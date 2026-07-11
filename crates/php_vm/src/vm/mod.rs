@@ -14305,7 +14305,7 @@ impl Vm {
             }
         };
 
-        if internal_throwable_instanceof(&object.class_name(), "throwable").is_some()
+        if internal_throwable_instanceof(&object.class_name_handle(), "throwable").is_some()
             || is_php_token_runtime_class(&object.class_name())
             || is_std_class_runtime_class(&object.class_name())
             || is_date_time_runtime_class(&object.class_name())
@@ -21397,7 +21397,7 @@ impl Vm {
                             }
                             continue;
                         }
-                        if internal_throwable_instanceof(&object.class_name(), "throwable")
+                        if internal_throwable_instanceof(&object.class_name_handle(), "throwable")
                             .is_some()
                         {
                             let value = object.get_property(property).unwrap_or(Value::Null);
@@ -27661,7 +27661,7 @@ impl Vm {
                                 }
                             }
                         };
-                        if internal_throwable_instanceof(&object.class_name(), "throwable")
+                        if internal_throwable_instanceof(&object.class_name_handle(), "throwable")
                             .is_some()
                         {
                             let value = match internal_throwable_method_value(
@@ -37261,7 +37261,7 @@ impl Vm {
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
         }
-        if internal_throwable_instanceof(&object.class_name(), "throwable").is_some() {
+        if internal_throwable_instanceof(&object.class_name_handle(), "throwable").is_some() {
             return match internal_throwable_method_value(
                 &object,
                 method,
@@ -41715,7 +41715,7 @@ impl Vm {
         state: &ExecutionState,
     ) -> Result<bool, VmResult> {
         if is_reflection_runtime_class(&object.class_name())
-            || internal_throwable_instanceof(&object.class_name(), "throwable").is_some()
+            || internal_throwable_instanceof(&object.class_name_handle(), "throwable").is_some()
             || spl_runtime_marker(object).is_some_and(|class| is_spl_caching_iterator_class(&class))
             || is_spl_file_runtime_class(&object.class_name())
             || is_php_token_runtime_class(&object.class_name())
@@ -41757,7 +41757,7 @@ impl Vm {
                     )
                 });
         }
-        if internal_throwable_instanceof(&object.class_name(), "throwable").is_some() {
+        if internal_throwable_instanceof(&object.class_name_handle(), "throwable").is_some() {
             return Ok(PhpString::from_bytes(
                 throwable_string(&object).into_bytes(),
             ));
@@ -48659,39 +48659,46 @@ fn internal_throwable_parent(class_name: &str) -> Option<&'static str> {
     }
 }
 
+const INTERNAL_THROWABLE_CLASS_NAMES: &[&str] = &[
+    "exception",
+    "error",
+    "parseerror",
+    "typeerror",
+    "valueerror",
+    "unhandledmatcherror",
+    "argumentcounterror",
+    "fibererror",
+    "jsonexception",
+    "sodiumexception",
+    "pdoexception",
+    "reflectionexception",
+    "logicexception",
+    "badfunctioncallexception",
+    "badmethodcallexception",
+    "domainexception",
+    "invalidargumentexception",
+    "lengthexception",
+    "outofrangeexception",
+    "runtimeexception",
+    "outofboundsexception",
+    "overflowexception",
+    "rangeexception",
+    "underflowexception",
+    "unexpectedvalueexception",
+];
+
 fn internal_throwable_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
-    let mut object_class = normalize_class_name(object_class);
-    let target_class = normalize_class_name(target_class);
-    if !matches!(
-        object_class.as_str(),
-        "exception"
-            | "error"
-            | "parseerror"
-            | "typeerror"
-            | "valueerror"
-            | "unhandledmatcherror"
-            | "argumentcounterror"
-            | "fibererror"
-            | "jsonexception"
-            | "sodiumexception"
-            | "pdoexception"
-            | "reflectionexception"
-            | "logicexception"
-            | "badfunctioncallexception"
-            | "badmethodcallexception"
-            | "domainexception"
-            | "invalidargumentexception"
-            | "lengthexception"
-            | "outofrangeexception"
-            | "runtimeexception"
-            | "outofboundsexception"
-            | "overflowexception"
-            | "rangeexception"
-            | "underflowexception"
-            | "unexpectedvalueexception"
-    ) {
+    // Fast in-place reject: almost every receiver is not an engine
+    // throwable, and this probe runs on hot property/method paths.
+    let trimmed = object_class.trim_start_matches('\\');
+    if !INTERNAL_THROWABLE_CLASS_NAMES
+        .iter()
+        .any(|candidate| trimmed.eq_ignore_ascii_case(candidate))
+    {
         return None;
     }
+    let mut object_class = normalize_class_name(object_class);
+    let target_class = normalize_class_name(target_class);
     if target_class == "throwable" {
         return Some(true);
     }
@@ -53552,7 +53559,9 @@ fn object_instanceof(
             if let Some(result) = internal_php_token_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
-            if let Some(result) = internal_throwable_instanceof(&object.class_name(), class_name) {
+            if let Some(result) =
+                internal_throwable_instanceof(&object.class_name_handle(), class_name)
+            {
                 return Ok(result);
             }
             if class_is_or_implements(compiled, &object.class_name(), class_name)? {
@@ -53651,7 +53660,9 @@ fn object_instanceof_in_state(
             if let Some(result) = internal_php_token_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
-            if let Some(result) = internal_throwable_instanceof(&object.class_name(), class_name) {
+            if let Some(result) =
+                internal_throwable_instanceof(&object.class_name_handle(), class_name)
+            {
                 return Ok(result);
             }
             if let Some(result) = internal_spl_iterator_instanceof(&object.class_name(), class_name)
