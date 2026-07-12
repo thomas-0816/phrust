@@ -31,27 +31,10 @@ Use the aggregate performance gate for performance-related changes:
 nix develop -c just verify-performance
 ```
 
-The gate includes:
-
-- `performance-tests`
-- `performance-regression` (includes the `perf-flag-matrix` A/B matrix)
-- `cache-roundtrip`
-- `optimizer-diff`
-- `quickening-smoke`
-- `inline-cache-smoke`
-- `jit-smoke`
-- `safety-audit-smoke`
-- `benchmark-smoke`
-- `framework-smoke`
-
-The release-profile and report gates run as `verify-performance-extended`
-(its own job in the CI gate matrix):
-
-- `release-benchmark-smoke`
-- `callgrind-smoke`
-- `hotpath-inventory`
-- `fastest-hotpath-report`
-- `perf-report`
+The gate composition (and the split into `verify-performance` and
+`verify-performance-extended`) is documented once, in
+[`ci-policy.md`](ci-policy.md); the `justfile` recipes are the executable
+source of truth.
 
 Long benchmark suites remain opt-in and are not default pull-request gates:
 
