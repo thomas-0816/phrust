@@ -4457,6 +4457,7 @@ impl LoweringContext<'_> {
             FunctionFlags {
                 is_closure: true,
                 is_static: signature.flags().is_static(),
+                is_generator: signature.flags().is_generator(),
                 ..FunctionFlags::default()
             },
             span,

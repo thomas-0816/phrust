@@ -6,6 +6,9 @@ use super::prelude::*;
 pub(super) struct GeneratorYield {
     pub(super) key: Option<Value>,
     pub(super) value: Value,
+    /// True when the pair was forwarded from a delegated generator; forwarded
+    /// keys must not advance the suspending generator's auto-key counter.
+    pub(super) forwarded: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -747,7 +750,11 @@ impl Vm {
             return Err(Box::new(result));
         }
         if let Some(yielded) = result.yielded {
-            generator.suspend(yielded.key.clone(), yielded.value.clone());
+            if yielded.forwarded {
+                generator.suspend_forwarded(yielded.key.clone(), yielded.value.clone());
+            } else {
+                generator.suspend(yielded.key.clone(), yielded.value.clone());
+            }
             self.record_runtime_trace_event(|| {
                 format!(
                     "generator suspend function={} key={} value={}",
@@ -760,7 +767,7 @@ impl Vm {
                     trace_value(&yielded.value)
                 )
             });
-            Ok(Some((yielded.key, yielded.value)))
+            Ok(Some((generator.current_key(), yielded.value)))
         } else {
             generator.close(result.return_value);
             self.record_runtime_trace_event(|| {
@@ -852,7 +859,11 @@ impl Vm {
             return Err(Box::new(result));
         }
         if let Some(yielded) = result.yielded {
-            generator.suspend(yielded.key.clone(), yielded.value.clone());
+            if yielded.forwarded {
+                generator.suspend_forwarded(yielded.key.clone(), yielded.value.clone());
+            } else {
+                generator.suspend(yielded.key.clone(), yielded.value.clone());
+            }
             self.record_runtime_trace_event(|| {
                 format!(
                     "generator suspend function={} key={} value={}",
@@ -865,7 +876,7 @@ impl Vm {
                     trace_value(&yielded.value)
                 )
             });
-            Ok(Some((yielded.key, yielded.value)))
+            Ok(Some((generator.current_key(), yielded.value)))
         } else {
             state.generator_continuations.remove(&generator.id());
             generator.close(result.return_value);

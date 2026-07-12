@@ -2893,7 +2893,11 @@ impl Vm {
                         }
                         let mut result =
                             VmResult::success_with_diagnostics_no_output(None, diagnostics);
-                        result.yielded = Some(Box::new(GeneratorYield { key, value }));
+                        result.yielded = Some(Box::new(GeneratorYield {
+                            key,
+                            value,
+                            forwarded: false,
+                        }));
                         return result;
                     }
                     InstructionKind::YieldFrom { dst, source } => {
@@ -2945,7 +2949,11 @@ impl Vm {
                                 );
                                 let mut result =
                                     VmResult::success_with_diagnostics_no_output(None, diagnostics);
-                                result.yielded = Some(Box::new(GeneratorYield { key, value }));
+                                result.yielded = Some(Box::new(GeneratorYield {
+                                    key,
+                                    value,
+                                    forwarded: true,
+                                }));
                                 return result;
                             }
                             YieldFromStep::Complete(return_value) => {

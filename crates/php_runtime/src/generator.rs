@@ -31,6 +31,8 @@ struct GeneratorStorage {
     call_context: GeneratorCallContext,
     state: GeneratorState,
     current_key: Option<Value>,
+    /// Next auto-assigned integer key, advanced by explicit int yields.
+    next_auto_key: i64,
     current_value: Option<Value>,
     return_value: Option<Value>,
 }
@@ -80,6 +82,7 @@ impl GeneratorRef {
                     call_context,
                     state: GeneratorState::Created,
                     current_key: None,
+                    next_auto_key: 0,
                     current_value: None,
                     return_value: None,
                 }),
@@ -122,8 +125,33 @@ impl GeneratorRef {
         self.cell.storage.borrow_mut().state = state;
     }
 
-    /// Records the current yielded key/value and marks the generator suspended.
+    /// Records the current yielded key/value and marks the generator
+    /// suspended. Auto keys are numbered from the largest previously yielded
+    /// integer key plus one, mirroring the reference engine.
     pub fn suspend(&self, key: Option<Value>, value: Value) {
+        let mut storage = self.cell.storage.borrow_mut();
+        let key = match key {
+            Some(Value::Int(explicit)) => {
+                if explicit >= storage.next_auto_key {
+                    storage.next_auto_key = explicit.saturating_add(1);
+                }
+                Value::Int(explicit)
+            }
+            Some(other) => other,
+            None => {
+                let auto = storage.next_auto_key;
+                storage.next_auto_key = storage.next_auto_key.saturating_add(1);
+                Value::Int(auto)
+            }
+        };
+        storage.current_key = Some(key);
+        storage.current_value = Some(value);
+        storage.state = GeneratorState::Suspended;
+    }
+
+    /// Suspends with a key forwarded from a delegated generator (`yield
+    /// from`); forwarded keys do not advance this generator's auto counter.
+    pub fn suspend_forwarded(&self, key: Option<Value>, value: Value) {
         let mut storage = self.cell.storage.borrow_mut();
         storage.current_key = key;
         storage.current_value = Some(value);
