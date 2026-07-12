@@ -1083,7 +1083,7 @@ pub(super) fn check_property_type(
     } else {
         Err(format!(
             "E_PHP_VM_PROPERTY_TYPE_MISMATCH: Cannot assign {} to property {class_name}::${property} of type {}",
-            value_type_name(value),
+            type_error_value_name(value),
             runtime_type_name(runtime_type)
         ))
     }
