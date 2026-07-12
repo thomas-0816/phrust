@@ -97,6 +97,7 @@ help:
       '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
       '  just wordpress-root-benchmark-feedback-ab Run persistent-feedback A/B' \
       '  just wordpress-root-benchmark-cranelift Run experimental Cranelift arm' \
+      '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
       '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
       '  just wordpress-clone-churn-report Summarize clone/COW attribution from latest request profile' \
@@ -1193,6 +1194,11 @@ wordpress-root-regression-gate *args:
 # counters, or metric renames without production Rust changes or gates.
 perf-pr-guard *args:
     scripts/verify/perf_pr_guard.py {{args}}
+
+# Worker-local adaptive state: direct quickening/IC reuse must preserve the
+# kill switch, compiled-generation isolation, and PHP-visible request isolation.
+worker-adaptive-state-smoke:
+    cargo test -p php_executor worker_ -- --nocapture
 
 # Profiler containment: unprofiled requests after a profiled request must stay
 # within 5% of clean unprofiled requests in the same server process.

@@ -83,7 +83,7 @@ skipped because an equivalent direct PHP server value already exists. The server
 snapshots process environment variables at startup for normal request contexts;
 restart the server to expose changed process environment values to PHP requests.
 Persistent-engine metrics distinguish immutable metadata reuse from request
-state. Script/include cache hits and quickening feedback templates may persist
+state. Script/include cache hits and worker-owned guarded adaptive state may persist
 across requests; PHP globals, request context, output buffers, sessions, and
 runtime values are reset per request. A request-local reset is therefore counted
 as a reset, not as rejected persistence.

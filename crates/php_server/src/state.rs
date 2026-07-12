@@ -3,7 +3,7 @@ use crate::{
     access_log::AccessLogger,
     metrics::ServerMetrics,
     perf_trace::PerfTraceWriter,
-    persistent_metadata::{PersistentMetadataStats, PersistentMetadataStore},
+    persistent_metadata::PersistentMetadataStats,
     request_profile::RequestProfileWriter,
     server::{PreloadError, ServerError},
 };
@@ -15,8 +15,8 @@ use php_executor::{
     PhpExecutorOptions, PhpScriptCacheInput,
 };
 use php_vm::api::{
-    CacheInstanceId, DenseIncludeMode, DenseJumpThreadingMode, FunctionCallSiteSnapshot,
-    InlineCacheMode, JitMode, QuickeningMode, QuickeningSiteSnapshot, VmError,
+    CacheInstanceId, DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode,
+    QuickeningMode, VmError,
 };
 use std::{
     net::SocketAddr,
@@ -120,7 +120,6 @@ pub(crate) struct ServerEngineState {
     pub(crate) script_cache: Arc<CompiledScriptCache>,
     pub(crate) include_cache: Arc<IncludeCache>,
     pub(crate) compile_optimization_level: OptimizationLevel,
-    persistent_metadata: Arc<PersistentMetadataStore>,
     dense_includes: Option<DenseIncludeMode>,
     perf_ablation: ServerPerfAblation,
 }
@@ -160,7 +159,6 @@ impl ServerEngineState {
             script_cache,
             include_cache,
             compile_optimization_level,
-            persistent_metadata: Arc::new(PersistentMetadataStore::default()),
             dense_includes,
             perf_ablation,
         }
@@ -176,7 +174,8 @@ impl ServerEngineState {
             options.vm_options.max_steps = self.max_vm_steps;
             options
         };
-        options.collect_quickening_feedback = persistent_feedback_enabled();
+        options.collect_quickening_feedback = false;
+        options.vm_options.persistent_adaptive_state = persistent_feedback_enabled();
         self.apply_engine_overrides(&mut options);
         options
     }
@@ -227,27 +226,10 @@ impl ServerEngineState {
 
     pub(crate) fn executor_options_for_request(
         &self,
-        script: &str,
-        metrics: &ServerMetrics,
+        _script: &str,
+        _metrics: &ServerMetrics,
     ) -> PhpExecutorOptions {
-        let mut options = self.executor_options_with_include_cache();
-        if !options.collect_quickening_feedback {
-            return options;
-        }
-        options.vm_options.quickening_seed = self.persistent_metadata.quickening_templates(script);
-        options.vm_options.callsite_seed = self.persistent_metadata.callsite_templates(script);
-        let instantiated = options
-            .vm_options
-            .quickening_seed
-            .len()
-            .saturating_add(options.vm_options.callsite_seed.len())
-            as u64;
-        if instantiated > 0 {
-            metrics
-                .persistent_engine_feedback_template_instantiations
-                .fetch_add(instantiated, Ordering::Relaxed);
-        }
-        options
+        self.executor_options_with_include_cache()
     }
 
     pub(crate) fn request_executor_cache_key(&self) -> RequestExecutorCacheKey {
@@ -261,26 +243,8 @@ impl ServerEngineState {
         }
     }
 
-    pub(crate) fn absorb_quickening_feedback(
-        &self,
-        script: &str,
-        feedback: Vec<QuickeningSiteSnapshot>,
-    ) -> usize {
-        self.persistent_metadata
-            .absorb_quickening_feedback(script, feedback)
-    }
-
-    pub(crate) fn absorb_callsite_feedback(
-        &self,
-        script: &str,
-        feedback: Vec<FunctionCallSiteSnapshot>,
-    ) -> usize {
-        self.persistent_metadata
-            .absorb_callsite_feedback(script, feedback)
-    }
-
     pub(crate) fn persistent_metadata_stats(&self) -> PersistentMetadataStats {
-        self.persistent_metadata.stats()
+        PersistentMetadataStats::default()
     }
 
     pub(crate) fn compile_script(

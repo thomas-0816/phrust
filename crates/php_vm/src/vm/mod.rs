@@ -527,6 +527,48 @@ type UnitFunctionKey = (u64, u32);
 type TrivialMethodPlanCache = Rc<RefCell<HashMap<UnitFunctionKey, Option<TrivialMethodPlan>>>>;
 type LastUseMovePlanCache =
     Rc<RefCell<HashMap<UnitFunctionKey, Rc<crate::last_use::LastUseMovePlan>>>>;
+type WorkerQuickeningTables = Rc<RefCell<HashMap<u64, QuickeningTable>>>;
+
+struct WorkerQuickeningLease<'a> {
+    request_table: &'a RefCell<QuickeningTable>,
+    worker_tables: WorkerQuickeningTables,
+    unit_key: u64,
+    enabled: bool,
+}
+
+impl<'a> WorkerQuickeningLease<'a> {
+    fn begin(
+        request_table: &'a RefCell<QuickeningTable>,
+        worker_tables: WorkerQuickeningTables,
+        unit_key: u64,
+        enabled: bool,
+    ) -> Self {
+        let table = if enabled {
+            worker_tables
+                .borrow_mut()
+                .remove(&unit_key)
+                .unwrap_or_default()
+        } else {
+            QuickeningTable::default()
+        };
+        *request_table.borrow_mut() = table;
+        Self {
+            request_table,
+            worker_tables,
+            unit_key,
+            enabled,
+        }
+    }
+}
+
+impl Drop for WorkerQuickeningLease<'_> {
+    fn drop(&mut self) {
+        let table = std::mem::take(&mut *self.request_table.borrow_mut());
+        if self.enabled {
+            self.worker_tables.borrow_mut().insert(self.unit_key, table);
+        }
+    }
+}
 
 /// Minimal interpreter VM.
 #[derive(Clone, Debug)]
@@ -536,6 +578,7 @@ pub struct Vm {
     counters: RefCell<Option<VmCounters>>,
     literal_pool: RefCell<LiteralPool>,
     quickening: RefCell<QuickeningTable>,
+    worker_quickening_tables: WorkerQuickeningTables,
     /// Final invalidation epochs of the last `execute` call, stashed before
     /// request state drops so the persistent-feedback writer can stamp entries
     /// with the true observation state instead of cold-start zeros.
@@ -609,6 +652,7 @@ pub struct VmWorkerState {
     jit: Rc<RefCell<JitRuntimeState>>,
     tiering: Rc<RefCell<TieringState>>,
     inline_caches: Rc<RefCell<InlineCacheTable>>,
+    quickening_tables: WorkerQuickeningTables,
     runtime_class_entry_cache: Rc<RefCell<RuntimeClassEntryCache>>,
     ir_class_entry_cache: Rc<RefCell<IrClassEntryCache>>,
     default_slot_template_cache: Rc<RefCell<DefaultSlotTemplateCache>>,
@@ -631,6 +675,7 @@ impl VmWorkerState {
             jit: Rc::new(RefCell::new(JitRuntimeState::default())),
             tiering: Rc::new(RefCell::new(TieringState::new(tiering))),
             inline_caches: Rc::new(RefCell::new(InlineCacheTable::default())),
+            quickening_tables: Rc::new(RefCell::new(HashMap::new())),
             runtime_class_entry_cache: Rc::new(RefCell::new(RuntimeClassEntryCache::default())),
             ir_class_entry_cache: Rc::new(RefCell::new(IrClassEntryCache::default())),
             default_slot_template_cache: Rc::new(RefCell::new(DefaultSlotTemplateCache::default())),
@@ -677,6 +722,7 @@ impl Vm {
             default_slot_template_cache: worker_state.default_slot_template_cache,
             constructor_resolution_cache: worker_state.constructor_resolution_cache,
             quickening: RefCell::new(QuickeningTable::default()),
+            worker_quickening_tables: worker_state.quickening_tables,
             persistent_feedback_epochs: Cell::new(None),
             persistent_feedback_entry_unit_key: Cell::new(None),
             inline_caches: worker_state.inline_caches,
@@ -697,6 +743,14 @@ impl Vm {
     #[must_use]
     pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
         let unit = unit.into();
+        let entry_unit_key = compiled_unit_cache_key(&unit);
+        let _quickening_lease = WorkerQuickeningLease::begin(
+            &self.quickening,
+            Rc::clone(&self.worker_quickening_tables),
+            entry_unit_key,
+            self.options.persistent_adaptive_state && self.options.quickening.enabled(),
+        );
+        let persistent_quickening_reused_sites = self.quickening.borrow().touched_site_count();
         self.tiering
             .borrow_mut()
             .begin_request(self.options.tiering.clone());
@@ -706,12 +760,11 @@ impl Vm {
         let mut output = OutputBuffer::with_capacity(output_preallocation_hint(unit.unit()));
         self.trace.borrow_mut().clear();
         *self.literal_pool.borrow_mut() = LiteralPool::default();
-        *self.quickening.borrow_mut() = QuickeningTable::default();
         self.persistent_feedback_epochs.set(None);
         // IC slots and the entry-unit scope filter share the compiled unit's
         // stable cache identity.
         self.persistent_feedback_entry_unit_key
-            .set(Some(compiled_unit_cache_key(&unit)));
+            .set(Some(entry_unit_key));
         let mut persistent_feedback_seeded_sites = 0usize;
         if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
             persistent_feedback_seeded_sites = self
@@ -719,7 +772,10 @@ impl Vm {
                 .borrow_mut()
                 .seed_persistent_sites(&self.options.quickening_seed);
         }
-        let dynamic_ic_invalidations = self.inline_caches.borrow_mut().begin_request();
+        let dynamic_ic_invalidations = self
+            .inline_caches
+            .borrow_mut()
+            .begin_request(self.options.persistent_adaptive_state);
         let mut persistent_feedback_seeded_callsites = 0usize;
         if self.options.inline_caches.enabled() && !self.options.callsite_seed.is_empty() {
             // Only seed a callsite whose recorded target function still exists
@@ -760,6 +816,11 @@ impl Vm {
             if persistent_feedback_seeded_callsites > 0 {
                 counters.record_persistent_feedback_seeded_callsites(
                     persistent_feedback_seeded_callsites as u64,
+                );
+            }
+            if persistent_quickening_reused_sites > 0 {
+                counters.record_persistent_worker_quickening_reuse(
+                    persistent_quickening_reused_sites as u64,
                 );
             }
             counters

@@ -1196,7 +1196,6 @@ pub(crate) fn execute_compiled_php_with_state(
     mode: RequestCounterMode,
     collect_profile_spans: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
-    let feedback_key = lookup.compiled.path().to_owned();
     state
         .services
         .metrics
@@ -1204,7 +1203,7 @@ pub(crate) fn execute_compiled_php_with_state(
         .fetch_add(1, Ordering::Relaxed);
     // PHP-visible state is always rebuilt. The worker retains only explicitly
     // engine-owned plans, constants, builtin/JIT handles, tiering hotness, and
-    // feedback templates; rejecting frames/globals/resources remains visible.
+    // guarded adaptive tables; rejecting frames/globals/resources remains visible.
     state
         .services
         .metrics
@@ -1228,25 +1227,6 @@ pub(crate) fn execute_compiled_php_with_state(
             collect_layout_source_attribution: mode.collects_source_attribution(),
         },
     );
-    let mut output = output;
-    let absorbed = state
-        .services
-        .engine
-        .absorb_quickening_feedback(
-            &feedback_key,
-            std::mem::take(&mut output.quickening_feedback),
-        )
-        .saturating_add(state.services.engine.absorb_callsite_feedback(
-            &feedback_key,
-            std::mem::take(&mut output.callsite_feedback),
-        ));
-    if absorbed > 0 {
-        state
-            .services
-            .metrics
-            .persistent_engine_feedback_template_absorptions
-            .fetch_add(absorbed as u64, Ordering::Relaxed);
-    }
     Ok(output)
 }
 

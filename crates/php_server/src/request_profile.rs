@@ -818,6 +818,18 @@ fn metadata_json(counters: &VmCounters) -> Value {
         ("quickening_dequickens", counters.quickening_dequickens),
         ("quickening_megamorphic", counters.quickening_megamorphic),
         ("quickening_disabled", counters.quickening_disabled),
+        (
+            "persistent_worker_quickening_reused_sites",
+            counters.persistent_worker_quickening_reused_sites,
+        ),
+        (
+            "persistent_worker_adaptive_lock_acquisitions",
+            counters.persistent_worker_adaptive_lock_acquisitions,
+        ),
+        (
+            "persistent_worker_adaptive_copied_bytes",
+            counters.persistent_worker_adaptive_copied_bytes,
+        ),
     ])
     .with_map(
         "arena_fallback_allocations_by_reason",

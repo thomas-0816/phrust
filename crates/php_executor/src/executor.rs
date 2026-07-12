@@ -570,6 +570,158 @@ mod tests {
     }
 
     #[test]
+    fn execute_compiled_reuses_worker_quickening_without_snapshots() {
+        let mut options = PhpExecutorOptions::managed_fast_runtime();
+        options.vm_options.execution_format = ExecutionFormat::Bytecode;
+        options.vm_options.persistent_adaptive_state = true;
+        let executor = PhpExecutor::with_options(options);
+        let compiled = executor
+            .compile_source(PhpCompileInput {
+                source: "<?php $sum = 0; for ($i = 0; $i < 20; $i++) { $sum += $i; } echo $sum;"
+                    .to_owned(),
+                source_path: "worker-quickening.php".to_owned(),
+                optimization_level: Some(OptimizationLevel::O0),
+            })
+            .expect("compile worker quickening script");
+        let input = || PhpRequestExecutionInput {
+            real_path: None,
+            cwd: std::env::current_dir().expect("current directory"),
+            include_roots: Vec::new(),
+            runtime_context: RuntimeContext::controlled_cli("worker-quickening.php", Vec::new()),
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: false,
+        };
+
+        let first = executor.execute_compiled(&compiled, input());
+        let second = executor.execute_compiled(&compiled, input());
+        assert_eq!(first.stdout, b"190");
+        assert_eq!(second.stdout, first.stdout);
+        assert_eq!(
+            first
+                .counters
+                .expect("first counters")
+                .persistent_worker_quickening_reused_sites,
+            0
+        );
+        assert!(
+            second
+                .counters
+                .expect("second counters")
+                .persistent_worker_quickening_reused_sites
+                > 0
+        );
+        assert!(second.quickening_feedback.is_empty());
+        assert!(second.callsite_feedback.is_empty());
+    }
+
+    #[test]
+    fn worker_quickening_kill_switch_and_generation_key_isolate_state() {
+        let mut options = PhpExecutorOptions::managed_fast_runtime();
+        options.vm_options.execution_format = ExecutionFormat::Bytecode;
+        options.vm_options.persistent_adaptive_state = false;
+        let executor = PhpExecutor::with_options(options);
+        let compile = |suffix: &str| {
+            executor
+                .compile_source(PhpCompileInput {
+                    source: format!(
+                        "<?php $sum = 0; for ($i = 0; $i < 20; $i++) {{ $sum += $i; }} echo $sum, '{suffix}';"
+                    ),
+                    source_path: "worker-quickening-generation.php".to_owned(),
+                    optimization_level: Some(OptimizationLevel::O0),
+                })
+                .expect("compile worker quickening generation")
+        };
+        let input = || PhpRequestExecutionInput {
+            real_path: None,
+            cwd: std::env::current_dir().expect("current directory"),
+            include_roots: Vec::new(),
+            runtime_context: RuntimeContext::controlled_cli(
+                "worker-quickening-generation.php",
+                Vec::new(),
+            ),
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: false,
+        };
+
+        let first = compile("a");
+        let _ = executor.execute_compiled(&first, input());
+        let repeated = executor.execute_compiled(&first, input());
+        assert_eq!(repeated.stdout, b"190a");
+        assert_eq!(
+            repeated
+                .counters
+                .expect("kill switch counters")
+                .persistent_worker_quickening_reused_sites,
+            0
+        );
+
+        let mut enabled = PhpExecutorOptions::managed_fast_runtime();
+        enabled.vm_options.execution_format = ExecutionFormat::Bytecode;
+        enabled.vm_options.persistent_adaptive_state = true;
+        let enabled_executor = PhpExecutor::with_options(enabled);
+        let replacement = enabled_executor
+            .compile_source(PhpCompileInput {
+                source:
+                    "<?php $sum = 0; for ($i = 0; $i < 20; $i++) { $sum += $i; } echo $sum, 'b';"
+                        .to_owned(),
+                source_path: "worker-quickening-generation.php".to_owned(),
+                optimization_level: Some(OptimizationLevel::O0),
+            })
+            .expect("compile replacement generation");
+        let fresh = enabled_executor.execute_compiled(&replacement, input());
+        assert_eq!(fresh.stdout, b"190b");
+        assert_eq!(
+            fresh
+                .counters
+                .expect("replacement counters")
+                .persistent_worker_quickening_reused_sites,
+            0
+        );
+    }
+
+    #[test]
+    fn worker_quickening_returns_to_worker_after_failed_request() {
+        let mut options = PhpExecutorOptions::managed_fast_runtime();
+        options.vm_options.execution_format = ExecutionFormat::Bytecode;
+        options.vm_options.persistent_adaptive_state = true;
+        let executor = PhpExecutor::with_options(options);
+        let compiled = executor
+            .compile_source(PhpCompileInput {
+                source: "<?php $sum = 0; for ($i = 0; $i < 20; $i++) { $sum += $i; } missing_worker_function();"
+                    .to_owned(),
+                source_path: "worker-quickening-failure.php".to_owned(),
+                optimization_level: Some(OptimizationLevel::O0),
+            })
+            .expect("compile failing worker quickening script");
+        let input = || PhpRequestExecutionInput {
+            real_path: None,
+            cwd: std::env::current_dir().expect("current directory"),
+            include_roots: Vec::new(),
+            runtime_context: RuntimeContext::controlled_cli(
+                "worker-quickening-failure.php",
+                Vec::new(),
+            ),
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: false,
+        };
+
+        let first = executor.execute_compiled(&compiled, input());
+        let second = executor.execute_compiled(&compiled, input());
+        assert_eq!(first.status, PhpExecutionStatus::RuntimeError);
+        assert_eq!(second.status, first.status);
+        assert!(
+            second
+                .counters
+                .expect("failed request counters")
+                .persistent_worker_quickening_reused_sites
+                > 0
+        );
+    }
+
+    #[test]
     fn worker_class_cache_invalidates_recompiled_units_and_rejects_heap_defaults() {
         let mut options = PhpExecutorOptions::managed_fast_runtime();
         options.vm_options.execution_format = ExecutionFormat::Ir;

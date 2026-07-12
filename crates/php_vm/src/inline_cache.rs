@@ -1201,6 +1201,19 @@ fn clear_slot_targets(slot: &mut InlineCacheSlot) {
     slot.persistent_worker = false;
 }
 
+fn inline_cache_payload_len(payload: &InlineCachePayload) -> usize {
+    match payload {
+        InlineCachePayload::FunctionCall(entries) => entries.len(),
+        InlineCachePayload::MethodCall(entries) => entries.len(),
+        InlineCachePayload::PropertyFetch(entries) => entries.len(),
+        InlineCachePayload::PropertyAssign(entries) => entries.len(),
+        InlineCachePayload::ClassStatic(entries) => entries.len(),
+        InlineCachePayload::IncludePath(entries) => entries.len(),
+        InlineCachePayload::AutoloadLookup(entries) => entries.len(),
+        InlineCachePayload::Empty(_) => 0,
+    }
+}
+
 fn finish_polymorphic_install(
     slot: &mut InlineCacheSlot,
     epoch: InvalidationEpoch,
@@ -1293,9 +1306,17 @@ pub struct InlineCacheTable {
 impl InlineCacheTable {
     /// Marks guarded payloads that survived from an earlier request. Empty
     /// slots remain ordinary cold misses and are not attributed as reuse.
-    pub fn begin_request(&mut self) -> usize {
+    pub fn begin_request(&mut self, retain_static: bool) -> usize {
         let mut dynamic_invalidations = 0usize;
         for slot in &mut self.slots {
+            if !retain_static {
+                let removed = inline_cache_payload_len(&slot.payload);
+                dynamic_invalidations = dynamic_invalidations.saturating_add(removed);
+                clear_slot_targets(slot);
+                slot.state = InlineCacheState::Cold;
+                slot.persistent_worker = false;
+                continue;
+            }
             let mut removed = 0usize;
             let retained = match &mut slot.payload {
                 InlineCachePayload::FunctionCall(entries) => {

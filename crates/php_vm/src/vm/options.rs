@@ -68,6 +68,10 @@ pub struct VmOptions {
     /// shape, and epoch validate at the callsite), so stale seeds invalidate
     /// back to generic resolution.
     pub callsite_seed: Vec<crate::inline_cache::FunctionCallSiteSnapshot>,
+    /// Retain engine-only quickening and guarded static inline-cache state in
+    /// the worker across isolated requests. Request-owned cache targets are
+    /// still discarded at every request boundary.
+    pub persistent_adaptive_state: bool,
     /// Allocate request-local inline-cache slots without changing semantics.
     pub inline_caches: InlineCacheMode,
     /// Select the experimental performance JIT tier for eligible hot leaf functions.
@@ -142,6 +146,7 @@ impl Default for VmOptions {
             quickening: QuickeningMode::Off,
             quickening_seed: Vec::new(),
             callsite_seed: Vec::new(),
+            persistent_adaptive_state: false,
             inline_caches: InlineCacheMode::Off,
             jit: JitMode::Off,
             copy_patch_leaf_override: None,

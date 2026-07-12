@@ -257,6 +257,9 @@ pub struct VmCounters {
     pub persistent_worker_class_cache_hits: u64,
     pub persistent_worker_default_slot_template_hits: u64,
     pub persistent_worker_constructor_hits: u64,
+    pub persistent_worker_quickening_reused_sites: u64,
+    pub persistent_worker_adaptive_lock_acquisitions: u64,
+    pub persistent_worker_adaptive_copied_bytes: u64,
     pub persistent_worker_invalidations_by_reason: BTreeMap<String, u64>,
     pub persistent_worker_request_visible_rejections_by_family: BTreeMap<String, u64>,
     pub arena_fallback_allocations_by_reason: BTreeMap<String, u64>,
@@ -1146,6 +1149,12 @@ impl VmCounters {
             .persistent_worker_invalidations_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
+    }
+
+    pub(crate) fn record_persistent_worker_quickening_reuse(&mut self, sites: u64) {
+        self.persistent_worker_quickening_reused_sites = self
+            .persistent_worker_quickening_reused_sites
+            .saturating_add(sites);
     }
 
     pub(crate) fn record_persistent_worker_request_visible_rejection(&mut self, family: &str) {
@@ -3021,6 +3030,24 @@ impl VmCounters {
             &mut json,
             "persistent_worker_constructor_hits",
             self.persistent_worker_constructor_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_quickening_reused_sites",
+            self.persistent_worker_quickening_reused_sites,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_adaptive_lock_acquisitions",
+            self.persistent_worker_adaptive_lock_acquisitions,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_adaptive_copied_bytes",
+            self.persistent_worker_adaptive_copied_bytes,
             true,
         );
         push_string_u64_map_field(

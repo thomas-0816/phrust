@@ -123,6 +123,7 @@ impl EngineProfile {
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
+                vm_options.persistent_adaptive_state = true;
                 vm_options.jit = JitMode::Off;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
@@ -144,6 +145,7 @@ impl EngineProfile {
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
+                vm_options.persistent_adaptive_state = true;
                 vm_options.jit = JitMode::Cranelift;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
