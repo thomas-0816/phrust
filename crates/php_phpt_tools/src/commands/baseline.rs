@@ -308,6 +308,7 @@ pub(crate) fn verify_baseline<W: Write, E: Write>(
     if let Some(report) = &report {
         compare_report_total("PASS", metadata.pass_count, report, &mut errors);
         compare_report_total("SKIP", metadata.skip_count, report, &mut errors);
+        compare_report_total("XFAIL", metadata.xfail_count, report, &mut errors);
         compare_report_total("FAIL", metadata.fail_count, report, &mut errors);
         compare_report_total("BORK", metadata.bork_count, report, &mut errors);
         if metadata.timestamp != report.timestamp {
@@ -343,13 +344,18 @@ pub(crate) fn verify_baseline<W: Write, E: Write>(
         ));
     }
     if metadata.corpus_count
-        != metadata.pass_count + metadata.skip_count + metadata.fail_count + metadata.bork_count
+        != metadata.pass_count
+            + metadata.skip_count
+            + metadata.xfail_count
+            + metadata.fail_count
+            + metadata.bork_count
     {
         errors.push(format!(
-            "corpus_count must equal PASS + SKIP + FAIL + BORK: {} != {} + {} + {} + {}",
+            "corpus_count must equal PASS + SKIP + XFAIL + FAIL + BORK: {} != {} + {} + {} + {} + {}",
             metadata.corpus_count,
             metadata.pass_count,
             metadata.skip_count,
+            metadata.xfail_count,
             metadata.fail_count,
             metadata.bork_count
         ));
