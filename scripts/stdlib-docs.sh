@@ -25,7 +25,6 @@ test -f docs/stdlib/regression-corpus.md
 test -f docs/stdlib/stabilization-06-54.md
 test -f docs/stdlib/arginfo-coercion.md
 test -f docs/stdlib/platform-constants.md
-test -f docs/stdlib/validation-summary.md
 test -f docs/stdlib/canonical-extension-surfaces.md
 test -f scripts/stdlib/diff_builtin_function.php
 test -x scripts/stdlib/function_coverage.py
@@ -97,9 +96,6 @@ grep -q 'Strict' docs/stdlib/arginfo-coercion.md
 grep -q 'Weak' docs/stdlib/arginfo-coercion.md
 grep -q 'PHP_VERSION_ID' docs/stdlib/platform-constants.md
 grep -q 'DIRECTORY_SEPARATOR' docs/stdlib/platform-constants.md
-grep -q 'diff-streams' docs/stdlib/validation-summary.md
-grep -q 'diff-json-pcre-date' docs/stdlib/validation-summary.md
-grep -q 'diff-spl-reflection' docs/stdlib/validation-summary.md
 grep -q 'STDLIB-GAP-HASH-RANDOM-ALGORITHMS' docs/stdlib/known-gaps.md
 
 scripts/stdlib/generate_arginfo.py \

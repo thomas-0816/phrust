@@ -37,7 +37,6 @@ focused `diff-*` recipes); prose copies of it are not maintained here.
 - [Function coverage](function-coverage.md)
 - [PHPT extension smoke](phpt-extension-smoke.md)
 - [Regression corpus](regression-corpus.md)
-- [Validation summary](validation-summary.md)
 
 ## Implemented Areas
 
