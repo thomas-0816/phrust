@@ -1,5 +1,34 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
+fn emit_rich_dim_float_key_diagnostics(
+    vm: &Vm,
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    stack: &mut CallStack,
+    state: &mut ExecutionState,
+    frame_index: usize,
+    local: LocalId,
+    dim_values: &[Value],
+    span: php_ir::IrSpan,
+) -> Result<(), Box<VmResult>> {
+    if !dim_values.iter().any(is_float_dim_key) {
+        return Ok(());
+    }
+    let container = read_local_value_at_frame(stack, frame_index, local).unwrap_or(Value::Null);
+    for dim in dim_values {
+        if is_float_dim_key(dim) {
+            vm.emit_dim_float_key_diagnostics(
+                ExecutionCursor::new(compiled, output, stack, state),
+                &container,
+                dim,
+                span,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn execute_rich_array_instruction(
     vm: &Vm,
     cursor: ExecutionCursor<'_>,
@@ -565,6 +594,19 @@ pub(super) fn execute_rich_array_instruction(
                 Ok(false) => {}
                 Err(result) => return RichDispatchOutcome::Return(Box::new(*result)),
             }
+            if let Err(result) = emit_rich_dim_float_key_diagnostics(
+                vm,
+                compiled,
+                output,
+                stack,
+                state,
+                frame_index,
+                *local,
+                &dim_values,
+                instruction.span,
+            ) {
+                return RichDispatchOutcome::Return(result);
+            }
             let dims = match dim_values_to_array_keys(&dim_values) {
                 Ok(dims) => dims,
                 Err(message) => {
@@ -758,6 +800,21 @@ pub(super) fn execute_rich_array_instruction(
                 "dim_append",
             );
             let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
+            if let Ok(raw_dims) = read_dim_operand_values_at_frame(unit, stack, frame_index, dims)
+                && let Err(result) = emit_rich_dim_float_key_diagnostics(
+                    vm,
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    frame_index,
+                    *local,
+                    &raw_dims,
+                    instruction.span,
+                )
+            {
+                return RichDispatchOutcome::Return(result);
+            }
             let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims) {
                 Ok(dims) => dims,
                 Err(message) => {
@@ -934,6 +991,21 @@ pub(super) fn execute_rich_array_instruction(
                 "dim_isset",
             );
             let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
+            if let Ok(raw_dims) = read_dim_operand_values_at_frame(unit, stack, frame_index, dims)
+                && let Err(result) = emit_rich_dim_float_key_diagnostics(
+                    vm,
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    frame_index,
+                    *local,
+                    &raw_dims,
+                    instruction.span,
+                )
+            {
+                return RichDispatchOutcome::Return(result);
+            }
             let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims) {
                 Ok(dims) => dims,
                 Err(message) => {
@@ -1040,6 +1112,21 @@ pub(super) fn execute_rich_array_instruction(
                 "dim_empty",
             );
             let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
+            if let Ok(raw_dims) = read_dim_operand_values_at_frame(unit, stack, frame_index, dims)
+                && let Err(result) = emit_rich_dim_float_key_diagnostics(
+                    vm,
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    frame_index,
+                    *local,
+                    &raw_dims,
+                    instruction.span,
+                )
+            {
+                return RichDispatchOutcome::Return(result);
+            }
             let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims) {
                 Ok(dims) => dims,
                 Err(message) => {
@@ -1170,6 +1257,21 @@ pub(super) fn execute_rich_array_instruction(
                 "dim_unset",
             );
             let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
+            if let Ok(raw_dims) = read_dim_operand_values_at_frame(unit, stack, frame_index, dims)
+                && let Err(result) = emit_rich_dim_float_key_diagnostics(
+                    vm,
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    frame_index,
+                    *local,
+                    &raw_dims,
+                    instruction.span,
+                )
+            {
+                return RichDispatchOutcome::Return(result);
+            }
             let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims) {
                 Ok(dims) => dims,
                 Err(message) => {

@@ -4550,6 +4550,15 @@ impl Vm {
                             return result;
                         };
                         let local = LocalId::new(local);
+                        if let Err(result) = self.emit_dense_dim_float_key_diagnostics(
+                            ExecutionCursor::new(compiled, output, stack, state),
+                            local,
+                            dims,
+                            dense_instruction_span(dense, instruction),
+                        ) {
+                            stack.pop_recycle();
+                            return *result;
+                        }
                         let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
                             Ok(dims) => dims,
                             Err(message) => {
@@ -4838,6 +4847,15 @@ impl Vm {
                             return result;
                         };
                         let local = LocalId::new(local);
+                        if let Err(result) = self.emit_dense_dim_float_key_diagnostics(
+                            ExecutionCursor::new(compiled, output, stack, state),
+                            local,
+                            dims,
+                            dense_instruction_span(dense, instruction),
+                        ) {
+                            stack.pop_recycle();
+                            return *result;
+                        }
                         let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
                             Ok(dims) => dims,
                             Err(message) => {
@@ -5003,6 +5021,28 @@ impl Vm {
                             Err(result) => {
                                 stack.pop_recycle();
                                 return *result;
+                            }
+                        }
+                        if dim_values.iter().any(is_float_dim_key) {
+                            let container = stack
+                                .current()
+                                .expect("bytecode frame was pushed")
+                                .locals
+                                .get(local)
+                                .unwrap_or(Value::Null);
+                            let span = dense_instruction_span(dense, instruction);
+                            for dim in &dim_values {
+                                if is_float_dim_key(dim)
+                                    && let Err(result) = self.emit_dim_float_key_diagnostics(
+                                        ExecutionCursor::new(compiled, output, stack, state),
+                                        &container,
+                                        dim,
+                                        span,
+                                    )
+                                {
+                                    stack.pop_recycle();
+                                    return *result;
+                                }
                             }
                         }
                         let dims = match dim_values_to_array_keys(&dim_values) {

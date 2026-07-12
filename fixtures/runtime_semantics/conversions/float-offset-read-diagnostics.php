@@ -17,3 +17,14 @@ set_error_handler(function ($errno, $errstr) {
 var_dump($a[0.5]);
 var_dump($s[0.5]);
 restore_error_handler();
+
+// Writes, isset, and unset follow the same container rules.
+$w = ['a', 'b', 'c'];
+$w[2.5] = 'z';
+var_dump($w);
+var_dump(isset($w[1.5]));
+unset($w[1.5]);
+var_dump($w);
+$t = 'php';
+$t[2.5] = 'z';
+var_dump($t);

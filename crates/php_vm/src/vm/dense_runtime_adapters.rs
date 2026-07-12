@@ -859,6 +859,47 @@ impl Vm {
         result
     }
 
+    /// Raw-value pre-pass for dim writes/isset/unset: emits the float-key
+    /// diagnostics against the local's current container before the operand
+    /// list is converted to array keys.
+    pub(super) fn emit_dense_dim_float_key_diagnostics(
+        &self,
+        cursor: ExecutionCursor<'_>,
+        local: LocalId,
+        dims: &[DenseOperand],
+        span: IrSpan,
+    ) -> Result<(), Box<VmResult>> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
+        let Ok(dim_values) = self.read_dense_dim_values(compiled, stack, dims) else {
+            return Ok(());
+        };
+        if !dim_values.iter().any(is_float_dim_key) {
+            return Ok(());
+        }
+        let container = stack
+            .current()
+            .expect("bytecode frame was pushed")
+            .locals
+            .get(local)
+            .unwrap_or(Value::Null);
+        for dim in &dim_values {
+            if is_float_dim_key(dim) {
+                self.emit_dim_float_key_diagnostics(
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    &container,
+                    dim,
+                    span,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn read_dense_dim_operands(
         &self,
         compiled: &CompiledUnit,
