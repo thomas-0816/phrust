@@ -10,7 +10,7 @@ pub(crate) fn descriptor() -> ExtensionDescriptor {
     ExtensionDescriptor::from_generated(
         "intl",
         "8.5.7",
-        true,
+        false,
         FUNCTIONS,
         CONSTANTS,
         CLASSES,

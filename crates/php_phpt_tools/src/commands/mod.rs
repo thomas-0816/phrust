@@ -5893,7 +5893,7 @@ mod tests {
         );
         assert!(
             report.contains(
-                "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | stub-only |"
+                "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | partial-implementation |"
             )
         );
         assert!(report.contains(

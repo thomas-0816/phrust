@@ -109,7 +109,7 @@
     }
   ],
   "dependencies": [],
-  "enabled_by_default": true,
+  "enabled_by_default": false,
   "functions": [
     {
       "arginfo": {

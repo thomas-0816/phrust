@@ -865,11 +865,15 @@ mod tests {
     }
 
     #[test]
-    fn bounded_mbstring_and_intl_are_enabled() {
+    fn bounded_mbstring_is_enabled_and_intl_is_disabled_by_default() {
         let registry = ExtensionRegistry::standard_library();
 
         assert!(registry.is_extension_enabled("mbstring"));
-        assert!(registry.is_extension_enabled("intl"));
+        // intl ships descriptors but reports as not loaded by default: the
+        // class surface (Collator, formatters) is still missing, and claiming
+        // the extension breaks skipif parity with a reference build that
+        // lacks intl.
+        assert!(!registry.is_extension_enabled("intl"));
 
         for name in [
             "mb_check_encoding",
@@ -896,8 +900,8 @@ mod tests {
             "normalizer_normalize",
         ] {
             assert!(
-                registry.enabled_php_function(name).is_some(),
-                "{name} should be visible in the bounded intl MVP"
+                registry.enabled_php_function(name).is_none(),
+                "{name} must not be introspectable while intl reports as not loaded"
             );
         }
 
@@ -909,10 +913,16 @@ mod tests {
             "NumberFormatter",
         ] {
             assert!(
-                registry.enabled_class(name).is_some(),
-                "{name} should be visible in the bounded intl MVP"
+                registry.enabled_class(name).is_none(),
+                "{name} must not be introspectable while intl reports as not loaded"
             );
         }
+
+        let mut enabled = registry.clone();
+        enabled.enable_extension("intl").expect("enable intl");
+        assert!(enabled.is_extension_enabled("intl"));
+        assert!(enabled.enabled_php_function("grapheme_strlen").is_some());
+        assert!(enabled.enabled_class("Collator").is_some());
     }
 
     #[test]
@@ -2551,7 +2561,7 @@ mod tests {
             ("RecursiveRegexIterator", ClassKind::Class),
             ("SplPriorityQueue", ClassKind::Class),
             ("SplSubject", ClassKind::Interface),
-            ("Transliterator", ClassKind::Class),
+            ("XMLReader", ClassKind::Class),
             ("Random\\Engine\\Mt19937", ClassKind::Class),
         ] {
             let class = registry
@@ -2567,6 +2577,10 @@ mod tests {
         assert!(
             registry.enabled_class("_ZendTestClass").is_none(),
             "php-src test fixtures must not be enabled by default"
+        );
+        assert!(
+            registry.enabled_class("Transliterator").is_none(),
+            "intl classlikes must stay hidden while intl reports as not loaded"
         );
     }
 

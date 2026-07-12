@@ -153,7 +153,6 @@ mod tests {
                 "igbinary",
                 "imagick",
                 "imap",
-                "intl",
                 "json",
                 "ldap",
                 "mbstring",
@@ -200,7 +199,7 @@ mod tests {
         let Value::Array(array) = get_loaded_extensions_value(registry) else {
             panic!("expected array");
         };
-        assert_eq!(array.len(), 63);
+        assert_eq!(array.len(), 62);
     }
 
     #[test]
