@@ -10,6 +10,7 @@ Dated, non-normative research notes. Entries reflect their writing date and are 
 - [Cranelift Polymorphic Inline Cache Research for Performance](cranelift-polymorphic-ics.md)
 - [Guard, Snapshot, Side-Exit, And Resume Table](deopt-resume-table.md)
 - [Dependency Units](dependency-units.md)
+- [Diagnostic-Parity Clusters of the Full PHPT Baseline](diagnostic-parity-clusters.md)
 - [Runtime Embedding and WASI Spike](embedding-spike.md)
 - [Include and Autoload Dependency Graph](include-autoload-dependency-graph.md)
 - [Native-Tier + Runtime Roadmap: Toward Native-PHP Parity](native-plus-runtime-roadmap.md)
