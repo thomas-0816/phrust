@@ -910,6 +910,46 @@ impl Vm {
         )
     }
 
+    /// Emits the reference diagnostics for a float dim key: arrays deprecate
+    /// lossy implicit conversions, strings warn about the offset cast for
+    /// every float offset, and objects receive the raw key silently. Callers
+    /// pre-check that the key is a float, so the hot integer path stays free.
+    pub(super) fn emit_dim_float_key_diagnostics(
+        &self,
+        cursor: ExecutionCursor<'_>,
+        container: &Value,
+        key: &Value,
+        span: php_ir::IrSpan,
+    ) -> Result<(), Box<VmResult>> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
+        match effective_value(container) {
+            Value::Array(_) => {
+                if let Some(message) = implicit_int_deprecation_message(&effective_value(key)) {
+                    self.emit_implicit_int_deprecation(
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        message,
+                        runtime_source_span(compiled, span),
+                    )?;
+                }
+            }
+            Value::String(_) => {
+                self.emit_cast_coercion_warning(
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    "E_PHP_RUNTIME_STRING_OFFSET_CAST_WARNING",
+                    "String offset cast occurred".to_owned(),
+                    runtime_source_span(compiled, span),
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Emits the implicit float-to-int deprecation through the user error
     /// handler, falling back to the deprecation output channel.
     pub(super) fn emit_implicit_int_deprecation(

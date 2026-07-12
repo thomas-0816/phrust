@@ -242,6 +242,16 @@ pub(super) fn execute_rich_array_instruction(
                                 }
                             }
                         } else {
+                            if is_float_dim_key(&key_value)
+                                && let Err(result) = vm.emit_dim_float_key_diagnostics(
+                                    ExecutionCursor::new(compiled, output, stack, state),
+                                    &base,
+                                    &key_value,
+                                    instruction.span,
+                                )
+                            {
+                                return RichDispatchOutcome::Return(result);
+                            }
                             let key = match array_key_from_value(&key_value) {
                                 Ok(key) => key,
                                 Err(message) => {

@@ -834,6 +834,11 @@ impl Vm {
         let Value::Array(array) = array else {
             return None;
         };
+        // Float keys take the slow path so the implicit-conversion
+        // deprecation can be emitted with execution state in scope.
+        if is_float_dim_key(key_value) {
+            return None;
+        }
         let Ok(key) = array_key_from_value(key_value) else {
             return None;
         };
@@ -1135,6 +1140,14 @@ impl Vm {
                 vec![CallArgument::positional(key_value.clone())],
                 span,
             );
+        }
+        if is_float_dim_key(key_value) {
+            self.emit_dim_float_key_diagnostics(
+                ExecutionCursor::new(compiled, output, stack, state),
+                &base,
+                key_value,
+                span,
+            )?;
         }
         let key = array_key_from_value(key_value)
             .map_err(|message| self.runtime_error(output, compiled, stack, message))?;

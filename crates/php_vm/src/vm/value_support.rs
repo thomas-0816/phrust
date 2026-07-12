@@ -100,6 +100,16 @@ pub(super) fn inline_constant_value(constant: &IrConstant) -> Value {
     }
 }
 
+/// Cheap float peek for dim-key diagnostics: avoids cloning containers on the
+/// hot non-float path.
+pub(super) fn is_float_dim_key(value: &Value) -> bool {
+    match value {
+        Value::Float(_) => true,
+        Value::Reference(cell) => matches!(&*cell.borrow(), Value::Float(_)),
+        _ => false,
+    }
+}
+
 pub(super) fn array_key_from_value(value: &Value) -> Result<ArrayKey, String> {
     ArrayKey::from_value(value).ok_or_else(|| {
         if let Value::Object(object) = effective_value(value) {
