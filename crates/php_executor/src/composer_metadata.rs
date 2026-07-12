@@ -1,6 +1,6 @@
-//! Composer declaration metadata for multi-file include compilation.
+//! Explicit autoload declaration metadata for multi-file include compilation.
 
-use php_semantics::hir::{ExprId, HirExprKind, HirStmtKind};
+use php_semantics::hir::{ExprId, HirExprKind, HirStmtKind, StmtId};
 use php_vm::api::{
     CompilationDependencyRequest, CompilationDependencyResolver, ResolvedCompilationDependency,
     VmError,
@@ -8,13 +8,13 @@ use php_vm::api::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const RESOLVER_FINGERPRINT: &str = "composer-hir-metadata-v1";
+const RESOLVER_FINGERPRINT: &str = "autoload-hir-metadata-v2";
 
-/// Executor-owned resolver for Composer's generated classmap and PSR-4 maps.
+/// Executor-owned resolver for explicit Composer and static PSR-4 metadata.
 #[derive(Debug, Default)]
-pub(crate) struct ComposerCompilationResolver;
+pub(crate) struct AutoloadCompilationResolver;
 
-impl CompilationDependencyResolver for ComposerCompilationResolver {
+impl CompilationDependencyResolver for AutoloadCompilationResolver {
     fn fingerprint(&self) -> String {
         RESOLVER_FINGERPRINT.to_owned()
     }
@@ -42,7 +42,358 @@ impl CompilationDependencyResolver for ComposerCompilationResolver {
                 }));
             }
         }
+        for ancestor in request
+            .requesting_path
+            .parent()
+            .into_iter()
+            .flat_map(Path::ancestors)
+        {
+            let metadata_path = ancestor.join("autoload.php");
+            if !metadata_path.is_file() {
+                continue;
+            }
+            let Some(maps) = StaticPsr4Maps::load(&metadata_path)? else {
+                continue;
+            };
+            if let Some(path) = maps.resolve(request.declaration) {
+                return Ok(Some(ResolvedCompilationDependency {
+                    path,
+                    metadata_paths: vec![metadata_path],
+                    activate_through_autoload: true,
+                }));
+            }
+        }
         Ok(None)
+    }
+}
+
+#[derive(Debug, Default)]
+struct StaticPsr4Maps {
+    psr4: Vec<(String, PathBuf)>,
+}
+
+impl StaticPsr4Maps {
+    fn load(path: &Path) -> Result<Option<Self>, VmError> {
+        let source = std::fs::read_to_string(path).map_err(|error| {
+            metadata_error(path, format!("failed to read autoload metadata: {error}"))
+        })?;
+        let frontend = php_semantics::analyze_source(&source);
+        if frontend.has_errors() {
+            return Ok(None);
+        }
+        let module = frontend
+            .database()
+            .module(frontend.module().module_id())
+            .ok_or_else(|| metadata_error(path, "autoload metadata has no HIR module"))?;
+        if !has_static_autoload_registration(module) {
+            return Ok(None);
+        }
+
+        let variables = collect_static_variables(module, path);
+        let mut psr4 = Vec::new();
+        for statement in module.statements().values() {
+            let HirStmtKind::If {
+                condition: Some(condition),
+                body,
+                ..
+            } = statement.kind()
+            else {
+                continue;
+            };
+            let Some(prefix) = autoload_prefix(module, *condition, path, &variables) else {
+                continue;
+            };
+            if let Some(root) = autoload_root(module, body, path, &variables) {
+                psr4.push((prefix, root));
+            }
+        }
+        psr4.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
+        Ok((!psr4.is_empty()).then_some(Self { psr4 }))
+    }
+
+    fn resolve(&self, declaration: &str) -> Option<PathBuf> {
+        for (prefix, root) in &self.psr4 {
+            let Some(relative) = strip_prefix_case_sensitive(declaration, prefix) else {
+                continue;
+            };
+            let candidate = root.join(format!("{}.php", relative.replace('\\', "/")));
+            if candidate.is_file()
+                && let Ok(candidate) = std::fs::canonicalize(candidate)
+            {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+}
+
+fn has_static_autoload_registration(module: &php_semantics::hir::HirModule) -> bool {
+    module.expressions().values().any(|expression| {
+        let HirExprKind::Call {
+            callee: Some(callee),
+            args,
+        } = expression.kind()
+        else {
+            return false;
+        };
+        is_named_call(module, *callee, "spl_autoload_register")
+            && args.first().is_some_and(|argument| {
+                module
+                    .expressions()
+                    .get(argument.value)
+                    .is_some_and(|argument| matches!(argument.kind(), HirExprKind::Closure { .. }))
+            })
+    })
+}
+
+fn collect_static_variables(
+    module: &php_semantics::hir::HirModule,
+    path: &Path,
+) -> HashMap<String, MetadataValue> {
+    let mut variables = HashMap::new();
+    for _ in 0..module.expressions().len() {
+        let previous_len = variables.len();
+        for expression in module.expressions().values() {
+            let HirExprKind::Assign {
+                operator,
+                left: Some(left),
+                right: Some(right),
+            } = expression.kind()
+            else {
+                continue;
+            };
+            if operator != "=" {
+                continue;
+            }
+            let Some(HirExprKind::Variable { name, .. }) =
+                module.expressions().get(*left).map(|left| left.kind())
+            else {
+                continue;
+            };
+            if let Ok(value) = evaluate_expr(module, *right, path, &variables) {
+                variables.insert(name.clone(), value);
+            }
+        }
+        if variables.len() == previous_len {
+            break;
+        }
+    }
+    variables
+}
+
+fn autoload_prefix(
+    module: &php_semantics::hir::HirModule,
+    condition: ExprId,
+    path: &Path,
+    variables: &HashMap<String, MetadataValue>,
+) -> Option<String> {
+    let condition_expr = module.expressions().get(condition)?;
+    let call = match condition_expr.kind() {
+        HirExprKind::Binary {
+            operator,
+            left: Some(left),
+            right: Some(right),
+        } if matches!(operator.as_str(), "==" | "===") => {
+            if is_zero_literal(module, *left) {
+                *right
+            } else if is_zero_literal(module, *right) {
+                *left
+            } else {
+                return None;
+            }
+        }
+        HirExprKind::Call { .. } => condition,
+        _ => return None,
+    };
+    let HirExprKind::Call {
+        callee: Some(callee),
+        args,
+    } = module.expressions().get(call)?.kind()
+    else {
+        return None;
+    };
+    let prefix = if is_named_call(module, *callee, "strncmp") && args.len() >= 2
+        || is_named_call(module, *callee, "str_starts_with") && args.len() == 2
+    {
+        args[1].value
+    } else {
+        return None;
+    };
+    match evaluate_expr(module, prefix, path, variables).ok()? {
+        MetadataValue::String(prefix) if prefix.ends_with('\\') => Some(prefix),
+        _ => None,
+    }
+}
+
+fn is_zero_literal(module: &php_semantics::hir::HirModule, expr: ExprId) -> bool {
+    matches!(
+        module.expressions().get(expr).map(|expression| expression.kind()),
+        Some(HirExprKind::Literal { text }) if text == "0"
+    )
+}
+
+fn is_named_call(module: &php_semantics::hir::HirModule, callee: ExprId, name: &str) -> bool {
+    matches!(
+        module.expressions().get(callee).map(|expression| expression.kind()),
+        Some(HirExprKind::Name { resolution }) if resolution.source().eq_ignore_ascii_case(name)
+    )
+}
+
+#[derive(Debug)]
+struct PathTemplate {
+    before: String,
+    has_relative_class: bool,
+    after: String,
+}
+
+fn autoload_root(
+    module: &php_semantics::hir::HirModule,
+    body: &[StmtId],
+    path: &Path,
+    variables: &HashMap<String, MetadataValue>,
+) -> Option<PathBuf> {
+    let mut expressions = Vec::new();
+    collect_statement_expressions(module, body, &mut expressions);
+    let included_variables = expressions
+        .iter()
+        .filter_map(|expr| module.expressions().get(*expr))
+        .filter_map(|expression| match expression.kind() {
+            HirExprKind::Include {
+                expr: Some(expr), ..
+            } => variable_name(module, *expr),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for expr in expressions {
+        let HirExprKind::Assign {
+            operator,
+            left: Some(left),
+            right: Some(right),
+        } = module.expressions().get(expr)?.kind()
+        else {
+            continue;
+        };
+        if operator != "=" {
+            continue;
+        }
+        let Some(variable) = variable_name(module, *left) else {
+            continue;
+        };
+        if !included_variables.contains(&variable) {
+            continue;
+        }
+        let template = path_template(module, *right, path, variables)?;
+        if template.has_relative_class && template.after == ".php" {
+            return Some(PathBuf::from(template.before));
+        }
+    }
+    None
+}
+
+fn collect_statement_expressions(
+    module: &php_semantics::hir::HirModule,
+    statements: &[StmtId],
+    output: &mut Vec<ExprId>,
+) {
+    for statement in statements {
+        let Some(statement) = module.statements().get(*statement) else {
+            continue;
+        };
+        match statement.kind() {
+            HirStmtKind::Expr { expr: Some(expr) } => output.push(*expr),
+            HirStmtKind::Block { statements } => {
+                collect_statement_expressions(module, statements, output);
+            }
+            HirStmtKind::If {
+                body,
+                elseifs,
+                else_body,
+                ..
+            } => {
+                collect_statement_expressions(module, body, output);
+                for branch in elseifs {
+                    collect_statement_expressions(module, &branch.body, output);
+                }
+                collect_statement_expressions(module, else_body, output);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn variable_name(module: &php_semantics::hir::HirModule, expr: ExprId) -> Option<&String> {
+    match module.expressions().get(expr)?.kind() {
+        HirExprKind::Variable { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+fn path_template(
+    module: &php_semantics::hir::HirModule,
+    expr: ExprId,
+    path: &Path,
+    variables: &HashMap<String, MetadataValue>,
+) -> Option<PathTemplate> {
+    let expression = module.expressions().get(expr)?;
+    match expression.kind() {
+        HirExprKind::Binary {
+            operator,
+            left: Some(left),
+            right: Some(right),
+        } if operator == "." => {
+            let left = path_template(module, *left, path, variables)?;
+            let right = path_template(module, *right, path, variables)?;
+            if left.has_relative_class && right.has_relative_class {
+                return None;
+            }
+            if left.has_relative_class {
+                return Some(PathTemplate {
+                    before: left.before,
+                    has_relative_class: true,
+                    after: left.after + &right.before + &right.after,
+                });
+            }
+            if right.has_relative_class {
+                return Some(PathTemplate {
+                    before: left.before + &left.after + &right.before,
+                    has_relative_class: true,
+                    after: right.after,
+                });
+            }
+            Some(PathTemplate {
+                before: left.before + &left.after + &right.before + &right.after,
+                has_relative_class: false,
+                after: String::new(),
+            })
+        }
+        HirExprKind::Call {
+            callee: Some(callee),
+            args,
+        } if is_named_call(module, *callee, "str_replace") && args.len() == 3 => {
+            let search = expect_string(
+                evaluate_expr(module, args[0].value, path, variables).ok()?,
+                path,
+            )
+            .ok()?;
+            let replacement = expect_string(
+                evaluate_expr(module, args[1].value, path, variables).ok()?,
+                path,
+            )
+            .ok()?;
+            (search == "\\" && replacement == "/").then_some(PathTemplate {
+                before: String::new(),
+                has_relative_class: true,
+                after: String::new(),
+            })
+        }
+        _ => match evaluate_expr(module, expr, path, variables).ok()? {
+            MetadataValue::String(value) => Some(PathTemplate {
+                before: value,
+                has_relative_class: false,
+                after: String::new(),
+            }),
+            MetadataValue::Array(_) => None,
+        },
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::composer_metadata::ComposerCompilationResolver;
+use crate::composer_metadata::AutoloadCompilationResolver;
 use crate::engine_compat::EngineInput;
 use crate::input::PhpRequestExecutionInput;
 use php_runtime::api::{ErrorReporting, FilesystemCapabilities, RuntimeContext};
@@ -27,7 +27,7 @@ pub(crate) fn include_loader_for(input: &EngineInput) -> Result<Option<IncludeLo
     }
     IncludeLoader::new(roots)
         .map(|loader| {
-            loader.with_compilation_dependency_resolver(Arc::new(ComposerCompilationResolver))
+            loader.with_compilation_dependency_resolver(Arc::new(AutoloadCompilationResolver))
         })
         .map(Some)
         .map_err(|error| error.render_message())
@@ -54,7 +54,7 @@ pub(crate) fn include_loader_for_request(
     }
     IncludeLoader::new(roots)
         .map(|loader| {
-            loader.with_compilation_dependency_resolver(Arc::new(ComposerCompilationResolver))
+            loader.with_compilation_dependency_resolver(Arc::new(AutoloadCompilationResolver))
         })
         .map(Some)
         .map_err(|error| error.render_message())

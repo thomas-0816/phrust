@@ -296,7 +296,7 @@ fn ir_lowering_failure_detail(lowering: &php_ir::LoweringResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composer_metadata::ComposerCompilationResolver;
+    use crate::composer_metadata::AutoloadCompilationResolver;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -324,7 +324,7 @@ mod tests {
     fn load(root: &Path, relative: &str) -> (IncludeLoader, ValidatedIncludeSource) {
         let loader = IncludeLoader::for_root(root)
             .expect("loader")
-            .with_compilation_dependency_resolver(Arc::new(ComposerCompilationResolver));
+            .with_compilation_dependency_resolver(Arc::new(AutoloadCompilationResolver));
         let resolved = loader
             .resolve_with_include_path(None, relative, &[], Some(root))
             .expect("resolve source");
@@ -369,6 +369,51 @@ mod tests {
 
         let compiled =
             compile_include(source, &loader, OptimizationLevel::O0).expect("compile mapped trait");
+
+        assert_eq!(compiled.unit.unit().files.len(), 2);
+        assert_eq!(
+            compiled.unit.unit().linked_entry_autoload_declarations,
+            vec![Some("acme\\support\\withthing".to_owned()), None]
+        );
+        assert_eq!(compiled.dependencies.len(), 2);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn static_psr4_autoloader_resolves_trait_without_composer_metadata() {
+        let root = fixture("static-psr4-trait");
+        write(
+            &root,
+            "autoload.php",
+            r#"<?php
+$prefix = 'Acme\\';
+$prefix_len = 5;
+$base_dir = __DIR__;
+spl_autoload_register(static function ($class_name) use ($prefix, $prefix_len, $base_dir): void {
+    if (0 === strncmp($class_name, $prefix, $prefix_len)) {
+        $relative_class = substr($class_name, $prefix_len);
+        $file = $base_dir . '/src/' . str_replace('\\', '/', $relative_class) . '.php';
+        if (file_exists($file)) {
+            require $file;
+        }
+    }
+});
+"#,
+        );
+        write(
+            &root,
+            "src/Registry.php",
+            "<?php namespace Acme; use Acme\\Support\\WithThing; class Registry { use WithThing; }",
+        );
+        write(
+            &root,
+            "src/Support/WithThing.php",
+            "<?php namespace Acme\\Support; trait WithThing { public function value(): string { return 'ok'; } }",
+        );
+        let (loader, source) = load(&root, "src/Registry.php");
+
+        let compiled = compile_include(source, &loader, OptimizationLevel::O0)
+            .expect("compile static PSR-4 mapped trait");
 
         assert_eq!(compiled.unit.unit().files.len(), 2);
         assert_eq!(
