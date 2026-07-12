@@ -275,6 +275,8 @@ architecture-guardrails:
     scripts/verify/architecture_guardrails.py --self-test
     scripts/verify/architecture_guardrails.py
     scripts/verify/dependency_boundaries.py
+    scripts/verify/validation_strategy.py --self-test
+    scripts/verify/validation_strategy.py
 
 architecture-inventory:
     scripts/verify/architecture_inventory.py --check --verify-determinism
@@ -1250,7 +1252,6 @@ compat-corpus-smoke:
     scripts/stdlib_diff.py --fixtures tests/fixtures/stdlib/corpus --area corpus --out target/stdlib/corpus
 
 performance-tests:
-    RUST_MIN_STACK="${PHRUST_RUST_MIN_STACK:-8388608}" cargo test --workspace
     scripts/performance/compare_perf_json.py --self-test
     scripts/performance/hotpath_inventory.py --self-test
     scripts/performance/fastest_hotpath_report.py --self-test

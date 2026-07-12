@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 const INTERNAL_THROWABLE_TRACE_STRING_PROPERTY: &str = "__phrust_trace_string";
 
 pub(in crate::builtins::modules) struct DebugFormatter {
-    active_references: BTreeSet<usize>,
-    active_arrays: BTreeSet<usize>,
+    active_references: BTreeSet<u64>,
+    active_arrays: BTreeSet<u64>,
     active_objects: BTreeSet<u64>,
     var_export_saw_recursion: bool,
     /// `serialize_precision` ini value applied to var_dump floats (`-1` selects

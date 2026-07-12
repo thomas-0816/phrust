@@ -9,6 +9,7 @@ pub(super) fn include_read_error(path: &Path, error: std::io::Error) -> VmError 
         format!("{}: {error}", path.display()),
     )
     .with_context("canonical_path", path.display())
+    .with_context("reason", &error)
 }
 
 pub(super) fn include_metadata_error(path: &Path, error: std::io::Error) -> VmError {

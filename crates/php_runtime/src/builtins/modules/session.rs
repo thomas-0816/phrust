@@ -420,7 +420,7 @@ fn session_encode_php_binary(
 const SESSION_SERIALIZE_MAX_DEPTH: usize = 64;
 
 struct SessionReferenceSerializer {
-    references: Vec<(usize, usize)>,
+    references: Vec<(u64, usize)>,
     next_reference_index: usize,
     serialize_precision: i32,
 }

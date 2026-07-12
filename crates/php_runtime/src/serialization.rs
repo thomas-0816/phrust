@@ -118,7 +118,7 @@ pub fn unserialize_prefix(
 
 struct Serializer {
     output: Vec<u8>,
-    active_references: Vec<usize>,
+    active_references: Vec<u64>,
     serialize_precision: i32,
 }
 

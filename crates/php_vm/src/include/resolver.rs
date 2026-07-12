@@ -438,7 +438,8 @@ impl IncludeLoader {
                             "E_PHP_VM_INCLUDE_MISSING",
                             format!("{}: {error}", candidate.display()),
                         )
-                        .with_context("candidate", candidate.display()),
+                        .with_context("candidate", candidate.display())
+                        .with_context("reason", &error),
                     );
                 }
             }
@@ -447,6 +448,7 @@ impl IncludeLoader {
             let error = last_error.unwrap_or_else(|| {
                 include_error("E_PHP_VM_INCLUDE_MISSING", format!("{path}: not found"))
                     .with_context("path", path)
+                    .with_context("reason", "not found")
             });
             let trace = NegativeProbeTrace {
                 guards: cacheable.then_some(guards),
@@ -502,6 +504,7 @@ impl IncludeLoader {
                 format!("{}: {error}", canonical.display()),
             )
             .with_context("canonical_path", canonical.display())
+            .with_context("reason", &error)
         })?;
         let source = php_source_from_bytes(source);
         Ok(LoadedInclude {
@@ -577,7 +580,9 @@ impl IncludeLoader {
         let capabilities =
             FilesystemCapabilities::none().with_allowed_roots(self.allowed_roots.clone());
         let bytes = phar::read_uri(path, Path::new("."), &capabilities).map_err(|error| {
-            include_error("E_PHP_VM_INCLUDE_READ", error.to_string()).with_context("path", path)
+            include_error("E_PHP_VM_INCLUDE_READ", error.to_string())
+                .with_context("path", path)
+                .with_context("reason", &error)
         })?;
         let source = String::from_utf8(bytes).map_err(|error| {
             include_error(
@@ -585,6 +590,7 @@ impl IncludeLoader {
                 format!("phar entry `{path}` is not valid UTF-8: {error}"),
             )
             .with_context("path", path)
+            .with_context("reason", &error)
         })?;
         Ok(LoadedInclude {
             canonical_path: PathBuf::from(path),

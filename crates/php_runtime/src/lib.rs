@@ -173,13 +173,14 @@ pub mod api {
         PostgresRow, PostgresState,
     };
     pub use crate::diagnostic::{
-        JsonDiagnosticContext, PhpReferenceClassification, RuntimeBringupDiagnosticContext,
-        RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError, RuntimeEventKind,
-        RuntimeSeverity, RuntimeStackFrame, TokenizerParseDiagnosticContext, VmCompileDiagnostic,
-        argument_count_error_mvp, array_to_string_warning, division_by_zero_mvp,
-        leading_numeric_string_warning, non_numeric_string_type_error, type_error_mvp,
-        undefined_function, undefined_global_variable_warning, undefined_variable_warning,
-        unhandled_match_error_mvp, unsupported_feature, value_error_mvp,
+        IncludeFailureDiagnosticContext, JsonDiagnosticContext, PhpReferenceClassification,
+        RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,
+        RuntimeEventKind, RuntimeSeverity, RuntimeStackFrame, TokenizerParseDiagnosticContext,
+        VmCompileDiagnostic, argument_count_error_mvp, array_to_string_warning,
+        division_by_zero_mvp, leading_numeric_string_warning, non_numeric_string_type_error,
+        type_error_mvp, undefined_function, undefined_global_variable_warning,
+        undefined_variable_warning, unhandled_match_error_mvp, unsupported_feature,
+        value_error_mvp,
     };
     pub use crate::error_output::{
         PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,

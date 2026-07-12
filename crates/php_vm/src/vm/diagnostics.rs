@@ -53,12 +53,6 @@ pub(super) fn runtime_diagnostic_for_message_with_source_span(
     }
 }
 
-pub(super) fn string_offset_negative_index(message: &str) -> Option<i64> {
-    message
-        .strip_prefix("E_PHP_VM_STRING_OFFSET_NEGATIVE: Illegal string offset ")
-        .and_then(|index| index.parse().ok())
-}
-
 pub(super) fn emit_string_offset_negative_warning(
     compiled: &CompiledUnit,
     output: &mut OutputBuffer,

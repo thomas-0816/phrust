@@ -651,7 +651,7 @@ fn gc_note_slot(
 }
 
 fn gc_note_array(array: &PhpArray, seen: &mut GcSeenSet, pending: &mut Vec<GcPendingEntity>) {
-    let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+    let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id());
     if seen.insert(id) {
         pending.push(GcPendingEntity::Array(array.clone()));
     }
@@ -675,7 +675,7 @@ fn gc_note_reference(
     seen: &mut GcSeenSet,
     pending: &mut Vec<GcPendingEntity>,
 ) {
-    let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+    let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
     if seen.insert(id) {
         pending.push(GcPendingEntity::Reference(cell.clone()));
     }
@@ -758,7 +758,7 @@ fn collect_destructor_candidates_with_share_flag(
 ) {
     match value {
         Value::Array(array) => {
-            let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+            let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id());
             if !seen.insert(id) {
                 return;
             }
@@ -790,7 +790,7 @@ fn collect_destructor_candidates_with_share_flag(
             });
         }
         Value::Reference(cell) => {
-            let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+            let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
             if !seen.insert(id) {
                 return;
             }

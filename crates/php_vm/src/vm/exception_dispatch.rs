@@ -325,11 +325,8 @@ pub(super) fn function_redeclaration_fatal_result(
     compiled: &CompiledUnit,
     stack: &CallStack,
     span: php_ir::IrSpan,
-    message: String,
+    display_message: String,
 ) -> VmResult {
-    let display_message = message
-        .strip_prefix("E_PHP_VM_FUNCTION_REDECLARATION: ")
-        .unwrap_or(&message);
     let (file, line) = source_span_file_line(compiled, span).unwrap_or_else(|| {
         let file = compiled
             .unit()
@@ -341,6 +338,7 @@ pub(super) fn function_redeclaration_fatal_result(
     output.write_test_str(&format!(
         "Fatal error: {display_message} in {file} on line {line}\n"
     ));
+    let message = format!("E_PHP_VM_FUNCTION_REDECLARATION: {display_message}");
     let diagnostic = runtime_diagnostic_for_message_with_source_span(
         &message,
         compiled,

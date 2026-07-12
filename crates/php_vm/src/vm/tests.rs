@@ -5918,6 +5918,12 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
     assert!(include_output.ends_with("after\n"), "{include_output}");
     assert_eq!(include.diagnostics[0].id(), "E_PHP_VM_INCLUDE_MISSING");
     assert_eq!(include.diagnostics[0].severity(), RuntimeSeverity::Warning);
+    let Some(RuntimeDiagnosticPayload::IncludeFailure(payload)) = include.diagnostics[0].payload()
+    else {
+        panic!("missing include failure payload");
+    };
+    assert!(payload.target().ends_with("missing.php"), "{payload:?}");
+    assert_eq!(payload.reason(), "No such file or directory");
     let counters = include.counters.expect("counters should be collected");
     assert_eq!(
         counters
@@ -22755,6 +22761,7 @@ fn first_vm_compile_payload(result: &VmResult) -> &VmCompileDiagnostic {
             RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
             RuntimeDiagnosticPayload::TokenizerParse(_) => None,
             RuntimeDiagnosticPayload::Bringup(_) => None,
+            RuntimeDiagnosticPayload::IncludeFailure(_) => None,
         })
         .expect("compile error should carry VM compile payload")
 }
@@ -22770,6 +22777,7 @@ fn first_runtime_bringup_payload(
             RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
             RuntimeDiagnosticPayload::TokenizerParse(_) => None,
             RuntimeDiagnosticPayload::VmCompile(_) => None,
+            RuntimeDiagnosticPayload::IncludeFailure(_) => None,
         })
         .unwrap_or_else(|| {
             panic!(

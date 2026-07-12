@@ -40,7 +40,7 @@ if forbidden in vm:
 required = {
     "stable method route identity": "pub identity: MethodCallRouteIdentity",
     "stable function owner identity": "unit_identity: u64",
-    "canonical declaring class handle": "owner.lookup_class_arc(&declaring_class.name)",
+    "canonical declaring class handle": "owner.lookup_class_handle(&declaring_class.name)",
     "stable compiled-unit cache key": "compiled.cache_identity()",
 }
 combined = inline_cache + vm

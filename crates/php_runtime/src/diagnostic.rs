@@ -651,6 +651,8 @@ pub enum RuntimeDiagnosticPayload {
     TokenizerParse(TokenizerParseDiagnosticContext),
     /// Runtime bring-up diagnostic classification payload.
     Bringup(RuntimeBringupDiagnosticContext),
+    /// Include/require failure details used by PHP-compatible rendering.
+    IncludeFailure(IncludeFailureDiagnosticContext),
 }
 
 impl RuntimeDiagnosticPayload {
@@ -662,7 +664,48 @@ impl RuntimeDiagnosticPayload {
             Self::JsonBuiltin(payload) => payload.envelope_context(),
             Self::TokenizerParse(payload) => payload.envelope_context(),
             Self::Bringup(payload) => payload.envelope_context(),
+            Self::IncludeFailure(payload) => payload.envelope_context(),
         }
+    }
+}
+
+/// Structured include/require failure details.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncludeFailureDiagnosticContext {
+    target: String,
+    reason: String,
+}
+
+impl IncludeFailureDiagnosticContext {
+    /// Creates include/require failure context.
+    #[must_use]
+    pub fn new(target: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Requested include target.
+    #[must_use]
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// PHP-visible stream failure reason.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Structured payload fields for shared diagnostic envelopes.
+    #[must_use]
+    pub fn envelope_context(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("payload".to_string(), "include_failure".to_string()),
+            ("include_target".to_string(), self.target.clone()),
+            ("include_reason".to_string(), self.reason.clone()),
+        ])
     }
 }
 

@@ -2,8 +2,8 @@
 //!
 //! This crate owns compiled units, frames, registers, dispatch, calls, control
 //! flow, exceptions, includes, tracing, and VM results. Downstream execution
-//! code should import [`Vm`], [`VmOptions`], [`VmResult`], and related execution
-//! types through [`api`]. Performance tooling and experiments should import
+//! code should import [`api::Vm`], [`api::VmOptions`], [`api::VmResult`], and
+//! related execution types through [`api`]. Performance tooling and experiments should import
 //! quickening, inline-cache, JIT, tiering, persistent-feedback, and deopt
 //! surfaces through [`experimental`].
 //!

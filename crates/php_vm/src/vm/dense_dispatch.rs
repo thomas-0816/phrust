@@ -5102,7 +5102,7 @@ impl Vm {
                             result
                         };
                         if let Err(message) = result {
-                            if let Some(index) = string_offset_negative_index(&message) {
+                            if let Some(index) = message.negative_string_offset() {
                                 emit_string_offset_negative_warning(
                                     compiled,
                                     output,

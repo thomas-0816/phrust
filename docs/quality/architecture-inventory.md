@@ -33,10 +33,11 @@ compilation no longer parses `E_PHP_IR_TRAIT_NOT_FOUND` rendering. The inventory
 has no allowance for that pattern, so reintroducing the former prefix parser
 fails the gate.
 
-The remaining allowlisted parsers are narrower legacy rendering boundaries:
-typed include failures are owned by Prompt 04, runtime type errors by Prompt 07,
-and VM diagnostic construction by Prompt 10. Each baseline entry names its
-specific migration owner; new diagnostic-string control flow remains rejected.
+The diagnostic-string parsing and pointer-integer identity baselines are zero.
+Include failures, parameter type mismatches, negative string offsets, and
+function redeclarations carry typed data across their rendering boundaries.
+Arrays and reference cells use process-local logical storage IDs without
+exposing allocator addresses or enlarging the runtime `Value` handle.
 
 ## Typed frontend boundary
 

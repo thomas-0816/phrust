@@ -1308,7 +1308,7 @@ fn xml_sax_escape_attribute(value: &str) -> String {
 
 #[derive(Default)]
 struct JsonSerializableEncodeState {
-    active_arrays: Vec<usize>,
+    active_arrays: Vec<u64>,
     active_objects: Vec<u64>,
     recursion_error: bool,
 }

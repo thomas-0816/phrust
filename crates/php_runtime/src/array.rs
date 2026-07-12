@@ -14,7 +14,14 @@ use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
     rc::{Rc, Weak},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static NEXT_ARRAY_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_array_storage_id() -> u64 {
+    NEXT_ARRAY_STORAGE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// PHP array key after runtime-semantics key normalization.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -587,6 +594,7 @@ impl ArrayCachedMetadata {
 /// one `Value` instead of a full key/value entry.
 #[derive(Clone, Debug)]
 struct PackedArrayStorage {
+    storage_id: u64,
     values: Vec<Value>,
     next_append_key: Option<i64>,
     internal_pointer: Option<usize>,
@@ -742,6 +750,7 @@ fn record_shape_extended(shape: &Rc<RecordShape>, key: &PhpString) -> Rc<RecordS
 /// values-only slot vector.
 #[derive(Clone, Debug)]
 struct RecordArrayStorage {
+    storage_id: u64,
     shape: Rc<RecordShape>,
     values: Vec<Value>,
     next_append_key: Option<i64>,
@@ -753,6 +762,7 @@ struct RecordArrayStorage {
 /// Mixed array storage for holes, string keys, and non-sequential integer keys.
 #[derive(Clone, Debug)]
 struct MixedArrayStorage {
+    storage_id: u64,
     entries: Vec<Option<ArrayEntry>>,
     live_len: usize,
     index: StableKeyMap<ArrayKey, usize>,
@@ -776,6 +786,7 @@ enum ArrayStorage {
 impl Default for ArrayStorage {
     fn default() -> Self {
         Self::Packed(PackedArrayStorage {
+            storage_id: next_array_storage_id(),
             values: Vec::new(),
             next_append_key: None,
             internal_pointer: None,
@@ -835,6 +846,21 @@ impl PartialEq for ArrayStorage {
 impl Eq for ArrayStorage {}
 
 impl ArrayStorage {
+    fn storage_id(&self) -> u64 {
+        match self {
+            Self::Packed(storage) => storage.storage_id,
+            Self::Record(storage) => storage.storage_id,
+            Self::Mixed(storage) => storage.storage_id,
+        }
+    }
+
+    fn set_storage_id(&mut self, storage_id: u64) {
+        match self {
+            Self::Packed(storage) => storage.storage_id = storage_id,
+            Self::Record(storage) => storage.storage_id = storage_id,
+            Self::Mixed(storage) => storage.storage_id = storage_id,
+        }
+    }
     const MIXED_COMPACTION_MIN_TOMBSTONES: usize = 32;
 
     fn value_at(&self, index: usize) -> &Value {
@@ -1070,7 +1096,9 @@ impl ArrayStorage {
         debug_assert!(self.is_packed() && self.is_empty());
         crate::layout_stats::record_record_storage_array();
         crate::layout_stats::record_record_shape_promotion();
+        let storage_id = self.storage_id();
         *self = Self::Record(RecordArrayStorage {
+            storage_id,
             shape: record_shape_for(&[], None),
             values: Vec::new(),
             next_append_key: self.next_append_key(),
@@ -1095,6 +1123,7 @@ impl ArrayStorage {
         #[allow(clippy::mutable_key_type)]
         let index = build_index(&entries);
         let mixed = MixedArrayStorage {
+            storage_id: storage.storage_id,
             live_len: entries.len(),
             entries: entries.into_iter().map(Some).collect(),
             index,
@@ -1126,6 +1155,7 @@ impl ArrayStorage {
         #[allow(clippy::mutable_key_type)]
         let index = build_index(&entries);
         let mixed = MixedArrayStorage {
+            storage_id: storage.storage_id,
             live_len: entries.len(),
             entries: entries.into_iter().map(Some).collect(),
             index,
@@ -1364,10 +1394,18 @@ fn build_index(entries: &[ArrayEntry]) -> StableKeyMap<ArrayKey, usize> {
 /// `separate_for_write` through `storage_mut`, so by-value assignment shares
 /// until the first write while true PHP references still write through their
 /// owning slot/reference cell.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct PhpArray {
     storage: Rc<ArrayStorage>,
 }
+
+impl PartialEq for PhpArray {
+    fn eq(&self, other: &Self) -> bool {
+        self.storage == other.storage
+    }
+}
+
+impl Eq for PhpArray {}
 
 impl Default for PhpArray {
     fn default() -> Self {
@@ -1387,14 +1425,14 @@ impl Clone for PhpArray {
 /// Weak debug handle to array storage for GC tests.
 #[derive(Clone, Debug)]
 pub struct WeakArrayHandle {
-    id: usize,
+    id: u64,
     storage: Weak<ArrayStorage>,
 }
 
 impl WeakArrayHandle {
     /// Returns the process-local debug ID for this handle.
     #[must_use]
-    pub const fn id(&self) -> usize {
+    pub const fn id(&self) -> u64 {
         self.id
     }
 
@@ -1411,6 +1449,7 @@ impl PhpArray {
     pub fn new() -> Self {
         Self {
             storage: Rc::new(ArrayStorage::Packed(PackedArrayStorage {
+                storage_id: next_array_storage_id(),
                 values: Vec::new(),
                 next_append_key: None,
                 internal_pointer: None,
@@ -1428,6 +1467,7 @@ impl PhpArray {
         let cached_metadata = ArrayCachedMetadata::from_packed_values(&elements);
         Self {
             storage: Rc::new(ArrayStorage::Packed(PackedArrayStorage {
+                storage_id: next_array_storage_id(),
                 values: elements,
                 next_append_key: (len > 0).then(|| i64::try_from(len).ok()).flatten(),
                 internal_pointer: (len > 0).then_some(0),
@@ -1775,8 +1815,8 @@ impl PhpArray {
     /// This is not a PHP-visible handle and must only be used by runtime tests
     /// and diagnostics.
     #[must_use]
-    pub fn gc_debug_id(&self) -> usize {
-        Rc::as_ptr(&self.storage).cast::<()>() as usize
+    pub fn gc_debug_id(&self) -> u64 {
+        self.storage.storage_id()
     }
 
     /// Returns the current `Rc` strong count for GC debug metadata.
@@ -2139,7 +2179,9 @@ impl PhpArray {
             let _source = crate::layout_stats::enter_layout_source_family(
                 crate::layout_stats::SOURCE_COW_SEPARATION_CONTENTS,
             );
-            return Rc::make_mut(&mut self.storage);
+            let storage = Rc::make_mut(&mut self.storage);
+            storage.set_storage_id(next_array_storage_id());
+            return storage;
         }
         Rc::make_mut(&mut self.storage)
     }
@@ -3002,5 +3044,16 @@ mod tests {
                 .record_shape_string_key_lookup(&ArrayKey::String(PhpString::from("id"))),
             PhpArrayShapeLookup::Fallback(PhpArrayShapeLookupFallback::CowOrReference)
         );
+    }
+
+    #[test]
+    fn logical_storage_id_changes_only_when_cow_separates() {
+        let original = PhpArray::from_packed(vec![Value::Int(1)]);
+        let mut copy = original.clone();
+
+        assert_eq!(original.gc_debug_id(), copy.gc_debug_id());
+        copy.append(Value::Int(2));
+        assert_ne!(original.gc_debug_id(), copy.gc_debug_id());
+        assert_eq!(original.get(&ArrayKey::Int(1)), None);
     }
 }

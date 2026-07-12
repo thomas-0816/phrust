@@ -17,7 +17,9 @@ use php_executor::{
 use php_ir::{LoweringOptions, lower_frontend_result, module::IrUnit, verify_unit};
 use php_optimizer::{OptimizationLevel, OptimizationReport, PassContext, PassPipeline};
 use php_perf::PhaseTimingReport;
-use php_runtime::api::{ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic};
+use php_runtime::api::{
+    ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
+};
 use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::DiagnosticId};
 use php_source::{SourceText, TextRange};
 use php_vm::api::{
@@ -1599,16 +1601,12 @@ fn runtime_diagnostic_was_rendered(diagnostic: &RuntimeDiagnostic, php_output: &
     if matches!(
         diagnostic.id(),
         "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ"
-    ) && let Some(target) = include_diagnostic_target(diagnostic.message())
+    ) && let Some(RuntimeDiagnosticPayload::IncludeFailure(payload)) = diagnostic.payload()
     {
-        return php_output.contains(target) && php_output.contains("Failed to open stream");
+        return php_output.contains(payload.target())
+            && php_output.contains("Failed to open stream");
     }
     false
-}
-
-fn include_diagnostic_target(message: &str) -> Option<&str> {
-    let payload = message.split_once(": ")?.1;
-    payload.rsplit_once(": ").map(|(target, _)| target)
 }
 
 fn write_trace<W: Write>(

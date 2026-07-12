@@ -557,7 +557,7 @@ impl Vm {
                     return Ok(value);
                 }
                 PropertyDimInPlace::Applied(Err(message)) => {
-                    return Err(PropertyDimAssign::Raise(span, message));
+                    return Err(PropertyDimAssign::Raise(span, message.render_message()));
                 }
                 PropertyDimInPlace::NotEligible => {
                     self.record_counter_property_dim_assign_generic("stdclass_non_array_slot");
@@ -583,7 +583,7 @@ impl Vm {
                 current = Value::Array(PhpArray::new());
             }
             if let Err(message) = assign_dim_value(&mut current, dims, value.clone(), append) {
-                return Err(PropertyDimAssign::Raise(span, message));
+                return Err(PropertyDimAssign::Raise(span, message.render_message()));
             }
             object.set_property(property, current);
             return Ok(value);
@@ -625,7 +625,7 @@ impl Vm {
                             return Ok(value);
                         }
                         PropertyDimInPlace::Applied(Err(message)) => {
-                            return Err(PropertyDimAssign::Raise(span, message));
+                            return Err(PropertyDimAssign::Raise(span, message.render_message()));
                         }
                         PropertyDimInPlace::NotEligible => {
                             self.record_counter_property_dim_assign_generic(
@@ -658,7 +658,7 @@ impl Vm {
                     current = Value::Array(PhpArray::new());
                 }
                 if let Err(message) = assign_dim_value(&mut current, dims, value.clone(), append) {
-                    return Err(PropertyDimAssign::Raise(span, message));
+                    return Err(PropertyDimAssign::Raise(span, message.render_message()));
                 }
                 if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
                     compiled, state, &class, &object, property, stack,
@@ -718,7 +718,7 @@ impl Vm {
                 current = Value::Array(PhpArray::new());
             }
             if let Err(message) = assign_dim_value(&mut current, dims, value.clone(), append) {
-                return Err(PropertyDimAssign::Raise(span, message));
+                return Err(PropertyDimAssign::Raise(span, message.render_message()));
             }
             object.set_property(property, current);
             return Ok(value);
@@ -763,7 +763,7 @@ impl Vm {
                     return Ok(value);
                 }
                 PropertyDimInPlace::Applied(Err(message)) => {
-                    return Err(PropertyDimAssign::Raise(span, message));
+                    return Err(PropertyDimAssign::Raise(span, message.render_message()));
                 }
                 PropertyDimInPlace::NotEligible => {
                     self.record_counter_property_dim_assign_generic("declared_non_array_slot");
@@ -794,7 +794,7 @@ impl Vm {
             current = Value::Array(PhpArray::new());
         }
         if let Err(message) = assign_dim_value(&mut current, dims, value.clone(), append) {
-            return Err(PropertyDimAssign::Raise(span, message));
+            return Err(PropertyDimAssign::Raise(span, message.render_message()));
         }
         let property_type = ir_runtime_type(entry.type_.as_ref());
         if let Err(message) = check_property_type(

@@ -76,16 +76,54 @@ pub(super) enum AssignDimLocalPath {
     ClonedReferenceFallback,
 }
 
+#[derive(Debug)]
+pub(super) enum DimAssignmentError {
+    NegativeStringOffset(i64),
+    Message(String),
+}
+
+impl DimAssignmentError {
+    pub(super) const fn negative_string_offset(&self) -> Option<i64> {
+        match self {
+            Self::NegativeStringOffset(index) => Some(*index),
+            Self::Message(_) => None,
+        }
+    }
+
+    pub(super) fn render_message(self) -> String {
+        match self {
+            Self::NegativeStringOffset(index) => {
+                format!("E_PHP_VM_STRING_OFFSET_NEGATIVE: Illegal string offset {index}")
+            }
+            Self::Message(message) => message,
+        }
+    }
+}
+
+impl From<String> for DimAssignmentError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<DimAssignmentError> for String {
+    fn from(error: DimAssignmentError) -> Self {
+        error.render_message()
+    }
+}
+
 pub(super) fn assign_dim_local(
     stack: &mut CallStack,
     local: LocalId,
     dims: &[ArrayKey],
     value: Value,
     append: bool,
-) -> Result<AssignDimLocalPath, String> {
-    let frame = stack.current_mut().ok_or("no active frame")?;
+) -> Result<AssignDimLocalPath, DimAssignmentError> {
+    let frame = stack
+        .current_mut()
+        .ok_or_else(|| DimAssignmentError::Message("no active frame".to_owned()))?;
     let Some(slot) = frame.locals.get_slot_mut(local) else {
-        return Err(format!("invalid local local:{}", local.raw()));
+        return Err(format!("invalid local local:{}", local.raw()).into());
     };
     let mut pending = Some(value);
     let in_place = slot.try_with_effective_value_mut(|current| {
@@ -121,21 +159,23 @@ pub(super) fn assign_globals_dim(
     dims: &[ArrayKey],
     value: Value,
     append: bool,
-) -> Result<(), String> {
+) -> Result<(), DimAssignmentError> {
     if append {
-        return Err(
+        return Err(DimAssignmentError::Message(
             "E_PHP_VM_GLOBALS_APPEND_GAP: appending directly to $GLOBALS is not implemented"
                 .to_owned(),
-        );
+        ));
     }
     let Some((first, rest)) = dims.split_first() else {
-        return Err("E_PHP_VM_GLOBALS_ASSIGN_DIM: missing $GLOBALS key".to_owned());
+        return Err("E_PHP_VM_GLOBALS_ASSIGN_DIM: missing $GLOBALS key"
+            .to_owned()
+            .into());
     };
     let ArrayKey::String(name) = first else {
-        return Err(
+        return Err(DimAssignmentError::Message(
             "E_PHP_VM_GLOBALS_ASSIGN_KEY: $GLOBALS keys must be strings in runtime-semantics"
                 .to_owned(),
-        );
+        ));
     };
     let name = name.to_string();
     if rest.is_empty() {
@@ -184,36 +224,42 @@ pub(super) fn write_string_offset(
     dims: &[ArrayKey],
     value: Value,
     append: bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, DimAssignmentError> {
     if append {
-        return Err("E_PHP_VM_STRING_APPEND: [] operator not supported for strings".to_owned());
+        return Err(
+            "E_PHP_VM_STRING_APPEND: [] operator not supported for strings"
+                .to_owned()
+                .into(),
+        );
     }
     let [key] = dims else {
-        return Err(
+        return Err(DimAssignmentError::Message(
             "E_PHP_VM_STRING_OFFSET_NESTED: cannot use a nested write on a string offset"
                 .to_owned(),
-        );
+        ));
     };
     let index = match key {
         ArrayKey::Int(value) => *value,
         ArrayKey::String(value) => leading_int_offset(value.as_bytes()).ok_or_else(|| {
-            "E_PHP_VM_STRING_OFFSET_TYPE: Cannot access offset of type string on string".to_owned()
+            DimAssignmentError::Message(
+                "E_PHP_VM_STRING_OFFSET_TYPE: Cannot access offset of type string on string"
+                    .to_owned(),
+            )
         })?,
     };
     let length = bytes.len() as i64;
     let resolved = if index < 0 { index + length } else { index };
     if resolved < 0 {
-        return Err(format!(
-            "E_PHP_VM_STRING_OFFSET_NEGATIVE: Illegal string offset {index}"
-        ));
+        return Err(DimAssignmentError::NegativeStringOffset(index));
     }
-    let replacement =
-        to_string(&value).map_err(|message| format!("E_PHP_VM_STRING_OFFSET_VALUE: {message}"))?;
+    let replacement = to_string(&value).map_err(|message| {
+        DimAssignmentError::Message(format!("E_PHP_VM_STRING_OFFSET_VALUE: {message}"))
+    })?;
     let Some(&first) = replacement.as_bytes().first() else {
-        return Err(
+        return Err(DimAssignmentError::Message(
             "E_PHP_VM_STRING_OFFSET_EMPTY: Cannot assign an empty string to a string offset"
                 .to_owned(),
-        );
+        ));
     };
     let index = resolved as usize;
     if index >= bytes.len() {
@@ -227,7 +273,7 @@ pub(super) fn write_string_offset(
 pub(super) enum PropertyDimInPlace {
     /// The property held an array and `assign_dim_value` ran directly on
     /// the stored value; carries that call's result.
-    Applied(Result<(), String>),
+    Applied(Result<(), DimAssignmentError>),
     /// The property is missing, holds a non-array value, or the object
     /// storage is unavailable; the caller must run the generic
     /// read-clone → assign → write-back path.
@@ -274,7 +320,7 @@ pub(super) fn assign_dim_value(
     dims: &[ArrayKey],
     value: Value,
     append: bool,
-) -> Result<(), String> {
+) -> Result<(), DimAssignmentError> {
     if let Value::Reference(cell) = container {
         let mut pending = Some(value);
         if let Ok(result) = cell.try_with_value_mut(|current| {
@@ -301,16 +347,18 @@ pub(super) fn assign_dim_value(
         && spl_runtime_marker(object).is_some_and(|class| is_spl_caching_iterator_class(&class))
     {
         if dims.len() > 1 {
-            return Err(
+            return Err(DimAssignmentError::Message(
                 "E_PHP_VM_SPL_CONTAINER_NESTED_DIM: nested ArrayAccess writes are not implemented"
                     .to_owned(),
-            );
+            ));
         }
         let key = if append {
             Value::Null
         } else {
             let Some(key) = dims.first() else {
-                return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: missing array dimension".to_owned());
+                return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: missing array dimension"
+                    .to_owned()
+                    .into());
             };
             array_key_to_value(key.clone())
         };
@@ -322,16 +370,18 @@ pub(super) fn assign_dim_value(
         && spl_runtime_marker(object).is_some_and(|class| is_spl_array_access_runtime_class(&class))
     {
         if dims.len() > 1 {
-            return Err(
+            return Err(DimAssignmentError::Message(
                 "E_PHP_VM_SPL_CONTAINER_NESTED_DIM: nested ArrayAccess writes are not implemented"
                     .to_owned(),
-            );
+            ));
         }
         let key = if append {
             Value::Null
         } else {
             let Some(key) = dims.first() else {
-                return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: missing array dimension".to_owned());
+                return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: missing array dimension"
+                    .to_owned()
+                    .into());
             };
             array_key_to_value(key.clone())
         };
@@ -347,14 +397,17 @@ pub(super) fn assign_dim_value(
         return Err(format!(
             "E_PHP_VM_ARRAY_ASSIGN_TYPE: cannot assign dimension on {}",
             value_type_name(container)
-        ));
+        )
+        .into());
     };
     let Some((first, rest)) = dims.split_first() else {
         if append {
             array.append(value);
             return Ok(());
         }
-        return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: missing array dimension".to_owned());
+        return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: missing array dimension"
+            .to_owned()
+            .into());
     };
     if rest.is_empty() && !append {
         if let Some(mut existing) = array.get_mut(first) {
@@ -368,7 +421,9 @@ pub(super) fn assign_dim_value(
         array.insert(first.clone(), Value::Array(PhpArray::new()));
     }
     let Some(mut child) = array.get_mut(first) else {
-        return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: failed to create nested array".to_owned());
+        return Err("E_PHP_VM_ARRAY_ASSIGN_DIM: failed to create nested array"
+            .to_owned()
+            .into());
     };
     if matches!(*child, Value::Uninitialized | Value::Null) {
         *child = Value::Array(PhpArray::new());
@@ -710,5 +765,27 @@ pub(super) fn array_offset_scalar_type_name(value: &Value) -> &'static str {
         Value::Float(_) => "float",
         Value::Resource(_) => "resource",
         other => value_type_name(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_string_offset_remains_typed_until_rendering() {
+        let error = write_string_offset(
+            b"abc".to_vec(),
+            &[ArrayKey::Int(-4)],
+            Value::string("x"),
+            false,
+        )
+        .expect_err("offset before the start must fail");
+
+        assert_eq!(error.negative_string_offset(), Some(-4));
+        assert_eq!(
+            error.render_message(),
+            "E_PHP_VM_STRING_OFFSET_NEGATIVE: Illegal string offset -4"
+        );
     }
 }

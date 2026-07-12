@@ -597,13 +597,43 @@ fn by_ref_not_referenceable_error(
     .with_context("position", index + 1)
 }
 
-fn argument_typecheck_error(function_name: &str, message: String) -> VmError {
-    if let Some(message) = message.strip_prefix("E_PHP_VM_PARAM_TYPE_MISMATCH: ") {
-        return VmError::fatal("E_PHP_VM_PARAM_TYPE_MISMATCH", "arguments", message)
-            .with_context("function", function_name);
+fn argument_typecheck_error(function_name: &str, error: ParamTypecheckError) -> VmError {
+    match error {
+        ParamTypecheckError::Mismatch(message) => {
+            VmError::fatal("E_PHP_VM_PARAM_TYPE_MISMATCH", "arguments", message)
+                .with_context("function", function_name)
+        }
+        ParamTypecheckError::Runtime(message) => {
+            VmError::fatal("E_PHP_VM_ARGUMENT_TYPECHECK", "arguments", message)
+                .with_context("function", function_name)
+        }
     }
-    VmError::fatal("E_PHP_VM_ARGUMENT_TYPECHECK", "arguments", message)
-        .with_context("function", function_name)
+}
+
+pub(super) enum ParamTypecheckError {
+    Mismatch(String),
+    Runtime(String),
+}
+
+impl ParamTypecheckError {
+    pub(super) fn render_message(self) -> String {
+        match self {
+            Self::Mismatch(message) => format!("E_PHP_VM_PARAM_TYPE_MISMATCH: {message}"),
+            Self::Runtime(message) => message,
+        }
+    }
+}
+
+impl From<ParamTypecheckError> for String {
+    fn from(error: ParamTypecheckError) -> Self {
+        error.render_message()
+    }
+}
+
+impl From<String> for ParamTypecheckError {
+    fn from(message: String) -> Self {
+        Self::Runtime(message)
+    }
 }
 
 fn variadic_array(args: Vec<VariadicTailArg>) -> Value {
@@ -626,7 +656,7 @@ fn precheck_bound_argument_types(
     typecheck: TypecheckFastPathContext<'_>,
     call_site_strict_types: bool,
     call_span: Option<php_ir::IrSpan>,
-) -> Result<(), String> {
+) -> Result<(), ParamTypecheckError> {
     for (index, (param, arg)) in function.params.iter().zip(bound.iter_mut()).enumerate() {
         if param.by_ref || param.variadic {
             continue;
@@ -805,7 +835,7 @@ fn param_type_mismatch_message(
         String::new()
     };
     let mut message = format!(
-        "E_PHP_VM_PARAM_TYPE_MISMATCH: {}(): Argument #{}{} must be of type {}, {} given",
+        "{}(): Argument #{}{} must be of type {}, {} given",
         function.name,
         arg_index + 1,
         parameter_name,
@@ -887,7 +917,7 @@ pub(super) fn coerce_or_check_param_type(
     typecheck: TypecheckFastPathContext<'_>,
     call_site_strict_types: bool,
     call_span: Option<php_ir::IrSpan>,
-) -> Result<(), String> {
+) -> Result<(), ParamTypecheckError> {
     let Some(runtime_type) = ir_runtime_type(param.type_.as_ref()) else {
         return Ok(());
     };
@@ -912,10 +942,12 @@ pub(super) fn coerce_or_check_param_type(
         return Ok(());
     }
     materialize_int_to_float_runtime_type(value, &runtime_type);
-    if vm_value_matches_runtime_type(compiled, Some(state), value, &runtime_type, typecheck)? {
+    if vm_value_matches_runtime_type(compiled, Some(state), value, &runtime_type, typecheck)
+        .map_err(ParamTypecheckError::Runtime)?
+    {
         Ok(())
     } else {
-        Err(param_type_mismatch_message(
+        Err(ParamTypecheckError::Mismatch(param_type_mismatch_message(
             compiled,
             function,
             param,
@@ -924,7 +956,7 @@ pub(super) fn coerce_or_check_param_type(
             &runtime_type,
             call_span,
             true,
-        ))
+        )))
     }
 }
 
@@ -939,7 +971,7 @@ fn coerce_or_check_variadic_param_type(
     typecheck: TypecheckFastPathContext<'_>,
     call_site_strict_types: bool,
     call_span: Option<php_ir::IrSpan>,
-) -> Result<(), String> {
+) -> Result<(), ParamTypecheckError> {
     let Value::Array(array) = value else {
         return Ok(());
     };
@@ -958,8 +990,10 @@ fn coerce_or_check_variadic_param_type(
             &element,
             runtime_type,
             typecheck,
-        )? {
-            return Err(param_type_mismatch_message(
+        )
+        .map_err(ParamTypecheckError::Runtime)?
+        {
+            return Err(ParamTypecheckError::Mismatch(param_type_mismatch_message(
                 compiled,
                 function,
                 param,
@@ -968,7 +1002,7 @@ fn coerce_or_check_variadic_param_type(
                 runtime_type,
                 call_span,
                 false,
-            ));
+            )));
         }
         materialize_int_to_float_runtime_type(&mut element, runtime_type);
         if let Some(mut slot) = array.get_mut(&key) {

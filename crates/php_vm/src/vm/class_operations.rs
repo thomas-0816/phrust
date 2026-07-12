@@ -3274,20 +3274,18 @@ pub(super) fn declare_runtime_function(
     let normalized = normalize_function_name(function_name);
     if let Some(existing) = compiled.lookup_function(&normalized) {
         return Err(format!(
-            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}(){}",
+            "Cannot redeclare function {normalized}(){}",
             function_previous_declaration_suffix(compiled, existing)
         ));
     }
     if let Some(existing) = dynamic_function_entry_by_normalized_name(state, &normalized) {
         return Err(format!(
-            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}() (previously declared in {}:{})",
+            "Cannot redeclare function {normalized}() (previously declared in {}:{})",
             existing.origin.source_path, existing.origin.line
         ));
     }
     if BuiltinRegistry::new().contains(&normalized) {
-        return Err(format!(
-            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}()"
-        ));
+        return Err(format!("Cannot redeclare function {normalized}()"));
     }
     let unit_index = dynamic_or_retain_unit_index(state, compiled);
     state.push_dynamic_function(DynamicFunctionEntry {

@@ -323,7 +323,7 @@ pub struct Frame {
     /// PHP-visible arguments supplied to this call after default/variadic
     /// normalization.
     pub arguments: Vec<Value>,
-    /// Backtrace-visible arguments (see [`TraceArguments`]).
+    /// Backtrace-visible arguments stored in the internal `TraceArguments` form.
     pub trace_arguments: TraceArguments,
     /// Source span of the call site that activated this frame, when known.
     pub call_span: Option<IrSpan>,

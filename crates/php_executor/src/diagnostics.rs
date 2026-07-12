@@ -300,6 +300,7 @@ pub(crate) fn write_vm_compile_fatal_line<W: Write>(
                 RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
                 RuntimeDiagnosticPayload::TokenizerParse(_) => None,
                 RuntimeDiagnosticPayload::Bringup(_) => None,
+                RuntimeDiagnosticPayload::IncludeFailure(_) => None,
             })
     else {
         return Ok(false);

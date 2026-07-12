@@ -235,7 +235,7 @@ impl GcTrackedHeap {
         }
 
         for handle in &self.references {
-            let id = GcEntityId::new(GcEntityKind::Reference, handle.id() as u64);
+            let id = GcEntityId::new(GcEntityKind::Reference, handle.id());
             if snapshot.contains(id) {
                 continue;
             }
@@ -274,7 +274,7 @@ impl GcTrackedHeap {
     fn track_value_inner(&mut self, value: &Value, seen: &mut BTreeSet<GcEntityId>) {
         match value {
             Value::Array(array) => {
-                let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+                let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id());
                 if !seen.insert(id) {
                     return;
                 }
@@ -312,7 +312,7 @@ impl GcTrackedHeap {
                 }
             }
             Value::Reference(cell) => {
-                let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+                let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
                 if !seen.insert(id) {
                     return;
                 }
@@ -381,7 +381,7 @@ impl GcScanner {
     fn scan_value(&mut self, value: &Value) -> Vec<GcEntityId> {
         match value {
             Value::Array(array) => {
-                let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+                let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id());
                 self.ensure_node(id, Some(array.gc_refcount_estimate()));
                 if self.scanning.insert(id) {
                     let edges = array
@@ -423,7 +423,7 @@ impl GcScanner {
                 vec![id]
             }
             Value::Reference(cell) => {
-                let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+                let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
                 self.ensure_node(id, Some(cell.gc_refcount_estimate()));
                 if self.scanning.insert(id) {
                     let value = cell.get();
@@ -564,7 +564,7 @@ mod tests {
         let root = GcRoot::value(GcRootKind::Global, "globals.a", Value::Array(array.clone()));
 
         let snapshot = scan_roots([root]);
-        let array_id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+        let array_id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id());
         let object_id = GcEntityId::new(GcEntityKind::Object, object.id());
 
         assert!(snapshot.contains(array_id));
@@ -616,7 +616,7 @@ mod tests {
             ),
             GcRoot::value(GcRootKind::Temporary, "tmp0", closure),
         ]);
-        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
         let object_id = GcEntityId::new(GcEntityKind::Object, object.id());
 
         assert!(snapshot.contains(reference_id));
@@ -673,7 +673,7 @@ mod tests {
         array.append(Value::Reference(cell.clone()));
         cell.set(Value::Array(array));
         let weak = cell.weak_handle();
-        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
 
         let mut heap = GcTrackedHeap::new();
         heap.track_value(&Value::Reference(cell));
@@ -695,7 +695,7 @@ mod tests {
         array.append(Value::Reference(cell.clone()));
         cell.set(Value::Array(array));
         let weak = cell.weak_handle();
-        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id());
 
         let mut heap = GcTrackedHeap::new();
         heap.track_value(&Value::Reference(cell.clone()));

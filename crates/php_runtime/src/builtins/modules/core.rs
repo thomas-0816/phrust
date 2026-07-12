@@ -2366,9 +2366,9 @@ pub(in crate::builtins::modules) fn php_value_to_json_checked(
 struct JsonEncodeState {
     partial: bool,
     first_error: Option<i64>,
-    active_arrays: Vec<usize>,
+    active_arrays: Vec<u64>,
     active_objects: Vec<u64>,
-    active_references: Vec<usize>,
+    active_references: Vec<u64>,
     depth: usize,
     max_depth: usize,
 }

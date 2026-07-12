@@ -703,7 +703,7 @@ pub(super) fn execute_rich_array_instruction(
                 result
             };
             if let Err(message) = result {
-                if let Some(index) = string_offset_negative_index(&message) {
+                if let Some(index) = message.negative_string_offset() {
                     emit_string_offset_negative_warning(
                         compiled,
                         output,
@@ -725,6 +725,7 @@ pub(super) fn execute_rich_array_instruction(
                     }
                     return RichDispatchOutcome::Continue;
                 }
+                let message = message.render_message();
                 if message.starts_with("E_PHP_VM_STRING_OFFSET_TYPE:") {
                     match vm.raise_runtime_error(
                         compiled,

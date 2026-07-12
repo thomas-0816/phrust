@@ -986,25 +986,46 @@ pub(super) fn include_failure(
     compiled: &CompiledUnit,
     span: IrSpan,
     kind: IncludeKind,
-    message: impl Into<String>,
+    error: VmError,
     state: &ExecutionState,
     stack_trace: Vec<RuntimeStackFrame>,
 ) -> VmResult {
-    let message = message.into();
+    let message = error.render_message();
     let severity = if matches!(kind, IncludeKind::Include | IncludeKind::IncludeOnce) {
         RuntimeSeverity::Warning
     } else {
         RuntimeSeverity::FatalError
     };
     let source_span = runtime_source_span(compiled, span);
-    let diagnostic = RuntimeDiagnostic::new(
-        include_failure_id(&message).to_owned(),
+    let mut diagnostic = RuntimeDiagnostic::new(
+        error.code(),
         severity,
         message.clone(),
         source_span,
         stack_trace,
         None,
     );
+    if matches!(
+        error.code(),
+        "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ"
+    ) && let Some(target) = error
+        .context()
+        .get("path")
+        .or_else(|| error.context().get("canonical_path"))
+        .or_else(|| error.context().get("candidate"))
+    {
+        diagnostic = diagnostic.with_diagnostic_payload(RuntimeDiagnosticPayload::IncludeFailure(
+            php_runtime::api::IncludeFailureDiagnosticContext::new(
+                target,
+                include_failure_reason(
+                    error
+                        .context()
+                        .get("reason")
+                        .map_or(error.message(), String::as_str),
+                ),
+            ),
+        ));
+    }
     emit_include_failure_output(output, compiled, span, kind, state, &diagnostic);
     VmResult::runtime_error_with_diagnostic(output.clone(), message.clone(), diagnostic)
 }
@@ -1015,11 +1036,15 @@ pub(super) fn load_phar_include(
     filesystem: &php_runtime::api::FilesystemCapabilities,
 ) -> Result<LoadedInclude, VmError> {
     let parsed = php_runtime::api::phar::parse_uri(uri, cwd, filesystem).map_err(|error| {
-        include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri)
+        include_vm_error(error.diagnostic_id(), error.message())
+            .with_context("path", uri)
+            .with_context("reason", error.message())
     })?;
     let bytes = php_runtime::api::phar::read_entry(&parsed.archive_path, &parsed.entry_path)
         .map_err(|error| {
-            include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri)
+            include_vm_error(error.diagnostic_id(), error.message())
+                .with_context("path", uri)
+                .with_context("reason", error.message())
         })?;
     let source = String::from_utf8(bytes).map_err(|_| {
         include_vm_error(
@@ -1027,6 +1052,7 @@ pub(super) fn load_phar_include(
             format!("{uri}: PHAR entry is not valid UTF-8 PHP source"),
         )
         .with_context("path", uri)
+        .with_context("reason", "PHAR entry is not valid UTF-8 PHP source")
     })?;
     Ok(LoadedInclude {
         canonical_path: parsed.synthetic_path,
@@ -1038,13 +1064,6 @@ pub(super) fn load_phar_include(
 #[inline(never)]
 pub(super) fn include_vm_error(code: &'static str, message: impl Into<String>) -> VmError {
     VmError::fatal(code, "include", message)
-}
-
-pub(super) fn include_failure_id(message: &str) -> &str {
-    message
-        .split_once(':')
-        .and_then(|(id, _)| id.starts_with("E_").then_some(id))
-        .unwrap_or("E_PHP_VM_INCLUDE_ERROR")
 }
 
 pub(super) fn include_failure_allows_continuation(kind: IncludeKind, result: &VmResult) -> bool {
@@ -1068,7 +1087,7 @@ pub(super) fn emit_include_failure_output(
     state: &ExecutionState,
     diagnostic: &RuntimeDiagnostic,
 ) {
-    let Some((target, reason)) = include_failure_target_and_reason(diagnostic.message()) else {
+    let Some(RuntimeDiagnosticPayload::IncludeFailure(payload)) = diagnostic.payload() else {
         let channel =
             php_runtime::api::PhpDiagnosticChannel::from_runtime_severity(diagnostic.severity());
         let level = match diagnostic.severity() {
@@ -1078,6 +1097,8 @@ pub(super) fn emit_include_failure_output(
         emit_vm_diagnostic(output, state, diagnostic, channel, level);
         return;
     };
+    let target = payload.target();
+    let reason = payload.reason();
     let (file, line) = source_span_file_line(compiled, span)
         .unwrap_or_else(|| ("<unknown>".to_owned(), i64::from(span.start)));
     if display_errors_enabled(state)
@@ -1115,14 +1136,8 @@ pub(super) fn emit_include_failure_output(
 }
 
 #[cold]
-pub(super) fn include_failure_target_and_reason(message: &str) -> Option<(&str, String)> {
-    let id = include_failure_id(message);
-    if !matches!(id, "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ") {
-        return None;
-    }
-    let payload = message.split_once(": ")?.1;
-    let (target, reason) = payload.rsplit_once(": ")?;
-    let reason = if reason.contains("No such file or directory") || reason == "not found" {
+fn include_failure_reason(reason: &str) -> String {
+    if reason.contains("No such file or directory") || reason.ends_with(": not found") {
         "No such file or directory".to_owned()
     } else if reason.contains("Is a directory") {
         "Is a directory".to_owned()
@@ -1132,8 +1147,7 @@ pub(super) fn include_failure_target_and_reason(message: &str) -> Option<(&str, 
             .map(|(reason, _)| reason)
             .unwrap_or(reason)
             .to_owned()
-    };
-    Some((target, reason))
+    }
 }
 
 pub(super) fn include_path_warning_display(state: &ExecutionState) -> &str {
