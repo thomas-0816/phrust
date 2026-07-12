@@ -48,6 +48,16 @@ impl Vm {
         let Some(function) = unit.functions.get(function_id.index()) else {
             return self.runtime_error(output, compiled, stack, "called function is missing");
         };
+        if !function.attributes.is_empty()
+            && let Some(message) = Self::deprecated_attribute_call_message(compiled, function)
+            && let Err(result) = self.emit_deprecated_call(
+                ExecutionCursor::new(compiled, output, stack, state),
+                message,
+                call.call_span,
+            )
+        {
+            return *result;
+        }
         if call.this_value.is_some()
             && !function.locals.iter().any(|local| local == "this")
             && let Some(declaring_class) = call.declaring_class.as_deref()

@@ -910,6 +910,44 @@ impl Vm {
         )
     }
 
+    /// Builds the `#[\Deprecated]` call message for a function-like entry, or
+    /// None when the attribute is absent. The optional first string argument
+    /// is the user-provided suffix.
+    pub(super) fn deprecated_attribute_call_message(
+        compiled: &CompiledUnit,
+        function: &IrFunction,
+    ) -> Option<String> {
+        let entry = function.attributes.iter().find(|attribute| {
+            attribute
+                .resolved_name
+                .as_deref()
+                .or(attribute.fallback_name.as_deref())
+                .unwrap_or(&attribute.name)
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case("deprecated")
+        })?;
+        let custom = entry.arguments.iter().find_map(|id| {
+            match compiled.unit().constants.get(id.index())? {
+                IrConstant::String(text) => Some(text.clone()),
+                IrConstant::StringBytes(bytes) => {
+                    Some(String::from_utf8_lossy(bytes).into_owned())
+                }
+                _ => None,
+            }
+        });
+        let kind = if function.flags.is_method {
+            "Method"
+        } else {
+            "Function"
+        };
+        let mut message = format!("{kind} {}() is deprecated", function.name);
+        if let Some(custom) = custom {
+            message.push_str(", ");
+            message.push_str(&custom);
+        }
+        Some(message)
+    }
+
     /// Emits the reference diagnostics for a float dim key: arrays deprecate
     /// lossy implicit conversions, strings warn about the offset cast for
     /// every float offset, and objects receive the raw key silently. Callers
@@ -958,6 +996,41 @@ impl Vm {
         message: String,
         source_span: RuntimeSourceSpan,
     ) -> Result<(), Box<VmResult>> {
+        self.emit_runtime_deprecation(
+            cursor,
+            "E_PHP_RUNTIME_IMPLICIT_FLOAT_TO_INT_DEPRECATION",
+            message,
+            source_span,
+        )
+    }
+
+    /// Emits the `#[\Deprecated]` call-site deprecation at the caller's span.
+    pub(super) fn emit_deprecated_call(
+        &self,
+        cursor: ExecutionCursor<'_>,
+        message: String,
+        call_span: Option<php_ir::IrSpan>,
+    ) -> Result<(), Box<VmResult>> {
+        let source_span = call_span
+            .map(|span| runtime_source_span(cursor.compiled, span))
+            .unwrap_or_default();
+        self.emit_runtime_deprecation(
+            cursor,
+            "E_PHP_RUNTIME_DEPRECATED_ATTRIBUTE_CALL",
+            message,
+            source_span,
+        )
+    }
+
+    /// Emits a deprecation through the user error handler, falling back to
+    /// the deprecation output channel.
+    fn emit_runtime_deprecation(
+        &self,
+        cursor: ExecutionCursor<'_>,
+        id: &'static str,
+        message: String,
+        source_span: RuntimeSourceSpan,
+    ) -> Result<(), Box<VmResult>> {
         let ExecutionCursor {
             compiled,
             output,
@@ -965,7 +1038,7 @@ impl Vm {
             state,
         } = cursor;
         let diagnostic = RuntimeDiagnostic::new(
-            "E_PHP_RUNTIME_IMPLICIT_FLOAT_TO_INT_DEPRECATION",
+            id,
             RuntimeSeverity::Deprecation,
             message,
             source_span,

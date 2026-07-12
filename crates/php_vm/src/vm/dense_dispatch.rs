@@ -3369,6 +3369,21 @@ impl Vm {
                                     if let Some(positional) = fast_lane_values.take() {
                                         call = call.with_positional_values(positional);
                                     }
+                                    if !ir_function.attributes.is_empty()
+                                        && let Some(message) =
+                                            Self::deprecated_attribute_call_message(
+                                                compiled,
+                                                ir_function,
+                                            )
+                                        && let Err(result) = self.emit_deprecated_call(
+                                            ExecutionCursor::new(compiled, output, stack, state),
+                                            message,
+                                            call.call_span,
+                                        )
+                                    {
+                                        stack.pop_recycle();
+                                        return *result;
+                                    }
                                     // Copy-and-patch native leaf tier, fired from
                                     // the hot dense call path. The dense fast path
                                     // dispatches straight to `execute_bytecode_function`,

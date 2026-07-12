@@ -265,6 +265,16 @@ impl Vm {
         let function_profile = profile_boundary
             .is_some()
             .then(|| (ir_function.name.clone(), ir_function.flags.is_method));
+        if !ir_function.attributes.is_empty()
+            && let Some(message) = Self::deprecated_attribute_call_message(owner, ir_function)
+            && let Err(result) = self.emit_deprecated_call(
+                ExecutionCursor::new(owner, output, stack, state),
+                message,
+                call.call_span,
+            )
+        {
+            return *result;
+        }
         let result = self.execute_bytecode_function(
             DenseExecutionRequest {
                 compiled: owner,
