@@ -425,7 +425,11 @@ def collect_inventory() -> dict:
         "source_reparsing": collect_findings(
             sources,
             SOURCE_REPARSE_PATTERNS,
-            ("crates/php_ir/src/lower/", "crates/php_semantics/src/lower/"),
+            (
+                "crates/php_executor/src/",
+                "crates/php_ir/src/lower/",
+                "crates/php_semantics/src/lower/",
+            ),
         ),
         "raw_source_accesses": collect_findings(
             sources,

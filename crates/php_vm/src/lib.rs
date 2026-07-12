@@ -99,12 +99,13 @@ pub mod api {
     };
     pub use crate::error::{VmError, VmErrorSeverity};
     pub use crate::include::{
-        CacheInstanceId, CompiledInclude, ComposerFingerprintTransition, DeploymentRootFingerprint,
+        CacheInstanceId, CompilationDependencyRequest, CompilationDependencyResolver,
+        CompiledInclude, ComposerFingerprintTransition, DeploymentRootFingerprint,
         DeploymentRootMode, IncludeCache, IncludeCacheStats, IncludeCompiler,
         IncludeCompilerFingerprint, IncludeDependency, IncludeDirectoryVersion, IncludeLoader,
-        IncludePathFileFingerprint, LoadedInclude, ResolvedIncludePath,
-        SERVER_INCLUDE_REVALIDATION_INTERVAL, ValidatedIncludeSource,
-        composer_autoload_map_fingerprint, include_directory_version,
+        IncludePathFileFingerprint, LoadedCompilationDependency, LoadedInclude,
+        ResolvedCompilationDependency, ResolvedIncludePath, SERVER_INCLUDE_REVALIDATION_INTERVAL,
+        ValidatedIncludeSource, composer_autoload_map_fingerprint, include_directory_version,
         include_revalidation_interval_from_env, negative_include_cache_enabled,
     };
     pub use crate::inline_cache::{FunctionCallSiteSnapshot, InlineCacheMode};

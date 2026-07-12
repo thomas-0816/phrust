@@ -1,9 +1,9 @@
 use php_optimizer::{OptimizationLevel, PassContext, PassPipeline};
 use php_vm::api::{
-    CompiledInclude, CompiledUnit, IncludeCompiler, IncludeCompilerFingerprint, IncludeLoader,
-    ValidatedIncludeSource, VmError,
+    CompilationDependencyRequest, CompiledInclude, CompiledUnit, IncludeCompiler,
+    IncludeCompilerFingerprint, IncludeLoader, ValidatedIncludeSource, VmError,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Executor-owned compiler used by VM include and eval execution.
 #[derive(Clone, Debug)]
@@ -87,6 +87,7 @@ fn compile_include(
         source.loaded().source.clone(),
     );
     let mut dependencies = Vec::new();
+    let mut dependency_paths = HashSet::new();
     let mut providers = HashMap::<String, php_ir::CompilationFileId>::new();
     for name in session.declared_trait_names(session.entry()) {
         providers.insert(name, session.entry());
@@ -117,47 +118,43 @@ fn compile_include(
                 );
                 continue;
             }
-            let mut inferred = false;
-            let dependency_source =
-                match loader.load_compilation_dependency(&request.normalized_name)? {
-                    Some(dependency_source) => {
-                        if !source_declares_trait(&dependency_source, &request.normalized_name) {
-                            return Err(include_compile_error(
-                                "E_PHP_VM_INCLUDE_DEPENDENCY_MISMATCH",
-                                format!(
-                                    "mapped file {} does not declare trait `{}`",
-                                    dependency_source.loaded().canonical_path.display(),
-                                    request.normalized_name
-                                ),
-                            )
-                            .with_context("declaration", &request.normalized_name)
-                            .with_context(
-                                "canonical_path",
-                                dependency_source.loaded().canonical_path.display(),
-                            ));
-                        }
-                        dependency_source
-                    }
-                    // No explicit mapping: infer the trait's file from the
-                    // requesting file's own PSR-4 layout, the same file the
-                    // reference autoloader would pull in at class-link time.
-                    // A miss, a policy-rejected path, or a file that does not
-                    // declare the trait falls through to the standard
-                    // missing-trait diagnostic.
-                    None => {
-                        let Some(dependency_source) =
-                            load_psr_inferred_trait(&session, file_id, &request, loader)
-                        else {
-                            continue;
-                        };
-                        inferred = true;
-                        dependency_source
-                    }
-                };
-
+            let requesting_path = std::path::Path::new(session.files()[file_id.index()].path());
+            let Some(resolved_dependency) =
+                loader.load_compilation_dependency(CompilationDependencyRequest {
+                    requesting_path,
+                    declaration: &request.resolved_name,
+                })?
+            else {
+                continue;
+            };
+            if !source_declares_trait(resolved_dependency.source(), &request.normalized_name) {
+                return Err(include_compile_error(
+                    "E_PHP_VM_INCLUDE_DEPENDENCY_MISMATCH",
+                    format!(
+                        "mapped file {} does not declare trait `{}`",
+                        resolved_dependency
+                            .source()
+                            .loaded()
+                            .canonical_path
+                            .display(),
+                        request.normalized_name
+                    ),
+                )
+                .with_context("declaration", &request.normalized_name)
+                .with_context(
+                    "canonical_path",
+                    resolved_dependency
+                        .source()
+                        .loaded()
+                        .canonical_path
+                        .display(),
+                ));
+            }
+            let (dependency_source, metadata_sources, activate_through_autoload) =
+                resolved_dependency.into_parts();
             let path = dependency_source.loaded().canonical_path.clone();
-            let dependency = if inferred {
-                session.add_inferred_dependency(
+            let dependency = if activate_through_autoload {
+                session.add_autoload_dependency(
                     file_id,
                     &request.normalized_name,
                     &request.normalized_name,
@@ -183,7 +180,14 @@ fn compile_include(
                     .with_context("declaration", declared));
                 }
             }
-            dependencies.push(dependency_source.into_dependency());
+            for metadata_source in metadata_sources {
+                if dependency_paths.insert(metadata_source.loaded().canonical_path.clone()) {
+                    dependencies.push(metadata_source.into_dependency());
+                }
+            }
+            if dependency_paths.insert(path) {
+                dependencies.push(dependency_source.into_dependency());
+            }
         }
         next_file += 1;
     }
@@ -275,33 +279,6 @@ fn source_declares_trait(source: &ValidatedIncludeSource, normalized_name: &str)
         .any(|name| name == normalized_name)
 }
 
-/// Loads the trait file a PSR-4 autoloader would provide for `request`,
-/// inferred from the requesting file's namespace-to-path layout. Returns
-/// `None` when inference fails, the loader's root policy rejects the file,
-/// or the file does not declare the requested trait.
-fn load_psr_inferred_trait(
-    session: &php_ir::CompilationSession,
-    file_id: php_ir::CompilationFileId,
-    request: &php_ir::UnresolvedTraitRequest,
-    loader: &IncludeLoader,
-) -> Option<ValidatedIncludeSource> {
-    let requesting = &session.files()[file_id.index()];
-    let requesting_path = std::path::Path::new(requesting.path());
-    let map = crate::psr_map::LocalPsrSourceMap::infer(requesting.source(), requesting_path)?;
-    let path = map.resolve_declaration(&request.normalized_name)?;
-    let path = path.to_string_lossy();
-    let resolved = loader
-        .resolve_with_include_path(
-            None,
-            &path,
-            &[],
-            loader.allowed_roots().first().map(std::path::Path::new),
-        )
-        .ok()?;
-    let dependency_source = loader.load_validated_resolved(&resolved).ok()?;
-    source_declares_trait(&dependency_source, &request.normalized_name).then_some(dependency_source)
-}
-
 fn include_compile_error(code: &'static str, message: impl Into<String>) -> VmError {
     VmError::fatal(code, "include_compile", message)
 }
@@ -314,4 +291,114 @@ fn ir_lowering_failure_detail(lowering: &php_ir::LoweringResult) -> String {
         return format!("IR verification failed: {error:?}");
     }
     "unknown IR lowering failure".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::composer_metadata::ComposerCompilationResolver;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "phrust-include-compiler-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create fixture");
+        root
+    }
+
+    fn write(root: &Path, relative: &str, source: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(path, source).expect("write fixture");
+    }
+
+    fn load(root: &Path, relative: &str) -> (IncludeLoader, ValidatedIncludeSource) {
+        let loader = IncludeLoader::for_root(root)
+            .expect("loader")
+            .with_compilation_dependency_resolver(Arc::new(ComposerCompilationResolver));
+        let resolved = loader
+            .resolve_with_include_path(None, relative, &[], Some(root))
+            .expect("resolve source");
+        let source = loader
+            .load_validated_resolved(&resolved)
+            .expect("load source");
+        (loader, source)
+    }
+
+    #[test]
+    fn composer_metadata_resolves_trait_without_source_inference() {
+        let root = fixture("composer-trait");
+        write(
+            &root,
+            "src/Registry.php",
+            "<?php namespace Acme; use Acme\\Support\\WithThing; class Registry { use WithThing; }",
+        );
+        write(
+            &root,
+            "src/Support/WithThing.php",
+            "<?php namespace Acme\\Support; trait WithThing { public function value(): string { return 'ok'; } }",
+        );
+        write(
+            &root,
+            "vendor/composer/autoload_psr4.php",
+            "<?php return ['Acme\\\\' => [__DIR__ . '/../../src']];",
+        );
+        let (loader, source) = load(&root, "src/Registry.php");
+        let probe = php_ir::CompilationSession::new(
+            source
+                .loaded()
+                .canonical_path
+                .to_string_lossy()
+                .into_owned(),
+            source.loaded().source.clone(),
+        );
+        let request = probe
+            .unresolved_trait_requests(probe.entry())
+            .pop()
+            .expect("trait request");
+        assert_eq!(request.resolved_name, "Acme\\Support\\WithThing");
+
+        let compiled =
+            compile_include(source, &loader, OptimizationLevel::O0).expect("compile mapped trait");
+
+        assert_eq!(compiled.unit.unit().files.len(), 2);
+        assert_eq!(
+            compiled.unit.unit().linked_entry_autoload_declarations,
+            vec![Some("acme\\support\\withthing".to_owned()), None]
+        );
+        assert_eq!(compiled.dependencies.len(), 2);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn unmapped_sibling_trait_is_not_discovered_from_source_layout() {
+        let root = fixture("unmapped-trait");
+        write(
+            &root,
+            "src/Registry.php",
+            "<?php namespace Acme; use Acme\\Support\\MissingTrait; class Registry { use MissingTrait; }",
+        );
+        write(
+            &root,
+            "src/Support/MissingTrait.php",
+            "<?php namespace Acme\\Support; trait MissingTrait {}",
+        );
+        let (loader, source) = load(&root, "src/Registry.php");
+
+        let error = compile_include(source, &loader, OptimizationLevel::O0)
+            .expect_err("unmapped source layout must not be inferred");
+
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_COMPILE_ERROR");
+        assert!(error.render_message().contains("E_PHP_IR_TRAIT_NOT_FOUND"));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
 }

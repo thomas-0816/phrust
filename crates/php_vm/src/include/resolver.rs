@@ -14,6 +14,76 @@ use php_runtime::api::{FilesystemCapabilities, normalize_class_name, phar};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// Explicit declaration-resolution request issued by the include compiler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilationDependencyRequest<'a> {
+    /// Original file containing the unresolved declaration use.
+    pub requesting_path: &'a Path,
+    /// Resolved PHP-visible declaration name, preserving source casing.
+    pub declaration: &'a str,
+}
+
+/// Path selected by executor-owned autoload metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedCompilationDependency {
+    /// File that provides the requested declaration.
+    pub path: PathBuf,
+    /// Metadata files whose exact identities determined `path`.
+    pub metadata_paths: Vec<PathBuf>,
+    /// Whether the runtime autoload protocol must run before the linked source
+    /// is activated.
+    pub activate_through_autoload: bool,
+}
+
+/// Executor-owned declaration resolver used by multi-file include compilation.
+///
+/// Implementations consume explicit autoload metadata. They must not infer
+/// namespace layout from PHP source text or scan directory trees for matching
+/// declarations.
+pub trait CompilationDependencyResolver: Send + Sync {
+    /// Stable implementation/configuration identity for compiler cache keys.
+    fn fingerprint(&self) -> String;
+
+    /// Resolves one declaration through explicit autoload metadata.
+    fn resolve(
+        &self,
+        request: CompilationDependencyRequest<'_>,
+    ) -> Result<Option<ResolvedCompilationDependency>, VmError>;
+}
+
+/// Validated declaration source returned to the include compiler.
+#[derive(Clone, Debug)]
+pub struct LoadedCompilationDependency {
+    source: ValidatedIncludeSource,
+    metadata_dependencies: Vec<ValidatedIncludeSource>,
+    activate_through_autoload: bool,
+}
+
+impl LoadedCompilationDependency {
+    /// Exact declaration source validated by the include loader.
+    #[must_use]
+    pub const fn source(&self) -> &ValidatedIncludeSource {
+        &self.source
+    }
+
+    /// Whether runtime autoload activation is required for the linked source.
+    #[must_use]
+    pub const fn activate_through_autoload(&self) -> bool {
+        self.activate_through_autoload
+    }
+
+    /// Consumes the resolution into its source and metadata identities.
+    #[must_use]
+    pub fn into_parts(self) -> (ValidatedIncludeSource, Vec<ValidatedIncludeSource>, bool) {
+        (
+            self.source,
+            self.metadata_dependencies,
+            self.activate_through_autoload,
+        )
+    }
+}
 
 /// Result of resolving one include target without loading its contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,10 +171,28 @@ impl NegativeIncludeEntry {
 }
 
 /// Root-constrained local include loader.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct IncludeLoader {
     allowed_roots: Vec<PathBuf>,
     compilation_dependencies: BTreeMap<String, PathBuf>,
+    compilation_dependency_resolver: Option<Arc<dyn CompilationDependencyResolver>>,
+}
+
+impl std::fmt::Debug for IncludeLoader {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IncludeLoader")
+            .field("allowed_roots", &self.allowed_roots)
+            .field("compilation_dependencies", &self.compilation_dependencies)
+            .field(
+                "compilation_dependency_resolver",
+                &self
+                    .compilation_dependency_resolver
+                    .as_ref()
+                    .map(|resolver| resolver.fingerprint()),
+            )
+            .finish()
+    }
 }
 
 impl IncludeLoader {
@@ -126,6 +214,7 @@ impl IncludeLoader {
         Ok(Self {
             allowed_roots,
             compilation_dependencies: BTreeMap::new(),
+            compilation_dependency_resolver: None,
         })
     }
 
@@ -158,6 +247,16 @@ impl IncludeLoader {
         self
     }
 
+    /// Installs the executor-owned resolver for Composer/autoload metadata.
+    #[must_use]
+    pub fn with_compilation_dependency_resolver(
+        mut self,
+        resolver: Arc<dyn CompilationDependencyResolver>,
+    ) -> Self {
+        self.compilation_dependency_resolver = Some(resolver);
+        self
+    }
+
     fn compilation_dependency(&self, declaration: &str) -> Option<&Path> {
         self.compilation_dependencies
             .get(&normalize_class_name(declaration))
@@ -174,6 +273,10 @@ impl IncludeLoader {
             serialized.extend_from_slice(path.to_string_lossy().as_bytes());
             serialized.push(b'\n');
         }
+        if let Some(resolver) = &self.compilation_dependency_resolver {
+            serialized.extend_from_slice(resolver.fingerprint().as_bytes());
+            serialized.push(b'\n');
+        }
         fnv1a_64(&serialized)
     }
 
@@ -183,19 +286,46 @@ impl IncludeLoader {
     /// compiler validates that the source actually provides the declaration.
     pub fn load_compilation_dependency(
         &self,
-        declaration: &str,
-    ) -> Result<Option<ValidatedIncludeSource>, VmError> {
-        let Some(path) = self.compilation_dependency(declaration) else {
+        request: CompilationDependencyRequest<'_>,
+    ) -> Result<Option<LoadedCompilationDependency>, VmError> {
+        let resolved = if let Some(path) = self.compilation_dependency(request.declaration) {
+            Some(ResolvedCompilationDependency {
+                path: path.to_path_buf(),
+                metadata_paths: Vec::new(),
+                activate_through_autoload: false,
+            })
+        } else if let Some(resolver) = &self.compilation_dependency_resolver {
+            resolver.resolve(request)?
+        } else {
+            None
+        };
+        let Some(resolved_dependency) = resolved else {
             return Ok(None);
         };
-        let path = path.to_string_lossy();
+        let path = resolved_dependency.path.to_string_lossy();
         let resolved = self.resolve_with_include_path(
             None,
             &path,
             &[],
             self.allowed_roots.first().map(PathBuf::as_path),
         )?;
-        self.load_validated_resolved(&resolved).map(Some)
+        let source = self.load_validated_resolved(&resolved)?;
+        let mut metadata_dependencies = Vec::new();
+        for metadata_path in resolved_dependency.metadata_paths {
+            let path = metadata_path.to_string_lossy();
+            let resolved = self.resolve_with_include_path(
+                None,
+                &path,
+                &[],
+                self.allowed_roots.first().map(PathBuf::as_path),
+            )?;
+            metadata_dependencies.push(self.load_validated_resolved(&resolved)?);
+        }
+        Ok(Some(LoadedCompilationDependency {
+            source,
+            metadata_dependencies,
+            activate_through_autoload: resolved_dependency.activate_through_autoload,
+        }))
     }
 
     /// Converts an include/require error string to the shared diagnostic envelope.

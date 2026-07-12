@@ -83,15 +83,13 @@ impl Vm {
         };
         let mut linked_diagnostics = Vec::new();
         for (linked_index, linked_entry) in linked_entries.into_iter().enumerate() {
-            // A linked file that compile-time inference injected stands in
-            // for what the autoload protocol would load at class-link time in
-            // reference PHP. Mirror that: an already-declared or
-            // autoloader-provided declaration wins and the injected copy is
-            // skipped; a declaration nobody provides is the reference
-            // "Trait not found" failure.
+            // Explicit resolver metadata can link the source needed for class
+            // composition before execution. Runtime activation still follows
+            // PHP's autoload protocol: an already-declared or callback-provided
+            // declaration wins, while an unresolved declaration fails.
             if let Some(normalized_name) = included
                 .unit()
-                .linked_entry_inferred_declarations
+                .linked_entry_autoload_declarations
                 .get(linked_index)
                 .and_then(|declaration| declaration.as_deref())
             {

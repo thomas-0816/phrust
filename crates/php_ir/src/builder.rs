@@ -405,11 +405,10 @@ impl IrBuilder {
         self.unit.linked_file_entries = entries;
     }
 
-    /// Records, index-aligned with the linked file entries, which linked
-    /// files were pulled in by compile-time inference and under which
-    /// PHP-visible declaration name.
-    pub fn set_linked_entry_inferred_declarations(&mut self, declarations: Vec<Option<String>>) {
-        self.unit.linked_entry_inferred_declarations = declarations;
+    /// Records, index-aligned with the linked file entries, which linked files
+    /// require runtime autoload activation and under which declaration name.
+    pub fn set_linked_entry_autoload_declarations(&mut self, declarations: Vec<Option<String>>) {
+        self.unit.linked_entry_autoload_declarations = declarations;
     }
 
     /// Sets file-level `declare(strict_types=1)` metadata for this IR unit.

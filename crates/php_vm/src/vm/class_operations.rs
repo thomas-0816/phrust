@@ -3322,16 +3322,15 @@ pub(super) fn register_dynamic_classes(
     compiled: &CompiledUnit,
     load_kind: DeclarationLoadKind,
 ) {
-    // Declarations living in compile-time-inferred linked files stand in for
-    // what an autoloader would provide at class-link time; pre-registering
-    // them would make them visible without any autoloader having run. Their
-    // runtime declaration is decided by the linked-entry autoload gate.
-    let inferred_files: std::collections::HashSet<php_ir::ids::FileId> = compiled
+    // Resolver-linked autoload files must not become visible before their
+    // runtime callback runs. Their declaration is decided by the linked-entry
+    // autoload gate.
+    let autoload_files: std::collections::HashSet<php_ir::ids::FileId> = compiled
         .unit()
         .linked_file_entries
         .iter()
-        .zip(compiled.unit().linked_entry_inferred_declarations.iter())
-        .filter(|(_, inferred)| inferred.is_some())
+        .zip(compiled.unit().linked_entry_autoload_declarations.iter())
+        .filter(|(_, declaration)| declaration.is_some())
         .filter_map(|(entry, _)| {
             compiled
                 .unit()
@@ -3348,7 +3347,7 @@ pub(super) fn register_dynamic_classes(
         .filter(|(_, class)| {
             class.span != php_ir::source_map::IrSpan::default()
                 && !class.flags.is_conditional
-                && !inferred_files.contains(&class.span.file)
+                && !autoload_files.contains(&class.span.file)
         })
     {
         let normalized = normalize_class_name(&class.name);

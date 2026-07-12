@@ -14,17 +14,25 @@ to reference its original file-table entry. No PHP source is concatenated or
 rewritten. The include layer supplies the declaration resolver; the compiler
 does not infer Composer or PSR mappings by scanning source lines or directory
 trees. `IncludeLoader::with_compilation_dependency` supplies normalized
-declaration-to-path metadata explicitly. An unmapped declaration remains
-unresolved even when a same-named PHP file exists below an allowed root, and a
-mapped file that does not declare the requested trait fails closed.
+declaration-to-path metadata directly. Production executor loaders also install
+an executor-owned resolver that evaluates Composer's generated
+`autoload_classmap.php` and `autoload_psr4.php` through typed HIR. It checks only
+the conventional `vendor/composer` location in the requester's ancestor roots;
+it never searches source trees for declarations. An unmapped declaration
+remains unresolved even when a same-named PHP file exists below an allowed
+root, and a mapped file that does not declare the requested trait fails closed.
 
 The linked unit retains entry-file `strict_types` as a compatibility field and
 also records `file_strict_types[FileId]` for dependency-owned functions. Exact
-dependency content identities are included in the compiled-include cache key,
-so edits, same-metadata rewrites, and atomic replacements invalidate the root
-artifact. The deterministic declaration-map fingerprint is also part of the
-compiler identity, preventing artifacts compiled with different resolver
-inputs from sharing a cache hit.
+dependency and Composer metadata-file identities are included in the
+compiled-include cache key, so edits, same-metadata rewrites, map changes, and
+atomic replacements invalidate the root artifact. The deterministic resolver
+fingerprint is also part of the compiler identity, preventing artifacts
+compiled with different resolver implementations or direct mappings from
+sharing a cache hit. Composer-resolved units are linked at compile time but
+remain inactive until the runtime autoload protocol requests that declaration;
+this preserves registered callback order and side effects without reparsing or
+recompiling the dependency.
 
 `performance/multi_file_trait_compile` in `php_bench` measures the cold linked
 include path with an explicit trait mapping. The existing include-cache and

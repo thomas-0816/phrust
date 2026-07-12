@@ -107,6 +107,8 @@ pub struct UnresolvedTraitRequest {
     pub requesting_file: CompilationFileId,
     /// Normalized requested trait name.
     pub normalized_name: String,
+    /// Resolved declaration name preserving PHP-visible source casing.
+    pub resolved_name: String,
     /// PHP-visible spelling at the use site.
     pub display_name: String,
     /// Normalized owner class-like name.
@@ -138,9 +140,9 @@ pub struct CompilationSession {
     paths: HashMap<String, CompilationFileId>,
     dependencies: Vec<CompilationDependency>,
     entry: CompilationFileId,
-    /// PHP-visible declaration names for files added by compile-time
-    /// inference, keyed by file.
-    inferred_declarations: HashMap<CompilationFileId, String>,
+    /// Normalized declaration names that explicit resolver metadata requires
+    /// the runtime autoload protocol to activate, keyed by file.
+    autoload_declarations: HashMap<CompilationFileId, String>,
 }
 
 impl CompilationSession {
@@ -155,7 +157,7 @@ impl CompilationSession {
             paths: HashMap::from([(path, entry)]),
             dependencies: Vec::new(),
             entry,
-            inferred_declarations: HashMap::new(),
+            autoload_declarations: HashMap::new(),
         }
     }
 
@@ -188,10 +190,10 @@ impl CompilationSession {
         dependency
     }
 
-    /// Adds a dependency discovered by compile-time inference rather than an
-    /// explicit mapping, recording the PHP-visible declaration name so the
-    /// VM can gate the injected file on the autoload protocol.
-    pub fn add_inferred_dependency(
+    /// Adds an explicitly resolved autoload dependency and records the
+    /// normalized declaration used to activate it through the runtime autoload
+    /// protocol.
+    pub fn add_autoload_dependency(
         &mut self,
         requester: CompilationFileId,
         declaration: impl Into<String>,
@@ -200,17 +202,17 @@ impl CompilationSession {
         source: impl Into<String>,
     ) -> CompilationFileId {
         let dependency = self.add_dependency(requester, declaration, path, source);
-        self.inferred_declarations
+        self.autoload_declarations
             .entry(dependency)
             .or_insert_with(|| display_name.into());
         dependency
     }
 
-    /// Returns the PHP-visible declaration name when `file` was pulled in by
-    /// compile-time inference.
+    /// Returns the normalized declaration used to activate `file` through the
+    /// runtime autoload protocol.
     #[must_use]
-    pub fn inferred_declaration(&self, file: CompilationFileId) -> Option<&str> {
-        self.inferred_declarations.get(&file).map(String::as_str)
+    pub fn autoload_declaration(&self, file: CompilationFileId) -> Option<&str> {
+        self.autoload_declarations.get(&file).map(String::as_str)
     }
 
     /// Returns all files in stable insertion order.
@@ -340,12 +342,14 @@ impl CompilationSession {
                     continue;
                 };
                 for trait_name in trait_use.traits() {
-                    let normalized_name = normalize_class_name(
-                        trait_name
-                            .resolved()
-                            .or_else(|| trait_name.fallback())
-                            .unwrap_or_else(|| trait_name.source()),
-                    );
+                    let resolved_name = trait_name
+                        .resolved_display()
+                        .or_else(|| trait_name.resolved())
+                        .or_else(|| trait_name.fallback())
+                        .unwrap_or_else(|| trait_name.source())
+                        .trim_start_matches('\\')
+                        .to_owned();
+                    let normalized_name = normalize_class_name(&resolved_name);
                     if local_traits.contains(&normalized_name)
                         || requests.iter().any(|request: &UnresolvedTraitRequest| {
                             request.normalized_name == normalized_name
@@ -356,6 +360,7 @@ impl CompilationSession {
                     requests.push(UnresolvedTraitRequest {
                         requesting_file: file_id,
                         normalized_name,
+                        resolved_name,
                         display_name: trait_name.source().to_owned(),
                         owner_name: normalize_class_name(&owner_name),
                     });

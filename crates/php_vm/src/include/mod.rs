@@ -24,7 +24,11 @@ pub use metadata::{
     composer_autoload_map_fingerprint,
 };
 pub use metrics::IncludeCacheStats;
-pub use resolver::{IncludeLoader, ResolvedIncludePath, negative_include_cache_enabled};
+pub use resolver::{
+    CompilationDependencyRequest, CompilationDependencyResolver, IncludeLoader,
+    LoadedCompilationDependency, ResolvedCompilationDependency, ResolvedIncludePath,
+    negative_include_cache_enabled,
+};
 pub(crate) use source::resolution_path_targets;
 pub use source::{
     IncludeDependency, IncludeDirectoryVersion, IncludePathFileFingerprint, LoadedInclude,

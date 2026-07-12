@@ -1,8 +1,8 @@
 use crate::compiled_unit::CompiledUnit;
 use crate::error::VmError;
 use crate::include::{
-    CompiledInclude, IncludeCompiler, IncludeCompilerFingerprint, IncludeLoader,
-    ValidatedIncludeSource,
+    CompilationDependencyRequest, CompiledInclude, IncludeCompiler, IncludeCompilerFingerprint,
+    IncludeLoader, ValidatedIncludeSource,
 };
 use php_optimizer::{OptimizationLevel, PassContext, PassPipeline};
 use std::collections::HashMap;
@@ -138,11 +138,17 @@ fn compile_include(
                 );
                 continue;
             }
-            let Some(dependency_source) =
-                loader.load_compilation_dependency(&request.normalized_name)?
+            let requesting_path = std::path::Path::new(session.files()[file_id.index()].path());
+            let Some(resolved_dependency) =
+                loader.load_compilation_dependency(CompilationDependencyRequest {
+                    requesting_path,
+                    declaration: &request.resolved_name,
+                })?
             else {
                 continue;
             };
+            let (dependency_source, metadata_sources, activate_through_autoload) =
+                resolved_dependency.into_parts();
             let probe = php_ir::CompilationSession::new(
                 dependency_source
                     .loaded()
@@ -172,12 +178,22 @@ fn compile_include(
             }
 
             let path = dependency_source.loaded().canonical_path.clone();
-            let dependency = session.add_dependency(
-                file_id,
-                &request.normalized_name,
-                path.to_string_lossy().into_owned(),
-                dependency_source.loaded().source.clone(),
-            );
+            let dependency = if activate_through_autoload {
+                session.add_autoload_dependency(
+                    file_id,
+                    &request.normalized_name,
+                    &request.normalized_name,
+                    path.to_string_lossy().into_owned(),
+                    dependency_source.loaded().source.clone(),
+                )
+            } else {
+                session.add_dependency(
+                    file_id,
+                    &request.normalized_name,
+                    path.to_string_lossy().into_owned(),
+                    dependency_source.loaded().source.clone(),
+                )
+            };
             for declared in session.declared_trait_names(dependency) {
                 if let Some(previous) = providers.insert(declared.clone(), dependency)
                     && previous != dependency
@@ -189,6 +205,11 @@ fn compile_include(
                     .with_context("declaration", declared));
                 }
             }
+            dependencies.extend(
+                metadata_sources
+                    .into_iter()
+                    .map(ValidatedIncludeSource::into_dependency),
+            );
             dependencies.push(dependency_source.into_dependency());
         }
         next_file += 1;

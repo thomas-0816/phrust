@@ -2,12 +2,12 @@
 // runtime-semantics: category=includes expect=pass php_ref_required=1
 // A PSR-4 autoloaded class composes a trait declared in a sibling file that
 // is NOT loaded before the class file: reference PHP autoloads the trait at
-// class-link time, so the include compiler must pull the trait's file in as
-// a compilation dependency inferred from the class file's namespace layout
-// (the WordPress php-ai-client shape). Regression: fe98fee1 dropped the
-// inference and the include died with E_PHP_IR_TRAIT_NOT_FOUND.
+// class-link time. The include compiler resolves the dependency through the
+// explicit Composer PSR-4 metadata beside this fixture and still activates it
+// through the registered callback.
 
 spl_autoload_register(static function ($class) {
+    echo 'autoload:', $class, "\n";
     $prefix = 'Acme\\';
     if (0 !== strncmp($class, $prefix, 5)) {
         return;

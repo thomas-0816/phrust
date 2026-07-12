@@ -249,6 +249,16 @@ impl FullyQualifiedName {
             .collect::<Vec<_>>()
             .join("\\")
     }
+
+    /// Returns the resolved FQN with each source name segment's spelling.
+    #[must_use]
+    pub fn display(&self) -> String {
+        self.parts
+            .iter()
+            .map(NamePart::original)
+            .collect::<Vec<_>>()
+            .join("\\")
+    }
 }
 
 /// Source-preserving name text captured for later name resolution.

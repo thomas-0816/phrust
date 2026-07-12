@@ -11,6 +11,7 @@
 //! to frontend or VM internals.
 
 mod cache;
+mod composer_metadata;
 mod diagnostics;
 mod engine_compat;
 mod executor;
@@ -18,7 +19,6 @@ mod include_compiler;
 mod input;
 mod pipeline;
 mod profile;
-mod psr_map;
 mod request;
 
 pub use cache::{

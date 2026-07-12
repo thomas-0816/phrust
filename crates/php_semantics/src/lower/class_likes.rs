@@ -728,18 +728,22 @@ impl ClassLikeLowerer<'_> {
             .resolver()
             .resolve(&qualified, ResolveContext::ClassLike);
         let name_kind = NameResolver::name_kind(ResolveContext::ClassLike);
-        let resolved = match &result {
-            ResolvedName::FullyQualified(name) => Some(name.canonical(name_kind)),
-            ResolvedName::MaybeRuntimeFallback { namespaced, .. } => {
-                Some(namespaced.canonical(name_kind))
+        let (resolved, resolved_display) = match &result {
+            ResolvedName::FullyQualified(name) => {
+                (Some(name.canonical(name_kind)), Some(name.display()))
             }
-            ResolvedName::Dynamic | ResolvedName::Unresolved => None,
+            ResolvedName::MaybeRuntimeFallback { namespaced, .. } => (
+                Some(namespaced.canonical(name_kind)),
+                Some(namespaced.display()),
+            ),
+            ResolvedName::Dynamic | ResolvedName::Unresolved => (None, None),
         };
-        HirNameResolution::new(
+        HirNameResolution::new_with_display(
             source,
             ResolveContext::ClassLike.as_str(),
             result.classification(),
             resolved,
+            resolved_display,
             None,
         )
     }
