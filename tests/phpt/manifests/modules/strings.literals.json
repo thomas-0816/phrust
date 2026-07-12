@@ -11,6 +11,6 @@
   "known_failure_count":0,
   "scope":["string literal decoding","heredoc/nowdoc","string interpolation basics"],
   "non_scope":["full ext/standard string API"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=strings.literals"],
-  "next_step":"Keep the selected literal/string gate green while expanding heredoc, interpolation, and standard string formatting coverage."
+  "target_gates":["nix develop -c just verify-frontend"],
+  "next_step":"Separate frontend literal gaps from runtime string builtin gaps."
 }

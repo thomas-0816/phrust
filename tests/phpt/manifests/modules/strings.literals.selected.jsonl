@@ -1,9 +1,9 @@
-{"path":"tests/strings/offsets_general.phpt"}
-{"path":"tests/strings/offsets_chaining_5.phpt"}
-{"path":"tests/strings/offsets_chaining_3.phpt"}
-{"path":"tests/strings/offsets_chaining_1.phpt"}
-{"path":"tests/strings/bug26703.phpt"}
-{"path":"tests/strings/bug22592.phpt"}
-{"path":"tests/strings/004.phpt"}
-{"path":"tests/strings/002.phpt"}
 {"path":"tests/strings/001.phpt"}
+{"path":"tests/strings/002.phpt"}
+{"path":"tests/strings/004.phpt"}
+{"path":"tests/strings/bug22592.phpt"}
+{"path":"tests/strings/bug26703.phpt"}
+{"path":"tests/strings/offsets_chaining_1.phpt"}
+{"path":"tests/strings/offsets_chaining_3.phpt"}
+{"path":"tests/strings/offsets_chaining_5.phpt"}
+{"path":"tests/strings/offsets_general.phpt"}
