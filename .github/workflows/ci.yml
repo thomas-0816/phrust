@@ -86,6 +86,7 @@ jobs:
           - verify-stdlib
           - verify-server
           - verify-performance
+          - verify-performance-extended
     steps:
       - name: Checkout
         uses: actions/checkout@v7
