@@ -15,6 +15,7 @@ mod multipart;
 mod perf_trace;
 mod persistent_metadata;
 mod php_request;
+mod request_pipeline;
 mod request_profile;
 pub mod response;
 pub mod routing;

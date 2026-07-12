@@ -391,10 +391,6 @@
     {
       "id": "crates/php_runtime/src/reference.rs:pointer_integer_identity:51d079e45291:1",
       "reason": "pre-remediation pointer identity; server cache identity is removed in Prompt 15"
-    },
-    {
-      "id": "crates/php_server/src/state.rs:pointer_integer_identity:09df98bf4eec:1",
-      "reason": "pre-remediation pointer identity; server cache identity is removed in Prompt 15"
     }
   ],
   "public_surface_limits": {

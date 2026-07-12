@@ -68,7 +68,7 @@ pub(crate) fn emit_request_diagnostic(
     request_id: Option<&str>,
     diagnostic: RequestDiagnostic<'_>,
 ) {
-    if !state.debug {
+    if !state.observability.debug {
         return;
     }
     let uri = parts.uri.path_and_query().map_or_else(
@@ -117,7 +117,7 @@ pub(crate) fn emit_server_debug(
     message: &str,
     mut context: BTreeMap<String, String>,
 ) {
-    if !state.debug {
+    if !state.observability.debug {
         return;
     }
     if let Some(request_id) = request_id {
@@ -130,7 +130,7 @@ pub(crate) fn emit_server_debug(
         message,
     )
     .with_context(context);
-    let rendered = match state.error_format {
+    let rendered = match state.observability.error_format {
         DiagnosticOutputFormat::Text => {
             let mut line = event.text_line();
             line.push('\n');
@@ -144,7 +144,7 @@ pub(crate) fn emit_server_debug(
             }
         },
     };
-    if let Some(path) = &state.debug_log {
+    if let Some(path) = &state.observability.debug_log {
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(mut file) => {
                 if let Err(error) = file.write_all(rendered.as_bytes()) {
@@ -168,7 +168,7 @@ pub(crate) fn emit_server_debug_lazy<F>(
 ) where
     F: FnOnce() -> BTreeMap<String, String>,
 {
-    if !state.debug {
+    if !state.observability.debug {
         return;
     }
     emit_server_debug(state, request_id, code, phase, message, context());

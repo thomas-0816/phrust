@@ -15,7 +15,8 @@ mod resolver;
 mod source;
 
 pub use cache::{
-    IncludeCache, SERVER_INCLUDE_REVALIDATION_INTERVAL, include_revalidation_interval_from_env,
+    CacheInstanceId, IncludeCache, SERVER_INCLUDE_REVALIDATION_INTERVAL,
+    include_revalidation_interval_from_env,
 };
 pub use compiler::{CompiledInclude, IncludeCompiler, IncludeCompilerFingerprint};
 pub use metadata::{

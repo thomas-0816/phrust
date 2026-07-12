@@ -83,7 +83,7 @@ pub mod api {
     };
     pub use crate::error::{VmError, VmErrorSeverity};
     pub use crate::include::{
-        CompiledInclude, ComposerFingerprintTransition, DeploymentRootFingerprint,
+        CacheInstanceId, CompiledInclude, ComposerFingerprintTransition, DeploymentRootFingerprint,
         DeploymentRootMode, IncludeCache, IncludeCacheStats, IncludeCompiler,
         IncludeCompilerFingerprint, IncludeDependency, IncludeDirectoryVersion, IncludeLoader,
         IncludePathFileFingerprint, LoadedInclude, ResolvedIncludePath,
@@ -231,9 +231,9 @@ pub use fallback::{
 pub use frame::{CallStack, Frame, RegisterFile};
 #[doc(hidden)]
 pub use include::{
-    CompiledInclude, IncludeCache, IncludeCacheStats, IncludeCompiler, IncludeCompilerFingerprint,
-    IncludeDependency, IncludeLoader, IncludePathFileFingerprint, LoadedInclude,
-    ResolvedIncludePath, ValidatedIncludeSource,
+    CacheInstanceId, CompiledInclude, IncludeCache, IncludeCacheStats, IncludeCompiler,
+    IncludeCompilerFingerprint, IncludeDependency, IncludeLoader, IncludePathFileFingerprint,
+    LoadedInclude, ResolvedIncludePath, ValidatedIncludeSource,
 };
 #[doc(hidden)]
 pub use inline_cache::{

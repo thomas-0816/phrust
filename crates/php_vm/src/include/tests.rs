@@ -11,6 +11,17 @@ use std::sync::{Arc, Barrier, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
+fn include_cache_instances_have_stable_distinct_ids() {
+    let first = IncludeCache::new(1);
+    let first_id = first.instance_id();
+    let second = IncludeCache::new(1);
+
+    assert_eq!(first.instance_id(), first_id);
+    assert_ne!(first_id, second.instance_id());
+    assert_ne!(first_id.get(), 0);
+}
+
+#[test]
 fn include_module_ownership_is_one_way() {
     let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/include");
     let modules = [

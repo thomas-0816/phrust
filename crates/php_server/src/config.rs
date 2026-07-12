@@ -35,29 +35,49 @@ pub(crate) const BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV: &str =
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerConfig {
+    pub transport: TransportConfig,
+    pub routing: ServerRoutingConfig,
+    pub limits: RequestLimitsConfig,
+    pub engine: EngineConfig,
+    pub observability: ObservabilityConfig,
+    pub sessions_uploads: SessionsUploadsConfig,
+    pub capabilities: CapabilityConfig,
+    pub help: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransportConfig {
     pub listen: SocketAddr,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+    pub http3_enabled: bool,
+    pub http3_listen: Option<SocketAddr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerRoutingConfig {
     pub docroot: PathBuf,
-    pub debug: bool,
-    pub error_format: DiagnosticOutputFormat,
-    pub debug_log: Option<PathBuf>,
     pub index: String,
     pub front_controller: Option<PathBuf>,
     pub builtin_router: Option<PathBuf>,
     pub request_rewrites: Vec<RequestRewriteRule>,
+    pub metrics_endpoint_enabled: bool,
+    pub cache_clear_endpoint_enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestLimitsConfig {
     pub max_body_bytes: usize,
-    pub upload_temp_dir: PathBuf,
-    pub max_upload_files: usize,
-    pub max_upload_file_bytes: usize,
-    pub session_save_path: PathBuf,
-    pub session_cookie_name: String,
-    pub session_cookie_path: String,
-    pub sessions_enabled: bool,
     pub max_in_flight: usize,
     pub cpu_execution_limit: usize,
     pub request_timeout_ms: u64,
     pub max_execution_ms: u64,
     pub max_vm_steps: usize,
     pub execution_deadline_enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineConfig {
     pub engine_preset: EngineProfileName,
     /// Declared mutability of the deployment root. `dev` (default) marks the
     /// docroot as mutable, which keeps every deployment-fingerprint-gated
@@ -67,19 +87,20 @@ pub struct ServerConfig {
     pub deployment_mode: DeploymentRootMode,
     pub dense_includes: Option<DenseIncludeMode>,
     pub perf_ablation: ServerPerfAblation,
-    pub metrics_endpoint_enabled: bool,
-    pub metrics_token: Option<String>,
-    pub tls_cert: Option<PathBuf>,
-    pub tls_key: Option<PathBuf>,
-    pub http3_enabled: bool,
-    pub http3_listen: Option<SocketAddr>,
     pub script_cache_enabled: bool,
     pub script_cache_shards: usize,
     pub script_cache_max_entries: usize,
     pub script_cache_preload: Option<PathBuf>,
     pub script_cache_check_interval_ms: u64,
     pub strict_preload: bool,
-    pub cache_clear_endpoint_enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservabilityConfig {
+    pub debug: bool,
+    pub error_format: DiagnosticOutputFormat,
+    pub debug_log: Option<PathBuf>,
+    pub metrics_token: Option<String>,
     pub access_log: Option<String>,
     pub perf_trace: Option<PathBuf>,
     pub perf_trace_vm_counters: bool,
@@ -87,8 +108,22 @@ pub struct ServerConfig {
     pub request_profile_vm_counters: bool,
     pub request_profile_source_attribution: bool,
     pub request_profile_trigger_header: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionsUploadsConfig {
+    pub upload_temp_dir: PathBuf,
+    pub max_upload_files: usize,
+    pub max_upload_file_bytes: usize,
+    pub session_save_path: PathBuf,
+    pub session_cookie_name: String,
+    pub session_cookie_path: String,
+    pub sessions_enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityConfig {
     pub network_requests_enabled: bool,
-    pub help: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -453,65 +488,56 @@ impl ServerConfig {
             }
         }
 
-        validate_index(&index)?;
-        if let Some(path) = &front_controller {
-            validate_relative_path("front_controller", path)?;
-        }
-        validate_cookie_name("session_cookie_name", &session_cookie_name)?;
-        validate_cookie_path("session_cookie_path", &session_cookie_path)?;
-        if tls_cert.is_some() != tls_key.is_some() {
-            return Err(ConfigError::new(
-                "TLS configuration requires both --tls-cert <path> and --tls-key <path>; provide both flags or neither",
-            ));
-        }
-        if http3_enabled && tls_cert.is_none() {
-            return Err(ConfigError::new(
-                "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
-            ));
-        }
-
-        if help {
-            return Ok(Self {
+        let docroot = if help {
+            docroot.unwrap_or_default()
+        } else {
+            docroot.ok_or_else(|| {
+                ConfigError::new("--docroot is required; example: phrust-server --docroot public")
+            })?
+        };
+        let config = Self {
+            transport: TransportConfig {
                 listen,
-                docroot: docroot.unwrap_or_default(),
-                debug,
-                error_format,
-                debug_log,
+                tls_cert,
+                tls_key,
+                http3_enabled,
+                http3_listen,
+            },
+            routing: ServerRoutingConfig {
+                docroot,
                 index,
                 front_controller,
                 builtin_router: None,
                 request_rewrites,
+                metrics_endpoint_enabled,
+                cache_clear_endpoint_enabled,
+            },
+            limits: RequestLimitsConfig {
                 max_body_bytes,
-                upload_temp_dir,
-                max_upload_files,
-                max_upload_file_bytes: max_upload_file_bytes.unwrap_or(max_body_bytes),
-                session_save_path,
-                session_cookie_name,
-                session_cookie_path,
-                sessions_enabled,
                 max_in_flight,
                 cpu_execution_limit,
                 request_timeout_ms,
                 max_execution_ms,
                 max_vm_steps,
                 execution_deadline_enabled,
+            },
+            engine: EngineConfig {
                 engine_preset,
                 deployment_mode,
                 dense_includes,
                 perf_ablation,
-                metrics_endpoint_enabled,
-                metrics_token,
-                tls_cert,
-                tls_key,
-                http3_enabled,
-                http3_listen,
                 script_cache_enabled,
                 script_cache_shards,
                 script_cache_max_entries,
                 script_cache_preload,
                 script_cache_check_interval_ms,
                 strict_preload,
-                cache_clear_endpoint_enabled,
+            },
+            observability: ObservabilityConfig {
+                debug,
+                error_format,
+                debug_log,
+                metrics_token,
                 access_log,
                 perf_trace,
                 perf_trace_vm_counters,
@@ -519,65 +545,23 @@ impl ServerConfig {
                 request_profile_vm_counters,
                 request_profile_source_attribution,
                 request_profile_trigger_header,
+            },
+            sessions_uploads: SessionsUploadsConfig {
+                upload_temp_dir,
+                max_upload_files,
+                max_upload_file_bytes: max_upload_file_bytes.unwrap_or(max_body_bytes),
+                session_save_path,
+                session_cookie_name,
+                session_cookie_path,
+                sessions_enabled,
+            },
+            capabilities: CapabilityConfig {
                 network_requests_enabled,
-                help,
-            });
-        }
-
-        let docroot = docroot.ok_or_else(|| {
-            ConfigError::new("--docroot is required; example: phrust-server --docroot public")
-        })?;
-        Ok(Self {
-            listen,
-            docroot,
-            debug,
-            error_format,
-            debug_log,
-            index,
-            front_controller,
-            builtin_router: None,
-            request_rewrites,
-            max_body_bytes,
-            upload_temp_dir,
-            max_upload_files,
-            max_upload_file_bytes: max_upload_file_bytes.unwrap_or(max_body_bytes),
-            session_save_path,
-            session_cookie_name,
-            session_cookie_path,
-            sessions_enabled,
-            max_in_flight,
-            cpu_execution_limit,
-            request_timeout_ms,
-            max_execution_ms,
-            max_vm_steps,
-            execution_deadline_enabled,
-            engine_preset,
-            deployment_mode,
-            dense_includes,
-            perf_ablation,
-            metrics_endpoint_enabled,
-            metrics_token,
-            tls_cert,
-            tls_key,
-            http3_enabled,
-            http3_listen,
-            script_cache_enabled,
-            script_cache_shards,
-            script_cache_max_entries,
-            script_cache_preload,
-            script_cache_check_interval_ms,
-            strict_preload,
-            cache_clear_endpoint_enabled,
-            access_log,
-            perf_trace,
-            perf_trace_vm_counters,
-            request_profile,
-            request_profile_vm_counters,
-            request_profile_source_attribution,
-            request_profile_trigger_header,
-            network_requests_enabled,
+            },
             help,
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn builtin_cli_server(
@@ -604,57 +588,73 @@ impl ServerConfig {
             })
             .transpose()?
             .unwrap_or_default();
-        Ok(Self {
-            listen,
-            docroot,
-            debug: false,
-            error_format: DiagnosticOutputFormat::Text,
-            debug_log: None,
-            index: DEFAULT_INDEX.to_string(),
-            front_controller: None,
-            builtin_router: router,
-            request_rewrites,
-            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
-            upload_temp_dir: std::env::temp_dir().join("phrust-uploads"),
-            max_upload_files: DEFAULT_MAX_UPLOAD_FILES,
-            max_upload_file_bytes: DEFAULT_MAX_BODY_BYTES,
-            session_save_path: std::env::temp_dir().join("phrust-sessions"),
-            session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
-            session_cookie_path: DEFAULT_SESSION_COOKIE_PATH.to_string(),
-            sessions_enabled: true,
-            max_in_flight: default_max_in_flight(),
-            cpu_execution_limit: default_cpu_execution_limit(),
-            request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
-            max_execution_ms: DEFAULT_MAX_EXECUTION_MS,
-            max_vm_steps: DEFAULT_MAX_VM_STEPS,
-            execution_deadline_enabled: true,
-            engine_preset: EngineProfileName::default(),
-            deployment_mode: DeploymentRootMode::DevMutable,
-            dense_includes: env_value_dense_includes()?,
-            perf_ablation: env_value_perf_ablation()?.unwrap_or_default(),
-            metrics_endpoint_enabled: false,
-            metrics_token: None,
-            tls_cert: None,
-            tls_key: None,
-            http3_enabled: false,
-            http3_listen: None,
-            script_cache_enabled: true,
-            script_cache_shards: DEFAULT_SCRIPT_CACHE_SHARDS,
-            script_cache_max_entries: DEFAULT_SCRIPT_CACHE_MAX_ENTRIES,
-            script_cache_preload: None,
-            script_cache_check_interval_ms: DEFAULT_SCRIPT_CACHE_CHECK_INTERVAL_MS,
-            strict_preload: false,
-            cache_clear_endpoint_enabled: false,
-            access_log: None,
-            perf_trace: None,
-            perf_trace_vm_counters: false,
-            request_profile: None,
-            request_profile_vm_counters: false,
-            request_profile_source_attribution: false,
-            request_profile_trigger_header: true,
-            network_requests_enabled: false,
+        let config = Self {
+            transport: TransportConfig {
+                listen,
+                tls_cert: None,
+                tls_key: None,
+                http3_enabled: false,
+                http3_listen: None,
+            },
+            routing: ServerRoutingConfig {
+                docroot,
+                index: DEFAULT_INDEX.to_string(),
+                front_controller: None,
+                builtin_router: router,
+                request_rewrites,
+                metrics_endpoint_enabled: false,
+                cache_clear_endpoint_enabled: false,
+            },
+            limits: RequestLimitsConfig {
+                max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+                max_in_flight: default_max_in_flight(),
+                cpu_execution_limit: default_cpu_execution_limit(),
+                request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+                max_execution_ms: DEFAULT_MAX_EXECUTION_MS,
+                max_vm_steps: DEFAULT_MAX_VM_STEPS,
+                execution_deadline_enabled: true,
+            },
+            engine: EngineConfig {
+                engine_preset: EngineProfileName::default(),
+                deployment_mode: DeploymentRootMode::DevMutable,
+                dense_includes: env_value_dense_includes()?,
+                perf_ablation: env_value_perf_ablation()?.unwrap_or_default(),
+                script_cache_enabled: true,
+                script_cache_shards: DEFAULT_SCRIPT_CACHE_SHARDS,
+                script_cache_max_entries: DEFAULT_SCRIPT_CACHE_MAX_ENTRIES,
+                script_cache_preload: None,
+                script_cache_check_interval_ms: DEFAULT_SCRIPT_CACHE_CHECK_INTERVAL_MS,
+                strict_preload: false,
+            },
+            observability: ObservabilityConfig {
+                debug: false,
+                error_format: DiagnosticOutputFormat::Text,
+                debug_log: None,
+                metrics_token: None,
+                access_log: None,
+                perf_trace: None,
+                perf_trace_vm_counters: false,
+                request_profile: None,
+                request_profile_vm_counters: false,
+                request_profile_source_attribution: false,
+                request_profile_trigger_header: true,
+            },
+            sessions_uploads: SessionsUploadsConfig {
+                upload_temp_dir: std::env::temp_dir().join("phrust-uploads"),
+                max_upload_files: DEFAULT_MAX_UPLOAD_FILES,
+                max_upload_file_bytes: DEFAULT_MAX_BODY_BYTES,
+                session_save_path: std::env::temp_dir().join("phrust-sessions"),
+                session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
+                session_cookie_path: DEFAULT_SESSION_COOKIE_PATH.to_string(),
+                sessions_enabled: true,
+            },
+            capabilities: CapabilityConfig {
+                network_requests_enabled: false,
+            },
             help: false,
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn help_text() -> &'static str {
@@ -712,10 +712,10 @@ Options:\n\
     }
 
     pub fn validated_docroot(&self) -> Result<PathBuf, ConfigError> {
-        let docroot = self.docroot.canonicalize().map_err(|error| {
+        let docroot = self.routing.docroot.canonicalize().map_err(|error| {
             ConfigError::new(format!(
                 "docroot `{}` cannot be canonicalized: {error}",
-                self.docroot.display()
+                self.routing.docroot.display()
             ))
         })?;
         if !docroot.is_dir() {
@@ -725,6 +725,32 @@ Options:\n\
             )));
         }
         Ok(docroot)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        validate_index(&self.routing.index)?;
+        if let Some(path) = &self.routing.front_controller {
+            validate_relative_path("front_controller", path)?;
+        }
+        validate_cookie_name(
+            "session_cookie_name",
+            &self.sessions_uploads.session_cookie_name,
+        )?;
+        validate_cookie_path(
+            "session_cookie_path",
+            &self.sessions_uploads.session_cookie_path,
+        )?;
+        if self.transport.tls_cert.is_some() != self.transport.tls_key.is_some() {
+            return Err(ConfigError::new(
+                "TLS configuration requires both --tls-cert <path> and --tls-key <path>; provide both flags or neither",
+            ));
+        }
+        if self.transport.http3_enabled && self.transport.tls_cert.is_none() {
+            return Err(ConfigError::new(
+                "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1173,12 +1199,15 @@ mod tests {
             ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "immutable"])
                 .unwrap();
         assert_eq!(
-            config.deployment_mode,
+            config.engine.deployment_mode,
             DeploymentRootMode::ImmutableDeclared
         );
         let config =
             ServerConfig::parse_from(["--docroot", "public", "--deployment-mode=dev"]).unwrap();
-        assert_eq!(config.deployment_mode, DeploymentRootMode::DevMutable);
+        assert_eq!(
+            config.engine.deployment_mode,
+            DeploymentRootMode::DevMutable
+        );
         let error = ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "prod"])
             .unwrap_err();
         assert!(error.to_string().contains("expected dev or immutable"));
@@ -1189,59 +1218,65 @@ mod tests {
         let config = ServerConfig::parse_from(["--docroot", "public"]).unwrap();
 
         assert_eq!(
-            config.listen,
+            config.transport.listen,
             "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
         );
-        assert_eq!(config.docroot, PathBuf::from("public"));
-        assert!(!config.debug);
-        assert_eq!(config.error_format, DiagnosticOutputFormat::Text);
-        assert_eq!(config.debug_log, None);
-        assert_eq!(config.index, "index.php");
-        assert_eq!(config.max_body_bytes, 1_048_576);
+        assert_eq!(config.routing.docroot, PathBuf::from("public"));
+        assert!(!config.observability.debug);
         assert_eq!(
-            config.upload_temp_dir,
+            config.observability.error_format,
+            DiagnosticOutputFormat::Text
+        );
+        assert_eq!(config.observability.debug_log, None);
+        assert_eq!(config.routing.index, "index.php");
+        assert_eq!(config.limits.max_body_bytes, 1_048_576);
+        assert_eq!(
+            config.sessions_uploads.upload_temp_dir,
             std::env::temp_dir().join("phrust-uploads")
         );
-        assert_eq!(config.max_upload_files, 32);
-        assert_eq!(config.max_upload_file_bytes, 1_048_576);
+        assert_eq!(config.sessions_uploads.max_upload_files, 32);
+        assert_eq!(config.sessions_uploads.max_upload_file_bytes, 1_048_576);
         assert_eq!(
-            config.session_save_path,
+            config.sessions_uploads.session_save_path,
             std::env::temp_dir().join("phrust-sessions")
         );
-        assert_eq!(config.session_cookie_name, "PHPSESSID");
-        assert_eq!(config.session_cookie_path, "/");
-        assert!(config.sessions_enabled);
-        assert_eq!(config.request_timeout_ms, 30_000);
-        assert_eq!(config.max_execution_ms, 30_000);
-        assert_eq!(config.max_vm_steps, 100_000);
-        assert!(config.execution_deadline_enabled);
-        assert_eq!(config.engine_preset, EngineProfileName::Default);
-        assert_eq!(config.deployment_mode, DeploymentRootMode::DevMutable);
-        assert_eq!(config.dense_includes, None);
-        assert_eq!(config.perf_ablation, Default::default());
-        assert!(config.metrics_endpoint_enabled);
-        assert_eq!(config.metrics_token, None);
-        assert_eq!(config.tls_cert, None);
-        assert_eq!(config.tls_key, None);
-        assert!(!config.http3_enabled);
-        assert_eq!(config.http3_listen, None);
-        assert_eq!(config.access_log, None);
-        assert_eq!(config.perf_trace, None);
-        assert!(!config.perf_trace_vm_counters);
-        assert_eq!(config.request_profile, None);
-        assert!(config.request_profile_trigger_header);
-        assert!(!config.network_requests_enabled);
-        assert!(config.script_cache_enabled);
-        assert_eq!(config.script_cache_shards, 16);
-        assert_eq!(config.script_cache_max_entries, 4096);
-        assert_eq!(config.script_cache_preload, None);
-        assert_eq!(config.script_cache_check_interval_ms, 2_000);
-        assert!(!config.strict_preload);
-        assert!(!config.cache_clear_endpoint_enabled);
-        assert!(config.front_controller.is_none());
-        assert!(config.request_rewrites.is_empty());
+        assert_eq!(config.sessions_uploads.session_cookie_name, "PHPSESSID");
+        assert_eq!(config.sessions_uploads.session_cookie_path, "/");
+        assert!(config.sessions_uploads.sessions_enabled);
+        assert_eq!(config.limits.request_timeout_ms, 30_000);
+        assert_eq!(config.limits.max_execution_ms, 30_000);
+        assert_eq!(config.limits.max_vm_steps, 100_000);
+        assert!(config.limits.execution_deadline_enabled);
+        assert_eq!(config.engine.engine_preset, EngineProfileName::Default);
+        assert_eq!(
+            config.engine.deployment_mode,
+            DeploymentRootMode::DevMutable
+        );
+        assert_eq!(config.engine.dense_includes, None);
+        assert_eq!(config.engine.perf_ablation, Default::default());
+        assert!(config.routing.metrics_endpoint_enabled);
+        assert_eq!(config.observability.metrics_token, None);
+        assert_eq!(config.transport.tls_cert, None);
+        assert_eq!(config.transport.tls_key, None);
+        assert!(!config.transport.http3_enabled);
+        assert_eq!(config.transport.http3_listen, None);
+        assert_eq!(config.observability.access_log, None);
+        assert_eq!(config.observability.perf_trace, None);
+        assert!(!config.observability.perf_trace_vm_counters);
+        assert_eq!(config.observability.request_profile, None);
+        assert!(config.observability.request_profile_trigger_header);
+        assert!(!config.capabilities.network_requests_enabled);
+        assert!(config.engine.script_cache_enabled);
+        assert_eq!(config.engine.script_cache_shards, 16);
+        assert_eq!(config.engine.script_cache_max_entries, 4096);
+        assert_eq!(config.engine.script_cache_preload, None);
+        assert_eq!(config.engine.script_cache_check_interval_ms, 2_000);
+        assert!(!config.engine.strict_preload);
+        assert!(!config.routing.cache_clear_endpoint_enabled);
+        assert!(config.routing.front_controller.is_none());
+        assert!(config.routing.request_rewrites.is_empty());
         assert!(!config.help);
-        assert_eq!(config.max_in_flight, 200);
+        assert_eq!(config.limits.max_in_flight, 200);
     }
 
     #[test]
@@ -1325,63 +1360,96 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(config.listen, "127.0.0.1:0".parse::<SocketAddr>().unwrap());
-        assert_eq!(config.index, "home.php");
-        assert_eq!(config.front_controller, Some(PathBuf::from("index.php")));
-        assert_eq!(config.request_rewrites.len(), 1);
-        assert_eq!(config.request_rewrites[0].path_prefix, "/api");
-        assert_eq!(config.request_rewrites[0].query_parameter, "route");
-        assert_eq!(config.max_body_bytes, 64);
-        assert_eq!(config.upload_temp_dir, PathBuf::from("uploads"));
-        assert_eq!(config.max_upload_files, 4);
-        assert_eq!(config.max_upload_file_bytes, 32);
-        assert_eq!(config.session_save_path, PathBuf::from("sessions"));
-        assert_eq!(config.session_cookie_name, "APPSESSID");
-        assert_eq!(config.session_cookie_path, "/app");
-        assert!(!config.sessions_enabled);
-        assert_eq!(config.max_in_flight, 2);
-        assert_eq!(config.cpu_execution_limit, 3);
-        assert_eq!(config.request_timeout_ms, 250);
-        assert_eq!(config.max_execution_ms, 125);
-        assert_eq!(config.max_vm_steps, 250_000);
-        assert!(!config.execution_deadline_enabled);
-        assert_eq!(config.engine_preset, EngineProfileName::ExperimentalJit);
-        assert_eq!(config.dense_includes, Some(DenseIncludeMode::Off));
-        assert!(config.perf_ablation.disable_quickening);
-        assert!(config.perf_ablation.disable_inline_caches);
-        assert!(config.perf_ablation.disable_builtin_ic);
-        assert!(config.perf_ablation.disable_jit);
-        assert!(config.perf_ablation.disable_include_o2);
-        assert!(config.perf_ablation.disable_dense_jump_threading);
-        assert!(!config.perf_ablation.disable_dense_includes);
-        assert!(!config.metrics_endpoint_enabled);
-        assert_eq!(config.metrics_token, Some("secret".to_string()));
-        assert_eq!(config.tls_cert, Some(PathBuf::from("tls/cert.pem")));
-        assert_eq!(config.tls_key, Some(PathBuf::from("tls/key.pem")));
-        assert!(config.http3_enabled);
         assert_eq!(
-            config.http3_listen,
+            config.transport.listen,
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(config.routing.index, "home.php");
+        assert_eq!(
+            config.routing.front_controller,
+            Some(PathBuf::from("index.php"))
+        );
+        assert_eq!(config.routing.request_rewrites.len(), 1);
+        assert_eq!(config.routing.request_rewrites[0].path_prefix, "/api");
+        assert_eq!(config.routing.request_rewrites[0].query_parameter, "route");
+        assert_eq!(config.limits.max_body_bytes, 64);
+        assert_eq!(
+            config.sessions_uploads.upload_temp_dir,
+            PathBuf::from("uploads")
+        );
+        assert_eq!(config.sessions_uploads.max_upload_files, 4);
+        assert_eq!(config.sessions_uploads.max_upload_file_bytes, 32);
+        assert_eq!(
+            config.sessions_uploads.session_save_path,
+            PathBuf::from("sessions")
+        );
+        assert_eq!(config.sessions_uploads.session_cookie_name, "APPSESSID");
+        assert_eq!(config.sessions_uploads.session_cookie_path, "/app");
+        assert!(!config.sessions_uploads.sessions_enabled);
+        assert_eq!(config.limits.max_in_flight, 2);
+        assert_eq!(config.limits.cpu_execution_limit, 3);
+        assert_eq!(config.limits.request_timeout_ms, 250);
+        assert_eq!(config.limits.max_execution_ms, 125);
+        assert_eq!(config.limits.max_vm_steps, 250_000);
+        assert!(!config.limits.execution_deadline_enabled);
+        assert_eq!(
+            config.engine.engine_preset,
+            EngineProfileName::ExperimentalJit
+        );
+        assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Off));
+        assert!(config.engine.perf_ablation.disable_quickening);
+        assert!(config.engine.perf_ablation.disable_inline_caches);
+        assert!(config.engine.perf_ablation.disable_builtin_ic);
+        assert!(config.engine.perf_ablation.disable_jit);
+        assert!(config.engine.perf_ablation.disable_include_o2);
+        assert!(config.engine.perf_ablation.disable_dense_jump_threading);
+        assert!(!config.engine.perf_ablation.disable_dense_includes);
+        assert!(!config.routing.metrics_endpoint_enabled);
+        assert_eq!(
+            config.observability.metrics_token,
+            Some("secret".to_string())
+        );
+        assert_eq!(
+            config.transport.tls_cert,
+            Some(PathBuf::from("tls/cert.pem"))
+        );
+        assert_eq!(config.transport.tls_key, Some(PathBuf::from("tls/key.pem")));
+        assert!(config.transport.http3_enabled);
+        assert_eq!(
+            config.transport.http3_listen,
             Some("127.0.0.1:9443".parse::<SocketAddr>().unwrap())
         );
-        assert_eq!(config.access_log, Some("-".to_string()));
-        assert_eq!(config.perf_trace, Some(PathBuf::from("perf.jsonl")));
-        assert!(config.perf_trace_vm_counters);
-        assert_eq!(config.request_profile, Some(PathBuf::from("profiles")));
-        assert!(config.request_profile_trigger_header);
-        assert!(config.network_requests_enabled);
-        assert!(config.debug);
-        assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
-        assert_eq!(config.debug_log, Some(PathBuf::from("debug.log")));
-        assert!(!config.script_cache_enabled);
-        assert_eq!(config.script_cache_shards, 3);
-        assert_eq!(config.script_cache_max_entries, 64);
+        assert_eq!(config.observability.access_log, Some("-".to_string()));
         assert_eq!(
-            config.script_cache_preload,
+            config.observability.perf_trace,
+            Some(PathBuf::from("perf.jsonl"))
+        );
+        assert!(config.observability.perf_trace_vm_counters);
+        assert_eq!(
+            config.observability.request_profile,
+            Some(PathBuf::from("profiles"))
+        );
+        assert!(config.observability.request_profile_trigger_header);
+        assert!(config.capabilities.network_requests_enabled);
+        assert!(config.observability.debug);
+        assert_eq!(
+            config.observability.error_format,
+            DiagnosticOutputFormat::Json
+        );
+        assert_eq!(
+            config.observability.debug_log,
+            Some(PathBuf::from("debug.log"))
+        );
+        assert!(!config.engine.script_cache_enabled);
+        assert_eq!(config.engine.script_cache_shards, 3);
+        assert_eq!(config.engine.script_cache_max_entries, 64);
+        assert_eq!(
+            config.engine.script_cache_preload,
             Some(PathBuf::from("preload.txt"))
         );
-        assert_eq!(config.script_cache_check_interval_ms, 25);
-        assert!(config.strict_preload);
-        assert!(config.cache_clear_endpoint_enabled);
+        assert_eq!(config.engine.script_cache_check_interval_ms, 25);
+        assert!(config.engine.strict_preload);
+        assert!(config.routing.cache_clear_endpoint_enabled);
     }
 
     #[test]
@@ -1404,11 +1472,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.request_rewrites.len(), 2);
-        assert_eq!(config.request_rewrites[0].path_prefix, "/api");
-        assert_eq!(config.request_rewrites[0].query_parameter, "route");
-        assert_eq!(config.request_rewrites[1].path_prefix, "/legacy");
-        assert_eq!(config.request_rewrites[1].query_parameter, "path");
+        assert_eq!(config.routing.request_rewrites.len(), 2);
+        assert_eq!(config.routing.request_rewrites[0].path_prefix, "/api");
+        assert_eq!(config.routing.request_rewrites[0].query_parameter, "route");
+        assert_eq!(config.routing.request_rewrites[1].path_prefix, "/legacy");
+        assert_eq!(config.routing.request_rewrites[1].query_parameter, "path");
     }
 
     #[test]
@@ -1456,34 +1524,40 @@ rewrite_prefix_query = "/api=route,/legacy=path"
         fs::remove_file(path).expect("remove config");
 
         assert_eq!(
-            config.listen,
+            config.transport.listen,
             "127.0.0.1:9000".parse::<SocketAddr>().unwrap()
         );
-        assert_eq!(config.docroot, PathBuf::from("from-cli"));
-        assert_eq!(config.index, "home.php");
-        assert_eq!(config.max_body_bytes, 128);
-        assert_eq!(config.metrics_token, Some("from-cli-token".to_string()));
-        assert_eq!(config.access_log, Some("access.log".to_string()));
-        assert_eq!(config.tls_cert, Some(PathBuf::from("cert.pem")));
-        assert_eq!(config.tls_key, Some(PathBuf::from("key.pem")));
-        assert!(config.http3_enabled);
+        assert_eq!(config.routing.docroot, PathBuf::from("from-cli"));
+        assert_eq!(config.routing.index, "home.php");
+        assert_eq!(config.limits.max_body_bytes, 128);
         assert_eq!(
-            config.http3_listen,
+            config.observability.metrics_token,
+            Some("from-cli-token".to_string())
+        );
+        assert_eq!(
+            config.observability.access_log,
+            Some("access.log".to_string())
+        );
+        assert_eq!(config.transport.tls_cert, Some(PathBuf::from("cert.pem")));
+        assert_eq!(config.transport.tls_key, Some(PathBuf::from("key.pem")));
+        assert!(config.transport.http3_enabled);
+        assert_eq!(
+            config.transport.http3_listen,
             Some("127.0.0.1:9443".parse::<SocketAddr>().unwrap())
         );
-        assert_eq!(config.script_cache_max_entries, 12);
-        assert!(config.strict_preload);
-        assert!(config.network_requests_enabled);
-        assert_eq!(config.engine_preset, EngineProfileName::Default);
-        assert_eq!(config.dense_includes, Some(DenseIncludeMode::Off));
-        assert!(config.perf_ablation.disable_jit);
-        assert!(!config.perf_ablation.disable_dense_includes);
-        assert_eq!(config.max_vm_steps, 333_000);
-        assert_eq!(config.request_rewrites.len(), 2);
-        assert_eq!(config.request_rewrites[0].path_prefix, "/api");
-        assert_eq!(config.request_rewrites[0].query_parameter, "route");
-        assert_eq!(config.request_rewrites[1].path_prefix, "/legacy");
-        assert_eq!(config.request_rewrites[1].query_parameter, "path");
+        assert_eq!(config.engine.script_cache_max_entries, 12);
+        assert!(config.engine.strict_preload);
+        assert!(config.capabilities.network_requests_enabled);
+        assert_eq!(config.engine.engine_preset, EngineProfileName::Default);
+        assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Off));
+        assert!(config.engine.perf_ablation.disable_jit);
+        assert!(!config.engine.perf_ablation.disable_dense_includes);
+        assert_eq!(config.limits.max_vm_steps, 333_000);
+        assert_eq!(config.routing.request_rewrites.len(), 2);
+        assert_eq!(config.routing.request_rewrites[0].path_prefix, "/api");
+        assert_eq!(config.routing.request_rewrites[0].query_parameter, "route");
+        assert_eq!(config.routing.request_rewrites[1].path_prefix, "/legacy");
+        assert_eq!(config.routing.request_rewrites[1].query_parameter, "path");
     }
 
     #[test]
@@ -1501,7 +1575,7 @@ index = "../bad.php"
 
         fs::remove_file(path).expect("remove config");
 
-        assert_eq!(config.index, "index.php");
+        assert_eq!(config.routing.index, "index.php");
     }
 
     #[test]
@@ -1548,15 +1622,21 @@ index = "../bad.php"
         })
         .unwrap();
 
-        assert!(config.debug);
-        assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
-        assert_eq!(config.debug_log, Some(PathBuf::from("server-debug.log")));
-        assert!(config.network_requests_enabled);
-        assert_eq!(config.dense_includes, Some(DenseIncludeMode::Auto));
-        assert!(config.perf_ablation.disable_dense_includes);
-        assert!(config.perf_ablation.disable_builtin_ic);
+        assert!(config.observability.debug);
         assert_eq!(
-            config.request_profile,
+            config.observability.error_format,
+            DiagnosticOutputFormat::Json
+        );
+        assert_eq!(
+            config.observability.debug_log,
+            Some(PathBuf::from("server-debug.log"))
+        );
+        assert!(config.capabilities.network_requests_enabled);
+        assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Auto));
+        assert!(config.engine.perf_ablation.disable_dense_includes);
+        assert!(config.engine.perf_ablation.disable_builtin_ic);
+        assert_eq!(
+            config.observability.request_profile,
             Some(PathBuf::from("target/performance/server/request-profile"))
         );
     }
@@ -1581,9 +1661,15 @@ index = "../bad.php"
         )
         .unwrap();
 
-        assert!(config.debug);
-        assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
-        assert_eq!(config.debug_log, Some(PathBuf::from("cli-debug.log")));
+        assert!(config.observability.debug);
+        assert_eq!(
+            config.observability.error_format,
+            DiagnosticOutputFormat::Json
+        );
+        assert_eq!(
+            config.observability.debug_log,
+            Some(PathBuf::from("cli-debug.log"))
+        );
     }
 
     #[test]

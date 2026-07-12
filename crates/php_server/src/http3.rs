@@ -98,7 +98,7 @@ async fn handle_http3_request(
 ) {
     let (mut parts, ()) = request.into_parts();
     parts.extensions.insert(RequestLocalAddr(local_addr));
-    let body = match read_http3_request_body(&mut stream, state.max_body_bytes).await {
+    let body = match read_http3_request_body(&mut stream, state.request.max_body_bytes).await {
         Ok(body) => body,
         Err(Http3BodyReadError::Invalid(error)) => {
             warn!(%peer, %error, "HTTP/3 request body read failed");

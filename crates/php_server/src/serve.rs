@@ -124,7 +124,11 @@ pub(crate) async fn handle_parts(
 ) -> Response<ResponseBody> {
     let started = Instant::now();
     let request_id = state.next_request_id();
-    state.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
+    state
+        .services
+        .metrics
+        .requests_total
+        .fetch_add(1, Ordering::Relaxed);
     let method = parts.method.clone();
     let request_version = parts.version;
     let request_target = parts
@@ -160,7 +164,7 @@ pub(crate) async fn handle_parts(
     let admission_started = Instant::now();
     let _permit = match timeout(
         REQUEST_ADMISSION_TIMEOUT,
-        Arc::clone(&state.in_flight).acquire_owned(),
+        Arc::clone(&state.concurrency.in_flight).acquire_owned(),
     )
     .await
     {
@@ -168,16 +172,20 @@ pub(crate) async fn handle_parts(
             // Queue-wait signal: time spent waiting for an in-flight permit
             // (the blocking-region admission gate). Near-zero under low load;
             // grows as workers saturate.
-            state.metrics.record_phase(
+            state.services.metrics.record_phase(
                 super::metrics::RequestPhase::AdmissionWait,
                 admission_started.elapsed().as_nanos(),
             );
             permit
         }
         Ok(Err(_)) | Err(_) => {
-            state.metrics.overload.fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .overload
+                .fetch_add(1, Ordering::Relaxed);
             let response = overloaded();
-            state.metrics.record_response(response.status());
+            state.services.metrics.record_response(response.status());
             write_access_log(
                 &state,
                 AccessLogEntry {
@@ -198,7 +206,7 @@ pub(crate) async fn handle_parts(
     let route_started = Instant::now();
     let route = resolve_route(method.as_str(), parts.uri.path(), &state.route_config);
     let route_resolution = route_started.elapsed();
-    state.metrics.record_phase(
+    state.services.metrics.record_phase(
         super::metrics::RequestPhase::RouteResolution,
         route_resolution.as_nanos(),
     );
@@ -238,6 +246,7 @@ pub(crate) async fn handle_parts(
                 (response, "builtin-router", None)
             } else {
                 state
+                    .services
                     .metrics
                     .static_responses
                     .fetch_add(1, Ordering::Relaxed);
@@ -252,7 +261,11 @@ pub(crate) async fn handle_parts(
             script_path,
             path_info,
         } => {
-            state.metrics.php_responses.fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .php_responses
+                .fetch_add(1, Ordering::Relaxed);
             let route_kind = if path_info.is_some() {
                 "front-controller"
             } else {
@@ -344,7 +357,7 @@ pub(crate) async fn handle_parts(
         }
         ResolvedRoute::MethodNotAllowed => (method_not_allowed(), "method-not-allowed", None),
     };
-    if let Some(alt_svc) = &state.http3_alt_svc
+    if let Some(alt_svc) = &state.transport.http3_alt_svc
         && request_version != hyper::Version::HTTP_3
     {
         match HeaderValue::from_str(alt_svc) {
@@ -359,7 +372,7 @@ pub(crate) async fn handle_parts(
             }
         }
     }
-    state.metrics.record_response(response.status());
+    state.services.metrics.record_response(response.status());
     emit_server_debug_lazy(
         &state,
         Some(&request_id),
@@ -397,7 +410,7 @@ pub(crate) async fn handle_parts(
     response
 }
 pub(crate) fn write_access_log(state: &AppState, entry: AccessLogEntry<'_>) {
-    if let Some(access_log) = &state.access_log
+    if let Some(access_log) = &state.observability.access_log
         && let Err(error) = access_log.write(&entry)
     {
         warn!(%error, "access log write failed");
@@ -429,14 +442,14 @@ async fn execute_builtin_router_before_normal_route(
         || {
             BTreeMap::from([(
                 "max_body_bytes".to_string(),
-                state.max_body_bytes.to_string(),
+                state.request.max_body_bytes.to_string(),
             )])
         },
     );
     let body_started = Instant::now();
     let body = match timeout(
-        state.request_timeout,
-        read_limited_body(body, state.max_body_bytes),
+        state.request.request_timeout,
+        read_limited_body(body, state.request.max_body_bytes),
     )
     .await
     {
@@ -450,11 +463,11 @@ async fn execute_builtin_router_before_normal_route(
                 || {
                     BTreeMap::from([(
                         "timeout_ms".to_string(),
-                        state.request_timeout.as_millis().to_string(),
+                        state.request.request_timeout.as_millis().to_string(),
                     )])
                 },
             );
-            state.metrics.record_phase(
+            state.services.metrics.record_phase(
                 super::metrics::RequestPhase::BodyRead,
                 body_started.elapsed().as_nanos(),
             );
@@ -465,7 +478,11 @@ async fn execute_builtin_router_before_normal_route(
         }
         Ok(Ok(body)) => body,
         Ok(Err(BodyReadError::TooLarge)) => {
-            state.metrics.body_too_large.fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .body_too_large
+                .fetch_add(1, Ordering::Relaxed);
             emit_server_debug_lazy(
                 &state,
                 Some(request_id),
@@ -475,12 +492,12 @@ async fn execute_builtin_router_before_normal_route(
                 || {
                     BTreeMap::from([(
                         "max_body_bytes".to_string(),
-                        state.max_body_bytes.to_string(),
+                        state.request.max_body_bytes.to_string(),
                     )])
                 },
             );
-            debug!(%peer, max_body_bytes=state.max_body_bytes, "request body too large");
-            state.metrics.record_phase(
+            debug!(%peer, max_body_bytes=state.request.max_body_bytes, "request body too large");
+            state.services.metrics.record_phase(
                 super::metrics::RequestPhase::BodyRead,
                 body_started.elapsed().as_nanos(),
             );
@@ -499,14 +516,14 @@ async fn execute_builtin_router_before_normal_route(
                 BTreeMap::new,
             );
             warn!(%peer, "failed to read request body");
-            state.metrics.record_phase(
+            state.services.metrics.record_phase(
                 super::metrics::RequestPhase::BodyRead,
                 body_started.elapsed().as_nanos(),
             );
             return Some(response::text(StatusCode::BAD_REQUEST, "bad request\n"));
         }
     };
-    state.metrics.record_phase(
+    state.services.metrics.record_phase(
         super::metrics::RequestPhase::BodyRead,
         body_started.elapsed().as_nanos(),
     );
@@ -525,8 +542,8 @@ pub(crate) fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Respon
     if !peer.ip().is_loopback() {
         return response::text(StatusCode::FORBIDDEN, "forbidden\n");
     }
-    state.engine.script_cache.clear();
-    if let Err(error) = state.engine.include_cache.clear() {
+    state.services.engine.script_cache.clear();
+    if let Err(error) = state.services.engine.include_cache.clear() {
         warn!(%error, "failed to clear include cache");
         return response::text(
             StatusCode::INTERNAL_SERVER_ERROR,

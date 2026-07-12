@@ -384,7 +384,7 @@ use hyper::{
 };
 
 pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<ResponseBody> {
-    if let Some(token) = &state.metrics_token
+    if let Some(token) = &state.observability.metrics_token
         && !metrics_token_authorized(&parts.headers, token)
     {
         return response::text(HttpStatusCode::FORBIDDEN, "forbidden\n");
@@ -392,19 +392,26 @@ pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<Resp
     // Re-observe the deployment root's directory version per scrape so
     // `deployment_fingerprint_stale` attributes root mutations. One stat call;
     // metadata only.
-    state.engine.include_cache.revalidate_deployment_root();
+    state
+        .services
+        .engine
+        .include_cache
+        .revalidate_deployment_root();
     response::text_dynamic(
         HttpStatusCode::OK,
-        state.metrics.render(
+        state.services.metrics.render(
             state
+                .concurrency
                 .max_in_flight
-                .saturating_sub(state.in_flight.available_permits()) as u64,
+                .saturating_sub(state.concurrency.in_flight.available_permits()) as u64,
             state
+                .concurrency
                 .cpu_execution_limit
-                .saturating_sub(state.cpu_execution.available_permits()) as u64,
-            state.engine.script_cache.cache_stats(),
-            state.engine.include_cache.cache_stats(),
-            state.engine.persistent_metadata_stats(),
+                .saturating_sub(state.concurrency.cpu_execution.available_permits())
+                as u64,
+            state.services.engine.script_cache.cache_stats(),
+            state.services.engine.include_cache.cache_stats(),
+            state.services.engine.persistent_metadata_stats(),
         ),
         "text/plain; charset=UTF-8",
     )

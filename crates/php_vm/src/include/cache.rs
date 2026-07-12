@@ -11,8 +11,33 @@ use super::resolver::{IncludeLoader, ResolvedIncludePath};
 use crate::compiled_unit::CompiledUnit;
 use crate::error::VmError;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
+
+static NEXT_CACHE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Process-unique identity for one include-cache instance.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CacheInstanceId(u64);
+
+impl CacheInstanceId {
+    fn next() -> Self {
+        let id = NEXT_CACHE_INSTANCE_ID.fetch_add(1, Ordering::Relaxed);
+        if id == 0 {
+            std::process::abort();
+        }
+        Self(id)
+    }
+
+    /// Returns the process-local numeric identity.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
 
 /// Server-parity default for serving cached includes without filesystem
 /// probes (opcache.revalidate_freq).
@@ -33,6 +58,7 @@ pub fn include_revalidation_interval_from_env() -> Option<Duration> {
 /// facade owns only cross-component orchestration and the stable public API.
 #[derive(Debug)]
 pub struct IncludeCache {
+    instance_id: CacheInstanceId,
     pub(super) resolution: ResolutionCache,
     pub(super) compiled: CompiledIncludeCache,
     stats: Arc<IncludeCacheCounters>,
@@ -57,6 +83,7 @@ impl IncludeCache {
         let stats = Arc::new(IncludeCacheCounters::default());
         let metadata = Arc::new(IncludeMetadataState::new(Arc::clone(&stats)));
         Self {
+            instance_id: CacheInstanceId::next(),
             resolution: ResolutionCache::new(
                 shard_count,
                 Arc::clone(&stats),
@@ -72,6 +99,12 @@ impl IncludeCache {
             stats,
             metadata,
         }
+    }
+
+    /// Returns the stable logical identity assigned when this cache was built.
+    #[must_use]
+    pub const fn instance_id(&self) -> CacheInstanceId {
+        self.instance_id
     }
 
     pub fn set_deployment_root_fingerprint(&self, fingerprint: Option<DeploymentRootFingerprint>) {

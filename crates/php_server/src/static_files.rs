@@ -37,6 +37,7 @@ pub(crate) async fn static_file_response(
         .map(httpdate::fmt_http_date);
     if static_not_modified(&parts.headers, &etag, selection.metadata.modified().ok()) {
         state
+            .services
             .metrics
             .static_not_modified
             .fetch_add(1, Ordering::Relaxed);
@@ -67,6 +68,7 @@ pub(crate) async fn static_file_response(
                 content_len = range.len();
                 content_range = Some(format!("bytes {}-{}/{}", range.start, range.end, full_len));
                 state
+                    .services
                     .metrics
                     .static_partial_responses
                     .fetch_add(1, Ordering::Relaxed);
@@ -87,6 +89,7 @@ pub(crate) async fn static_file_response(
 
     if selection.content_encoding.is_some() {
         state
+            .services
             .metrics
             .static_precompressed_hits
             .fetch_add(1, Ordering::Relaxed);
@@ -112,6 +115,7 @@ pub(crate) async fn static_file_response(
         return response::text(StatusCode::INTERNAL_SERVER_ERROR, "static file failed\n");
     }
     state
+        .services
         .metrics
         .static_streamed_bytes
         .fetch_add(content_len, Ordering::Relaxed);
