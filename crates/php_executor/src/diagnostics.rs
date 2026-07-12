@@ -170,6 +170,33 @@ pub(crate) fn execution_output_from_vm(
     }
 }
 
+/// Builds the reference redeclaration wording from the semantic duplicate
+/// diagnostic (`duplicate function declaration \`f\``): functions and classes
+/// render as `Cannot redeclare <kind> <name>[()] (previously declared in
+/// <file>:<line>)`; other kinds keep the phrust wording.
+fn redeclare_fatal_message(
+    diagnostic: &php_semantics::SemanticDiagnostic,
+    path: &str,
+    source: &SourceText,
+) -> Option<String> {
+    let message = diagnostic.message();
+    let rest = message.strip_prefix("duplicate ")?;
+    let (kind, name_part) = rest.split_once(" declaration `")?;
+    let name = name_part.strip_suffix('`')?;
+    let suffix = match kind {
+        "function" => "()",
+        "class" => "",
+        _ => return None,
+    };
+    let previous_line = diagnostic
+        .labels()
+        .first()
+        .map(|label| line_number_for_span(source, label.range()))?;
+    Some(format!(
+        "Cannot redeclare {kind} {name}{suffix} (previously declared in {path}:{previous_line})"
+    ))
+}
+
 const PHP_RESERVED_WORDS: &[&str] = &[
     "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone",
     "const", "continue", "declare", "default", "do", "echo", "else", "elseif", "empty",
@@ -238,6 +265,20 @@ pub(crate) fn write_php_compile_error_stdout<W: Write>(
             continue;
         };
         let line = line_number_for_span(&pipeline.source, span);
+        if diagnostic.id() == DiagnosticId::DuplicateDeclaration
+            && let Some(message) =
+                redeclare_fatal_message(diagnostic, &pipeline.path, &pipeline.source)
+        {
+            // The reference raises redeclaration as a runtime Error, so the
+            // uncaught rendering includes the trace block.
+            writeln!(
+                stdout,
+                "\nFatal error: {message} in {} on line {line}\nStack trace:\n#0 {{main}}",
+                pipeline.path
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
         if let Some(message) = semantic_diagnostic_php_fatal_message(
             diagnostic.id(),
             diagnostic.message(),
