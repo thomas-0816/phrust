@@ -66,6 +66,18 @@ fn typed_slot_layout_is_smaller_than_legacy_option_layout() {
         std::mem::size_of::<InlineCacheHeader>(),
         std::mem::size_of::<InlineCachePayload>(),
     );
+    assert!(
+        std::mem::size_of::<InlineCacheHeader>() <= 144,
+        "inline-cache header exceeded its post-remediation byte budget"
+    );
+    assert!(
+        std::mem::size_of::<InlineCachePayload>() <= 32,
+        "inline-cache payload exceeded its post-remediation byte budget"
+    );
+    assert!(
+        std::mem::size_of::<InlineCacheSlot>() <= 176,
+        "inline-cache slot exceeded its post-remediation byte budget"
+    );
     assert!(typed < legacy, "typed={typed} legacy={legacy}");
     assert!(typed * 2 < legacy, "typed={typed} legacy={legacy}");
 }

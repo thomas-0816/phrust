@@ -22,6 +22,7 @@ help:
       '  just verify-phpt          PHPT tooling, manifests, and source-integrity checks' \
       '  just known-gaps           Validate checked known-gap manifests' \
       '  just source-integrity      Check module wiring and generated metadata' \
+      '  just architecture-guardrails Enforce all architecture rule classes' \
       '  just architecture-inventory Check source-derived architecture baseline' \
       '  just architecture-performance-baseline Capture compile/runtime architecture metrics' \
       '  just dependency-boundaries Check documented workspace dependency edges' \
@@ -265,11 +266,13 @@ check:
     @just test
 
 source-integrity:
-    scripts/verify/source_integrity.py
-    scripts/verify/architecture_inventory.py --check
-    scripts/verify/dependency_boundaries.py
-    scripts/verify/request_state_boundaries.py
+    @just architecture-guardrails
     scripts/verify/panic_unwrap_policy.py
+
+architecture-guardrails:
+    scripts/verify/architecture_guardrails.py --self-test
+    scripts/verify/architecture_guardrails.py
+    scripts/verify/dependency_boundaries.py
 
 architecture-inventory:
     scripts/verify/architecture_inventory.py --check --verify-determinism
@@ -496,6 +499,7 @@ verify-performance:
     @just templates-smoke
     @just quickening-smoke
     @just inline-cache-smoke
+    @just inline-cache-lookup-benchmark-gate
     @just callgrind-smoke
     @just jit-smoke
     @just safety-audit-smoke
@@ -1495,6 +1499,11 @@ quickening-smoke:
 inline-cache-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/inline_cache_smoke.sh
+
+inline-cache-lookup-benchmark-gate:
+    scripts/performance/inline_cache_lookup_gate.py --self-test
+    cargo bench --manifest-path crates/php_bench/Cargo.toml --bench perf_hotpaths -- inline_cache_function_hit
+    scripts/performance/inline_cache_lookup_gate.py
 
 polymorphic-inline-cache-smoke:
     cargo build -p php_vm_cli --bin php-vm

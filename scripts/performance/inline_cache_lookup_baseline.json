@@ -1,0 +1,7 @@
+{
+  "baseline_coordinate_median_ns": 18.183,
+  "baseline_dense_median_ns": 14.555,
+  "baseline_environment": "Darwin aarch64, Criterion bench profile, 2026-07-11",
+  "maximum_dense_to_coordinate_ratio": 0.9,
+  "schema_version": 1
+}

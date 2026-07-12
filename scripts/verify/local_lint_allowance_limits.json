@@ -1,0 +1,17 @@
+{
+  "limits": {
+    "crates/php_runtime/src/runtime_memory.rs": {
+      "unsafe_code": 6
+    },
+    "crates/php_vm/src/frame_memory.rs": {
+      "unsafe_code": 3
+    },
+    "crates/php_vm/src/vm/execution_tiering.rs": {
+      "unsafe_code": 1
+    },
+    "crates/php_vm/src/vm/jit_abi.rs": {
+      "unsafe_code": 7
+    }
+  },
+  "schema_version": 1
+}
