@@ -6,8 +6,8 @@ use super::prelude::*;
 pub(super) struct RequestLifecycleState {
     pub(super) http_response: RuntimeHttpResponseState,
     pub(super) upload_registry: UploadRegistry,
-    pub(super) session: php_runtime::SessionState,
-    pub(super) session_loader: Option<php_runtime::SessionLoadCallback>,
+    pub(super) session: php_runtime::api::SessionState,
+    pub(super) session_loader: Option<php_runtime::api::SessionLoadCallback>,
     pub(super) sapi_name: String,
     pub(super) php_binary: String,
 }

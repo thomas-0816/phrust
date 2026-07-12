@@ -740,8 +740,10 @@ impl Vm {
                                     self.record_counter_packed_foreach_sum_overflow_exit();
                                 }
                                 Some(status)
-                                    if status == php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT
-                                        || status == php_runtime::PHP_JIT_ARRAY_STATUS_FALLBACK =>
+                                    if status
+                                        == php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT
+                                        || status
+                                            == php_runtime::experimental::PHP_JIT_ARRAY_STATUS_FALLBACK =>
                                 {
                                     self.record_counter_packed_foreach_sum_layout_exit();
                                 }
@@ -828,12 +830,13 @@ impl Vm {
                             match error.native_status() {
                                 Some(status)
                                     if status
-                                        == php_runtime::PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT =>
+                                        == php_runtime::experimental::PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT =>
                                 {
                                     self.record_counter_record_lookup_key_miss_exit();
                                 }
                                 Some(status)
-                                    if status == php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT =>
+                                    if status
+                                        == php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT =>
                                 {
                                     self.record_counter_record_lookup_layout_exit();
                                 }
@@ -880,13 +883,19 @@ impl Vm {
                 Err(error) => {
                     let mut side_exit = error.side_exit();
                     match error.native_status() {
-                        Some(status) if status == php_runtime::PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT => {
+                        Some(status)
+                            if status
+                                == php_runtime::experimental::PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT =>
+                        {
                             self.record_counter_packed_fetch_bounds_exit();
                             side_exit =
                                 php_jit::JitSideExit::new(php_jit::SideExitReason::HelperStatus)
                                     .with_status(status);
                         }
-                        Some(status) if status == php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT => {
+                        Some(status)
+                            if status
+                                == php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT =>
+                        {
                             self.record_counter_packed_fetch_layout_exit();
                         }
                         _ => {}

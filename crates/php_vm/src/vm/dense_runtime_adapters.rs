@@ -63,16 +63,16 @@ impl Vm {
                     output,
                     stack,
                     state,
-                    php_runtime::PHP_E_WARNING,
+                    php_runtime::api::PHP_E_WARNING,
                     &diagnostic,
                 )?;
-                if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                     emit_vm_diagnostic(
                         output,
                         state,
                         &diagnostic,
-                        php_runtime::PhpDiagnosticChannel::Warning,
-                        php_runtime::PHP_E_WARNING,
+                        php_runtime::api::PhpDiagnosticChannel::Warning,
+                        php_runtime::api::PHP_E_WARNING,
                     );
                     diagnostics.push(diagnostic);
                 }
@@ -204,7 +204,7 @@ impl Vm {
         }
         if class_name_is(&class_handle, &["simplexmlelement"]) {
             self.record_counter_dense_property_fallback("simplexml_property");
-            return Ok(php_runtime::xml::simplexml_property(&object, property));
+            return Ok(php_runtime::api::xml::simplexml_property(&object, property));
         }
         if spl_array_object_uses_array_as_props(&object) {
             // ARRAY_AS_PROPS routes property reads through the container's
@@ -1105,16 +1105,16 @@ impl Vm {
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         ) {
-            Ok(false) if error_reporting_allows(state, php_runtime::PHP_E_WARNING) => {
+            Ok(false) if error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) => {
                 emit_vm_diagnostic(
                     output,
                     state,
                     &diagnostic,
-                    php_runtime::PhpDiagnosticChannel::Warning,
-                    php_runtime::PHP_E_WARNING,
+                    php_runtime::api::PhpDiagnosticChannel::Warning,
+                    php_runtime::api::PHP_E_WARNING,
                 );
                 diagnostics.push(diagnostic);
             }
@@ -1175,7 +1175,7 @@ impl Vm {
         if let Value::Object(object) = &base
             && normalize_class_name(&object.class_name()) == "simplexmlelement"
         {
-            return Ok(php_runtime::xml::simplexml_dimension(object, &key));
+            return Ok(php_runtime::api::xml::simplexml_dimension(object, &key));
         }
         if let Value::String(string) = &base {
             return match string_offset_for_read(string, &key) {
@@ -1192,18 +1192,21 @@ impl Vm {
                             output,
                             stack,
                             state,
-                            php_runtime::PHP_E_WARNING,
+                            php_runtime::api::PHP_E_WARNING,
                             &diagnostic,
                         ) {
                             Ok(false)
-                                if error_reporting_allows(state, php_runtime::PHP_E_WARNING) =>
+                                if error_reporting_allows(
+                                    state,
+                                    php_runtime::api::PHP_E_WARNING,
+                                ) =>
                             {
                                 emit_vm_diagnostic(
                                     output,
                                     state,
                                     &diagnostic,
-                                    php_runtime::PhpDiagnosticChannel::Warning,
-                                    php_runtime::PHP_E_WARNING,
+                                    php_runtime::api::PhpDiagnosticChannel::Warning,
+                                    php_runtime::api::PHP_E_WARNING,
                                 );
                             }
                             Ok(_) => {}
@@ -1226,18 +1229,21 @@ impl Vm {
                             output,
                             stack,
                             state,
-                            php_runtime::PHP_E_WARNING,
+                            php_runtime::api::PHP_E_WARNING,
                             &diagnostic,
                         ) {
                             Ok(false)
-                                if error_reporting_allows(state, php_runtime::PHP_E_WARNING) =>
+                                if error_reporting_allows(
+                                    state,
+                                    php_runtime::api::PHP_E_WARNING,
+                                ) =>
                             {
                                 emit_vm_diagnostic(
                                     output,
                                     state,
                                     &diagnostic,
-                                    php_runtime::PhpDiagnosticChannel::Warning,
-                                    php_runtime::PHP_E_WARNING,
+                                    php_runtime::api::PhpDiagnosticChannel::Warning,
+                                    php_runtime::api::PHP_E_WARNING,
                                 );
                             }
                             Ok(_) => {}

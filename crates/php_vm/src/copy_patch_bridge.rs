@@ -4,7 +4,7 @@
 //! It marshals a frame's locals into the flat `JitCValue` slot buffer a
 //! [`CompiledScalarRegion`](php_jit::copy_patch::CompiledScalarRegion) expects,
 //! runs the emitted native code, and marshals
-//! the result back to a VM [`Value`](php_runtime::Value). Non-scalar locals are
+//! the result back to a VM [`Value`](php_runtime::api::Value). Non-scalar locals are
 //! marshaled as `Uninitialized` so the region's `Int` guards take the
 //! interpreter side exit rather than misreading a heap handle as an integer.
 //!
@@ -25,9 +25,11 @@
 
 use std::sync::OnceLock;
 
+#[cfg(test)]
 use php_jit::copy_patch::CompiledScalarRegion;
-use php_runtime::Value;
+use php_runtime::api::Value;
 
+#[cfg(test)]
 use crate::frame::LocalFile;
 
 // The marshaling types, local addressing, and compiled-leaf cache are only
@@ -87,7 +89,7 @@ use crate::compiled_unit::CompiledUnit;
 /// pointer *into* `value`. The caller MUST keep the pointed-to `Value` alive and
 /// unmoved for the entire duration of the native `run` call its buffer is passed
 /// to, and the native code MUST NOT retain the pointer past that call. Both call
-/// sites uphold this — [`run_scalar_int_region`] marshals pointers into an owned
+/// sites uphold this; the test runner marshals pointers into an owned
 /// backing `Vec<Option<Value>>` that outlives the call, and
 /// [`NativeLeaf::run_outcome`] marshals pointers into the caller's `&[Value]`
 /// params slice, which likewise outlives the call. The consumers of a borrowed
@@ -141,7 +143,7 @@ fn marshal_local(value: &Value) -> JitCValue {
 /// `value_ptr` and write its packed-array length through `out`. Mirrors the
 /// Cranelift `jit_array_len_abi` (identical `extern "C" fn(usize, *mut i64) ->
 /// i32` shape) so both native tiers reuse the one runtime helper
-/// `php_runtime::php_jit_array_len` rather than re-implementing array length.
+/// `php_runtime::experimental::php_jit_array_len` rather than re-implementing array length.
 ///
 /// Read-only and non-re-entrant: it only reads the borrowed value's length and
 /// never mutates, frees, or re-enters the VM. It returns a non-OK status (so the
@@ -155,22 +157,24 @@ fn marshal_local(value: &Value) -> JitCValue {
 #[cfg(all(unix, target_arch = "aarch64"))]
 extern "C" fn copy_patch_array_len_abi(value_ptr: usize, out: *mut i64) -> i32 {
     if value_ptr == 0 || out.is_null() {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
     let value = unsafe { &*(value_ptr as *const Value) };
     let mut length = 0_usize;
-    if php_runtime::php_jit_array_len(value, &mut length) != php_runtime::PHP_JIT_ARRAY_STATUS_OK {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    if php_runtime::experimental::php_jit_array_len(value, &mut length)
+        != php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
+    {
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     let Ok(length) = i64::try_from(length) else {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     };
     // SAFETY: `out` is non-null and valid for this synchronous call (checked).
     unsafe {
         *out = length;
     }
-    php_runtime::PHP_JIT_ARRAY_STATUS_OK
+    php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
 }
 
 /// C-ABI wrapper the `strlen` stencil `blr`s: read the borrowed `Value` at
@@ -285,7 +289,7 @@ extern "C" fn copy_patch_property_load_abi(
 
 /// C-ABI wrapper the packed-array-fetch stencil `blr`s: read element `index`
 /// of the borrowed packed-int array `Value` at `value_ptr` and write it
-/// through `out`. Delegates to `php_runtime::php_jit_array_fetch_int_slow`,
+/// through `out`. Delegates to `php_runtime::experimental::php_jit_array_fetch_int_slow`,
 /// the same safe facade the Cranelift tier's packed fetch uses, so both
 /// native tiers share one bounds/layout-guarded element read.
 ///
@@ -312,8 +316,8 @@ extern "C" fn copy_patch_array_fetch_abi(value_ptr: usize, index: i64, out: *mut
     // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
     let value = unsafe { &*(value_ptr as *const Value) };
     let mut element = 0_i64;
-    if php_runtime::php_jit_array_fetch_int_slow(value, index, &mut element)
-        != php_runtime::PHP_JIT_ARRAY_STATUS_OK
+    if php_runtime::experimental::php_jit_array_fetch_int_slow(value, index, &mut element)
+        != php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
     {
         return JIT_HELPER_STATUS_FALLBACK;
     }
@@ -377,9 +381,9 @@ extern "C" fn copy_patch_property_store_abi(
     let new_value = match marshaled.tag {
         JitCValueTag::Int => Value::Int(marshaled.payload as i64),
         JitCValueTag::Bool => Value::Bool(marshaled.payload != 0),
-        JitCValueTag::FloatBits => Value::Float(php_runtime::FloatValue::from_f64(f64::from_bits(
-            marshaled.payload,
-        ))),
+        JitCValueTag::FloatBits => Value::Float(php_runtime::api::FloatValue::from_f64(
+            f64::from_bits(marshaled.payload),
+        )),
         _ => return JIT_HELPER_STATUS_FALLBACK,
     };
     if crate::vm::jit_property_store_commit(value, metadata, new_value).is_err() {
@@ -395,7 +399,7 @@ fn unmarshal_result(value: &JitCValue) -> Option<Value> {
     match value.tag {
         JitCValueTag::Int => Some(Value::Int(value.payload as i64)),
         JitCValueTag::Bool => Some(Value::Bool(value.payload != 0)),
-        JitCValueTag::FloatBits => Some(Value::Float(php_runtime::FloatValue::from_f64(
+        JitCValueTag::FloatBits => Some(Value::Float(php_runtime::api::FloatValue::from_f64(
             f64::from_bits(value.payload),
         ))),
         _ => None,
@@ -410,7 +414,7 @@ fn unmarshal_result(value: &JitCValue) -> Option<Value> {
 /// unrepresentable result. Buffer slot `i` is marshaled from local `i`, matching
 /// the region compiler's convention that a `Param`'s `VmSlotId` is the `LocalId`
 /// index.
-#[cfg(all(unix, target_arch = "aarch64"))]
+#[cfg(all(test, unix, target_arch = "aarch64"))]
 pub fn run_scalar_int_region(compiled: &CompiledScalarRegion, locals: &LocalFile) -> Option<Value> {
     use php_jit::code_memory::CodeMemory;
 
@@ -452,7 +456,7 @@ pub fn run_scalar_int_region(compiled: &CompiledScalarRegion, locals: &LocalFile
 
 /// Hosts without a copy-and-patch emitter (non-aarch64 / non-unix) always fall
 /// back to the interpreter.
-#[cfg(not(all(unix, target_arch = "aarch64")))]
+#[cfg(all(test, not(all(unix, target_arch = "aarch64"))))]
 pub fn run_scalar_int_region(
     _compiled: &CompiledScalarRegion,
     _locals: &LocalFile,
@@ -1250,7 +1254,7 @@ impl NativeLeaf {
         let permits = native_call_permits(unit);
         // Runtime-owned helper addresses `php_jit` cannot name itself (mirrors the
         // Cranelift `JitRuntimeHelperAddresses` plumbing). `count` reads array
-        // length through the wrapper over `php_runtime::php_jit_array_len`, and
+        // length through the wrapper over `php_runtime::experimental::php_jit_array_len`, and
         // `strlen` reads string byte length through its wrapper.
         let helpers = CopyPatchRuntimeHelpers {
             array_len: copy_patch_array_len_abi as *const () as usize as u64,
@@ -1397,17 +1401,6 @@ impl NativeLeaf {
             };
         }
         LeafOutcome::Fallback
-    }
-
-    /// Invoke over positional parameter values, returning a committed scalar
-    /// result only. A thin wrapper over [`Self::run_outcome`]: a tail call or any
-    /// side exit yields `None` so the caller falls back to the interpreter.
-    #[must_use]
-    pub fn run(&self, params: &[Value]) -> Option<Value> {
-        match self.run_outcome(params) {
-            LeafOutcome::Value(value) => Some(value),
-            LeafOutcome::TailCall { .. } | LeafOutcome::Fallback => None,
-        }
     }
 
     /// The return-and-resume plan, when this leaf is a call-composition region.
@@ -2434,7 +2427,7 @@ mod tests {
                 Value::Int(7),
                 Value::string("hi"),
                 Value::packed_array(vec![Value::Int(1), Value::Int(2)]),
-                Value::Float(php_runtime::FloatValue::from_f64(1.5)),
+                Value::Float(php_runtime::api::FloatValue::from_f64(1.5)),
                 Value::Bool(true),
             ]
         };

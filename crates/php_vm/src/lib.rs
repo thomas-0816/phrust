@@ -7,64 +7,80 @@
 //! quickening, inline-cache, JIT, tiering, persistent-feedback, and deopt
 //! surfaces through [`experimental`].
 //!
-//! Root re-exports remain as compatibility aliases while local crates migrate to
-//! the explicit facades.
-
+//! ```
+//! use php_vm::api::{Vm, VmOptions};
+//! use php_vm::experimental::InlineCacheTable;
+//!
+//! let _ = Vm::with_options(VmOptions::default());
+//! let _ = InlineCacheTable::default();
+//! ```
+//!
+//! Internal implementation modules are not public API:
+//!
+//! ```compile_fail
+//! use php_vm::inline_cache::InlineCacheTable;
+//! ```
+//!
+//! ```compile_fail
+//! use php_vm::vm::Vm;
+//! ```
+//!
 // The interpreter crate forbids unsafe entirely; native-tier unsafe lives
 // in php_jit behind its own safety audit.
 #![deny(unsafe_code)]
 
 #[doc(hidden)]
-pub mod aliasing;
+mod aliasing;
 #[doc(hidden)]
-pub mod bytecode;
+mod bytecode;
 #[doc(hidden)]
-pub mod compiled_unit;
+mod compiled_unit;
 /// Copy-and-patch native tier bridge (behind the default-on `jit-copy-patch`
 /// feature; runtime kill switch `PHRUST_JIT_COPY_PATCH=0`).
 #[cfg(feature = "jit-copy-patch")]
-pub mod copy_patch_bridge;
+mod copy_patch_bridge;
 #[doc(hidden)]
-pub mod counters;
+mod counters;
 #[doc(hidden)]
-pub mod deopt;
+mod deopt;
 #[doc(hidden)]
-pub mod dependency_units;
+mod dependency_units;
 #[doc(hidden)]
-pub mod error;
+mod error;
 #[doc(hidden)]
-pub mod exit_policy;
+mod exit_policy;
 #[doc(hidden)]
-pub mod fallback;
+mod fallback;
 #[doc(hidden)]
-pub mod frame;
+mod frame;
 /// Audited unchecked frame-slot access (ADR 0021); the only interpreter
 /// module exempt from the crate's `unsafe` denial.
 pub(crate) mod frame_memory;
 #[doc(hidden)]
-pub mod include;
+mod include;
 #[doc(hidden)]
-pub mod inline_cache;
+mod inline_cache;
 #[doc(hidden)]
-pub mod last_use;
+mod last_use;
 #[doc(hidden)]
-pub mod literal_pool;
+mod literal_pool;
 #[doc(hidden)]
-pub mod osr;
+mod osr;
 #[doc(hidden)]
-pub mod persistent_feedback;
+mod persistent_feedback;
 #[doc(hidden)]
-pub mod quickening;
+mod quickening;
 #[doc(hidden)]
-pub mod region_profile;
+mod region_profile;
 #[doc(hidden)]
-pub mod std_builtins;
+#[cfg(test)]
+mod std_builtins;
 #[cfg(test)]
 mod test_include_compiler;
 #[doc(hidden)]
-pub mod tiering;
+mod tiering;
 #[doc(hidden)]
-pub mod vm;
+mod vm;
 
 /// Stable VM execution surface.
 ///
@@ -152,12 +168,15 @@ pub mod experimental {
     pub use crate::inline_cache::FunctionCallSiteSnapshot;
     #[doc(hidden)]
     pub use crate::inline_cache::{
-        ClassConstantStaticPropertyCacheKind, ClassConstantStaticPropertyCacheTarget,
-        ClassRelationCache, ClassRelationCacheEntry, ClassRelationCacheKey,
-        ClassRelationCacheLookup, ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind,
+        CallReferenceMask, ClassConstantStaticPropertyCacheKind,
+        ClassConstantStaticPropertyCacheTarget, ClassRelationCache, ClassRelationCacheEntry,
+        ClassRelationCacheKey, ClassRelationCacheLookup, ClassRelationCacheTarget,
+        ClassRelationEpochs, ClassRelationKind, FunctionCallCacheTarget, FunctionCallShape,
         InlineCacheId, InlineCacheKind, InlineCacheMode, InlineCacheObservation, InlineCacheSlot,
         InlineCacheState, InlineCacheStats, InlineCacheTable, InvalidationEpoch,
-        MethodCallCacheTarget, PropertyFetchCacheTarget,
+        MethodCallCacheTarget, MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
+        PropertyAssignCacheTarget, PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget,
+        PropertyFetchCacheTarget, PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
     };
     #[doc(hidden)]
     pub use crate::literal_pool::{InternedLiteral, LiteralPool};
@@ -190,90 +209,21 @@ pub mod experimental {
     pub use crate::tiering::{ExecutionTier, TieringOptions, TieringState, TieringStats};
 }
 
-// Compatibility aliases for older local consumers. New code should import from
-// `php_vm::api` for execution or `php_vm::experimental` for optimization and
-// instrumentation internals.
+// Internal aliases keep implementation modules concise without widening the
+// public crate surface. External callers use `api` or `experimental`.
 #[doc(hidden)]
-pub use aliasing::{AliasState, alias_transition_key, slot_alias_state, value_alias_state};
+pub(crate) use counters::VmCounters;
 #[doc(hidden)]
-pub use bytecode::{
-    BytecodeLayoutProfile, BytecodeLayoutReport, DenseBytecodeUnit, DenseOpcode, DenseOperands,
-    dense_block_key,
+pub(crate) use deopt::{GuardKind, GuardedTier};
+#[doc(hidden)]
+pub(crate) use exit_policy::{ExitCounterKey, ExitCounterTable, ExitPolicyThresholds};
+#[doc(hidden)]
+pub(crate) use fallback::{
+    DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolStats,
 };
 #[doc(hidden)]
-pub use compiled_unit::{
-    CompiledClass, CompiledUnit, CompiledUnitBuildError, CompiledUnitLayoutStats,
-};
+pub(crate) use inline_cache::{InlineCacheKind, InlineCacheObservation};
 #[doc(hidden)]
-pub use counters::{BoundaryProfile, JitCompileDescriptor, OperationProfile, VmCounters};
+pub(crate) use quickening::{QuickeningMode, QuickeningObservation, QuickeningSpecialization};
 #[doc(hidden)]
-pub use deopt::{
-    ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptPrecisionCounters,
-    DeoptRegionMetadata, DeoptResumePoint, DeoptSideExitPoint, ExitId, GuardId, GuardKind,
-    GuardRecord, GuardedTier, LiveIdentityMarker, LiveStateSnapshot, LiveValueClass, LiveValueSlot,
-    MaterializedLiveState, MaterializedResumeRecord, ResumePoint, ResumeTable, ResumeTableError,
-    SharedExit, SideExitPolicy, SnapshotEntry, SnapshotId, SnapshotRecord, SnapshotRejection,
-    SnapshotStateFamily, VmDeoptReason,
-};
-#[doc(hidden)]
-pub use error::{VmError, VmErrorSeverity};
-#[doc(hidden)]
-pub use exit_policy::{
-    ExitCounterKey, ExitCounterSite, ExitCounterTable, ExitPolicyDecision, ExitPolicyState,
-    ExitPolicyThresholds, ExitSiteLocation,
-};
-#[doc(hidden)]
-pub use fallback::{
-    DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolEvent,
-    FallbackProtocolStats,
-};
-#[doc(hidden)]
-pub use frame::{CallStack, Frame, RegisterFile};
-#[doc(hidden)]
-pub use include::{
-    CacheInstanceId, CompiledInclude, IncludeCache, IncludeCacheStats, IncludeCompiler,
-    IncludeCompilerFingerprint, IncludeDependency, IncludeLoader, IncludePathFileFingerprint,
-    LoadedInclude, ResolvedIncludePath, ValidatedIncludeSource,
-};
-#[doc(hidden)]
-pub use inline_cache::{
-    ClassConstantStaticPropertyCacheKind, ClassConstantStaticPropertyCacheTarget,
-    ClassRelationCache, ClassRelationCacheEntry, ClassRelationCacheKey, ClassRelationCacheLookup,
-    ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind, InlineCacheId,
-    InlineCacheKind, InlineCacheMode, InlineCacheObservation, InlineCacheSlot, InlineCacheState,
-    InlineCacheStats, InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget,
-    PropertyFetchCacheTarget,
-};
-#[doc(hidden)]
-pub use literal_pool::{InternedLiteral, LiteralPool};
-#[doc(hidden)]
-pub use osr::{
-    OsrEntry, OsrEntryId, OsrEntryMap, OsrEntryReport, OsrLiveSlot, OsrLoopStateAnnotations,
-    OsrRefCowSafety, OsrTargetLocation, OsrUnsupportedStateKind, OsrValueClass, OsrVmSlot,
-    analyze_dense_osr_entries, analyze_dense_osr_entries_with_annotations,
-};
-#[doc(hidden)]
-pub use persistent_feedback::{
-    PERSISTENT_FEEDBACK_FORMAT_VERSION, PERSISTENT_FEEDBACK_STATS_SCHEMA_VERSION,
-    PersistentArrayKeyShape, PersistentArrayLayout, PersistentBranchBias, PersistentCallsiteState,
-    PersistentFeedbackContext, PersistentFeedbackEntry, PersistentFeedbackEpochs,
-    PersistentFeedbackKey, PersistentFeedbackLoadReport, PersistentFeedbackPayload,
-    PersistentFeedbackStats, PersistentFeedbackStore, PersistentGuardFailureSummary,
-    PersistentIncludeAutoloadStability, PersistentObjectShapeObservation, PersistentScalarKind,
-};
-#[doc(hidden)]
-pub use quickening::{
-    QuickeningMode, QuickeningObservation, QuickeningSiteKey, QuickeningSiteSnapshot,
-    QuickeningSpecialization, QuickeningState, QuickeningTable,
-};
-#[doc(hidden)]
-pub use region_profile::{
-    BranchBias, BytecodeRange, PrivacyPolicy, RegionCandidate, RegionProfile, RegionTrace,
-};
-#[doc(hidden)]
-pub use tiering::{ExecutionTier, TieringOptions, TieringState, TieringStats};
-#[doc(hidden)]
-pub use vm::{
-    BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
-    JitBlacklistMode, JitMode, SuperinstructionMode, Vm, VmOptions, VmResult,
-};
+pub(crate) use vm::JitMode;

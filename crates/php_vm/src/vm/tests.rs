@@ -1,10 +1,11 @@
 use super::*;
-use crate::{IncludeCache, IncludeLoader, InlineCacheMode, QuickeningMode, TieringOptions};
+use crate::api::{IncludeCache, IncludeLoader};
+use crate::experimental::{InlineCacheMode, QuickeningMode, TieringOptions};
 use php_ir::{
     FunctionFlags, IrBuilder, IrConstant, IrSpan, Operand, RegId, UnitId,
     instruction::InstructionKind,
 };
-use php_runtime::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
+use php_runtime::api::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
 use std::sync::Arc;
 
 fn test_declaration_origin(kind: DeclarationKind) -> DeclarationOrigin {
@@ -232,7 +233,8 @@ fn getimagesize_initializes_undefined_image_info_reference() {
         &source,
         VmOptions {
             runtime_context: RuntimeContext::default().with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -3553,7 +3555,7 @@ fn bootstrap_warning_sources_respect_display_and_reporting_masks() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -4277,7 +4279,7 @@ fn output_fast_paths_preserve_to_string_fallback_and_conversion_errors() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -4715,7 +4717,7 @@ fn http_superglobals_are_visible_inside_user_functions() {
         "<?php function show_server() { echo is_array($_SERVER) ? $_SERVER['REQUEST_URI'] : 'bad'; } show_server();",
         VmOptions {
             runtime_context: RuntimeContext::controlled_http(
-                php_runtime::RuntimeHttpRequestContext::new(
+                php_runtime::api::RuntimeHttpRequestContext::new(
                     "GET",
                     "127.0.0.1:18080",
                     "/admin/install.php?step=0",
@@ -4734,7 +4736,7 @@ fn http_superglobals_are_visible_inside_user_functions() {
 
 #[test]
 fn php_input_stream_reads_http_request_body_inside_vm_builtins() {
-    let mut request = php_runtime::RuntimeHttpRequestContext::new(
+    let mut request = php_runtime::api::RuntimeHttpRequestContext::new(
         "POST",
         "127.0.0.1:18080",
         "/submit.php",
@@ -4879,7 +4881,7 @@ fn include_preserves_global_reference_slots_for_bootstrap_files() {
         VmOptions {
             include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
             runtime_context: RuntimeContext::controlled_http(
-                php_runtime::RuntimeHttpRequestContext::new(
+                php_runtime::api::RuntimeHttpRequestContext::new(
                     "POST",
                     "127.0.0.1:18080",
                     "/admin/install.php?step=2",
@@ -6200,7 +6202,7 @@ fn builtin_context_persists_chdir_across_vm_builtin_calls() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6236,7 +6238,7 @@ fn builtin_context_persists_stream_resources_across_vm_builtin_calls() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6477,7 +6479,7 @@ var_dump(str_contains($archive->getStub(), '__HALT_COMPILER'));
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6529,7 +6531,7 @@ echo str_replace('phar://{archive_path}/', '', $entry->getPathname()), "\n";
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6572,7 +6574,8 @@ fn phar_constructor_creates_empty_archive_and_inherits_file_info_methods() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -6621,7 +6624,7 @@ fn builtin_context_persists_include_path_updates_for_stream_resolution() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -7202,7 +7205,7 @@ fn include_path_graph_invalidates_changed_file_metadata_in_vm() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             collect_counters: true,
@@ -15109,7 +15112,9 @@ fn control_flow_executes_switch_match_ternary_coalesce_and_return() {
     assert_eq!(result.output.as_bytes(), b"zeroone|match|fallback|yes");
     assert_eq!(
         result.return_value,
-        Some(Value::String(php_runtime::PhpString::from_test_str("done")))
+        Some(Value::String(php_runtime::api::PhpString::from_test_str(
+            "done"
+        )))
     );
 }
 
@@ -18410,7 +18415,8 @@ fn spl_file_info_and_file_object_use_allowed_local_files() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18534,7 +18540,8 @@ fn spl_recursive_directory_iterator_walks_allowed_local_files() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18632,7 +18639,8 @@ fn zip_archive_create_overwrite_writes_local_entries() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18684,7 +18692,8 @@ fn spl_regex_iterator_filters_recursive_directory_paths_with_get_match() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18730,7 +18739,8 @@ fn spl_file_info_reports_link_target_created_by_symlink() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18768,7 +18778,8 @@ fn spl_internal_file_subclass_uses_parent_storage_and_methods() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18842,7 +18853,8 @@ fn spl_file_object_rejects_repeated_constructor_call() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -22745,7 +22757,7 @@ fn first_vm_compile_payload(result: &VmResult) -> &VmCompileDiagnostic {
 
 fn first_runtime_bringup_payload(
     result: &VmResult,
-) -> &php_runtime::RuntimeBringupDiagnosticContext {
+) -> &php_runtime::api::RuntimeBringupDiagnosticContext {
     result
         .diagnostics
         .iter()

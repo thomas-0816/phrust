@@ -138,7 +138,7 @@ macro_rules! execute_rich_property_instruction {
                             continue;
                         }
                         if normalize_class_name(&object.class_name()) == "simplexmlelement" {
-                            let value = php_runtime::xml::simplexml_property(&object, property);
+                            let value = php_runtime::api::xml::simplexml_property(&object, property);
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")
@@ -1368,7 +1368,7 @@ macro_rules! execute_rich_property_instruction {
                             continue;
                         }
                         if normalize_class_name(&object.class_name()) == "simplexmlelement" {
-                            let value = php_runtime::xml::simplexml_property(&object, &property);
+                            let value = php_runtime::api::xml::simplexml_property(&object, &property);
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")

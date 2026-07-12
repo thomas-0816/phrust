@@ -68,16 +68,16 @@ impl Vm {
         compiled: &CompiledUnit,
         function_name: &str,
         call_span: Option<php_ir::IrSpan>,
-        error: &php_runtime::pcre::PcreFailure,
+        error: &php_runtime::experimental::pcre::PcreFailure,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<(), ArrayCallbackError> {
         state.builtins.pcre_state_mut().last_error_mut().set(
             error.code(),
-            php_runtime::pcre::preg_error_message(error.code()),
+            php_runtime::experimental::pcre::preg_error_message(error.code()),
         );
-        if error.code() != php_runtime::pcre::PREG_INTERNAL_ERROR {
+        if error.code() != php_runtime::experimental::pcre::PREG_INTERNAL_ERROR {
             return Ok(());
         }
 
@@ -87,7 +87,7 @@ impl Vm {
             format!("{function_name}(): {}", error.message()),
             builtin_source_span(compiled, call_span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self
             .dispatch_error_handler(
@@ -95,18 +95,18 @@ impl Vm {
                 output,
                 stack,
                 state,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PHP_E_WARNING,
                 &diagnostic,
             )
             .map_err(|result| ArrayCallbackError::Runtime(Box::new(result)))?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
-            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
         }
         Ok(())
@@ -230,7 +230,7 @@ impl Vm {
                 ArrayCallbackError::Message(format!("preg_replace_callback: {message}"))
             })?
             .unwrap_or(0);
-        let mut cache = php_runtime::pcre::PcreCache::default();
+        let mut cache = php_runtime::experimental::pcre::PcreCache::default();
         let mut compiled_patterns = Vec::new();
         for pattern in patterns {
             let compiled_pattern = match cache.compile(&pattern) {
@@ -417,7 +417,7 @@ impl Vm {
                 ArrayCallbackError::Message(format!("preg_replace_callback_array: {message}"))
             })?
             .unwrap_or(0);
-        let mut cache = php_runtime::pcre::PcreCache::default();
+        let mut cache = php_runtime::experimental::pcre::PcreCache::default();
         let mut count = 0i64;
         let mut value = args[1].clone();
         for (key, callback) in patterns.iter() {
@@ -479,7 +479,10 @@ impl Vm {
     pub(super) fn preg_replace_callback_array_subject_bytes(
         &self,
         compiled: &CompiledUnit,
-        patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
+        patterns: &[(
+            std::sync::Arc<php_runtime::experimental::pcre::CompiledPattern>,
+            Value,
+        )],
         subjects: PhpArray,
         call_span: Option<php_ir::IrSpan>,
         limit: i64,
@@ -520,7 +523,10 @@ impl Vm {
     pub(super) fn preg_replace_callback_array_subject_value(
         &self,
         compiled: &CompiledUnit,
-        patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
+        patterns: &[(
+            std::sync::Arc<php_runtime::experimental::pcre::CompiledPattern>,
+            Value,
+        )],
         subject: Value,
         call_span: Option<php_ir::IrSpan>,
         limit: i64,
@@ -569,7 +575,10 @@ impl Vm {
     pub(super) fn preg_replace_callback_array_bytes(
         &self,
         compiled: &CompiledUnit,
-        patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
+        patterns: &[(
+            std::sync::Arc<php_runtime::experimental::pcre::CompiledPattern>,
+            Value,
+        )],
         subject: &[u8],
         call_span: Option<php_ir::IrSpan>,
         limit: i64,
@@ -601,7 +610,7 @@ impl Vm {
     pub(super) fn preg_replace_callback_bytes(
         &self,
         compiled: &CompiledUnit,
-        pattern: &php_runtime::pcre::CompiledPattern,
+        pattern: &php_runtime::experimental::pcre::CompiledPattern,
         callback: Value,
         subject: &[u8],
         call_span: Option<php_ir::IrSpan>,
@@ -616,7 +625,7 @@ impl Vm {
         let mut last_end = 0usize;
         for captures in pattern.captures_iter(subject) {
             let captures = captures.map_err(|error| {
-                let error = php_runtime::pcre::PcreFailure::from(error);
+                let error = php_runtime::experimental::pcre::PcreFailure::from(error);
                 ArrayCallbackError::Message(format!(
                     "E_PHP_RUNTIME_PCRE_ERROR: {}",
                     error.message()
@@ -632,12 +641,14 @@ impl Vm {
             let callback_result = self.invoke_array_callback(
                 compiled,
                 callback.clone(),
-                vec![php_runtime::pcre::captures_to_array_with_names(
-                    &captures,
-                    pattern.capture_names(),
-                    flags,
-                    0,
-                )],
+                vec![
+                    php_runtime::experimental::pcre::captures_to_array_with_names(
+                        &captures,
+                        pattern.capture_names(),
+                        flags,
+                        0,
+                    ),
+                ],
                 output,
                 stack,
                 state,

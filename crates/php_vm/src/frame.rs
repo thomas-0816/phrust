@@ -6,7 +6,7 @@ use crate::error::VmError;
 use php_ir::IrSpan;
 use php_ir::ids::{FunctionId, LocalId, RegId};
 use php_runtime::api::RuntimeSourceSpan;
-use php_runtime::{Lvalue, LvalueError, LvalueKind, ReferenceCell, Slot, TempValue, Value};
+use php_runtime::api::{Lvalue, LvalueError, LvalueKind, ReferenceCell, Slot, TempValue, Value};
 
 /// Register storage with checked accessors.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -595,7 +595,9 @@ mod tests {
     use php_ir::IrSpan;
     use php_ir::ids::{FileId, FunctionId, LocalId, RegId};
     use php_runtime::api::RuntimeSourceSpan;
-    use php_runtime::{ClassEntry, ClassFlags, ObjectRef, PhpArray, ReferenceCell, Slot, Value};
+    use php_runtime::api::{
+        ClassEntry, ClassFlags, ObjectRef, PhpArray, ReferenceCell, Slot, Value,
+    };
 
     fn empty_class(name: &str) -> ClassEntry {
         ClassEntry {

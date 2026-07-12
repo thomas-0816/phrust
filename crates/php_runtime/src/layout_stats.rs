@@ -814,7 +814,8 @@ pub fn take_layout_source_stats() -> RuntimeLayoutSourceStats {
 
 #[cfg(test)]
 mod tests {
-    use crate::{PhpArray, PhpString, ReferenceCell, Value, layout_stats};
+    use crate::api::{PhpArray, PhpString, ReferenceCell, Value, ValueSlot};
+    use crate::layout_stats;
 
     #[test]
     fn layout_stats_record_safe_runtime_events() {
@@ -985,7 +986,7 @@ mod tests {
         let cell = ReferenceCell::new(Value::Int(1));
         let _value = cell.get();
 
-        let slot = crate::ValueSlot::value(Value::Array(PhpArray::new()));
+        let slot = ValueSlot::value(Value::Array(PhpArray::new()));
         let _value = slot.read();
 
         let array = PhpArray::from_packed(vec![Value::Array(PhpArray::new())]);

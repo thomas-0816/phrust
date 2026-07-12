@@ -18,7 +18,7 @@ pub(super) fn runtime_diagnostic_for_message(
         message.to_owned(),
         RuntimeSourceSpan::default(),
         stack_trace(compiled, stack),
-        php_runtime::PhpReferenceClassification::from_diagnostic_id(id),
+        php_runtime::api::PhpReferenceClassification::from_diagnostic_id(id),
     );
     match runtime_bringup_payload_without_state(message, id) {
         Some(payload) => diagnostic.with_diagnostic_payload(payload),
@@ -73,14 +73,14 @@ pub(super) fn emit_string_offset_negative_warning(
         format!("Illegal string offset {index}"),
         runtime_source_span(compiled, span),
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     );
     emit_vm_diagnostic(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Warning,
-        php_runtime::PHP_E_WARNING,
+        php_runtime::api::PhpDiagnosticChannel::Warning,
+        php_runtime::api::PHP_E_WARNING,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -217,11 +217,11 @@ pub(super) fn display_errors_enabled(state: &ExecutionState) -> bool {
 
 pub(super) fn diagnostic_display_options(
     state: &ExecutionState,
-) -> php_runtime::PhpDiagnosticDisplayOptions {
-    php_runtime::PhpDiagnosticDisplayOptions {
+) -> php_runtime::api::PhpDiagnosticDisplayOptions {
+    php_runtime::api::PhpDiagnosticDisplayOptions {
         display_errors: display_errors_enabled(state),
         error_reporting: current_error_reporting(state),
-        ..php_runtime::PhpDiagnosticDisplayOptions::default()
+        ..php_runtime::api::PhpDiagnosticDisplayOptions::default()
     }
 }
 
@@ -229,7 +229,7 @@ pub(super) fn emit_vm_diagnostic(
     output: &mut OutputBuffer,
     state: &ExecutionState,
     diagnostic: &RuntimeDiagnostic,
-    channel: php_runtime::PhpDiagnosticChannel,
+    channel: php_runtime::api::PhpDiagnosticChannel,
     level: i64,
 ) -> bool {
     emit_vm_diagnostic_with_options(output, state, diagnostic, channel, level, true)
@@ -239,7 +239,7 @@ pub(super) fn emit_vm_diagnostic_with_options(
     output: &mut OutputBuffer,
     state: &ExecutionState,
     diagnostic: &RuntimeDiagnostic,
-    channel: php_runtime::PhpDiagnosticChannel,
+    channel: php_runtime::api::PhpDiagnosticChannel,
     level: i64,
     leading_newline: bool,
 ) -> bool {
@@ -273,12 +273,12 @@ pub(super) fn is_supported_user_error_level(level: i64) -> bool {
     )
 }
 
-pub(super) fn error_level_channel(level: i64) -> php_runtime::PhpDiagnosticChannel {
+pub(super) fn error_level_channel(level: i64) -> php_runtime::api::PhpDiagnosticChannel {
     match level {
-        php_std::constants::E_USER_NOTICE => php_runtime::PhpDiagnosticChannel::Notice,
-        php_std::constants::E_USER_DEPRECATED => php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_std::constants::E_USER_ERROR => php_runtime::PhpDiagnosticChannel::FatalError,
-        _ => php_runtime::PhpDiagnosticChannel::Warning,
+        php_std::constants::E_USER_NOTICE => php_runtime::api::PhpDiagnosticChannel::Notice,
+        php_std::constants::E_USER_DEPRECATED => php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_std::constants::E_USER_ERROR => php_runtime::api::PhpDiagnosticChannel::FatalError,
+        _ => php_runtime::api::PhpDiagnosticChannel::Warning,
     }
 }
 

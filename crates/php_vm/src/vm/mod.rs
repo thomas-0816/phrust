@@ -154,8 +154,7 @@ use property_resolution::*;
 use property_state::*;
 use reflection::*;
 use request_lifecycle::RequestLifecycleState;
-pub use result::VmStepLimitDiagnostic;
-pub use result::{VmControlFlow, VmResult};
+pub use result::VmResult;
 use rich_exception_dispatch::*;
 use rich_foreach_dispatch::*;
 pub(crate) use runtime_class_metadata::dense_new_object_lowering_supported;
@@ -238,11 +237,9 @@ use php_ir::module::{
 };
 use php_ir::operand::Operand;
 use php_ir::source_map::IrSpan;
-use php_runtime::IniRegistry;
-use php_runtime::ResourceTable;
-use php_runtime::debug::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcSnapshot, scan_roots};
-use php_runtime::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
-use php_runtime::{
+use php_runtime::api::IniRegistry;
+use php_runtime::api::ResourceTable;
+use php_runtime::api::{
     ArrayKey, AttributeEntry as RuntimeAttributeEntry, AutoloadRegistry, BuiltinContext,
     BuiltinEntry, CallableMethodTarget, CallableValue,
     ClassConstantEntry as RuntimeClassConstantEntry,
@@ -267,6 +264,10 @@ use php_runtime::{
     to_string, to_string_php, undefined_function, undefined_global_variable_warning,
     undefined_variable_warning, unserialize as unserialize_value, unsupported_feature,
     value_matches_runtime_type, value_type_name,
+};
+use php_runtime::debug::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcSnapshot, scan_roots};
+use php_runtime::experimental::numeric_string::{
+    NumericStringKind, NumericStringValue, classify_php_string,
 };
 use request_profile::{RequestProfileFrame, RequestProfileOperationCategory};
 use std::cell::{Cell, RefCell};
@@ -352,7 +353,7 @@ const SPL_RII_CATCH_GET_CHILD: i64 = 16;
 const SPL_RTI_BYPASS_CURRENT: i64 = 4;
 const SPL_RTI_BYPASS_KEY: i64 = 8;
 const SORT_FLAG_CASE: i64 = 8;
-const NORMALIZER_FORM_C: i64 = php_runtime::builtins::NORMALIZER_FORM_C;
+const NORMALIZER_FORM_C: i64 = php_runtime::api::NORMALIZER_FORM_C;
 #[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_SIDE_EXIT_THRESHOLD: u64 = 2;
 #[cfg(feature = "jit-cranelift")]
@@ -691,15 +692,15 @@ impl Vm {
             counters
         });
         if self.options.collect_counters {
-            php_runtime::numeric_string::reset_cache_and_stats();
-            php_runtime::layout_stats::reset_layout_stats();
+            php_runtime::experimental::numeric_string::reset_cache_and_stats();
+            php_runtime::experimental::layout_stats::reset_layout_stats();
             if self.options.collect_layout_source_attribution {
-                php_runtime::layout_stats::enable_layout_source_attribution();
+                php_runtime::experimental::layout_stats::enable_layout_source_attribution();
             } else {
-                php_runtime::layout_stats::disable_layout_source_attribution();
+                php_runtime::experimental::layout_stats::disable_layout_source_attribution();
             }
         } else {
-            php_runtime::layout_stats::disable_layout_source_attribution();
+            php_runtime::experimental::layout_stats::disable_layout_source_attribution();
         }
         reset_float_string_precision();
 
@@ -796,7 +797,7 @@ impl Vm {
             cwd: self.options.runtime_context.cwd.clone(),
             ini,
             parsed_include_path,
-            default_timezone: php_runtime::datetime::DEFAULT_TIMEZONE.to_owned(),
+            default_timezone: php_runtime::api::datetime::DEFAULT_TIMEZONE.to_owned(),
             env,
             filter_input_arrays,
             network_requests_enabled,
@@ -954,11 +955,12 @@ impl Vm {
             result.trace = self.trace.borrow().clone();
         }
         if self.options.collect_counters {
-            let stats = php_runtime::numeric_string::take_cache_stats();
-            let layout_stats = php_runtime::layout_stats::take_layout_stats();
-            let layout_source_stats = php_runtime::layout_stats::take_layout_source_stats();
+            let stats = php_runtime::experimental::numeric_string::take_cache_stats();
+            let layout_stats = php_runtime::experimental::layout_stats::take_layout_stats();
+            let layout_source_stats =
+                php_runtime::experimental::layout_stats::take_layout_source_stats();
             let (interned_names, interned_name_bytes) =
-                php_runtime::string::symbol_interner_footprint();
+                php_runtime::experimental::string::symbol_interner_footprint();
             if let Some(counters) = self.counters.borrow_mut().as_mut() {
                 counters.record_numeric_string_cache_stats(stats);
                 counters.record_runtime_layout_stats(layout_stats);
@@ -1094,7 +1096,7 @@ impl Vm {
     }
 
     fn record_include_graph_resolution_fallback(&self, path: &str, message: &str) {
-        if php_runtime::phar::is_phar_uri(path) {
+        if php_runtime::api::phar::is_phar_uri(path) {
             self.record_counter_fallback_by_path_semantics("phar_stream");
         } else if path.contains("://") {
             self.record_counter_fallback_by_path_semantics("stream_wrapper");
@@ -1161,7 +1163,7 @@ impl Vm {
     /// request CWD.
     fn composer_probe_anchor(&self, state: &ExecutionState) -> Option<PathBuf> {
         let script = match &self.options.runtime_context.request_mode {
-            php_runtime::RuntimeRequestMode::Http(request) => {
+            php_runtime::api::RuntimeRequestMode::Http(request) => {
                 Some(PathBuf::from(&request.script_filename))
             }
             _ => self.options.runtime_context.argv.first().map(PathBuf::from),
@@ -1256,12 +1258,12 @@ impl Vm {
         for diagnostic in diagnostics {
             let (level, channel) = match diagnostic.severity() {
                 RuntimeSeverity::Warning => (
-                    php_runtime::PHP_E_WARNING,
-                    php_runtime::PhpDiagnosticChannel::Warning,
+                    php_runtime::api::PHP_E_WARNING,
+                    php_runtime::api::PhpDiagnosticChannel::Warning,
                 ),
                 RuntimeSeverity::Deprecation => (
-                    php_runtime::PHP_E_DEPRECATED,
-                    php_runtime::PhpDiagnosticChannel::Deprecated,
+                    php_runtime::api::PHP_E_DEPRECATED,
+                    php_runtime::api::PhpDiagnosticChannel::Deprecated,
                 ),
                 _ => {
                     state.diagnostics.push(diagnostic);

@@ -5,10 +5,10 @@
 #![allow(clippy::result_large_err)]
 
 use super::prelude::*;
-use php_runtime::builtins::{
-    SoapParsedBody, build_soap_envelope, igbinary_serialize_value, igbinary_unserialize_value,
-    load_wsdl, msgpack_pack_value, msgpack_unpack_value, parse_soap_response, parse_wsdl,
-    soap_http_post,
+use php_runtime::api::{
+    self as runtime_api, SoapParsedBody, build_soap_envelope, igbinary_serialize_value,
+    igbinary_unserialize_value, load_wsdl, msgpack_pack_value, msgpack_unpack_value,
+    parse_soap_response, parse_wsdl, soap_http_post,
 };
 use std::fmt;
 use std::io::{BufRead, BufReader, Seek};
@@ -58,7 +58,7 @@ pub(super) fn internal_php_token_instanceof(
 
 pub(super) struct PhpTokenStaticMethodValue {
     pub(super) value: Value,
-    pub(super) diagnostics: Vec<php_runtime::RuntimeDiagnostic>,
+    pub(super) diagnostics: Vec<runtime_api::RuntimeDiagnostic>,
 }
 
 pub(super) fn php_token_static_method_value_with_diagnostics(
@@ -122,7 +122,7 @@ pub(super) fn php_token_static_method_value_for_class_with_diagnostics(
 pub(super) fn php_tokenize_static_call_with_diagnostics(
     class_name: &str,
     args: Vec<CallArgument>,
-) -> Result<php_runtime::tokenizer::TokenizeResult, String> {
+) -> Result<runtime_api::tokenizer::TokenizeResult, String> {
     let values = call_args_to_positional("PhpToken::tokenize", args)?;
     if values.is_empty() || values.len() > 2 {
         return Err(format!(
@@ -132,7 +132,7 @@ pub(super) fn php_tokenize_static_call_with_diagnostics(
     }
     let source = to_string(&values[0])?.to_string_lossy();
     let flags = values.get(1).map(to_int).transpose()?.unwrap_or(0);
-    php_runtime::tokenizer::tokenize_with_diagnostics(&source, flags)
+    runtime_api::tokenizer::tokenize_with_diagnostics(&source, flags)
         .map_err(|error| error.display_message())
 }
 
@@ -162,7 +162,7 @@ pub(super) fn php_token_method_value(
                 object
                     .get_property("id")
                     .and_then(|value| match value {
-                        Value::Int(id) => Some(php_runtime::tokenizer::is_ignorable_id(id)),
+                        Value::Int(id) => Some(runtime_api::tokenizer::is_ignorable_id(id)),
                         _ => None,
                     })
                     .unwrap_or(false),
@@ -264,7 +264,7 @@ pub(super) fn php_token_name_value(object: &ObjectRef) -> Option<Value> {
         Some(Value::Int(id)) => id,
         _ => return None,
     };
-    if let Some(name) = php_runtime::tokenizer::token_name_for_id(id) {
+    if let Some(name) = runtime_api::tokenizer::token_name_for_id(id) {
         return Some(Value::String(PhpString::from_test_str(name)));
     }
     if (0..=u8::MAX as i64).contains(&id)
@@ -275,13 +275,13 @@ pub(super) fn php_token_name_value(object: &ObjectRef) -> Option<Value> {
     None
 }
 
-pub(super) fn php_token_object(token: php_runtime::tokenizer::TokenizerToken) -> ObjectRef {
+pub(super) fn php_token_object(token: runtime_api::tokenizer::TokenizerToken) -> ObjectRef {
     let class = php_token_class();
     php_token_object_for_class(token, &class, "PhpToken")
 }
 
 pub(super) fn php_token_object_for_class(
-    token: php_runtime::tokenizer::TokenizerToken,
+    token: runtime_api::tokenizer::TokenizerToken,
     class: &RuntimeClassEntry,
     display_name: impl Into<String>,
 ) -> ObjectRef {
@@ -428,23 +428,23 @@ pub(super) fn new_date_time_object(
                 .map(date_time_timezone_name_from_value)
                 .transpose()?
                 .unwrap_or_else(|| default_timezone.to_owned());
-            let base = php_runtime::datetime::current_timestamp();
+            let base = runtime_api::datetime::current_timestamp();
             let timestamp =
-                php_runtime::datetime::parse_datetime_text_in_timezone(&text, base, &timezone)
+                runtime_api::datetime::parse_datetime_text_in_timezone(&text, base, &timezone)
                     .ok_or_else(|| {
                         format!("E_PHP_VM_DATETIME_PARSE: could not parse DateTime text {text:?}")
                     })?;
             let value = if class_name_is(class_name, &["datetimeimmutable"]) {
-                php_runtime::datetime::datetime_immutable_object(timestamp, &timezone)
+                runtime_api::datetime::datetime_immutable_object(timestamp, &timezone)
             } else {
-                php_runtime::datetime::datetime_object(timestamp, &timezone)
+                runtime_api::datetime::datetime_object(timestamp, &timezone)
             };
             date_time_object_from_value(value)
         }
         "datetimezone" => {
             validate_date_time_arg_count(&function, values.len(), 1, 1)?;
             let timezone = to_string(&values[0])?.to_string_lossy();
-            php_runtime::datetime::datetimezone_object(&timezone)
+            runtime_api::datetime::datetimezone_object(&timezone)
                 .ok_or_else(|| {
                     format!("E_PHP_VM_DATETIMEZONE_INVALID: timezone {timezone:?} is unsupported")
                 })
@@ -453,10 +453,10 @@ pub(super) fn new_date_time_object(
         "dateinterval" => {
             validate_date_time_arg_count(&function, values.len(), 1, 1)?;
             let spec = to_string(&values[0])?.to_string_lossy();
-            let seconds = php_runtime::datetime::parse_interval_spec(&spec).ok_or_else(|| {
+            let seconds = runtime_api::datetime::parse_interval_spec(&spec).ok_or_else(|| {
                 format!("E_PHP_VM_DATEINTERVAL_PARSE: interval spec {spec:?} is unsupported")
             })?;
-            date_time_object_from_value(php_runtime::datetime::dateinterval_object(seconds))
+            date_time_object_from_value(runtime_api::datetime::dateinterval_object(seconds))
         }
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
@@ -1377,7 +1377,7 @@ fn call_soap_server_method(
             let response = if request.is_empty() {
                 soap_fault_envelope("Server", "SOAP request body is required")
             } else {
-                match php_runtime::xml_backend::parse_document(&request) {
+                match runtime_api::xml::parse_xml(&request) {
                     Ok(_) => soap_fault_envelope(
                         "Server",
                         "SOAP server callback dispatch is not implemented",
@@ -2364,7 +2364,7 @@ pub(super) fn new_phar_object(
             );
             spl_file_set_path(&object, &path.to_string_lossy());
             if path.exists() {
-                let archive = php_runtime::PharArchive::open(&path)
+                let archive = runtime_api::PharArchive::open(&path)
                     .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
                 if let Some(alias) = archive.alias.as_deref() {
                     object.set_property("__phar_alias", Value::string(alias));
@@ -2400,9 +2400,9 @@ pub(super) fn new_phar_object(
             validate_phar_arg_count("PharFileInfo::__construct", values.len(), 1, 1)?;
             let uri = to_string(&values[0])?.to_string_lossy();
             let parsed =
-                php_runtime::phar::parse_uri(&uri, &runtime_context.cwd, &runtime_context.filesystem)
+                runtime_api::phar::parse_uri(&uri, &runtime_context.cwd, &runtime_context.filesystem)
                     .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
-            let archive = php_runtime::PharArchive::open(&parsed.archive_path)
+            let archive = runtime_api::PharArchive::open(&parsed.archive_path)
                 .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
             let entry = archive.entry(&parsed.entry_path).cloned().ok_or_else(|| {
                 format!(
@@ -2502,7 +2502,7 @@ pub(super) fn call_phar_method(
                     path.display()
                 ));
             }
-            let archive = php_runtime::PharArchive::open(&path)
+            let archive = runtime_api::PharArchive::open(&path)
                 .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
             phar_metadata_value(&archive.metadata)
         }
@@ -2522,7 +2522,7 @@ pub(super) fn call_phar_method(
                     path.display()
                 ));
             }
-            let archive = php_runtime::PharArchive::open(&path)
+            let archive = runtime_api::PharArchive::open(&path)
                 .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
             Ok(Value::Bool(archive.entry(&entry).is_some()))
         }
@@ -2545,7 +2545,7 @@ fn phar_archive_entry(
     object: &ObjectRef,
     entry: &str,
     runtime_context: &RuntimeContext,
-) -> Result<(PathBuf, php_runtime::PharEntry), String> {
+) -> Result<(PathBuf, runtime_api::PharEntry), String> {
     let path = phar_object_path(object)?;
     if !runtime_context.filesystem.allows_path(&path) {
         return Err(format!(
@@ -2553,7 +2553,7 @@ fn phar_archive_entry(
             path.display()
         ));
     }
-    let archive = php_runtime::PharArchive::open(&path)
+    let archive = runtime_api::PharArchive::open(&path)
         .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
     let entry = archive.entry(entry).cloned().ok_or_else(|| {
         format!(
@@ -2564,7 +2564,7 @@ fn phar_archive_entry(
     Ok((path, entry))
 }
 
-fn phar_file_info_object(archive_path: &Path, entry: &php_runtime::PharEntry) -> ObjectRef {
+fn phar_file_info_object(archive_path: &Path, entry: &runtime_api::PharEntry) -> ObjectRef {
     let object =
         ObjectRef::new_with_display_name(&phar_runtime_class("PharFileInfo"), "PharFileInfo");
     let pathname = format!("phar://{}/{}", archive_path.display(), entry.name);
@@ -2622,9 +2622,9 @@ fn phar_metadata_value(metadata: &[u8]) -> Result<Value, String> {
     if metadata.is_empty() {
         return Ok(Value::Null);
     }
-    php_runtime::unserialize(
-        &php_runtime::PhpString::from_bytes(metadata.to_vec()),
-        php_runtime::UnserializeOptions::default(),
+    runtime_api::unserialize(
+        &runtime_api::PhpString::from_bytes(metadata.to_vec()),
+        runtime_api::UnserializeOptions::default(),
     )
     .map_err(|error| format!("E_PHP_VM_PHAR_METADATA: {}", error.message()))
 }
@@ -2733,7 +2733,7 @@ pub(super) fn new_fileinfo_object(
         Some(Value::Null | Value::Uninitialized) | None => None,
         Some(value) => Some(to_string(value)?.to_string_lossy()),
     };
-    php_runtime::builtins::validate_fileinfo_options(flags, magic_file.as_deref())
+    runtime_api::validate_fileinfo_options(flags, magic_file.as_deref())
         .map_err(|message| format!("E_PHP_VM_FILEINFO_MAGIC: {message}"))?;
     let object = ObjectRef::new_with_display_name(&fileinfo_runtime_class(), "finfo");
     object.set_property("__fileinfo_flags", Value::Int(flags));
@@ -2818,7 +2818,7 @@ pub(super) fn zip_class_constant_value(class_name: &str, constant: &str) -> Opti
 pub(super) fn new_mysqli_object(
     class_name: &str,
     args: Vec<CallArgument>,
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
 ) -> Result<ObjectRef, String> {
     match normalize_class_name(class_name).as_str() {
         "mysqli" => {
@@ -2862,7 +2862,7 @@ pub(super) fn call_mysqli_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
     compiled: &CompiledUnit,
     stack: &mut CallStack,
 ) -> Result<Value, String> {
@@ -2881,7 +2881,7 @@ pub(super) fn call_mysqli_connection_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("mysqli::{method}"), args)?;
     match method {
@@ -2936,7 +2936,7 @@ pub(super) fn call_mysqli_connection_method(
         "storeresult" | "store_result" => {
             validate_mysqli_arg_count("mysqli::store_result", values.len(), 0, 1)?;
             if values.first().map(to_int).transpose()?.is_some_and(|mode| {
-                mode != php_runtime::MYSQLI_STORE_RESULT && mode != php_runtime::MYSQLI_USE_RESULT
+                mode != runtime_api::MYSQLI_STORE_RESULT && mode != runtime_api::MYSQLI_USE_RESULT
             }) {
                 return Ok(Value::Bool(false));
             }
@@ -3095,7 +3095,7 @@ pub(super) fn call_mysqli_result_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("mysqli_result::{method}"), args)?;
     let Some(id) = mysqli_result_id(object) else {
@@ -3104,11 +3104,11 @@ pub(super) fn call_mysqli_result_method(
     match method {
         "fetchassoc" | "fetch_assoc" => {
             validate_mysqli_arg_count("mysqli_result::fetch_assoc", values.len(), 0, 0)?;
-            Ok(mysql.fetch_array(id, php_runtime::MYSQLI_ASSOC))
+            Ok(mysql.fetch_array(id, runtime_api::MYSQLI_ASSOC))
         }
         "fetchrow" | "fetch_row" => {
             validate_mysqli_arg_count("mysqli_result::fetch_row", values.len(), 0, 0)?;
-            Ok(mysql.fetch_array(id, php_runtime::MYSQLI_NUM))
+            Ok(mysql.fetch_array(id, runtime_api::MYSQLI_NUM))
         }
         "fetcharray" | "fetch_array" => {
             validate_mysqli_arg_count("mysqli_result::fetch_array", values.len(), 0, 1)?;
@@ -3116,7 +3116,7 @@ pub(super) fn call_mysqli_result_method(
                 .first()
                 .map(to_int)
                 .transpose()?
-                .unwrap_or(php_runtime::MYSQLI_BOTH);
+                .unwrap_or(runtime_api::MYSQLI_BOTH);
             Ok(mysql.fetch_array(id, mode))
         }
         "free" | "close" => {
@@ -3134,7 +3134,7 @@ pub(super) fn call_mysqli_stmt_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
     compiled: &CompiledUnit,
     stack: &mut CallStack,
 ) -> Result<Value, String> {
@@ -3305,17 +3305,17 @@ pub(super) fn call_mysqli_stmt_method(
     }
 }
 
-pub(super) fn mysqli_connect_from_test_dsn(mysql: &mut php_runtime::MysqlState) -> Option<i64> {
+pub(super) fn mysqli_connect_from_test_dsn(mysql: &mut runtime_api::MysqlState) -> Option<i64> {
     if mysqli_sqlite_compat_enabled() {
         return mysql.connect_sqlite_compat().ok();
     }
-    let Some(options) = php_runtime::MysqlConnectOptions::from_test_env() else {
+    let Some(options) = runtime_api::MysqlConnectOptions::from_test_env() else {
         mysql.record_connect_error(
             2002,
             format!(
                 "live mysqli connections require {}; selected SQLite compatibility fixtures require {}=1",
-                php_runtime::MYSQL_TEST_DSN_ENV,
-                php_runtime::MYSQLI_SQLITE_COMPAT_ENV
+                runtime_api::MYSQL_TEST_DSN_ENV,
+                runtime_api::MYSQLI_SQLITE_COMPAT_ENV
             ),
         );
         return None;
@@ -3330,7 +3330,7 @@ pub(super) fn mysqli_connect_from_test_dsn(mysql: &mut php_runtime::MysqlState) 
 }
 
 pub(super) fn mysqli_connect_from_values(
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
     values: &[Value],
 ) -> Option<i64> {
     if mysqli_sqlite_compat_enabled() {
@@ -3357,7 +3357,7 @@ pub(super) fn mysqli_connect_from_values(
 
 fn mysqli_connect_options_from_values(
     values: &[Value],
-) -> Result<php_runtime::MysqlConnectOptions, String> {
+) -> Result<runtime_api::MysqlConnectOptions, String> {
     let host = mysqli_optional_string_value(values.first())?.unwrap_or_else(|| "localhost".into());
     let user = mysqli_optional_string_value(values.get(1))?.unwrap_or_default();
     let password = mysqli_optional_string_value(values.get(2))?.unwrap_or_default();
@@ -3367,7 +3367,7 @@ fn mysqli_connect_options_from_values(
         Some(value) => u16::try_from(to_int(value)?).ok(),
     };
     let socket = mysqli_optional_string_value(values.get(5))?;
-    php_runtime::MysqlConnectOptions::from_parts_with_socket(
+    runtime_api::MysqlConnectOptions::from_parts_with_socket(
         &host,
         &user,
         &password,
@@ -3386,7 +3386,7 @@ fn mysqli_optional_string_value(value: Option<&Value>) -> Result<Option<String>,
 }
 
 pub(super) fn mysqli_sqlite_compat_enabled() -> bool {
-    std::env::var(php_runtime::MYSQLI_SQLITE_COMPAT_ENV).is_ok_and(|value| {
+    std::env::var(runtime_api::MYSQLI_SQLITE_COMPAT_ENV).is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
@@ -3407,11 +3407,11 @@ pub(super) fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
     object.set_property("insert_id", Value::Int(0));
     object.set_property(
         "client_info",
-        Value::string(php_runtime::MYSQLND_CLIENT_INFO),
+        Value::string(runtime_api::MYSQLND_CLIENT_INFO),
     );
     object.set_property(
         "client_version",
-        Value::Int(php_runtime::MYSQLND_CLIENT_VERSION),
+        Value::Int(runtime_api::MYSQLND_CLIENT_VERSION),
     );
     object
 }
@@ -3571,7 +3571,7 @@ pub(super) fn collect_mysqli_call_refs(
     Ok(refs)
 }
 
-pub(super) fn sync_mysqli_stmt_properties(object: &ObjectRef, mysql: &php_runtime::MysqlState) {
+pub(super) fn sync_mysqli_stmt_properties(object: &ObjectRef, mysql: &runtime_api::MysqlState) {
     if let Some(id) = mysqli_stmt_id(object) {
         object.set_property("affected_rows", Value::Int(mysql.stmt_affected_rows(id)));
         object.set_property("insert_id", Value::Int(mysql.stmt_insert_id(id)));
@@ -3585,7 +3585,7 @@ pub(super) fn sync_mysqli_stmt_properties(object: &ObjectRef, mysql: &php_runtim
     }
 }
 
-pub(super) fn sync_mysqli_error_properties(object: &ObjectRef, mysql: &php_runtime::MysqlState) {
+pub(super) fn sync_mysqli_error_properties(object: &ObjectRef, mysql: &runtime_api::MysqlState) {
     let errno =
         mysqli_connection_id(object).map_or_else(|| mysql.connect_errno(), |id| mysql.errno(id));
     let error =
@@ -5489,9 +5489,9 @@ impl PdoDriver {
 pub(super) fn new_pdo_object(
     class_name: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
-    mysql: &mut php_runtime::MysqlState,
-    postgres: &mut php_runtime::PostgresState,
+    sqlite: &mut runtime_api::SqliteState,
+    mysql: &mut runtime_api::MysqlState,
+    postgres: &mut runtime_api::PostgresState,
     runtime_context: &RuntimeContext,
 ) -> Result<ObjectRef, String> {
     match normalize_class_name(class_name).as_str() {
@@ -5547,9 +5547,9 @@ pub(super) fn call_pdo_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
-    mysql: &mut php_runtime::MysqlState,
-    postgres: &mut php_runtime::PostgresState,
+    sqlite: &mut runtime_api::SqliteState,
+    mysql: &mut runtime_api::MysqlState,
+    postgres: &mut runtime_api::PostgresState,
     runtime_context: &RuntimeContext,
 ) -> Result<Value, String> {
     match normalize_class_name(&object.class_name()).as_str() {
@@ -5573,9 +5573,9 @@ pub(super) fn call_pdo_connection_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
-    mysql: &mut php_runtime::MysqlState,
-    postgres: &mut php_runtime::PostgresState,
+    sqlite: &mut runtime_api::SqliteState,
+    mysql: &mut runtime_api::MysqlState,
+    postgres: &mut runtime_api::PostgresState,
     runtime_context: &RuntimeContext,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("PDO::{method}"), args)?;
@@ -5879,9 +5879,9 @@ pub(super) fn call_pdo_statement_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
-    mysql: &mut php_runtime::MysqlState,
-    postgres: &mut php_runtime::PostgresState,
+    sqlite: &mut runtime_api::SqliteState,
+    mysql: &mut runtime_api::MysqlState,
+    postgres: &mut runtime_api::PostgresState,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("PDOStatement::{method}"), args)?;
     match method {
@@ -6258,37 +6258,37 @@ pub(super) fn pdo_fetch_mode(object: &ObjectRef, value: Option<&Value>) -> Resul
 
 pub(super) fn pdo_sqlite_fetch_mode(mode: i64) -> i64 {
     match mode {
-        2 => php_runtime::SQLITE3_ASSOC,
-        3 => php_runtime::SQLITE3_NUM,
-        4 | 0 => php_runtime::SQLITE3_BOTH,
-        _ => php_runtime::SQLITE3_BOTH,
+        2 => runtime_api::SQLITE3_ASSOC,
+        3 => runtime_api::SQLITE3_NUM,
+        4 | 0 => runtime_api::SQLITE3_BOTH,
+        _ => runtime_api::SQLITE3_BOTH,
     }
 }
 
 pub(super) fn pdo_mysql_fetch_mode(mode: i64) -> i64 {
     match mode {
-        2 => php_runtime::MYSQLI_ASSOC,
-        3 => php_runtime::MYSQLI_NUM,
-        4 | 0 => php_runtime::MYSQLI_BOTH,
-        _ => php_runtime::MYSQLI_BOTH,
+        2 => runtime_api::MYSQLI_ASSOC,
+        3 => runtime_api::MYSQLI_NUM,
+        4 | 0 => runtime_api::MYSQLI_BOTH,
+        _ => runtime_api::MYSQLI_BOTH,
     }
 }
 
 pub(super) fn pdo_pgsql_fetch_mode(mode: i64) -> i64 {
     match mode {
-        2 => php_runtime::PGSQL_ASSOC,
-        3 => php_runtime::PGSQL_NUM,
-        4 | 0 => php_runtime::PGSQL_BOTH,
-        _ => php_runtime::PGSQL_BOTH,
+        2 => runtime_api::PGSQL_ASSOC,
+        3 => runtime_api::PGSQL_NUM,
+        4 | 0 => runtime_api::PGSQL_BOTH,
+        _ => runtime_api::PGSQL_BOTH,
     }
 }
 
 pub(super) fn pdo_fetch_column(
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
     result_id: i64,
     column: i64,
 ) -> Value {
-    let row = sqlite.fetch_array(result_id, php_runtime::SQLITE3_NUM);
+    let row = sqlite.fetch_array(result_id, runtime_api::SQLITE3_NUM);
     let Value::Array(array) = row else {
         return row;
     };
@@ -6299,22 +6299,22 @@ pub(super) fn pdo_fetch_column(
 }
 
 pub(super) fn pdo_fetch_row(
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
     result_id: i64,
     mode: i64,
 ) -> Value {
     if mode == 5 {
-        return pdo_assoc_row_to_object(sqlite.fetch_array(result_id, php_runtime::SQLITE3_ASSOC));
+        return pdo_assoc_row_to_object(sqlite.fetch_array(result_id, runtime_api::SQLITE3_ASSOC));
     }
     sqlite.fetch_array(result_id, pdo_sqlite_fetch_mode(mode))
 }
 
 pub(super) fn pdo_mysql_fetch_column(
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
     result_id: i64,
     column: i64,
 ) -> Value {
-    let row = mysql.fetch_array(result_id, php_runtime::MYSQLI_NUM);
+    let row = mysql.fetch_array(result_id, runtime_api::MYSQLI_NUM);
     let Value::Array(array) = row else {
         return row;
     };
@@ -6325,22 +6325,22 @@ pub(super) fn pdo_mysql_fetch_column(
 }
 
 pub(super) fn pdo_mysql_fetch_row(
-    mysql: &mut php_runtime::MysqlState,
+    mysql: &mut runtime_api::MysqlState,
     result_id: i64,
     mode: i64,
 ) -> Value {
     if mode == 5 {
-        return pdo_assoc_row_to_object(mysql.fetch_array(result_id, php_runtime::MYSQLI_ASSOC));
+        return pdo_assoc_row_to_object(mysql.fetch_array(result_id, runtime_api::MYSQLI_ASSOC));
     }
     mysql.fetch_array(result_id, pdo_mysql_fetch_mode(mode))
 }
 
 pub(super) fn pdo_pgsql_fetch_column(
-    postgres: &mut php_runtime::PostgresState,
+    postgres: &mut runtime_api::PostgresState,
     result_id: i64,
     column: i64,
 ) -> Value {
-    let row = postgres.fetch_array(result_id, php_runtime::PGSQL_NUM);
+    let row = postgres.fetch_array(result_id, runtime_api::PGSQL_NUM);
     let Value::Array(array) = row else {
         return row;
     };
@@ -6351,12 +6351,12 @@ pub(super) fn pdo_pgsql_fetch_column(
 }
 
 pub(super) fn pdo_pgsql_fetch_row(
-    postgres: &mut php_runtime::PostgresState,
+    postgres: &mut runtime_api::PostgresState,
     result_id: i64,
     mode: i64,
 ) -> Value {
     if mode == 5 {
-        return pdo_assoc_row_to_object(postgres.fetch_array(result_id, php_runtime::PGSQL_ASSOC));
+        return pdo_assoc_row_to_object(postgres.fetch_array(result_id, runtime_api::PGSQL_ASSOC));
     }
     postgres.fetch_array(result_id, pdo_pgsql_fetch_mode(mode))
 }
@@ -6584,7 +6584,7 @@ pub(super) fn pdo_errmode(object: &ObjectRef) -> i64 {
 
 pub(super) fn pdo_sqlite_failure(
     object: &ObjectRef,
-    sqlite: &php_runtime::SqliteState,
+    sqlite: &runtime_api::SqliteState,
     connection_id: Option<i64>,
 ) -> Result<Value, String> {
     let message = connection_id.map_or_else(
@@ -6599,7 +6599,7 @@ pub(super) fn pdo_sqlite_failure(
 }
 
 pub(super) fn pdo_sqlite_error_code(
-    sqlite: &php_runtime::SqliteState,
+    sqlite: &runtime_api::SqliteState,
     connection_id: Option<i64>,
 ) -> Value {
     let code = connection_id.map_or(1, |id| sqlite.last_error_code(id));
@@ -6611,7 +6611,7 @@ pub(super) fn pdo_sqlite_error_code(
 }
 
 pub(super) fn pdo_sqlite_error_info(
-    sqlite: &php_runtime::SqliteState,
+    sqlite: &runtime_api::SqliteState,
     connection_id: Option<i64>,
 ) -> Value {
     let mut info = PhpArray::new();
@@ -6637,7 +6637,7 @@ pub(super) fn pdo_sqlite_error_info(
 
 pub(super) fn pdo_mysql_failure(
     object: &ObjectRef,
-    mysql: &php_runtime::MysqlState,
+    mysql: &runtime_api::MysqlState,
     connection_id: Option<i64>,
     statement_id: Option<i64>,
 ) -> Result<Value, String> {
@@ -6656,7 +6656,7 @@ pub(super) fn pdo_mysql_failure(
 }
 
 pub(super) fn pdo_mysql_error_code(
-    mysql: &php_runtime::MysqlState,
+    mysql: &runtime_api::MysqlState,
     connection_id: Option<i64>,
     statement_id: Option<i64>,
 ) -> Value {
@@ -6677,7 +6677,7 @@ pub(super) fn pdo_mysql_error_code(
 }
 
 pub(super) fn pdo_mysql_error_info(
-    mysql: &php_runtime::MysqlState,
+    mysql: &runtime_api::MysqlState,
     connection_id: Option<i64>,
     statement_id: Option<i64>,
 ) -> Value {
@@ -6715,7 +6715,7 @@ pub(super) fn pdo_mysql_error_info(
 
 pub(super) fn pdo_pgsql_failure(
     object: &ObjectRef,
-    postgres: &php_runtime::PostgresState,
+    postgres: &runtime_api::PostgresState,
     connection_id: Option<i64>,
 ) -> Result<Value, String> {
     let message = connection_id.map_or_else(
@@ -6730,7 +6730,7 @@ pub(super) fn pdo_pgsql_failure(
 }
 
 pub(super) fn pdo_pgsql_error_code(
-    postgres: &php_runtime::PostgresState,
+    postgres: &runtime_api::PostgresState,
     connection_id: Option<i64>,
 ) -> Value {
     let sqlstate = connection_id.map_or_else(
@@ -6747,7 +6747,7 @@ pub(super) fn pdo_pgsql_error_code(
 }
 
 pub(super) fn pdo_pgsql_error_info(
-    postgres: &php_runtime::PostgresState,
+    postgres: &runtime_api::PostgresState,
     connection_id: Option<i64>,
 ) -> Value {
     let mut info = PhpArray::new();
@@ -6793,9 +6793,9 @@ pub(super) fn pdo_open_connection(
     dsn: &str,
     username: &str,
     password: &str,
-    sqlite: &mut php_runtime::SqliteState,
-    mysql: &mut php_runtime::MysqlState,
-    postgres: &mut php_runtime::PostgresState,
+    sqlite: &mut runtime_api::SqliteState,
+    mysql: &mut runtime_api::MysqlState,
+    postgres: &mut runtime_api::PostgresState,
     runtime_context: &RuntimeContext,
 ) -> Result<(PdoDriver, i64), String> {
     if dsn.starts_with("sqlite:") {
@@ -6803,7 +6803,7 @@ pub(super) fn pdo_open_connection(
         let id = sqlite
             .open(
                 &database,
-                php_runtime::SQLITE3_OPEN_READWRITE | php_runtime::SQLITE3_OPEN_CREATE,
+                runtime_api::SQLITE3_OPEN_READWRITE | runtime_api::SQLITE3_OPEN_CREATE,
             )
             .map_err(|message| {
                 format!(
@@ -6853,7 +6853,7 @@ pub(super) fn pdo_mysql_connect_options_from_dsn(
     dsn: &str,
     username: &str,
     password: &str,
-) -> Result<(php_runtime::MysqlConnectOptions, Option<String>), String> {
+) -> Result<(runtime_api::MysqlConnectOptions, Option<String>), String> {
     let Some(body) = dsn.strip_prefix("mysql:") else {
         return Err(format!(
             "E_PHP_VM_PDO_MYSQL_DSN: invalid MySQL PDO DSN {dsn:?}"
@@ -6883,7 +6883,7 @@ pub(super) fn pdo_mysql_connect_options_from_dsn(
             _ => {}
         }
     }
-    let options = php_runtime::MysqlConnectOptions::from_parts_with_socket(
+    let options = runtime_api::MysqlConnectOptions::from_parts_with_socket(
         &host,
         username,
         password,
@@ -6899,7 +6899,7 @@ pub(super) fn pdo_pgsql_connect_options_from_dsn(
     dsn: &str,
     username: &str,
     password: &str,
-) -> Result<php_runtime::PostgresConnectOptions, String> {
+) -> Result<runtime_api::PostgresConnectOptions, String> {
     let Some(body) = dsn.strip_prefix("pgsql:") else {
         return Err(format!(
             "E_PHP_VM_PDO_PGSQL_DSN: invalid PostgreSQL PDO DSN {dsn:?}"
@@ -6944,7 +6944,7 @@ pub(super) fn pdo_pgsql_connect_options_from_dsn(
         .map(|(key, value)| format!("{key}={}", pdo_pgsql_dsn_value(&value)))
         .collect::<Vec<_>>()
         .join(" ");
-    php_runtime::PostgresConnectOptions::from_dsn(dsn)
+    runtime_api::PostgresConnectOptions::from_dsn(dsn)
         .map_err(|error| format!("E_PHP_VM_PDO_PGSQL_DSN: {error}"))
 }
 
@@ -7124,11 +7124,11 @@ pub(super) fn new_xml_runtime_object(
     match class_name.as_str() {
         "domdocument" => {
             validate_xml_arg_count("DOMDocument::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_dom_document())
+            Ok(runtime_api::xml::new_dom_document())
         }
         "domnode" => {
             validate_xml_arg_count("DOMNode::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_dom_node())
+            Ok(runtime_api::xml::new_dom_node())
         }
         "domtext" => {
             validate_xml_arg_count("DOMText::__construct", &args, 0, 1)?;
@@ -7137,7 +7137,7 @@ pub(super) fn new_xml_runtime_object(
                 .map(|arg| xml_string_arg("DOMText::__construct", arg.value.clone()))
                 .transpose()?
                 .unwrap_or_default();
-            Ok(php_runtime::xml::new_dom_text(&value))
+            Ok(runtime_api::xml::new_dom_text(&value))
         }
         "domcomment" => {
             validate_xml_arg_count("DOMComment::__construct", &args, 0, 1)?;
@@ -7146,7 +7146,7 @@ pub(super) fn new_xml_runtime_object(
                 .map(|arg| xml_string_arg("DOMComment::__construct", arg.value.clone()))
                 .transpose()?
                 .unwrap_or_default();
-            Ok(php_runtime::xml::new_dom_comment(&value))
+            Ok(runtime_api::xml::new_dom_comment(&value))
         }
         "domcdatasection" => {
             validate_xml_arg_count("DOMCdataSection::__construct", &args, 0, 1)?;
@@ -7155,7 +7155,7 @@ pub(super) fn new_xml_runtime_object(
                 .map(|arg| xml_string_arg("DOMCdataSection::__construct", arg.value.clone()))
                 .transpose()?
                 .unwrap_or_default();
-            Ok(php_runtime::xml::new_dom_cdata_section(&value))
+            Ok(runtime_api::xml::new_dom_cdata_section(&value))
         }
         "domattr" => {
             validate_xml_arg_count("DOMAttr::__construct", &args, 1, 2)?;
@@ -7165,13 +7165,13 @@ pub(super) fn new_xml_runtime_object(
                 .map(|arg| xml_string_arg("DOMAttr::__construct", arg.value.clone()))
                 .transpose()?
                 .unwrap_or_default();
-            Ok(php_runtime::xml::new_dom_attr(&name, &value))
+            Ok(runtime_api::xml::new_dom_attr(&name, &value))
         }
         "domelement" => {
             validate_xml_arg_count("DOMElement::__construct", &args, 1, 1)?;
             let name = xml_string_arg("DOMElement::__construct", args[0].value.clone())?;
-            Ok(php_runtime::xml::new_dom_element(
-                &php_runtime::xml::XmlElement {
+            Ok(runtime_api::xml::new_dom_element(
+                &runtime_api::xml::XmlElement {
                     name,
                     attributes: Vec::new(),
                     children: Vec::new(),
@@ -7180,11 +7180,11 @@ pub(super) fn new_xml_runtime_object(
         }
         "domnodelist" => {
             validate_xml_arg_count("DOMNodeList::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_dom_node_list(Vec::new()))
+            Ok(runtime_api::xml::new_dom_node_list(Vec::new()))
         }
         "domnamednodemap" => {
             validate_xml_arg_count("DOMNamedNodeMap::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_dom_named_node_map(&[]))
+            Ok(runtime_api::xml::new_dom_named_node_map(&[]))
         }
         "domxpath" => {
             validate_xml_arg_count("DOMXPath::__construct", &args, 1, 1)?;
@@ -7193,12 +7193,12 @@ pub(super) fn new_xml_runtime_object(
                     "E_PHP_VM_XML_TYPE_ERROR: DOMXPath::__construct expects DOMDocument".to_owned(),
                 );
             };
-            Ok(php_runtime::xml::new_dom_xpath(&document))
+            Ok(runtime_api::xml::new_dom_xpath(&document))
         }
         "simplexmlelement" => {
             validate_xml_arg_count("SimpleXMLElement::__construct", &args, 1, 1)?;
             let xml = xml_string_arg("SimpleXMLElement::__construct", args[0].value.clone())?;
-            match php_runtime::xml::simplexml_load_string(&xml)? {
+            match runtime_api::xml::simplexml_load_string(&xml)? {
                 Value::Object(object) => Ok(object),
                 _ => Err(
                     "E_PHP_VM_XML_INTERNAL: SimpleXMLElement constructor did not return object"
@@ -7208,15 +7208,15 @@ pub(super) fn new_xml_runtime_object(
         }
         "xmlparser" => {
             validate_xml_arg_count("XMLParser::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_xml_parser())
+            Ok(runtime_api::xml::new_xml_parser())
         }
         "xmlreader" => {
             validate_xml_arg_count("XMLReader::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_xml_reader())
+            Ok(runtime_api::xml::new_xml_reader())
         }
         "xmlwriter" => {
             validate_xml_arg_count("XMLWriter::__construct", &args, 0, 0)?;
-            Ok(php_runtime::xml::new_xml_writer())
+            Ok(runtime_api::xml::new_xml_writer())
         }
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not an XML runtime class"
@@ -7236,22 +7236,22 @@ pub(super) fn call_xml_runtime_method(
         ("domdocument", "loadxml") => {
             validate_xml_value_count("DOMDocument::loadXML", &args, 1, 1)?;
             let xml = xml_string_arg("DOMDocument::loadXML", args[0].clone())?;
-            php_runtime::xml::dom_document_load_xml(object, &xml)
+            runtime_api::xml::dom_document_load_xml(object, &xml)
         }
         ("domdocument", "load") => {
             validate_xml_value_count("DOMDocument::load", &args, 1, 1)?;
             let path = xml_string_arg("DOMDocument::load", args[0].clone())?;
             let source = xml_reader_open_source(&path, runtime_context)?;
-            php_runtime::xml::dom_document_load_xml(object, &source)
+            runtime_api::xml::dom_document_load_xml(object, &source)
         }
         ("domdocument", "savexml") => {
             validate_xml_value_count("DOMDocument::saveXML", &args, 0, 0)?;
-            Ok(php_runtime::xml::dom_document_save_xml(object))
+            Ok(runtime_api::xml::dom_document_save_xml(object))
         }
         ("domdocument", "save") => {
             validate_xml_value_count("DOMDocument::save", &args, 1, 1)?;
             let path = xml_string_arg("DOMDocument::save", args[0].clone())?;
-            let Value::String(bytes) = php_runtime::xml::dom_document_save_xml(object) else {
+            let Value::String(bytes) = runtime_api::xml::dom_document_save_xml(object) else {
                 return Ok(Value::Bool(false));
             };
             if matches!(
@@ -7270,7 +7270,7 @@ pub(super) fn call_xml_runtime_method(
                 .get(1)
                 .map(|value| xml_string_arg("DOMDocument::createElement", value.clone()))
                 .transpose()?;
-            Ok(php_runtime::xml::dom_document_create_element(
+            Ok(runtime_api::xml::dom_document_create_element(
                 &name,
                 value.as_deref(),
             ))
@@ -7278,22 +7278,22 @@ pub(super) fn call_xml_runtime_method(
         ("domdocument", "createtextnode") => {
             validate_xml_value_count("DOMDocument::createTextNode", &args, 1, 1)?;
             let value = xml_string_arg("DOMDocument::createTextNode", args[0].clone())?;
-            Ok(php_runtime::xml::dom_document_create_text_node(&value))
+            Ok(runtime_api::xml::dom_document_create_text_node(&value))
         }
         ("domdocument", "createcomment") => {
             validate_xml_value_count("DOMDocument::createComment", &args, 1, 1)?;
             let value = xml_string_arg("DOMDocument::createComment", args[0].clone())?;
-            Ok(php_runtime::xml::dom_document_create_comment(&value))
+            Ok(runtime_api::xml::dom_document_create_comment(&value))
         }
         ("domdocument", "createcdatasection") => {
             validate_xml_value_count("DOMDocument::createCDATASection", &args, 1, 1)?;
             let value = xml_string_arg("DOMDocument::createCDATASection", args[0].clone())?;
-            Ok(php_runtime::xml::dom_document_create_cdata_section(&value))
+            Ok(runtime_api::xml::dom_document_create_cdata_section(&value))
         }
         ("domdocument", "createattribute") => {
             validate_xml_value_count("DOMDocument::createAttribute", &args, 1, 1)?;
             let name = xml_string_arg("DOMDocument::createAttribute", args[0].clone())?;
-            Ok(php_runtime::xml::dom_document_create_attribute(&name))
+            Ok(runtime_api::xml::dom_document_create_attribute(&name))
         }
         ("domdocument", "appendchild") => {
             validate_xml_value_count("DOMDocument::appendChild", &args, 1, 1)?;
@@ -7302,16 +7302,16 @@ pub(super) fn call_xml_runtime_method(
                     "E_PHP_VM_XML_TYPE_ERROR: DOMDocument::appendChild expects DOMNode".to_owned(),
                 );
             };
-            Ok(php_runtime::xml::dom_document_append_child(object, &child))
+            Ok(runtime_api::xml::dom_document_append_child(object, &child))
         }
         ("domdocument", "documentelement") => {
             validate_xml_value_count("DOMDocument::documentElement", &args, 0, 0)?;
-            Ok(php_runtime::xml::dom_document_element(object))
+            Ok(runtime_api::xml::dom_document_element(object))
         }
         ("domdocument", "getelementsbytagname") => {
             validate_xml_value_count("DOMDocument::getElementsByTagName", &args, 1, 1)?;
             let name = xml_string_arg("DOMDocument::getElementsByTagName", args[0].clone())?;
-            Ok(php_runtime::xml::dom_document_get_elements_by_tag_name(
+            Ok(runtime_api::xml::dom_document_get_elements_by_tag_name(
                 object, &name,
             ))
         }
@@ -7319,14 +7319,14 @@ pub(super) fn call_xml_runtime_method(
             validate_xml_value_count("DOMDocument::getElementsByTagNameNS", &args, 2, 2)?;
             let namespace = xml_string_arg("DOMDocument::getElementsByTagNameNS", args[0].clone())?;
             let local = xml_string_arg("DOMDocument::getElementsByTagNameNS", args[1].clone())?;
-            Ok(php_runtime::xml::dom_document_get_elements_by_tag_name_ns(
+            Ok(runtime_api::xml::dom_document_get_elements_by_tag_name_ns(
                 object, &namespace, &local,
             ))
         }
         ("domelement", "getelementsbytagname") => {
             validate_xml_value_count("DOMElement::getElementsByTagName", &args, 1, 1)?;
             let name = xml_string_arg("DOMElement::getElementsByTagName", args[0].clone())?;
-            Ok(php_runtime::xml::dom_element_get_elements_by_tag_name(
+            Ok(runtime_api::xml::dom_element_get_elements_by_tag_name(
                 object, &name,
             ))
         }
@@ -7334,24 +7334,24 @@ pub(super) fn call_xml_runtime_method(
             validate_xml_value_count("DOMElement::getElementsByTagNameNS", &args, 2, 2)?;
             let namespace = xml_string_arg("DOMElement::getElementsByTagNameNS", args[0].clone())?;
             let local = xml_string_arg("DOMElement::getElementsByTagNameNS", args[1].clone())?;
-            Ok(php_runtime::xml::dom_element_get_elements_by_tag_name_ns(
+            Ok(runtime_api::xml::dom_element_get_elements_by_tag_name_ns(
                 object, &namespace, &local,
             ))
         }
         ("domelement", "getattribute") => {
             validate_xml_value_count("DOMElement::getAttribute", &args, 1, 1)?;
             let name = xml_string_arg("DOMElement::getAttribute", args[0].clone())?;
-            Ok(php_runtime::xml::dom_element_get_attribute(object, &name))
+            Ok(runtime_api::xml::dom_element_get_attribute(object, &name))
         }
         ("domelement", "hasattribute") => {
             validate_xml_value_count("DOMElement::hasAttribute", &args, 1, 1)?;
             let name = xml_string_arg("DOMElement::hasAttribute", args[0].clone())?;
-            Ok(php_runtime::xml::dom_element_has_attribute(object, &name))
+            Ok(runtime_api::xml::dom_element_has_attribute(object, &name))
         }
         ("domelement", "getattributenode") => {
             validate_xml_value_count("DOMElement::getAttributeNode", &args, 1, 1)?;
             let name = xml_string_arg("DOMElement::getAttributeNode", args[0].clone())?;
-            Ok(php_runtime::xml::dom_element_get_attribute_node(
+            Ok(runtime_api::xml::dom_element_get_attribute_node(
                 object, &name,
             ))
         }
@@ -7359,14 +7359,14 @@ pub(super) fn call_xml_runtime_method(
             validate_xml_value_count("DOMElement::setAttribute", &args, 2, 2)?;
             let name = xml_string_arg("DOMElement::setAttribute", args[0].clone())?;
             let value = xml_string_arg("DOMElement::setAttribute", args[1].clone())?;
-            Ok(php_runtime::xml::dom_element_set_attribute(
+            Ok(runtime_api::xml::dom_element_set_attribute(
                 object, &name, &value,
             ))
         }
         ("domelement", "removeattribute") => {
             validate_xml_value_count("DOMElement::removeAttribute", &args, 1, 1)?;
             let name = xml_string_arg("DOMElement::removeAttribute", args[0].clone())?;
-            Ok(php_runtime::xml::dom_element_remove_attribute(
+            Ok(runtime_api::xml::dom_element_remove_attribute(
                 object, &name,
             ))
         }
@@ -7378,7 +7378,7 @@ pub(super) fn call_xml_runtime_method(
                         .to_owned(),
                 );
             };
-            Ok(php_runtime::xml::dom_element_set_attribute_node(
+            Ok(runtime_api::xml::dom_element_set_attribute_node(
                 object, &attribute,
             ))
         }
@@ -7389,34 +7389,34 @@ pub(super) fn call_xml_runtime_method(
                     "E_PHP_VM_XML_TYPE_ERROR: DOMElement::appendChild expects DOMNode".to_owned(),
                 );
             };
-            Ok(php_runtime::xml::dom_element_append_child(object, &child))
+            Ok(runtime_api::xml::dom_element_append_child(object, &child))
         }
         ("domnodelist", "item") => {
             validate_xml_value_count("DOMNodeList::item", &args, 1, 1)?;
             let index = to_int(&args[0])?;
-            Ok(php_runtime::xml::dom_node_list_item(object, index))
+            Ok(runtime_api::xml::dom_node_list_item(object, index))
         }
         ("domnamednodemap", "item") => {
             validate_xml_value_count("DOMNamedNodeMap::item", &args, 1, 1)?;
             let index = to_int(&args[0])?;
-            Ok(php_runtime::xml::dom_named_node_map_item(object, index))
+            Ok(runtime_api::xml::dom_named_node_map_item(object, index))
         }
         ("domnamednodemap", "getnameditem") => {
             validate_xml_value_count("DOMNamedNodeMap::getNamedItem", &args, 1, 1)?;
             let name = xml_string_arg("DOMNamedNodeMap::getNamedItem", args[0].clone())?;
-            Ok(php_runtime::xml::dom_named_node_map_get_named_item(
+            Ok(runtime_api::xml::dom_named_node_map_get_named_item(
                 object, &name,
             ))
         }
         ("domxpath", "query") => {
             validate_xml_value_count("DOMXPath::query", &args, 1, 1)?;
             let expression = xml_string_arg("DOMXPath::query", args[0].clone())?;
-            Ok(php_runtime::xml::dom_xpath_query(object, &expression))
+            Ok(runtime_api::xml::dom_xpath_query(object, &expression))
         }
         ("domxpath", "evaluate") => {
             validate_xml_value_count("DOMXPath::evaluate", &args, 1, 1)?;
             let expression = xml_string_arg("DOMXPath::evaluate", args[0].clone())?;
-            Ok(php_runtime::xml::dom_xpath_evaluate(object, &expression))
+            Ok(runtime_api::xml::dom_xpath_evaluate(object, &expression))
         }
         ("simplexmlelement", "asxml") | ("simplexmlelement", "savexml") => {
             let display_method = if method == "savexml" {
@@ -7425,7 +7425,7 @@ pub(super) fn call_xml_runtime_method(
                 "SimpleXMLElement::asXML"
             };
             validate_xml_value_count(display_method, &args, 0, 1)?;
-            let xml = php_runtime::xml::simplexml_as_xml(object);
+            let xml = runtime_api::xml::simplexml_as_xml(object);
             if let Some(value) = args.first()
                 && !matches!(value, Value::Null)
             {
@@ -7443,15 +7443,15 @@ pub(super) fn call_xml_runtime_method(
         }
         ("simplexmlelement", "attributes") => {
             validate_xml_value_count("SimpleXMLElement::attributes", &args, 0, 0)?;
-            Ok(php_runtime::xml::simplexml_attributes(object))
+            Ok(runtime_api::xml::simplexml_attributes(object))
         }
         ("simplexmlelement", "children") => {
             validate_xml_value_count("SimpleXMLElement::children", &args, 0, 0)?;
-            Ok(php_runtime::xml::simplexml_children(object))
+            Ok(runtime_api::xml::simplexml_children(object))
         }
         ("simplexmlelement", "getname") => {
             validate_xml_value_count("SimpleXMLElement::getName", &args, 0, 0)?;
-            Ok(php_runtime::xml::simplexml_get_name(object))
+            Ok(runtime_api::xml::simplexml_get_name(object))
         }
         ("simplexmlelement", "registerxpathnamespace") => {
             validate_xml_value_count("SimpleXMLElement::registerXPathNamespace", &args, 2, 2)?;
@@ -7459,33 +7459,33 @@ pub(super) fn call_xml_runtime_method(
                 xml_string_arg("SimpleXMLElement::registerXPathNamespace", args[0].clone())?;
             let namespace =
                 xml_string_arg("SimpleXMLElement::registerXPathNamespace", args[1].clone())?;
-            Ok(php_runtime::xml::simplexml_register_xpath_namespace(
+            Ok(runtime_api::xml::simplexml_register_xpath_namespace(
                 object, &prefix, &namespace,
             ))
         }
         ("simplexmlelement", "xpath") => {
             validate_xml_value_count("SimpleXMLElement::xpath", &args, 1, 1)?;
             let expression = xml_string_arg("SimpleXMLElement::xpath", args[0].clone())?;
-            Ok(php_runtime::xml::simplexml_xpath(object, &expression))
+            Ok(runtime_api::xml::simplexml_xpath(object, &expression))
         }
         ("simplexmlelement", "__tostring") => {
             validate_xml_value_count("SimpleXMLElement::__toString", &args, 0, 0)?;
-            Ok(php_runtime::xml::simplexml_text(object))
+            Ok(runtime_api::xml::simplexml_text(object))
         }
         ("xmlreader", "xml") => {
             validate_xml_value_count("XMLReader::XML", &args, 1, 1)?;
             let xml = xml_string_arg("XMLReader::XML", args[0].clone())?;
-            php_runtime::xml::xml_reader_xml(object, &xml)
+            runtime_api::xml::xml_reader_xml(object, &xml)
         }
         ("xmlreader", "open") => {
             validate_xml_value_count("XMLReader::open", &args, 1, 3)?;
             let path = xml_string_arg("XMLReader::open", args[0].clone())?;
             let source = xml_reader_open_source(&path, runtime_context)?;
-            php_runtime::xml::xml_reader_xml(object, &source)
+            runtime_api::xml::xml_reader_xml(object, &source)
         }
         ("xmlreader", "read") => {
             validate_xml_value_count("XMLReader::read", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_read(object))
+            Ok(runtime_api::xml::xml_reader_read(object))
         }
         ("xmlreader", "next") => {
             validate_xml_value_count("XMLReader::next", &args, 0, 1)?;
@@ -7494,74 +7494,74 @@ pub(super) fn call_xml_runtime_method(
                 .cloned()
                 .map(|value| xml_string_arg("XMLReader::next", value))
                 .transpose()?;
-            Ok(php_runtime::xml::xml_reader_next(object, name.as_deref()))
+            Ok(runtime_api::xml::xml_reader_next(object, name.as_deref()))
         }
         ("xmlreader", "getattribute") => {
             validate_xml_value_count("XMLReader::getAttribute", &args, 1, 1)?;
             let name = xml_string_arg("XMLReader::getAttribute", args[0].clone())?;
-            Ok(php_runtime::xml::xml_reader_get_attribute(object, &name))
+            Ok(runtime_api::xml::xml_reader_get_attribute(object, &name))
         }
         ("xmlreader", "getattributeno") => {
             validate_xml_value_count("XMLReader::getAttributeNo", &args, 1, 1)?;
             let index = to_int(&args[0])?;
-            Ok(php_runtime::xml::xml_reader_get_attribute_no(object, index))
+            Ok(runtime_api::xml::xml_reader_get_attribute_no(object, index))
         }
         ("xmlreader", "lookupnamespace") => {
             validate_xml_value_count("XMLReader::lookupNamespace", &args, 1, 1)?;
             let prefix = xml_string_arg("XMLReader::lookupNamespace", args[0].clone())?;
-            Ok(php_runtime::xml::xml_reader_lookup_namespace(
+            Ok(runtime_api::xml::xml_reader_lookup_namespace(
                 object, &prefix,
             ))
         }
         ("xmlreader", "movetoattribute") => {
             validate_xml_value_count("XMLReader::moveToAttribute", &args, 1, 1)?;
             let name = xml_string_arg("XMLReader::moveToAttribute", args[0].clone())?;
-            Ok(php_runtime::xml::xml_reader_move_to_attribute(
+            Ok(runtime_api::xml::xml_reader_move_to_attribute(
                 object, &name,
             ))
         }
         ("xmlreader", "movetoattributeno") => {
             validate_xml_value_count("XMLReader::moveToAttributeNo", &args, 1, 1)?;
             let index = to_int(&args[0])?;
-            Ok(php_runtime::xml::xml_reader_move_to_attribute_no(
+            Ok(runtime_api::xml::xml_reader_move_to_attribute_no(
                 object, index,
             ))
         }
         ("xmlreader", "movetofirstattribute") => {
             validate_xml_value_count("XMLReader::moveToFirstAttribute", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_move_to_first_attribute(object))
+            Ok(runtime_api::xml::xml_reader_move_to_first_attribute(object))
         }
         ("xmlreader", "movetonextattribute") => {
             validate_xml_value_count("XMLReader::moveToNextAttribute", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_move_to_next_attribute(object))
+            Ok(runtime_api::xml::xml_reader_move_to_next_attribute(object))
         }
         ("xmlreader", "movetoelement") => {
             validate_xml_value_count("XMLReader::moveToElement", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_move_to_element(object))
+            Ok(runtime_api::xml::xml_reader_move_to_element(object))
         }
         ("xmlreader", "readstring") => {
             validate_xml_value_count("XMLReader::readString", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_read_string(object))
+            Ok(runtime_api::xml::xml_reader_read_string(object))
         }
         ("xmlreader", "readinnerxml") => {
             validate_xml_value_count("XMLReader::readInnerXml", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_read_inner_xml(object))
+            Ok(runtime_api::xml::xml_reader_read_inner_xml(object))
         }
         ("xmlreader", "readouterxml") => {
             validate_xml_value_count("XMLReader::readOuterXml", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_read_outer_xml(object))
+            Ok(runtime_api::xml::xml_reader_read_outer_xml(object))
         }
         ("xmlreader", "expand") => {
             validate_xml_value_count("XMLReader::expand", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_expand(object))
+            Ok(runtime_api::xml::xml_reader_expand(object))
         }
         ("xmlreader", "close") => {
             validate_xml_value_count("XMLReader::close", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_reader_close(object))
+            Ok(runtime_api::xml::xml_reader_close(object))
         }
         ("xmlwriter", "openmemory") => {
             validate_xml_value_count("XMLWriter::openMemory", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_writer_open_memory(object))
+            Ok(runtime_api::xml::xml_writer_open_memory(object))
         }
         ("xmlwriter", "openuri") => {
             validate_xml_value_count("XMLWriter::openUri", &args, 1, 1)?;
@@ -7570,35 +7570,35 @@ pub(super) fn call_xml_runtime_method(
         }
         ("xmlwriter", "startdocument") => {
             validate_xml_value_count("XMLWriter::startDocument", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_writer_start_document(object))
+            Ok(runtime_api::xml::xml_writer_start_document(object))
         }
         ("xmlwriter", "startelement") => {
             validate_xml_value_count("XMLWriter::startElement", &args, 1, 1)?;
             let name = xml_string_arg("XMLWriter::startElement", args[0].clone())?;
-            Ok(php_runtime::xml::xml_writer_start_element(object, &name))
+            Ok(runtime_api::xml::xml_writer_start_element(object, &name))
         }
         ("xmlwriter", "writeattribute") => {
             validate_xml_value_count("XMLWriter::writeAttribute", &args, 2, 2)?;
             let name = xml_string_arg("XMLWriter::writeAttribute", args[0].clone())?;
             let value = xml_string_arg("XMLWriter::writeAttribute", args[1].clone())?;
-            Ok(php_runtime::xml::xml_writer_write_attribute(
+            Ok(runtime_api::xml::xml_writer_write_attribute(
                 object, &name, &value,
             ))
         }
         ("xmlwriter", "text") => {
             validate_xml_value_count("XMLWriter::text", &args, 1, 1)?;
             let value = xml_string_arg("XMLWriter::text", args[0].clone())?;
-            Ok(php_runtime::xml::xml_writer_text(object, &value))
+            Ok(runtime_api::xml::xml_writer_text(object, &value))
         }
         ("xmlwriter", "writecomment") => {
             validate_xml_value_count("XMLWriter::writeComment", &args, 1, 1)?;
             let value = xml_string_arg("XMLWriter::writeComment", args[0].clone())?;
-            Ok(php_runtime::xml::xml_writer_write_comment(object, &value))
+            Ok(runtime_api::xml::xml_writer_write_comment(object, &value))
         }
         ("xmlwriter", "writecdata") => {
             validate_xml_value_count("XMLWriter::writeCdata", &args, 1, 1)?;
             let value = xml_string_arg("XMLWriter::writeCdata", args[0].clone())?;
-            Ok(php_runtime::xml::xml_writer_write_cdata(object, &value))
+            Ok(runtime_api::xml::xml_writer_write_cdata(object, &value))
         }
         ("xmlwriter", "writeelement") => {
             validate_xml_value_count("XMLWriter::writeElement", &args, 1, 2)?;
@@ -7607,7 +7607,7 @@ pub(super) fn call_xml_runtime_method(
                 .get(1)
                 .map(|value| xml_string_arg("XMLWriter::writeElement", value.clone()))
                 .transpose()?;
-            Ok(php_runtime::xml::xml_writer_write_element(
+            Ok(runtime_api::xml::xml_writer_write_element(
                 object,
                 &name,
                 value.as_deref(),
@@ -7615,16 +7615,16 @@ pub(super) fn call_xml_runtime_method(
         }
         ("xmlwriter", "endelement") => {
             validate_xml_value_count("XMLWriter::endElement", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_writer_end_element(object))
+            Ok(runtime_api::xml::xml_writer_end_element(object))
         }
         ("xmlwriter", "enddocument") => {
             validate_xml_value_count("XMLWriter::endDocument", &args, 0, 0)?;
-            Ok(php_runtime::xml::xml_writer_end_document(object))
+            Ok(runtime_api::xml::xml_writer_end_document(object))
         }
         ("xmlwriter", "outputmemory") => {
             validate_xml_value_count("XMLWriter::outputMemory", &args, 0, 1)?;
             let flush = args.first().map(to_bool).transpose()?.unwrap_or(true);
-            Ok(php_runtime::xml::xml_writer_output_memory(object, flush))
+            Ok(runtime_api::xml::xml_writer_output_memory(object, flush))
         }
         ("xmlwriter", "flush") => {
             validate_xml_value_count("XMLWriter::flush", &args, 0, 1)?;
@@ -7652,7 +7652,7 @@ pub(super) fn call_normalizer_static_method(
                 .map(to_int)
                 .transpose()?
                 .unwrap_or(NORMALIZER_FORM_C);
-            php_runtime::builtins::normalize_string(&input, form)
+            runtime_api::normalize_string(&input, form)
                 .map(|value| Value::string(value.into_bytes()))
                 .ok_or_else(|| {
                     "E_PHP_RUNTIME_INTL_NORMALIZER_FORM: Normalizer::normalize(): Argument #2 ($form) must be a valid normalization form".to_owned()
@@ -7666,7 +7666,7 @@ pub(super) fn call_normalizer_static_method(
                 .map(to_int)
                 .transpose()?
                 .unwrap_or(NORMALIZER_FORM_C);
-            php_runtime::builtins::is_normalized_string(&input, form)
+            runtime_api::is_normalized_string(&input, form)
                 .map(Value::Bool)
                 .ok_or_else(|| {
                     "E_PHP_RUNTIME_INTL_NORMALIZER_FORM: Normalizer::isNormalized(): Argument #2 ($form) must be a valid normalization form".to_owned()
@@ -7683,10 +7683,10 @@ pub(super) fn intl_class_constant_value(class_name: &str, constant: &str) -> Opt
         return None;
     }
     let value = match constant {
-        "FORM_D" | "NFD" => php_runtime::builtins::NORMALIZER_FORM_D,
-        "FORM_KD" | "NFKD" => php_runtime::builtins::NORMALIZER_FORM_KD,
-        "FORM_C" | "NFC" => php_runtime::builtins::NORMALIZER_FORM_C,
-        "FORM_KC" | "NFKC" => php_runtime::builtins::NORMALIZER_FORM_KC,
+        "FORM_D" | "NFD" => runtime_api::NORMALIZER_FORM_D,
+        "FORM_KD" | "NFKD" => runtime_api::NORMALIZER_FORM_KD,
+        "FORM_C" | "NFC" => runtime_api::NORMALIZER_FORM_C,
+        "FORM_KC" | "NFKC" => runtime_api::NORMALIZER_FORM_KC,
         _ => return None,
     };
     Some(Value::Int(value))
@@ -7755,15 +7755,15 @@ pub(super) fn call_xmlwriter_static_method(
     match method.as_str() {
         "tomemory" => {
             validate_xml_value_count("XMLWriter::toMemory", &args, 0, 0)?;
-            let object = php_runtime::xml::new_xml_writer();
-            let _ = php_runtime::xml::xml_writer_open_memory(&object);
+            let object = runtime_api::xml::new_xml_writer();
+            let _ = runtime_api::xml::xml_writer_open_memory(&object);
             Ok(Value::Object(object))
         }
         "touri" => {
             validate_xml_value_count("XMLWriter::toUri", &args, 1, 1)?;
             let uri = xml_string_arg("XMLWriter::toUri", args[0].clone())?;
-            let object = php_runtime::xml::new_xml_writer();
-            let _ = php_runtime::xml::xml_writer_open_uri(&object, &uri);
+            let object = runtime_api::xml::new_xml_writer();
+            let _ = runtime_api::xml::xml_writer_open_uri(&object, &uri);
             Ok(Value::Object(object))
         }
         _ => Err(format!(
@@ -7872,11 +7872,11 @@ pub(super) fn xml_class_constant_value(class_name: &str, constant: &str) -> Opti
         return None;
     }
     let value = match constant.to_ascii_uppercase().as_str() {
-        "NONE" => php_runtime::xml::XML_READER_NONE,
-        "ELEMENT" => php_runtime::xml::XML_READER_ELEMENT,
-        "ATTRIBUTE" => php_runtime::xml::XML_READER_ATTRIBUTE,
-        "TEXT" => php_runtime::xml::XML_READER_TEXT,
-        "END_ELEMENT" => php_runtime::xml::XML_READER_END_ELEMENT,
+        "NONE" => runtime_api::xml::XML_READER_NONE,
+        "ELEMENT" => runtime_api::xml::XML_READER_ELEMENT,
+        "ATTRIBUTE" => runtime_api::xml::XML_READER_ATTRIBUTE,
+        "TEXT" => runtime_api::xml::XML_READER_TEXT,
+        "END_ELEMENT" => runtime_api::xml::XML_READER_END_ELEMENT,
         _ => return None,
     };
     Some(Value::Int(value))
@@ -7909,7 +7909,7 @@ pub(super) fn xml_writer_open_uri(
         simplexml_write_xml_file(runtime_context, uri, &[]),
         Value::Bool(true)
     ) {
-        php_runtime::xml::xml_writer_open_uri(object, uri)
+        runtime_api::xml::xml_writer_open_uri(object, uri)
     } else {
         Value::Bool(false)
     }
@@ -7920,15 +7920,15 @@ pub(super) fn xml_writer_flush(
     empty: bool,
     runtime_context: &RuntimeContext,
 ) -> Value {
-    let Some(uri) = php_runtime::xml::xml_writer_uri(object) else {
-        return php_runtime::xml::xml_writer_flush_memory(object, empty);
+    let Some(uri) = runtime_api::xml::xml_writer_uri(object) else {
+        return runtime_api::xml::xml_writer_flush_memory(object, empty);
     };
-    let bytes = php_runtime::xml::xml_writer_pending_bytes(object);
+    let bytes = runtime_api::xml::xml_writer_pending_bytes(object);
     if matches!(
         simplexml_write_xml_file(runtime_context, &uri, &bytes),
         Value::Bool(true)
     ) {
-        php_runtime::xml::xml_writer_clear_buffer(object);
+        runtime_api::xml::xml_writer_clear_buffer(object);
         Value::Int(bytes.len() as i64)
     } else {
         Value::Bool(false)
@@ -8020,7 +8020,7 @@ pub(super) fn validate_pdo_arg_count(
 pub(super) fn new_sqlite_object(
     class_name: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
     runtime_context: &RuntimeContext,
 ) -> Result<ObjectRef, String> {
     let normalized = normalize_class_name(class_name);
@@ -8033,7 +8033,7 @@ pub(super) fn new_sqlite_object(
                 .get(1)
                 .map(to_int)
                 .transpose()?
-                .unwrap_or(php_runtime::SQLITE3_OPEN_READWRITE | php_runtime::SQLITE3_OPEN_CREATE);
+                .unwrap_or(runtime_api::SQLITE3_OPEN_READWRITE | runtime_api::SQLITE3_OPEN_CREATE);
             let _encryption_key = values.get(2).map(to_string).transpose()?;
             let resolved = sqlite_resolve_database_path(&filename, runtime_context)?;
             let id = sqlite.open(&resolved, flags).map_err(|message| {
@@ -8064,7 +8064,7 @@ pub(super) fn call_sqlite_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
     runtime_context: &RuntimeContext,
 ) -> Result<Value, String> {
     let class_name = object.class_name();
@@ -8083,7 +8083,7 @@ pub(super) fn call_sqlite3_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
     runtime_context: &RuntimeContext,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("SQLite3::{method}"), args)?;
@@ -8093,7 +8093,7 @@ pub(super) fn call_sqlite3_method(
             let filename = to_string(&values[0])?.to_string_lossy();
             let flags =
                 values.get(1).map(to_int).transpose()?.unwrap_or(
-                    php_runtime::SQLITE3_OPEN_READWRITE | php_runtime::SQLITE3_OPEN_CREATE,
+                    runtime_api::SQLITE3_OPEN_READWRITE | runtime_api::SQLITE3_OPEN_CREATE,
                 );
             let _encryption_key = values.get(2).map(to_string).transpose()?;
             let resolved = sqlite_resolve_database_path(&filename, runtime_context)?;
@@ -8180,7 +8180,7 @@ pub(super) fn call_sqlite3_method(
         "escapestring" => {
             validate_sqlite_arg_count("SQLite3::escapeString", values.len(), 1, 1)?;
             let value = to_string(&values[0])?.to_string_lossy();
-            Ok(Value::string(php_runtime::sqlite::escape_string(&value)))
+            Ok(Value::string(runtime_api::sqlite::escape_string(&value)))
         }
         "busytimeout" => {
             validate_sqlite_arg_count("SQLite3::busyTimeout", values.len(), 1, 1)?;
@@ -8208,7 +8208,7 @@ pub(super) fn call_sqlite3_result_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("SQLite3Result::{method}"), args)?;
     let Some(id) = sqlite_result_id(object) else {
@@ -8221,7 +8221,7 @@ pub(super) fn call_sqlite3_result_method(
                 .first()
                 .map(to_int)
                 .transpose()?
-                .unwrap_or(php_runtime::SQLITE3_BOTH);
+                .unwrap_or(runtime_api::SQLITE3_BOTH);
             Ok(sqlite.fetch_array(id, mode))
         }
         "fetchall" => {
@@ -8230,7 +8230,7 @@ pub(super) fn call_sqlite3_result_method(
                 .first()
                 .map(to_int)
                 .transpose()?
-                .unwrap_or(php_runtime::SQLITE3_BOTH);
+                .unwrap_or(runtime_api::SQLITE3_BOTH);
             Ok(sqlite.fetch_all(id, mode))
         }
         "finalize" => {
@@ -8256,7 +8256,7 @@ pub(super) fn call_sqlite3_stmt_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
-    sqlite: &mut php_runtime::SqliteState,
+    sqlite: &mut runtime_api::SqliteState,
 ) -> Result<Value, String> {
     let values = call_args_to_positional(&format!("SQLite3Stmt::{method}"), args)?;
     match method {
@@ -8479,10 +8479,10 @@ pub(super) fn call_date_time_like_method(
         "format" => {
             validate_date_time_arg_count(&format!("{class_name}::format"), values.len(), 1, 1)?;
             let format = to_string(&values[0])?.to_string_lossy();
-            let timestamp = php_runtime::datetime::object_timestamp(&object).unwrap_or(0);
-            let timezone = php_runtime::datetime::object_timezone(&object)
-                .unwrap_or_else(|| php_runtime::datetime::DEFAULT_TIMEZONE.to_owned());
-            Ok(Value::string(php_runtime::datetime::format_timestamp(
+            let timestamp = runtime_api::datetime::object_timestamp(&object).unwrap_or(0);
+            let timezone = runtime_api::datetime::object_timezone(&object)
+                .unwrap_or_else(|| runtime_api::datetime::DEFAULT_TIMEZONE.to_owned());
+            Ok(Value::string(runtime_api::datetime::format_timestamp(
                 timestamp, &timezone, &format,
             )))
         }
@@ -8494,7 +8494,7 @@ pub(super) fn call_date_time_like_method(
                 0,
             )?;
             Ok(Value::Int(
-                php_runtime::datetime::object_timestamp(&object).unwrap_or(0),
+                runtime_api::datetime::object_timestamp(&object).unwrap_or(0),
             ))
         }
         "gettimezone" => {
@@ -8504,15 +8504,15 @@ pub(super) fn call_date_time_like_method(
                 0,
                 0,
             )?;
-            let timezone = php_runtime::datetime::object_timezone(&object)
-                .unwrap_or_else(|| php_runtime::datetime::DEFAULT_TIMEZONE.to_owned());
-            Ok(php_runtime::datetime::datetimezone_object(&timezone).unwrap_or(Value::Bool(false)))
+            let timezone = runtime_api::datetime::object_timezone(&object)
+                .unwrap_or_else(|| runtime_api::datetime::DEFAULT_TIMEZONE.to_owned());
+            Ok(runtime_api::datetime::datetimezone_object(&timezone).unwrap_or(Value::Bool(false)))
         }
         "getoffset" => {
             validate_date_time_arg_count(&format!("{class_name}::getOffset"), values.len(), 0, 0)?;
-            let timezone = php_runtime::datetime::object_timezone(&object)
-                .unwrap_or_else(|| php_runtime::datetime::DEFAULT_TIMEZONE.to_owned());
-            Ok(Value::Int(php_runtime::datetime::timezone_offset_seconds(
+            let timezone = runtime_api::datetime::object_timezone(&object)
+                .unwrap_or_else(|| runtime_api::datetime::DEFAULT_TIMEZONE.to_owned());
+            Ok(Value::Int(runtime_api::datetime::timezone_offset_seconds(
                 &timezone,
             )))
         }
@@ -8524,21 +8524,21 @@ pub(super) fn call_date_time_like_method(
                 1,
             )?;
             let timezone = date_time_timezone_name_from_value(&values[0])?;
-            php_runtime::datetime::with_timezone(&object, &timezone, immutable).ok_or_else(|| {
+            runtime_api::datetime::with_timezone(&object, &timezone, immutable).ok_or_else(|| {
                 format!("E_PHP_VM_DATETIMEZONE_INVALID: timezone {timezone:?} is unsupported")
             })
         }
         "add" => {
             validate_date_time_arg_count(&format!("{class_name}::add"), values.len(), 1, 1)?;
             let seconds = date_interval_seconds_from_value(&values[0])?;
-            Ok(php_runtime::datetime::add_interval(
+            Ok(runtime_api::datetime::add_interval(
                 &object, seconds, immutable,
             ))
         }
         "sub" => {
             validate_date_time_arg_count(&format!("{class_name}::sub"), values.len(), 1, 1)?;
             let seconds = date_interval_seconds_from_value(&values[0])?;
-            Ok(php_runtime::datetime::add_interval(
+            Ok(runtime_api::datetime::add_interval(
                 &object,
                 seconds.saturating_neg(),
                 immutable,
@@ -8548,7 +8548,7 @@ pub(super) fn call_date_time_like_method(
             validate_date_time_arg_count(&format!("{class_name}::modify"), values.len(), 1, 1)?;
             let modifier = to_string(&values[0])?.to_string_lossy();
             Ok(
-                php_runtime::datetime::modify_object(&object, &modifier, immutable)
+                runtime_api::datetime::modify_object(&object, &modifier, immutable)
                     .unwrap_or(Value::Bool(false)),
             )
         }
@@ -8569,7 +8569,7 @@ pub(super) fn call_date_time_like_method(
                     right.class_name()
                 ));
             }
-            Ok(php_runtime::datetime::diff_objects(&object, &right))
+            Ok(runtime_api::datetime::diff_objects(&object, &right))
         }
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_METHOD: method {class_name}::{method} is not defined"
@@ -8585,7 +8585,7 @@ pub(super) fn call_date_timezone_method(
     match normalize_method_name(method).as_str() {
         "getname" => {
             validate_date_time_arg_count("DateTimeZone::getName", values.len(), 0, 0)?;
-            Ok(php_runtime::datetime::object_timezone(&object)
+            Ok(runtime_api::datetime::object_timezone(&object)
                 .map_or(Value::Bool(false), Value::string))
         }
         "getoffset" => {
@@ -8605,9 +8605,9 @@ pub(super) fn call_date_timezone_method(
                     datetime.class_name()
                 ));
             }
-            let timezone = php_runtime::datetime::object_timezone(&object)
-                .unwrap_or_else(|| php_runtime::datetime::DEFAULT_TIMEZONE.to_owned());
-            Ok(Value::Int(php_runtime::datetime::timezone_offset_seconds(
+            let timezone = runtime_api::datetime::object_timezone(&object)
+                .unwrap_or_else(|| runtime_api::datetime::DEFAULT_TIMEZONE.to_owned());
+            Ok(Value::Int(runtime_api::datetime::timezone_offset_seconds(
                 &timezone,
             )))
         }
@@ -8629,7 +8629,7 @@ pub(super) fn call_date_interval_method(
             validate_date_time_arg_count("DateInterval::format", values.len(), 1, 1)?;
             let format = to_string(&values[0])?.to_string_lossy();
             let seconds = date_interval_seconds(&object)?;
-            Ok(Value::string(php_runtime::datetime::format_interval(
+            Ok(Value::string(runtime_api::datetime::format_interval(
                 seconds, &format,
             )))
         }
@@ -8673,7 +8673,7 @@ pub(super) fn date_time_timezone_name_from_value(value: &Value) -> Result<String
             object.class_name()
         ));
     }
-    php_runtime::datetime::object_timezone(&object)
+    runtime_api::datetime::object_timezone(&object)
         .ok_or_else(|| "E_PHP_VM_DATETIMEZONE_INVALID: DateTimeZone object has no name".to_owned())
 }
 

@@ -200,7 +200,7 @@ impl Vm {
                 output,
                 stack,
                 state,
-                php_runtime::PHP_E_WARNING,
+                PHP_E_WARNING,
                 &diagnostic,
             ) {
                 Ok(handled) => handled,
@@ -209,13 +209,13 @@ impl Vm {
                     return result;
                 }
             };
-            if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            if !handled && error_reporting_allows(state, PHP_E_WARNING) {
                 emit_vm_diagnostic(
                     output,
                     state,
                     &diagnostic,
-                    php_runtime::PhpDiagnosticChannel::Warning,
-                    php_runtime::PHP_E_WARNING,
+                    PhpDiagnosticChannel::Warning,
+                    PHP_E_WARNING,
                 );
                 diagnostics.push(diagnostic);
             }
@@ -2586,7 +2586,7 @@ impl Vm {
                                 message.clone(),
                                 runtime_source_span(compiled, span),
                                 stack_trace(compiled, stack),
-                                Some(php_runtime::PhpReferenceClassification::Error),
+                                Some(PhpReferenceClassification::Error),
                             );
                             stack.pop_recycle();
                             return VmResult::runtime_error_with_diagnostic(

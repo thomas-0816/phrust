@@ -117,8 +117,8 @@ pub(super) fn emit_sort_bool_compare_deprecation(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_runtime::PHP_E_DEPRECATED,
+        php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_runtime::api::PHP_E_DEPRECATED,
     );
     state.diagnostics.push(diagnostic);
 }

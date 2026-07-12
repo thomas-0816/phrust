@@ -9,12 +9,12 @@ use crate::deopt::GuardKind;
 ))]
 use php_ir::module::normalize_class_name;
 #[cfg(feature = "jit-cranelift")]
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
 #[cfg(any(
     feature = "jit-cranelift",
     all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
 ))]
-use php_runtime::Value;
+use php_runtime::api::Value;
 
 // The property-access status codes are shared by both native tiers'
 // property-load helpers (Cranelift and copy-and-patch) and reused by the
@@ -56,25 +56,25 @@ pub(super) fn jit_guard_kind_for_side_exit(reason: php_jit::SideExitReason) -> O
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_array_len_abi(value_ptr: usize, out: *mut i64) -> i32 {
     if value_ptr == 0 || out.is_null() {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     // SAFETY: Cranelift passes a pointer to a `PreparedArg.value` owned by the
     // active VM call frame and invokes this helper synchronously.
     let value = unsafe { &*(value_ptr as *const Value) };
     let mut length = 0_usize;
-    let status = php_runtime::php_jit_array_len(value, &mut length);
-    if status != php_runtime::PHP_JIT_ARRAY_STATUS_OK {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    let status = php_runtime::experimental::php_jit_array_len(value, &mut length);
+    if status != php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK {
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     let Ok(length) = i64::try_from(length) else {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     };
     // SAFETY: The pointer was checked for null and points to the native caller's
     // stack-owned output slot for the duration of this synchronous helper call.
     unsafe {
         *out = length;
     }
-    php_runtime::PHP_JIT_ARRAY_STATUS_OK
+    php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
 }
 
 #[cfg(feature = "jit-cranelift")]
@@ -85,10 +85,10 @@ pub(super) extern "C" fn jit_array_fetch_int_slow_abi(
     out: *mut i64,
 ) -> i32 {
     if value_ptr == 0 || out.is_null() {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     let Ok(index) = usize::try_from(index) else {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT;
     };
     // SAFETY: Cranelift passes a pointer to a `PreparedArg.value` owned by the
     // active VM call frame and invokes this helper synchronously.
@@ -96,7 +96,7 @@ pub(super) extern "C" fn jit_array_fetch_int_slow_abi(
     // SAFETY: Native handles allocate the out slot on the Rust stack and pass a
     // non-null pointer for the duration of this call.
     let out = unsafe { &mut *out };
-    php_runtime::php_jit_array_fetch_int_slow(value, index, out)
+    php_runtime::experimental::php_jit_array_fetch_int_slow(value, index, out)
 }
 
 #[cfg(feature = "jit-cranelift")]
@@ -161,14 +161,14 @@ pub(super) extern "C" fn jit_record_array_lookup_abi(
     out: *mut usize,
 ) -> i32 {
     if array_ptr == 0 || key_ptr == 0 || out.is_null() {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     // SAFETY: Cranelift passes pointers to `PreparedArg.value` slots owned by
     // the active VM call frame and invokes this helper synchronously.
     let array = unsafe { &*(array_ptr as *const Value) };
     // SAFETY: Same as above for the key operand.
     let key = unsafe { &*(key_ptr as *const Value) };
-    match php_runtime::php_jit_record_array_lookup(array, key) {
+    match php_runtime::experimental::php_jit_record_array_lookup(array, key) {
         Ok(value) => {
             let result = Box::new(value);
             // SAFETY: The out pointer was checked for null and points to the
@@ -177,7 +177,7 @@ pub(super) extern "C" fn jit_record_array_lookup_abi(
             unsafe {
                 *out = Box::into_raw(result) as usize;
             }
-            php_runtime::PHP_JIT_ARRAY_STATUS_OK
+            php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
         }
         Err(status) => status,
     }

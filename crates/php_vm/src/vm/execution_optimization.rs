@@ -1645,7 +1645,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         state: &ExecutionState,
-        object: &php_runtime::ObjectRef,
+        object: &php_runtime::api::ObjectRef,
     ) -> Option<CompiledClass> {
         let key = SharedClassName(object.class_name_handle());
         let epoch = state.class_table_epoch;

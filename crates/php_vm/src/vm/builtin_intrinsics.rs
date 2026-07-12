@@ -55,12 +55,14 @@ impl Vm {
                 return None;
             }
         }
-        match php_runtime::builtins::json_fast::json_encode_default_flags(&values[0]) {
+        match php_runtime::experimental::builtin_intrinsics::json_fast::json_encode_default_flags(
+            &values[0],
+        ) {
             Ok(encoded) => {
                 self.record_counter_json_encode_fast_path(encoded.len());
-                state
-                    .builtins
-                    .set_json_last_error(php_runtime::builtins::json_fast::JSON_ENCODE_NO_ERROR);
+                state.builtins.set_json_last_error(
+                    php_runtime::experimental::builtin_intrinsics::json_fast::JSON_ENCODE_NO_ERROR,
+                );
                 Some(VmResult::success_no_output(Some(Value::string(encoded))))
             }
             Err(reason) => {
@@ -109,7 +111,9 @@ impl Vm {
             }
         }
         let Some(result) =
-            php_runtime::builtins::array_intrinsics::array_slice_packed(array, *offset, length)
+            php_runtime::experimental::builtin_intrinsics::array_intrinsics::array_slice_packed(
+                array, *offset, length,
+            )
         else {
             self.record_counter_array_builtin_fast_fallback("array_slice", "array_shape");
             return None;
@@ -1298,7 +1302,7 @@ fn fast_builtin_stub_result_for_spec(
         (
             BuiltinIntrinsicKind::ImplodeStringParts,
             [Value::String(separator), Value::Array(parts)],
-        ) => php_runtime::builtins::string_intrinsics::implode_string_parts(separator, parts)
+        ) => php_runtime::experimental::builtin_intrinsics::string_intrinsics::implode_string_parts(separator, parts)
             .map(Value::String),
         (BuiltinIntrinsicKind::IsString, [value]) => {
             Some(Value::Bool(matches!(value, Value::String(_))))
@@ -1323,10 +1327,10 @@ fn fast_builtin_stub_result_for_spec(
             ))
         }
         (BuiltinIntrinsicKind::StrToLower, [Value::String(string)]) => Some(Value::String(
-            php_runtime::builtins::string_intrinsics::strtolower_ascii(string),
+            php_runtime::experimental::builtin_intrinsics::string_intrinsics::strtolower_ascii(string),
         )),
         (BuiltinIntrinsicKind::StrToUpper, [Value::String(string)]) => Some(Value::String(
-            php_runtime::builtins::string_intrinsics::strtoupper_ascii(string),
+            php_runtime::experimental::builtin_intrinsics::string_intrinsics::strtoupper_ascii(string),
         )),
         (
             BuiltinIntrinsicKind::StrReplaceScalar,
@@ -1336,18 +1340,18 @@ fn fast_builtin_stub_result_for_spec(
                 Value::String(subject),
             ],
         ) => Some(Value::String(
-            php_runtime::builtins::string_intrinsics::str_replace_scalar(search, replace, subject),
+            php_runtime::experimental::builtin_intrinsics::string_intrinsics::str_replace_scalar(search, replace, subject),
         )),
         (BuiltinIntrinsicKind::HtmlSpecialCharsDefault, [Value::String(string)]) => {
             Some(Value::String(
-                php_runtime::builtins::string_intrinsics::htmlspecialchars_default(string),
+                php_runtime::experimental::builtin_intrinsics::string_intrinsics::htmlspecialchars_default(string),
             ))
         }
         (
             BuiltinIntrinsicKind::ExplodeSingleByte,
             [Value::String(separator), Value::String(subject)],
         ) if separator.len() == 1 => Some(Value::Array(
-            php_runtime::builtins::string_intrinsics::explode_single_byte(
+            php_runtime::experimental::builtin_intrinsics::string_intrinsics::explode_single_byte(
                 separator.as_bytes()[0],
                 subject,
             ),
@@ -1362,11 +1366,11 @@ fn fast_builtin_stub_result_for_spec(
                 _ => return None,
             };
             Some(Value::String(
-                php_runtime::builtins::string_intrinsics::substr_bytes(string, *offset, length),
+                php_runtime::experimental::builtin_intrinsics::string_intrinsics::substr_bytes(string, *offset, length),
             ))
         }
         (BuiltinIntrinsicKind::TrimDefault, [Value::String(string)]) => Some(Value::String(
-            php_runtime::builtins::string_intrinsics::trim_ascii_default(string),
+            php_runtime::experimental::builtin_intrinsics::string_intrinsics::trim_ascii_default(string),
         )),
         (
             BuiltinIntrinsicKind::InArrayStrict,
@@ -1377,7 +1381,7 @@ fn fast_builtin_stub_result_for_spec(
             ],
         ) => {
             Some(Value::Bool(haystack.iter().any(|(_, value)| {
-                php_runtime::convert::identical(needle, value)
+                php_runtime::api::identical(needle, value)
             })))
         }
         _ => None,
@@ -1572,11 +1576,11 @@ pub(super) fn try_execute_simple_literal_pcre_builtin(
 
 fn simple_literal_pcre_pattern_value(
     value: &Value,
-) -> Option<php_runtime::pcre::SimpleLiteralPattern> {
+) -> Option<php_runtime::experimental::pcre::SimpleLiteralPattern> {
     let Value::String(pattern) = value else {
         return None;
     };
-    php_runtime::pcre::simple_literal_pattern(pattern)
+    php_runtime::experimental::pcre::simple_literal_pattern(pattern)
         .ok()
         .flatten()
 }
@@ -1687,7 +1691,7 @@ fn try_execute_simple_literal_preg_split(values: &[Value]) -> Option<Value> {
     let subject = simple_literal_string_value(&values[1])?;
     let limit = simple_literal_int_value(values.get(2), -1)?;
     let flags = simple_literal_int_value(values.get(3), 0)?;
-    if flags & php_runtime::pcre::PREG_SPLIT_DELIM_CAPTURE != 0 {
+    if flags & php_runtime::experimental::pcre::PREG_SPLIT_DELIM_CAPTURE != 0 {
         return None;
     }
     let mut pieces = PhpArray::new();
@@ -1726,10 +1730,10 @@ fn simple_literal_append_split_piece(
     offset: usize,
     flags: i64,
 ) {
-    if flags & php_runtime::pcre::PREG_SPLIT_NO_EMPTY != 0 && bytes.is_empty() {
+    if flags & php_runtime::experimental::pcre::PREG_SPLIT_NO_EMPTY != 0 && bytes.is_empty() {
         return;
     }
-    let value = if flags & php_runtime::pcre::PREG_SPLIT_OFFSET_CAPTURE != 0 {
+    let value = if flags & php_runtime::experimental::pcre::PREG_SPLIT_OFFSET_CAPTURE != 0 {
         Value::packed_array(vec![
             Value::string(bytes.to_vec()),
             Value::Int(offset as i64),
@@ -1749,7 +1753,7 @@ fn try_execute_simple_literal_preg_grep(values: &[Value]) -> Option<Value> {
         return None;
     };
     let flags = simple_literal_int_value(values.get(2), 0)?;
-    let invert = flags & php_runtime::pcre::PREG_GREP_INVERT != 0;
+    let invert = flags & php_runtime::experimental::pcre::PREG_GREP_INVERT != 0;
     let mut output = PhpArray::new();
     for (key, value) in input.iter() {
         let Value::String(text) = value else {

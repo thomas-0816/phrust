@@ -298,7 +298,7 @@ impl Vm {
         };
         let mut compiled_include = None;
         let mut include_path_recorded = false;
-        let loaded = if php_runtime::phar::is_phar_uri(&path) {
+        let loaded = if php_runtime::api::phar::is_phar_uri(&path) {
             self.record_counter_fallback_by_path_semantics("phar_stream");
             match load_phar_include(&path, &cwd, &self.options.runtime_context.filesystem) {
                 Ok(loaded) => loaded,
@@ -1012,14 +1012,15 @@ pub(super) fn include_failure(
 pub(super) fn load_phar_include(
     uri: &str,
     cwd: &Path,
-    filesystem: &php_runtime::FilesystemCapabilities,
+    filesystem: &php_runtime::api::FilesystemCapabilities,
 ) -> Result<LoadedInclude, VmError> {
-    let parsed = php_runtime::phar::parse_uri(uri, cwd, filesystem).map_err(|error| {
+    let parsed = php_runtime::api::phar::parse_uri(uri, cwd, filesystem).map_err(|error| {
         include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri)
     })?;
-    let bytes = php_runtime::phar::read_entry(&parsed.archive_path, &parsed.entry_path).map_err(
-        |error| include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri),
-    )?;
+    let bytes = php_runtime::api::phar::read_entry(&parsed.archive_path, &parsed.entry_path)
+        .map_err(|error| {
+            include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri)
+        })?;
     let source = String::from_utf8(bytes).map_err(|_| {
         include_vm_error(
             "E_PHP_VM_INCLUDE_READ",
@@ -1069,17 +1070,19 @@ pub(super) fn emit_include_failure_output(
 ) {
     let Some((target, reason)) = include_failure_target_and_reason(diagnostic.message()) else {
         let channel =
-            php_runtime::PhpDiagnosticChannel::from_runtime_severity(diagnostic.severity());
+            php_runtime::api::PhpDiagnosticChannel::from_runtime_severity(diagnostic.severity());
         let level = match diagnostic.severity() {
-            RuntimeSeverity::FatalError => php_runtime::PHP_E_ERROR,
-            _ => php_runtime::PHP_E_WARNING,
+            RuntimeSeverity::FatalError => php_runtime::api::PHP_E_ERROR,
+            _ => php_runtime::api::PHP_E_WARNING,
         };
         emit_vm_diagnostic(output, state, diagnostic, channel, level);
         return;
     };
     let (file, line) = source_span_file_line(compiled, span)
         .unwrap_or_else(|| ("<unknown>".to_owned(), i64::from(span.start)));
-    if display_errors_enabled(state) && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+    if display_errors_enabled(state)
+        && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING)
+    {
         let function_name = include_kind_function_name(kind);
         output.write_bytes(
             format!(
@@ -1099,7 +1102,7 @@ pub(super) fn emit_include_failure_output(
     }
     if matches!(kind, IncludeKind::Require | IncludeKind::RequireOnce)
         && display_errors_enabled(state)
-        && error_reporting_allows(state, php_runtime::PHP_E_ERROR)
+        && error_reporting_allows(state, php_runtime::api::PHP_E_ERROR)
     {
         let include_path = include_path_warning_display(state);
         output.write_bytes(

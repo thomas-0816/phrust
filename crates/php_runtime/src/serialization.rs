@@ -71,19 +71,6 @@ pub fn serialize_with_precision(
     Ok(PhpString::from_bytes(writer.output))
 }
 
-/// Serializes an object with an explicit PHP-visible property subset.
-///
-/// This is used by VM-owned magic serialization paths such as `__sleep`, where
-/// userland code selects which stored properties participate in the wire form.
-pub fn serialize_object_properties(
-    object: &ObjectRef,
-    properties: Vec<(String, Value)>,
-) -> Result<PhpString, SerializationError> {
-    let mut writer = Serializer::default();
-    writer.write_object_properties(object, properties, 0)?;
-    Ok(PhpString::from_bytes(writer.output))
-}
-
 /// Parses one PHP serialized value with bounded recursion and allocation.
 pub fn unserialize(
     input: &PhpString,
@@ -580,7 +567,7 @@ fn empty_class(name: &str) -> ClassEntry {
 #[cfg(test)]
 mod tests {
     use super::{UnserializeOptions, serialize, serialize_with_precision, unserialize};
-    use crate::{
+    use crate::api::{
         ClassEntry, ClassFlags, ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks,
         ObjectRef, PhpArray, ReferenceCell, ResourceTable, StreamFlags, StreamMetadata, Value,
     };

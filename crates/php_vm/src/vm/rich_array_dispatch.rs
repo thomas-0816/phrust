@@ -273,7 +273,7 @@ pub(super) fn execute_rich_array_instruction(
                             if let Value::Object(object) = &base
                                 && normalize_class_name(&object.class_name()) == "simplexmlelement"
                             {
-                                php_runtime::xml::simplexml_dimension(object, &key)
+                                php_runtime::api::xml::simplexml_dimension(object, &key)
                             } else if let Value::String(string) = &base {
                                 match string_offset_for_read(string, &key) {
                                     StringOffsetRead::Byte(value) => value,
@@ -289,21 +289,21 @@ pub(super) fn execute_rich_array_instruction(
                                                 output,
                                                 stack,
                                                 state,
-                                                php_runtime::PHP_E_WARNING,
+                                                php_runtime::api::PHP_E_WARNING,
                                                 &diagnostic,
                                             ) {
                                                 Ok(false)
                                                     if error_reporting_allows(
                                                         state,
-                                                        php_runtime::PHP_E_WARNING,
+                                                        php_runtime::api::PHP_E_WARNING,
                                                     ) =>
                                                 {
                                                     emit_vm_diagnostic(
                                                         output,
                                                         state,
                                                         &diagnostic,
-                                                        php_runtime::PhpDiagnosticChannel::Warning,
-                                                        php_runtime::PHP_E_WARNING,
+                                                        php_runtime::api::PhpDiagnosticChannel::Warning,
+                                                        php_runtime::api::PHP_E_WARNING,
                                                     );
                                                     diagnostics.push(diagnostic);
                                                 }
@@ -331,21 +331,21 @@ pub(super) fn execute_rich_array_instruction(
                                                 output,
                                                 stack,
                                                 state,
-                                                php_runtime::PHP_E_WARNING,
+                                                php_runtime::api::PHP_E_WARNING,
                                                 &diagnostic,
                                             ) {
                                                 Ok(false)
                                                     if error_reporting_allows(
                                                         state,
-                                                        php_runtime::PHP_E_WARNING,
+                                                        php_runtime::api::PHP_E_WARNING,
                                                     ) =>
                                                 {
                                                     emit_vm_diagnostic(
                                                         output,
                                                         state,
                                                         &diagnostic,
-                                                        php_runtime::PhpDiagnosticChannel::Warning,
-                                                        php_runtime::PHP_E_WARNING,
+                                                        php_runtime::api::PhpDiagnosticChannel::Warning,
+                                                        php_runtime::api::PHP_E_WARNING,
                                                     );
                                                     diagnostics.push(diagnostic);
                                                 }

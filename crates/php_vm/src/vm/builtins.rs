@@ -478,24 +478,24 @@ impl Vm {
             message,
             builtin_source_span(compiled, call_span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
-            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -516,24 +516,24 @@ impl Vm {
             "msg_send(): msgsnd failed: Invalid argument",
             builtin_source_span(compiled, call_span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
-            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -654,12 +654,12 @@ impl Vm {
         for diagnostic in std::mem::take(&mut result.diagnostics) {
             let (level, channel) = match diagnostic.severity() {
                 RuntimeSeverity::Warning => (
-                    php_runtime::PHP_E_WARNING,
-                    php_runtime::PhpDiagnosticChannel::Warning,
+                    php_runtime::api::PHP_E_WARNING,
+                    php_runtime::api::PhpDiagnosticChannel::Warning,
                 ),
                 RuntimeSeverity::Deprecation => (
-                    php_runtime::PHP_E_DEPRECATED,
-                    php_runtime::PhpDiagnosticChannel::Deprecated,
+                    php_runtime::api::PHP_E_DEPRECATED,
+                    php_runtime::api::PhpDiagnosticChannel::Deprecated,
                 ),
                 _ => {
                     diagnostics.push(diagnostic);
@@ -745,24 +745,24 @@ impl Vm {
             ),
             builtin_source_span(compiled, call_span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Deprecation),
+            Some(php_runtime::api::PhpReferenceClassification::Deprecation),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_DEPRECATED,
+            php_runtime::api::PHP_E_DEPRECATED,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED) {
-            Self::record_last_error(state, php_runtime::PHP_E_DEPRECATED, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_DEPRECATED) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_DEPRECATED, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Deprecated,
-                php_runtime::PHP_E_DEPRECATED,
+                php_runtime::api::PhpDiagnosticChannel::Deprecated,
+                php_runtime::api::PHP_E_DEPRECATED,
             );
             state.diagnostics.push(diagnostic);
         }

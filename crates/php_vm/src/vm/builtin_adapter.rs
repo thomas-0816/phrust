@@ -20,7 +20,7 @@ impl BuiltinTypeError<'_> {
             message.clone(),
             builtin_source_span(self.compiled, self.call_span),
             stack_trace(self.compiled, self.stack),
-            Some(php_runtime::PhpReferenceClassification::TypeError),
+            Some(php_runtime::api::PhpReferenceClassification::TypeError),
         );
         let result =
             VmResult::runtime_error_with_diagnostic(self.output.clone(), message, diagnostic);
@@ -82,7 +82,7 @@ impl InternalFunctionDispatchCache {
 #[derive(Clone, Debug, Default)]
 pub(super) struct UserStreamWrapperRegistry {
     wrappers: BTreeMap<String, UserStreamWrapperClass>,
-    open_streams: BTreeMap<php_runtime::ResourceId, UserStreamWrapperInstance>,
+    open_streams: BTreeMap<php_runtime::api::ResourceId, UserStreamWrapperInstance>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,7 +134,7 @@ impl UserStreamWrapperRegistry {
 
     pub(super) fn register_open_stream(
         &mut self,
-        resource: &php_runtime::ResourceRef,
+        resource: &php_runtime::api::ResourceRef,
         object: ObjectRef,
     ) {
         self.open_streams.insert(
@@ -148,7 +148,7 @@ impl UserStreamWrapperRegistry {
 
     pub(super) fn pending_close_object(
         &mut self,
-        id: php_runtime::ResourceId,
+        id: php_runtime::api::ResourceId,
     ) -> Option<ObjectRef> {
         let instance = self.open_streams.get_mut(&id)?;
         if instance.close_called {
@@ -158,7 +158,7 @@ impl UserStreamWrapperRegistry {
         Some(instance.object.clone())
     }
 
-    pub(super) fn pending_close_ids(&self) -> Vec<php_runtime::ResourceId> {
+    pub(super) fn pending_close_ids(&self) -> Vec<php_runtime::api::ResourceId> {
         self.open_streams
             .iter()
             .filter_map(|(id, instance)| (!instance.close_called).then_some(*id))
@@ -169,41 +169,41 @@ impl UserStreamWrapperRegistry {
 #[derive(Debug, Default)]
 pub(super) struct BuiltinAdapterState {
     pub(super) bcmath_scale: usize,
-    pub(super) strtok_state: php_runtime::StrtokState,
-    pub(super) iconv_state: php_runtime::IconvEncodingState,
-    pub(super) apcu_state: php_runtime::ApcuState,
-    pub(super) opcache_state: php_runtime::OpcacheState,
-    pub(super) soap_state: php_runtime::SoapState,
-    pub(super) openssl_error_state: php_runtime::OpenSslErrorState,
-    pub(super) gettext_state: php_runtime::GettextState,
-    pub(super) shmop_state: php_runtime::ShmopState,
-    pub(super) readline_state: php_runtime::ReadlineState,
-    pub(super) sysvmsg_state: php_runtime::SysvMessageQueueState,
-    pub(super) sysvsem_state: php_runtime::SysvSemaphoreState,
-    pub(super) sysvshm_state: php_runtime::SysvSharedMemoryState,
-    pub(super) pcntl_state: php_runtime::PcntlState,
-    pub(super) ftp_state: php_runtime::FtpState,
-    pub(super) imap_state: php_runtime::ImapState,
-    pub(super) ldap_state: php_runtime::LdapState,
-    pub(super) ssh2_state: php_runtime::Ssh2State,
-    pub(super) socket_state: php_runtime::SocketState,
-    pub(super) filesystem_state: php_runtime::FilesystemRuntimeState,
-    pub(super) stream_context_state: php_runtime::StreamContextState,
+    pub(super) strtok_state: php_runtime::api::StrtokState,
+    pub(super) iconv_state: php_runtime::api::IconvEncodingState,
+    pub(super) apcu_state: php_runtime::api::ApcuState,
+    pub(super) opcache_state: php_runtime::api::OpcacheState,
+    pub(super) soap_state: php_runtime::api::SoapState,
+    pub(super) openssl_error_state: php_runtime::api::OpenSslErrorState,
+    pub(super) gettext_state: php_runtime::api::GettextState,
+    pub(super) shmop_state: php_runtime::api::ShmopState,
+    pub(super) readline_state: php_runtime::api::ReadlineState,
+    pub(super) sysvmsg_state: php_runtime::api::SysvMessageQueueState,
+    pub(super) sysvsem_state: php_runtime::api::SysvSemaphoreState,
+    pub(super) sysvshm_state: php_runtime::api::SysvSharedMemoryState,
+    pub(super) pcntl_state: php_runtime::api::PcntlState,
+    pub(super) ftp_state: php_runtime::api::FtpState,
+    pub(super) imap_state: php_runtime::api::ImapState,
+    pub(super) ldap_state: php_runtime::api::LdapState,
+    pub(super) ssh2_state: php_runtime::api::Ssh2State,
+    pub(super) socket_state: php_runtime::api::SocketState,
+    pub(super) filesystem_state: php_runtime::api::FilesystemRuntimeState,
+    pub(super) stream_context_state: php_runtime::api::StreamContextState,
     pub(super) user_stream_wrappers: UserStreamWrapperRegistry,
     pub(super) mb_internal_encoding: String,
-    pub(super) mb_substitute_character: php_runtime::MbSubstituteCharacter,
-    pub(super) builtin_request_state: php_runtime::BuiltinRequestState,
+    pub(super) mb_substitute_character: php_runtime::api::MbSubstituteCharacter,
+    pub(super) builtin_request_state: php_runtime::api::BuiltinRequestState,
     pub(super) json_serializable_active_objects: Vec<u64>,
     pub(super) posix_last_error: i32,
-    pub(super) sqlite: php_runtime::SqliteState,
-    pub(super) mysql: php_runtime::MysqlState,
-    pub(super) postgres: php_runtime::PostgresState,
+    pub(super) sqlite: php_runtime::api::SqliteState,
+    pub(super) mysql: php_runtime::api::MysqlState,
+    pub(super) postgres: php_runtime::api::PostgresState,
     pub(super) redis_clients: RedisClientState,
     pub(super) memcached_clients: MemcachedClientState,
 }
 
 impl BuiltinAdapterState {
-    pub(super) fn pcre_state_mut(&mut self) -> &mut php_runtime::PcreRequestState {
+    pub(super) fn pcre_state_mut(&mut self) -> &mut php_runtime::api::PcreRequestState {
         self.builtin_request_state.pcre_mut()
     }
 
@@ -223,7 +223,7 @@ pub(super) fn execute_builtin_entry(
     let include_path = state_include_path(state);
     let diagnostic_display = diagnostic_display_options(state);
     if state.default_timezone.is_empty() {
-        state.default_timezone = php_runtime::datetime::DEFAULT_TIMEZONE.to_owned();
+        state.default_timezone = php_runtime::api::datetime::DEFAULT_TIMEZONE.to_owned();
     }
     if state.builtins.mb_internal_encoding.is_empty() {
         state.builtins.mb_internal_encoding = "UTF-8".to_owned();
@@ -240,7 +240,7 @@ pub(super) fn execute_builtin_entry(
     context.set_ini_registry_state(&mut state.ini);
     context.set_network_requests_enabled(state.network_requests_enabled);
     context.set_env_entries(Arc::clone(&state.env));
-    if let php_runtime::RuntimeRequestMode::Http(request) = &runtime_context.request_mode {
+    if let php_runtime::api::RuntimeRequestMode::Http(request) = &runtime_context.request_mode {
         context.set_php_input(Arc::clone(&request.raw_body));
     }
     context.set_default_timezone_state(&mut state.default_timezone);
@@ -275,7 +275,7 @@ pub(super) fn execute_builtin_entry(
     context.set_mb_internal_encoding_state(&mut state.builtins.mb_internal_encoding);
     context.set_mb_substitute_character_state(&mut state.builtins.mb_substitute_character);
     let initial_session_global = if state.request.session.status()
-        == php_runtime::PHP_SESSION_ACTIVE
+        == php_runtime::api::PHP_SESSION_ACTIVE
         || state.request.session.started()
     {
         state.request.session.data_value()
@@ -331,7 +331,7 @@ pub(super) fn execute_builtin_entry(
             {
                 error_diagnostic = error_diagnostic.with_diagnostic_payload(
                     RuntimeDiagnosticPayload::TokenizerParse(
-                        php_runtime::TokenizerParseDiagnosticContext::new(line),
+                        php_runtime::api::TokenizerParseDiagnosticContext::new(line),
                     ),
                 );
             }
@@ -438,8 +438,8 @@ pub(super) fn validate_internal_builtin_args(
                     output,
                     state,
                     diagnostic,
-                    php_runtime::PhpDiagnosticChannel::Deprecated,
-                    php_runtime::PHP_E_DEPRECATED,
+                    php_runtime::api::PhpDiagnosticChannel::Deprecated,
+                    php_runtime::api::PHP_E_DEPRECATED,
                 );
             }
             Ok(values)
@@ -746,15 +746,15 @@ fn emit_internal_by_ref_indirect_temporary_notice(
         "Only variables should be passed by reference",
         RuntimeSourceSpan::default(),
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     );
-    if error_reporting_allows(state, php_runtime::PHP_E_NOTICE) {
+    if error_reporting_allows(state, php_runtime::api::PHP_E_NOTICE) {
         emit_vm_diagnostic(
             output,
             state,
             &diagnostic,
-            php_runtime::PhpDiagnosticChannel::Notice,
-            php_runtime::PHP_E_NOTICE,
+            php_runtime::api::PhpDiagnosticChannel::Notice,
+            php_runtime::api::PHP_E_NOTICE,
         );
         state.diagnostics.push(diagnostic);
     }
@@ -772,7 +772,7 @@ pub(super) fn internal_builtin_by_ref_temporary_fatal_result(
     let source_span = span.map_or_else(RuntimeSourceSpan::default, |span| {
         runtime_source_span(compiled, span)
     });
-    let location = php_runtime::PhpDiagnosticLocation::from_span(&source_span);
+    let location = php_runtime::api::PhpDiagnosticLocation::from_span(&source_span);
     let message = format!(
         "Uncaught Error: {function}(): Argument #{position} (${param_name}) could not be passed by reference"
     );
@@ -797,7 +797,7 @@ pub(super) fn internal_builtin_by_ref_temporary_fatal_result(
             message,
             source_span,
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Error),
+            Some(php_runtime::api::PhpReferenceClassification::Error),
         ),
     )
 }

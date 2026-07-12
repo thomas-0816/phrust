@@ -293,9 +293,9 @@ impl Vm {
             RuntimeSourceSpan::default(),
             stack_trace(compiled, stack),
             Some(if level == php_std::constants::E_USER_ERROR {
-                php_runtime::PhpReferenceClassification::FatalError
+                php_runtime::api::PhpReferenceClassification::FatalError
             } else {
-                php_runtime::PhpReferenceClassification::Warning
+                php_runtime::api::PhpReferenceClassification::Warning
             }),
         );
         let handled = if level == php_std::constants::E_USER_ERROR {
@@ -440,17 +440,17 @@ impl Vm {
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
-            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             diagnostics.push(diagnostic);
         }
@@ -481,17 +481,17 @@ impl Vm {
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
-            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             diagnostics.push(diagnostic);
         }

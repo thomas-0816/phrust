@@ -623,7 +623,7 @@ pub(super) fn fetch_dim_path_value(
                 current = next;
             }
             Value::Object(object) if is_simplexml_object(object) => {
-                let next = php_runtime::xml::simplexml_dimension(object, key);
+                let next = php_runtime::api::xml::simplexml_dimension(object, key);
                 if matches!(next, Value::Null) {
                     return Ok(None);
                 }

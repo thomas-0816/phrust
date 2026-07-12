@@ -1,11 +1,11 @@
-//! Request-local inline-cache side table for performance.
+//! Request-local inline-cache side table.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
 
 use crate::bytecode::DenseCacheSlot;
 use crate::include::{
@@ -3085,7 +3085,7 @@ mod tests {
     };
     use crate::include::IncludePathFileFingerprint;
     use php_ir::ids::{BlockId, ClassId, FunctionId, InstrId};
-    use php_runtime::PhpString;
+    use php_runtime::api::PhpString;
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::sync::Arc;

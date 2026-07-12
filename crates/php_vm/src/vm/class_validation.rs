@@ -26,7 +26,7 @@ impl VmCompileError {
             message.clone(),
             runtime_source_span(compiled, span),
             Vec::new(),
-            Some(php_runtime::PhpReferenceClassification::FatalError),
+            Some(php_runtime::api::PhpReferenceClassification::FatalError),
             RuntimeDiagnosticPayload::VmCompile(payload),
         );
         Self {
@@ -279,15 +279,15 @@ pub(super) fn emit_private_final_method_warnings(
                 "Private methods cannot be final as they are never overridden by other classes",
                 source_span,
                 Vec::new(),
-                Some(php_runtime::PhpReferenceClassification::Warning),
+                Some(php_runtime::api::PhpReferenceClassification::Warning),
             );
-            if error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            if error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                 emit_vm_diagnostic(
                     output,
                     state,
                     &diagnostic,
-                    php_runtime::PhpDiagnosticChannel::Warning,
-                    php_runtime::PHP_E_WARNING,
+                    php_runtime::api::PhpDiagnosticChannel::Warning,
+                    php_runtime::api::PHP_E_WARNING,
                 );
                 state.diagnostics.push(diagnostic);
             }
@@ -313,7 +313,8 @@ pub(super) fn emit_serializable_interface_deprecations(
             )
             .unwrap_or(false)
         });
-        if !implements_serializable || !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED)
+        if !implements_serializable
+            || !error_reporting_allows(state, php_runtime::api::PHP_E_DEPRECATED)
         {
             continue;
         }
@@ -332,8 +333,8 @@ pub(super) fn emit_serializable_interface_deprecations(
             output,
             state,
             &diagnostic,
-            php_runtime::PhpDiagnosticChannel::Deprecated,
-            php_runtime::PHP_E_DEPRECATED,
+            php_runtime::api::PhpDiagnosticChannel::Deprecated,
+            php_runtime::api::PHP_E_DEPRECATED,
         );
         state.diagnostics.push(diagnostic);
     }

@@ -3,7 +3,7 @@ use crate::diagnostics::{
     write_frontend_diagnostics, write_runtime_diagnostics, write_vm_compile_fatal_line,
 };
 use crate::include_compiler::ExecutorIncludeCompiler;
-use crate::pipeline::compile_source;
+use crate::pipeline::{CompileTimingCollector, compile_source};
 use crate::request::{include_loader_for, runtime_context_for};
 use php_diagnostics::{DebugEvent, DiagnosticLayer, DiagnosticOutputFormat, DiagnosticPhase};
 use php_runtime::api::ExitStatus;
@@ -63,7 +63,11 @@ where
         "frontend analysis started",
         BTreeMap::from([("path".to_string(), input.source_path.clone())]),
     )?;
-    let pipeline = compile_source(&input.source, &input.source_path)?;
+    let pipeline = compile_source(
+        &input.source,
+        &input.source_path,
+        &mut CompileTimingCollector::disabled(),
+    )?;
     if !pipeline.ok() {
         write_frontend_diagnostics(stderr, &pipeline)?;
         return Ok(EXIT_PHP_ERROR);
@@ -203,7 +207,7 @@ where
     W: Write,
     E: Write,
 {
-    let pipeline = compile_source(source, source_path)?;
+    let pipeline = compile_source(source, source_path, &mut CompileTimingCollector::disabled())?;
     if pipeline.ok() {
         writeln!(stdout, "No syntax errors detected in {source_path}")
             .map_err(|error| error.to_string())?;

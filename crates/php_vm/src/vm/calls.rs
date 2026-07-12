@@ -2680,23 +2680,23 @@ impl Vm {
             ),
             runtime_source_span(compiled, span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -2717,23 +2717,23 @@ impl Vm {
             "Cannot unbind $this of closure using $this, this will be an error in PHP 9",
             runtime_source_span(compiled, span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -2762,23 +2762,23 @@ impl Vm {
             ),
             runtime_source_span(compiled, span),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -3319,7 +3319,7 @@ pub(super) fn value_is_numeric_string_key_ambiguity(value: &Value) -> bool {
     let Value::String(string) = effective_value(value) else {
         return false;
     };
-    php_runtime::numeric_string::array_key_has_numeric_string_ambiguity(&string)
+    php_runtime::experimental::numeric_string::array_key_has_numeric_string_ambiguity(&string)
 }
 
 pub(super) fn value_needs_vm_string_coercion_in_state(

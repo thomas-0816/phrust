@@ -395,16 +395,16 @@
   ],
   "public_surface_limits": {
     "php_runtime": {
-      "public_module_declarations": 39,
-      "public_reexport_statements": 71,
-      "root_public_module_declarations": 39,
-      "root_reexport_statements": 31
+      "public_module_declarations": 13,
+      "public_reexport_statements": 47,
+      "root_public_module_declarations": 3,
+      "root_reexport_statements": 0
     },
     "php_vm": {
-      "public_module_declarations": 24,
-      "public_reexport_statements": 44,
-      "root_public_module_declarations": 24,
-      "root_reexport_statements": 18
+      "public_module_declarations": 2,
+      "public_reexport_statements": 26,
+      "root_public_module_declarations": 2,
+      "root_reexport_statements": 0
     }
   },
   "schema_version": 1,

@@ -61,6 +61,11 @@ API_FACADE_ROOT_RE = re.compile(
     r"\bphp_(?:vm|runtime)::(?!(?:api|debug|experimental)\b)(?:\{|[A-Za-z_])"
 )
 
+API_FACADE_ROOT_MODULES = {
+    "crates/php_runtime/src/lib.rs": {"api", "debug", "experimental"},
+    "crates/php_vm/src/lib.rs": {"api", "experimental"},
+}
+
 VM_MOD_REQUIRED_SNIPPETS = [
     "mod arguments;",
     "mod builtin_callbacks;",
@@ -80,7 +85,7 @@ VM_MOD_REQUIRED_SNIPPETS = [
     "JitMode",
     "SuperinstructionMode",
     "VmOptions",
-    "pub use result::{VmControlFlow, VmResult};",
+    "pub use result::VmResult;",
     "pub struct Vm",
     "impl Vm",
     "pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult",
@@ -119,8 +124,9 @@ VM_SUBMODULE_FORBIDDEN_SNIPPETS = {
 }
 
 VM_LIB_REQUIRED_SNIPPETS = [
-    "pub mod vm;",
-    "pub use vm::{",
+    "mod vm;",
+    "pub mod api {",
+    "pub use crate::vm::{",
     "BytecodeLayoutMode",
     "DenseIncludeMode",
     "DenseJumpThreadingMode",
@@ -371,10 +377,42 @@ def check_api_facade_imports() -> None:
         )
 
 
+def check_api_facade_root_surfaces() -> None:
+    for relative, expected_modules in API_FACADE_ROOT_MODULES.items():
+        observed_modules: set[str] = set()
+        violations: list[str] = []
+        for line_number, line in enumerate(
+            read_required(relative).splitlines(), start=1
+        ):
+            if not line.startswith("pub "):
+                continue
+            module = re.fullmatch(r"pub mod ([A-Za-z0-9_]+) \{", line)
+            if module and module.group(1) in expected_modules:
+                observed_modules.add(module.group(1))
+                continue
+            violations.append(f"{relative}:{line_number}: {line}")
+        missing = sorted(expected_modules - observed_modules)
+        if violations or missing:
+            details: list[str] = []
+            if missing:
+                details.append("missing facades: " + ", ".join(missing))
+            if violations:
+                details.append("unexpected public root items: " + "; ".join(violations))
+            raise IntegrityError(
+                "php_vm/php_runtime public roots are facade-only: " + " | ".join(details)
+            )
+
+
 def check_runtime_module_boundaries_doc() -> None:
     lib = read_required("crates/php_runtime/src/lib.rs")
     doc = read_required(RUNTIME_MODULE_BOUNDARY_DOC)
-    modules = sorted(re.findall(r"^pub mod\s+([A-Za-z0-9_]+);", lib, re.MULTILINE))
+    modules = sorted(
+        re.findall(
+            r"^(?:pub(?:\(crate\))?\s+)?mod\s+([A-Za-z0-9_]+);",
+            lib,
+            re.MULTILINE,
+        )
+    )
     missing = [module for module in modules if f"`{module}`" not in doc]
     if missing:
         raise IntegrityError(
@@ -402,6 +440,7 @@ def main() -> int:
         check_generated_arginfo,
         check_php_std_consumers,
         check_api_facade_imports,
+        check_api_facade_root_surfaces,
         check_runtime_module_boundaries_doc,
         check_doc_import_guidance,
     ]

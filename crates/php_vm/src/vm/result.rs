@@ -1,12 +1,14 @@
 use crate::counters::VmCounters;
 use crate::tiering::TieringStats;
+#[cfg(test)]
 use php_diagnostics::{
     DiagnosticEnvelope, DiagnosticLayer, DiagnosticPhase, DiagnosticSeverity, DiagnosticSuggestion,
 };
-use php_runtime::{
+use php_runtime::api::{
     ExecutionStatus, OutputBuffer, ReferenceCell, RuntimeDiagnostic, RuntimeHttpResponseState,
     SessionState, UploadRegistry, Value,
 };
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 /// Execution result.
@@ -54,20 +56,8 @@ pub struct VmResult {
     pub tiering_stats: Option<Box<TieringStats>>,
 }
 
-/// VM control-flow signal, kept separate from runtime diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum VmControlFlow {
-    /// Function return.
-    Return(Option<Value>),
-    /// Future exception throw signal.
-    Throw(Value),
-    /// Loop break signal.
-    Break,
-    /// Loop continue signal.
-    Continue,
-}
-
 /// Structured VM max-step diagnostic context.
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmStepLimitDiagnostic {
     /// Configured maximum VM steps.
@@ -82,6 +72,7 @@ pub struct VmStepLimitDiagnostic {
     pub opcode: Option<String>,
 }
 
+#[cfg(test)]
 impl VmStepLimitDiagnostic {
     /// Converts this step-limit failure to the shared diagnostic envelope.
     #[must_use]

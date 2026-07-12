@@ -1111,10 +1111,11 @@ mod tests {
         BuiltinContext, JSON_ERROR_NONE, JSON_ERROR_SYNTAX, PcreServiceAccess, RuntimeSourceSpan,
         StrtokState, json_error_message,
     };
-    use crate::{
+    use crate::api::{
         ArrayKey, BuiltinRequestState, OutputBuffer, PhpArray, PhpString, ReferenceCell,
-        RuntimeHttpResponseState, RuntimeUploadedFile, SessionState, UploadRegistry, Value, pcre,
+        RuntimeHttpResponseState, RuntimeUploadedFile, SessionState, UploadRegistry, Value,
     };
+    use crate::pcre;
     use std::path::PathBuf;
 
     #[test]

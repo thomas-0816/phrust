@@ -1,5 +1,5 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use php_executor::ExecutorIncludeCompiler;
+use php_executor::{ExecutorIncludeCompiler, PhpCompileInput, PhpExecutor};
 use php_ir::ids::{BlockId, ClassId, FileId, FunctionId, InstrId};
 use php_ir::{LoweringOptions, lower_frontend_result};
 use php_lexer::{LexerConfig, lex_all};
@@ -8,7 +8,7 @@ use php_runtime::api::{
     ArrayKey, BuiltinContext, BuiltinRegistry, OutputBuffer, PhpArray, PhpString,
     RuntimeSourceSpan, Value,
 };
-use php_runtime::builtins::string_intrinsics;
+use php_runtime::experimental::builtin_intrinsics::string_intrinsics;
 use php_semantics::analyze_source;
 use php_source::byte_kernel;
 use php_syntax::parse_source_file;
@@ -16,7 +16,7 @@ use php_vm::api::{
     CompiledUnit, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache, IncludeLoader,
     InlineCacheMode, QuickeningMode, Vm, VmOptions,
 };
-use php_vm::inline_cache::{
+use php_vm::experimental::{
     CallReferenceMask, FunctionCallCacheTarget, FunctionCallShape, InlineCacheKind,
     InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget, MethodCallGuardMetadata,
     MethodCallResolvedTarget, MethodCallShape, PropertyAssignCacheTarget,
@@ -296,6 +296,35 @@ fn bench_frontend(c: &mut Criterion) {
             black_box(lowered.unit.functions.len());
         });
     });
+}
+
+fn bench_executor_compile_timing_collector(c: &mut Criterion) {
+    let executor = PhpExecutor::new();
+    let input = PhpCompileInput {
+        source: FRONTEND_SOURCE.to_owned(),
+        source_path: "compile-timing-benchmark.php".to_owned(),
+        optimization_level: Some(OptimizationLevel::O2),
+    };
+    let mut group = c.benchmark_group("performance/executor_compile_timing");
+    group.bench_function("disabled", |b| {
+        b.iter(|| {
+            black_box(
+                executor
+                    .compile_source(black_box(input.clone()))
+                    .expect("untimed benchmark compilation"),
+            );
+        });
+    });
+    group.bench_function("enabled", |b| {
+        b.iter(|| {
+            black_box(
+                executor
+                    .compile_source_with_timings(black_box(input.clone()))
+                    .expect("timed benchmark compilation"),
+            );
+        });
+    });
+    group.finish();
 }
 
 fn bench_compiled_unit_artifact(c: &mut Criterion) {
@@ -915,6 +944,6 @@ fn bench_string_intrinsics(c: &mut Criterion) {
 criterion_group! {
     name = perf_hotpaths;
     config = configured_criterion();
-    targets = bench_frontend, bench_compiled_unit_artifact, bench_vm, bench_inline_cache_lookup, bench_dynamic_symbols, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
+    targets = bench_frontend, bench_executor_compile_timing_collector, bench_compiled_unit_artifact, bench_vm, bench_inline_cache_lookup, bench_dynamic_symbols, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
 }
 criterion_main!(perf_hotpaths);

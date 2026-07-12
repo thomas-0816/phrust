@@ -355,7 +355,7 @@ pub(super) fn emit_relative_callable_deprecation(
     keyword: &str,
     source_span: RuntimeSourceSpan,
 ) {
-    if !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED) {
+    if !error_reporting_allows(state, php_runtime::api::PHP_E_DEPRECATED) {
         return;
     }
     let diagnostic = RuntimeDiagnostic::new(
@@ -370,8 +370,8 @@ pub(super) fn emit_relative_callable_deprecation(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_runtime::PHP_E_DEPRECATED,
+        php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_runtime::api::PHP_E_DEPRECATED,
     );
     state.diagnostics.push(diagnostic);
 }

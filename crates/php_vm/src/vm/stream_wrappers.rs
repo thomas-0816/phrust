@@ -146,8 +146,8 @@ impl Vm {
             return Some(VmResult::success_no_output(Some(Value::Bool(false))));
         }
         let resource = state.resources.register_stream(
-            php_runtime::StreamFlags::new(true, true, true),
-            php_runtime::StreamMetadata::new(&wrapper.protocol, "stream", &mode, &uri),
+            php_runtime::api::StreamFlags::new(true, true, true),
+            php_runtime::api::StreamMetadata::new(&wrapper.protocol, "stream", &mode, &uri),
         );
         state
             .builtins
@@ -173,7 +173,7 @@ impl Vm {
 
     pub(super) fn close_user_stream_resource(
         &self,
-        id: php_runtime::ResourceId,
+        id: php_runtime::api::ResourceId,
         call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,

@@ -10,7 +10,7 @@ use crate::error::VmError;
 use php_diagnostics::{
     DiagnosticEnvelope, DiagnosticLayer, DiagnosticPhase, DiagnosticSeverity, DiagnosticSuggestion,
 };
-use php_runtime::{FilesystemCapabilities, object::normalize_class_name, phar};
+use php_runtime::api::{FilesystemCapabilities, normalize_class_name, phar};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -17,7 +17,7 @@
 //! the currently executing dense function. Debug builds restate the bound
 //! with `debug_assert!`.
 use crate::frame::{LocalFile, RegisterFile};
-use php_runtime::{Slot, TempValue, Value};
+use php_runtime::api::{Slot, TempValue, Value};
 
 /// Borrows the register slot for a verified dense register operand.
 #[must_use]

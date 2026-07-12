@@ -6510,19 +6510,14 @@ mod tests {
         JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, PHP_QUERY_RFC3986, PHP_RAND_MAX,
         RuntimeSourceSpan, SORT_FLAG_CASE, SORT_NUMERIC, SORT_REGULAR, SORT_STRING,
     };
+    use crate::api::*;
     use crate::builtins::context::{
         JSON_BIGINT_AS_STRING, JSON_ERROR_CTRL_CHAR, JSON_ERROR_DEPTH, JSON_ERROR_NON_BACKED_ENUM,
         JSON_ERROR_NONE, JSON_ERROR_STATE_MISMATCH, JSON_FORCE_OBJECT, JSON_HEX_AMP, JSON_HEX_APOS,
         JSON_HEX_QUOT, JSON_HEX_TAG, JSON_NUMERIC_CHECK, JSON_OBJECT_AS_ARRAY,
         JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
     };
-    use crate::{
-        ArrayKey, BuiltinRegistry, ClassEntry, ClassEnumBackingType, ClassFlags,
-        ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, ClosurePayload,
-        FilesystemCapabilities, ObjectRef, OutputBuffer, PhpArray, PhpString, ReferenceCell,
-        ResourceTable, RuntimeHttpResponseState, RuntimeType, StreamFlags, StreamMetadata,
-        StrtokState, Value, datetime, layout_stats, normalize_class_name, pcre,
-    };
+    use crate::{datetime, layout_stats, pcre};
     use std::path::PathBuf;
 
     fn call(name: &str, args: Vec<Value>, output: &mut OutputBuffer) -> Value {
@@ -7579,8 +7574,8 @@ mod tests {
             Value::string("resource (stream)")
         );
 
-        assert!(resources.close(crate::ResourceId::new(1)));
-        assert!(!resources.close(crate::ResourceId::new(1)));
+        assert!(resources.close(ResourceId::new(1)));
+        assert!(!resources.close(ResourceId::new(1)));
         assert_eq!(
             call("get_resource_type", vec![resource.clone()], &mut output),
             Value::string("Unknown")
@@ -10314,7 +10309,7 @@ mod tests {
             vec![
                 Value::user_function_callable("test1"),
                 Value::closure(crate::ClosurePayload::new(3, Vec::new()).with_debug(Some(
-                    crate::ClosureDebugInfo {
+                    ClosureDebugInfo {
                         name: "{closure:/tmp/source.php:7}".to_owned(),
                         file: "/tmp/source.php".to_owned(),
                         line: 7,
@@ -10332,7 +10327,7 @@ mod tests {
                             Value::Int(2),
                         )],
                     )
-                    .with_debug(Some(crate::ClosureDebugInfo {
+                    .with_debug(Some(ClosureDebugInfo {
                         name: "{closure:/tmp/source.php:9}".to_owned(),
                         file: "/tmp/source.php".to_owned(),
                         line: 9,
@@ -10390,7 +10385,7 @@ mod tests {
                     )],
                 )
                 .with_bound_this(Some(bound_this))
-                .with_debug(Some(crate::ClosureDebugInfo {
+                .with_debug(Some(ClosureDebugInfo {
                     name: "{closure:/tmp/order.php:3}".to_owned(),
                     file: "/tmp/order.php".to_owned(),
                     line: 3,

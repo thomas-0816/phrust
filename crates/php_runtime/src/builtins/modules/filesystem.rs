@@ -1162,7 +1162,7 @@ fn disk_space_value(context: &mut BuiltinContext<'_>, name: &str, value: &Value)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FilesystemCapabilities, OutputBuffer, RuntimeUploadedFile, UploadRegistry};
+    use crate::api::{FilesystemCapabilities, OutputBuffer, RuntimeUploadedFile, UploadRegistry};
 
     #[allow(unsafe_code)] // test compares against the same host libc oracle
     #[cfg(unix)]

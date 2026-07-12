@@ -9,7 +9,7 @@ use super::{
 use crate::bytecode::DenseCacheSlot;
 use crate::include::IncludePathFileFingerprint;
 use php_ir::ids::FunctionId;
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
 use std::path::PathBuf;
 
 #[test]

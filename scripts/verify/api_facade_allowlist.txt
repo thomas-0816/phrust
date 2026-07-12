@@ -4,6 +4,5 @@
 #   path|relative/rust/file.rs|reason
 #   path-prefix|relative/path/prefix/|reason
 #
-# Prefer php_runtime::api, php_runtime::debug, php_runtime::experimental,
-# php_vm::api, or php_vm::experimental for new imports.
-path-prefix|crates/php_vm/src/|php_vm implementation still consumes runtime internals directly during facade migration
+# No workspace source exceptions remain. Use php_runtime::api/debug/experimental
+# and php_vm::api/experimental.

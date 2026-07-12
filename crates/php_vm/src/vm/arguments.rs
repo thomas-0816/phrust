@@ -714,7 +714,7 @@ fn by_ref_value_given_warning(
         ),
         source_span,
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     )
 }
 

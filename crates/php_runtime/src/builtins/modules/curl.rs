@@ -2748,7 +2748,7 @@ struct CurlResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BuiltinRequestState, OutputBuffer, ReferenceCell};
+    use crate::api::{BuiltinRequestState, OutputBuffer, ReferenceCell};
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
     use std::thread;

@@ -26,13 +26,13 @@ impl Vm {
                 if let Some(diagnostic) =
                     self.inaccessible_destructor_warning(compiled, &stack, &entry)
                 {
-                    if error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                    if error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                         emit_vm_diagnostic(
                             output,
                             state,
                             &diagnostic,
-                            php_runtime::PhpDiagnosticChannel::Warning,
-                            php_runtime::PHP_E_WARNING,
+                            php_runtime::api::PhpDiagnosticChannel::Warning,
+                            php_runtime::api::PHP_E_WARNING,
                         );
                         diagnostics.push(diagnostic);
                     }

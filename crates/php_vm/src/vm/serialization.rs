@@ -777,24 +777,24 @@ impl Vm {
                 .map(|span| runtime_source_span(compiled, span))
                 .unwrap_or_default(),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         );
         let handled = self.dispatch_error_handler(
             compiled,
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
-            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -908,7 +908,7 @@ pub(super) fn validate_hash_context_unserialize_payload(payload: &PhpArray) -> O
     if flags & HASH_HMAC_FLAG != 0 {
         return Some("HashContext with HASH_HMAC option cannot be serialized".to_owned());
     }
-    if !php_runtime::builtins::hash_algorithm_exists(&algorithm) {
+    if !php_runtime::api::hash_algorithm_exists(&algorithm) {
         return Some("Unknown hash algorithm".to_owned());
     }
     let internals = match payload.get(&ArrayKey::Int(2)).map(effective_value) {

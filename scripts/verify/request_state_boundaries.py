@@ -127,7 +127,7 @@ def main() -> int:
             failures.append(f"RequestLifecycleState is missing request field: {field}")
     if (
         vm_adapter_state.count(
-            "builtin_request_state: php_runtime::BuiltinRequestState"
+            "builtin_request_state: php_runtime::api::BuiltinRequestState"
         )
         != 1
     ):

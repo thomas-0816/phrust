@@ -17,16 +17,16 @@ pub(super) fn emit_spl_array_access_bind_reference_notice(
         ),
         runtime_source_span(compiled, span),
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     );
-    if error_reporting_allows(state, php_runtime::PHP_E_NOTICE) {
+    if error_reporting_allows(state, php_runtime::api::PHP_E_NOTICE) {
         let leading_newline = !output.as_bytes().is_empty();
         emit_vm_diagnostic_with_options(
             output,
             state,
             &diagnostic,
-            php_runtime::PhpDiagnosticChannel::Notice,
-            php_runtime::PHP_E_NOTICE,
+            php_runtime::api::PhpDiagnosticChannel::Notice,
+            php_runtime::api::PHP_E_NOTICE,
             leading_newline,
         );
         state.diagnostics.push(diagnostic);
@@ -51,15 +51,15 @@ pub(super) fn emit_static_property_as_non_static_notice(
         ),
         runtime_source_span(compiled, span),
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     );
-    if error_reporting_allows(state, php_runtime::PHP_E_NOTICE) {
+    if error_reporting_allows(state, php_runtime::api::PHP_E_NOTICE) {
         emit_vm_diagnostic(
             output,
             state,
             &diagnostic,
-            php_runtime::PhpDiagnosticChannel::Notice,
-            php_runtime::PHP_E_NOTICE,
+            php_runtime::api::PhpDiagnosticChannel::Notice,
+            php_runtime::api::PHP_E_NOTICE,
         );
         state.diagnostics.push(diagnostic);
     }
@@ -607,7 +607,7 @@ pub(super) fn php_empty(value: &Value) -> Result<bool, String> {
 pub(super) fn php_empty_access_value(value: &Value) -> Result<bool, String> {
     match effective_value(value) {
         Value::Object(object) if is_simplexml_object(&object) => {
-            Ok(php_runtime::xml::simplexml_empty_access(&object))
+            Ok(php_runtime::api::xml::simplexml_empty_access(&object))
         }
         value => php_empty(&value),
     }
@@ -629,7 +629,7 @@ pub(super) fn illegal_string_offset_warning(
         format!("Illegal string offset \"{key}\""),
         span,
         stack_trace,
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     )
 }
 
@@ -644,7 +644,7 @@ pub(super) fn uninitialized_string_offset_warning(
         format!("Uninitialized string offset {index}"),
         span,
         stack_trace,
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     )
 }
 
@@ -663,7 +663,7 @@ pub(super) fn undefined_array_key_warning(
         format!("Undefined array key {key}"),
         span,
         stack_trace,
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     )
 }
 
@@ -678,7 +678,7 @@ pub(super) fn undefined_array_string_key_warning(
         format!("Undefined array key \"{}\"", key.to_string_lossy()),
         span,
         stack_trace,
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     )
 }
 
@@ -696,7 +696,7 @@ pub(super) fn array_offset_on_scalar_warning(
         ),
         span,
         stack_trace,
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     )
 }
 

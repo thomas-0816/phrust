@@ -1155,7 +1155,7 @@ mod tests {
     // heap-handle shape of the native tier: the array-tag guard fires before the
     // call (a non-array side-exits), and a helper fallback (a non-packed array in
     // the VM) also side-exits — only a plain packed array returns natively. The
-    // helper here stands in for `php_runtime::php_jit_array_len` (php_jit cannot
+    // helper here stands in for `php_runtime::experimental::php_jit_array_len` (php_jit cannot
     // depend on php_runtime), exercising the exact call boundary and ABI.
     #[cfg(all(unix, target_arch = "aarch64"))]
     #[test]

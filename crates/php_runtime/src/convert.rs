@@ -642,7 +642,7 @@ fn type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use crate::api::{
         AttributeEntry, ClassConstantEntry, ClassEntry, ClassEnumCaseEntry, ClassFlags,
         ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, ObjectRef,
     };
@@ -984,12 +984,12 @@ mod tests {
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
-            properties: vec![crate::ClassPropertyEntry {
+            properties: vec![ClassPropertyEntry {
                 name: "value".to_owned(),
                 default: Value::Int(1),
                 type_: None,
-                flags: crate::ClassPropertyFlags::default(),
-                hooks: crate::ClassPropertyHooks::default(),
+                flags: ClassPropertyFlags::default(),
+                hooks: ClassPropertyHooks::default(),
                 attributes: Vec::new(),
             }],
             constants: Vec::new(),

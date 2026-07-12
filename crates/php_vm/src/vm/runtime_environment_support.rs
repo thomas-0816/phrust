@@ -1300,7 +1300,7 @@ pub(super) fn auto_start_session_if_configured(
     source_span: RuntimeSourceSpan,
 ) {
     if !ini_bool(&state.ini, "session.auto_start")
-        || state.request.session.status() == php_runtime::PHP_SESSION_ACTIVE
+        || state.request.session.status() == php_runtime::api::PHP_SESSION_ACTIVE
     {
         return;
     }
@@ -1319,7 +1319,7 @@ pub(super) fn auto_start_session_if_configured(
         .session
         .start_with_policy(id_length, strict_mode);
     state.request.session.mark_started_automatically();
-    let location = php_runtime::PhpDiagnosticLocation::from_span(&source_span);
+    let location = php_runtime::api::PhpDiagnosticLocation::from_span(&source_span);
     state
         .request
         .session
@@ -1513,7 +1513,7 @@ pub(super) fn process_warning_result(
             message,
             RuntimeSourceSpan::default(),
             stack_trace,
-            Some(php_runtime::PhpReferenceClassification::Warning),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
         )],
     )
 }

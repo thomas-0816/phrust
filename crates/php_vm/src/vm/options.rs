@@ -3,7 +3,7 @@ use crate::include::{IncludeCache, IncludeCompiler, IncludeLoader};
 use crate::inline_cache::InlineCacheMode;
 use crate::quickening::{QuickeningMode, QuickeningSiteSnapshot};
 use crate::tiering::TieringOptions;
-use php_runtime::RuntimeContext;
+use php_runtime::api::RuntimeContext;
 use std::path::PathBuf;
 use std::sync::Arc;
 

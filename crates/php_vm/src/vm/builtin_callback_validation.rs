@@ -18,7 +18,7 @@ pub(super) fn array_callback_type_error(
         message.clone(),
         builtin_source_span(compiled, None),
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::TypeError),
+        Some(php_runtime::api::PhpReferenceClassification::TypeError),
     );
     VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
 }

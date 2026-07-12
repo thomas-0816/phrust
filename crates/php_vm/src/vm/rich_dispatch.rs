@@ -276,19 +276,19 @@ impl Vm {
                     output,
                     stack,
                     state,
-                    php_runtime::PHP_E_WARNING,
+                    php_runtime::api::PHP_E_WARNING,
                     &diagnostic,
                 ) {
                     Ok(handled) => handled,
                     Err(result) => return result,
                 };
-                if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                     emit_vm_diagnostic(
                         output,
                         state,
                         &diagnostic,
-                        php_runtime::PhpDiagnosticChannel::Warning,
-                        php_runtime::PHP_E_WARNING,
+                        php_runtime::api::PhpDiagnosticChannel::Warning,
+                        php_runtime::api::PHP_E_WARNING,
                     );
                     diagnostics.push(diagnostic);
                 }
@@ -1076,21 +1076,21 @@ impl Vm {
                                         output,
                                         stack,
                                         state,
-                                        php_runtime::PHP_E_WARNING,
+                                        php_runtime::api::PHP_E_WARNING,
                                         &diagnostic,
                                     ) {
                                         Ok(handled) => handled,
                                         Err(result) => return result,
                                     };
                                     if !handled
-                                        && error_reporting_allows(state, php_runtime::PHP_E_WARNING)
+                                        && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING)
                                     {
                                         emit_vm_diagnostic(
                                             output,
                                             state,
                                             &diagnostic,
-                                            php_runtime::PhpDiagnosticChannel::Warning,
-                                            php_runtime::PHP_E_WARNING,
+                                            php_runtime::api::PhpDiagnosticChannel::Warning,
+                                            php_runtime::api::PHP_E_WARNING,
                                         );
                                         diagnostics.push(diagnostic);
                                     }
@@ -1296,7 +1296,7 @@ impl Vm {
                                 message.clone(),
                                 runtime_source_span(compiled, instruction.span),
                                 stack_trace(compiled, stack),
-                                Some(php_runtime::PhpReferenceClassification::Error),
+                                Some(php_runtime::api::PhpReferenceClassification::Error),
                             );
                             let result = VmResult::runtime_error_with_diagnostic(
                                 output.clone(),
@@ -2838,13 +2838,13 @@ impl Vm {
                         let (runtime_severity, channel, level) = match severity {
                             IrDiagnosticSeverity::Warning => (
                                 RuntimeSeverity::Warning,
-                                php_runtime::PhpDiagnosticChannel::Warning,
-                                php_runtime::PHP_E_WARNING,
+                                php_runtime::api::PhpDiagnosticChannel::Warning,
+                                php_runtime::api::PHP_E_WARNING,
                             ),
                             IrDiagnosticSeverity::Deprecation => (
                                 RuntimeSeverity::Deprecation,
-                                php_runtime::PhpDiagnosticChannel::Deprecated,
-                                php_runtime::PHP_E_DEPRECATED,
+                                php_runtime::api::PhpDiagnosticChannel::Deprecated,
+                                php_runtime::api::PHP_E_DEPRECATED,
                             ),
                         };
                         let diagnostic = RuntimeDiagnostic::new(
@@ -3321,7 +3321,7 @@ impl Vm {
                         };
                         let frame = stack.frame_mut(frame_index).expect("frame is active");
                         let _source = layout_source::enter(
-                            php_runtime::layout_stats::SOURCE_RETURN_REFERENCE_BINDING,
+                            php_runtime::experimental::layout_stats::SOURCE_RETURN_REFERENCE_BINDING,
                         );
                         match frame.locals.ensure_reference_cell(*local) {
                             Ok(reference) => Some(reference),

@@ -3,7 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use php_ir::instruction::{BinaryOp, InstructionKind};
-use php_runtime::{OutputStats, PhpArrayShapeKind, PhpArrayShapeLookupFallback, Slot, TempValue};
+use php_runtime::api::{
+    OutputStats, PhpArrayShapeKind, PhpArrayShapeLookupFallback, Slot, TempValue,
+};
+use php_runtime::experimental::{layout_stats, numeric_string};
 
 use crate::aliasing::{AliasState, alias_transition_key};
 use crate::bytecode::DenseOpcode;
@@ -1106,10 +1109,7 @@ impl VmCounters {
         self.persistent_engine_bytes = bytes;
     }
 
-    pub(crate) fn record_runtime_layout_stats(
-        &mut self,
-        stats: php_runtime::layout_stats::RuntimeLayoutStats,
-    ) {
+    pub(crate) fn record_runtime_layout_stats(&mut self, stats: layout_stats::RuntimeLayoutStats) {
         self.value_clones += stats.value_clones;
         self.string_allocations += stats.string_allocations;
         self.array_handle_clones += stats.array_handle_clones;
@@ -1173,7 +1173,7 @@ impl VmCounters {
 
     pub(crate) fn record_runtime_layout_source_stats(
         &mut self,
-        stats: php_runtime::layout_stats::RuntimeLayoutSourceStats,
+        stats: layout_stats::RuntimeLayoutSourceStats,
     ) {
         merge_static_counter_map(
             &mut self.value_clone_by_source_family,
@@ -1726,7 +1726,7 @@ impl VmCounters {
 
     pub(crate) fn record_numeric_string_cache_stats(
         &mut self,
-        stats: php_runtime::numeric_string::NumericStringCacheStats,
+        stats: numeric_string::NumericStringCacheStats,
     ) {
         self.numeric_string_classify_calls += stats.classify_calls;
         self.numeric_string_cache_hits += stats.hits;
@@ -5708,10 +5708,13 @@ fn merge_static_counter_map(
 
 #[cfg(test)]
 mod tests {
-    use crate::{AliasState, InlineCacheKind, InlineCacheObservation, QuickeningObservation};
+    use crate::experimental::{
+        AliasState, InlineCacheKind, InlineCacheObservation, QuickeningObservation,
+    };
     use php_ir::ids::RegId;
     use php_ir::instruction::{BinaryOp, InstructionKind};
-    use php_runtime::{PhpArrayShapeKind, PhpArrayShapeLookupFallback};
+    use php_runtime::api::{PhpArrayShapeKind, PhpArrayShapeLookupFallback};
+    use php_runtime::experimental::{layout_stats, numeric_string};
     use std::collections::BTreeMap;
 
     use super::{
@@ -5752,7 +5755,7 @@ mod tests {
         counters.record_dequickened_by_reference(AliasState::PropertyOrArrayDimReference);
         counters.record_ic_invalidated_by_reference(AliasState::PropertyOrArrayDimReference);
         counters.record_dense_bytecode_fallback_by_reference(AliasState::UnknownAliasing);
-        counters.record_runtime_layout_stats(php_runtime::layout_stats::RuntimeLayoutStats {
+        counters.record_runtime_layout_stats(layout_stats::RuntimeLayoutStats {
             value_clones: 11,
             string_allocations: 7,
             array_handle_clones: 5,
@@ -5792,17 +5795,15 @@ mod tests {
             record_to_mixed_ambiguous_key: 151,
             record_to_mixed_generic_mutation: 157,
         });
-        counters.record_runtime_layout_source_stats(
-            php_runtime::layout_stats::RuntimeLayoutSourceStats {
-                value_clone_by_family: BTreeMap::from([
-                    ("stack_register_local_move", 5),
-                    ("return_value", 2),
-                ]),
-                array_handle_clone_by_family: BTreeMap::from([("array_element_read", 3)]),
-                cow_separation_by_family: BTreeMap::from([("by_ref_argument_binding", 2)]),
-                reference_cell_creation_by_family: BTreeMap::from([("by_ref_argument_binding", 1)]),
-            },
-        );
+        counters.record_runtime_layout_source_stats(layout_stats::RuntimeLayoutSourceStats {
+            value_clone_by_family: BTreeMap::from([
+                ("stack_register_local_move", 5),
+                ("return_value", 2),
+            ]),
+            array_handle_clone_by_family: BTreeMap::from([("array_element_read", 3)]),
+            cow_separation_by_family: BTreeMap::from([("by_ref_argument_binding", 2)]),
+            reference_cell_creation_by_family: BTreeMap::from([("by_ref_argument_binding", 1)]),
+        });
         counters.record_autoload();
         counters.record_literal_intern(false);
         counters.record_literal_intern(true);
@@ -5826,15 +5827,13 @@ mod tests {
         counters.record_small_map_lookup_miss();
         counters.record_array_shape_lookup_fallback(PhpArrayShapeLookupFallback::KeyCoercion);
         counters.record_array_shape_lookup_fallback(PhpArrayShapeLookupFallback::OrderSemantics);
-        counters.record_numeric_string_cache_stats(
-            php_runtime::numeric_string::NumericStringCacheStats {
-                classify_calls: 7,
-                hits: 2,
-                misses: 3,
-                warning_sensitive_fallbacks: 4,
-                overflow_precision_fallbacks: 5,
-            },
-        );
+        counters.record_numeric_string_cache_stats(numeric_string::NumericStringCacheStats {
+            classify_calls: 7,
+            hits: 2,
+            misses: 3,
+            warning_sensitive_fallbacks: 4,
+            overflow_precision_fallbacks: 5,
+        });
         counters.record_numeric_string_specialization_hit();
         counters.record_typecheck_fast_path(false);
         counters.record_typecheck_fast_path(true);

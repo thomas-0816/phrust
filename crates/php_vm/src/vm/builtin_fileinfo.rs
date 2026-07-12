@@ -63,7 +63,7 @@ impl FileinfoMethodCall<'_> {
                 },
             };
             if let Err(message) =
-                php_runtime::builtins::validate_fileinfo_options(flags, magic_file.as_deref())
+                php_runtime::api::validate_fileinfo_options(flags, magic_file.as_deref())
             {
                 return self.vm.runtime_error(
                     self.output,

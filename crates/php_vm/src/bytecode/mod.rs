@@ -19,7 +19,7 @@ use php_ir::instruction::{IrCallArg, IrCallArgValueKind, Terminator, TerminatorK
 use php_ir::rule_selection::{RuleKind, RuleSelection, RuleSelectionReport};
 use php_ir::source_map::{IrSourceMapTarget, IrSpan};
 use php_ir::{BinaryOp, CompareOp, Instruction, InstructionKind, IrFunction, IrUnit, Operand};
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
 
 use crate::inline_cache::{InlineCacheKind, inline_cache_kind_for_instruction};
 
@@ -2156,6 +2156,7 @@ pub struct DenseLowerError {
 }
 
 /// Stable dense verifier error code.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DenseVerifyErrorCode {
     /// Format version is not supported.

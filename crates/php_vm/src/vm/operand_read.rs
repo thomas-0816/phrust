@@ -5,7 +5,7 @@ use crate::frame::CallStack;
 use php_ir::ids::{ConstId, RegId};
 use php_ir::module::IrUnit;
 use php_ir::operand::Operand;
-use php_runtime::{Slot, Value, to_bool};
+use php_runtime::api::{Slot, Value, to_bool};
 
 pub(super) enum DenseOperandRead<'a> {
     Borrowed(&'a Value),
@@ -71,7 +71,7 @@ impl Vm {
         compiled: &CompiledUnit,
         stack: &CallStack,
         operand: DenseOperand,
-        source_family: php_runtime::layout_stats::LayoutSourceFamily,
+        source_family: php_runtime::experimental::layout_stats::LayoutSourceFamily,
     ) -> Result<Value, String> {
         match operand.kind {
             DenseOperandKind::Register => {

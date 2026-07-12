@@ -7,8 +7,7 @@ use crate::input::{
     PhpExecutorOptions, PhpRequestExecutionInput,
 };
 use crate::pipeline::{
-    CompilePhaseTimings, Pipeline, apply_optimization, apply_optimization_with_timings,
-    compile_source, compile_source_with_timings,
+    CompilePhaseTimings, CompileTimingCollector, Pipeline, apply_optimization, compile_source,
 };
 use crate::request::include_loader_for_request;
 use php_runtime::api::{FilesystemCapabilities, RuntimeHttpResponseState};
@@ -39,37 +38,8 @@ impl PhpExecutor {
         &self,
         input: PhpCompileInput,
     ) -> Result<CompiledPhpScript, PhpExecutionError> {
-        let mut pipeline =
-            compile_source(&input.source, &input.source_path).map_err(PhpExecutionError::Engine)?;
-        apply_optimization(
-            &mut pipeline,
-            input
-                .optimization_level
-                .unwrap_or(self.options.optimization_level),
-        )
-        .map_err(PhpExecutionError::Engine)?;
-        if !pipeline.ok() {
-            let diagnostics_text =
-                render_frontend_diagnostics(&pipeline).map_err(PhpExecutionError::Engine)?;
-            return Err(PhpExecutionError::Compile(Box::new(PhpExecutionOutput {
-                stdout: Vec::new(),
-                diagnostics_text,
-                diagnostics: frontend_diagnostic_envelopes(&pipeline),
-                status: PhpExecutionStatus::CompileError,
-                runtime_diagnostics: Vec::new(),
-                http_response: RuntimeHttpResponseState::default(),
-                upload_registry: Default::default(),
-                session: Default::default(),
-                return_value: None,
-                trace: Vec::new(),
-                counters: None,
-                tiering_stats: None,
-                quickening_feedback: Vec::new(),
-                callsite_feedback: Vec::new(),
-                persistent_feedback_epochs: None,
-            })));
-        }
-        Ok(CompiledPhpScript::new(pipeline))
+        self.compile_source_internal(input, CompileTimingCollector::disabled())
+            .map(|result| result.compiled)
     }
 
     /// Compiles source into a reusable artifact and returns internal phase timings.
@@ -77,22 +47,28 @@ impl PhpExecutor {
         &self,
         input: PhpCompileInput,
     ) -> Result<(CompiledPhpScript, CompilePhaseTimings), PhpExecutionError> {
-        let (mut pipeline, mut timings) =
-            compile_source_with_timings(&input.source, &input.source_path)
-                .map_err(PhpExecutionError::Engine)?;
-        let optimization_timings = apply_optimization_with_timings(
+        let result = self.compile_source_internal(input, CompileTimingCollector::enabled())?;
+        let timings = result.timings.ok_or_else(|| {
+            PhpExecutionError::Engine("enabled compile timing collector returned no report".into())
+        })?;
+        Ok((result.compiled, timings))
+    }
+
+    fn compile_source_internal(
+        &self,
+        input: PhpCompileInput,
+        mut timings: CompileTimingCollector,
+    ) -> Result<CompilationResult, PhpExecutionError> {
+        let mut pipeline = compile_source(&input.source, &input.source_path, &mut timings)
+            .map_err(PhpExecutionError::Engine)?;
+        apply_optimization(
             &mut pipeline,
             input
                 .optimization_level
                 .unwrap_or(self.options.optimization_level),
+            &mut timings,
         )
         .map_err(PhpExecutionError::Engine)?;
-        timings.phases.extend(
-            optimization_timings
-                .phases()
-                .iter()
-                .map(|(key, value)| (key.clone(), *value)),
-        );
         if !pipeline.ok() {
             let diagnostics_text =
                 render_frontend_diagnostics(&pipeline).map_err(PhpExecutionError::Engine)?;
@@ -114,7 +90,10 @@ impl PhpExecutor {
                 persistent_feedback_epochs: None,
             })));
         }
-        Ok((CompiledPhpScript::new(pipeline), timings))
+        Ok(CompilationResult {
+            compiled: CompiledPhpScript::new(pipeline),
+            timings: timings.finish(),
+        })
     }
 
     /// Executes a previously compiled script with per-request runtime context.
@@ -192,6 +171,11 @@ impl PhpExecutor {
             },
         )
     }
+}
+
+struct CompilationResult {
+    compiled: CompiledPhpScript,
+    timings: Option<CompilePhaseTimings>,
 }
 
 /// Compiled, reusable PHP script artifact.
@@ -289,6 +273,57 @@ mod tests {
             InlineCacheMode::On
         );
         assert_eq!(executor.options.vm_options.jit, JitMode::Off);
+    }
+
+    #[test]
+    fn compilation_is_equivalent_with_timings_enabled_or_disabled() {
+        let executor = PhpExecutor::new();
+        let input = PhpCompileInput {
+            source: "<?php function add($a, $b) { return $a + $b; } echo add(2, 3);".to_owned(),
+            source_path: "timing-equivalence.php".to_owned(),
+            optimization_level: Some(OptimizationLevel::O2),
+        };
+
+        let untimed = executor
+            .compile_source(input.clone())
+            .expect("untimed compilation");
+        let (timed, timings) = executor
+            .compile_source_with_timings(input)
+            .expect("timed compilation");
+
+        assert_eq!(untimed.ir_unit(), timed.ir_unit());
+        assert_eq!(
+            timings
+                .phases()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "frontend_analyze_ms",
+                "ir_lower_ms",
+                "ir_verify_ms",
+                "optimizer_ms",
+            ]
+        );
+    }
+
+    #[test]
+    fn compilation_diagnostics_are_equal_with_timings_enabled_or_disabled() {
+        let executor = PhpExecutor::new();
+        let input = PhpCompileInput {
+            source: "<?php function broken( {".to_owned(),
+            source_path: "timing-diagnostics.php".to_owned(),
+            optimization_level: Some(OptimizationLevel::O2),
+        };
+
+        let untimed = executor
+            .compile_source(input.clone())
+            .expect_err("invalid source must fail");
+        let timed = executor
+            .compile_source_with_timings(input)
+            .expect_err("invalid source must fail");
+
+        assert_eq!(untimed, timed);
     }
 
     #[test]

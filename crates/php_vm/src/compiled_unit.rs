@@ -6,7 +6,7 @@ use php_ir::ids::FunctionId;
 use php_ir::module::{ClassEntry, normalize_class_name, normalized_class_name};
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
-use php_runtime::RuntimeDiagnostic;
+use php_runtime::api::RuntimeDiagnostic;
 use php_source::{BytePos, LineIndex};
 use std::{
     collections::HashMap,
@@ -496,7 +496,7 @@ impl CompiledUnit {
     /// Finds a user function by normalized name.
     #[must_use]
     pub fn lookup_function(&self, name: &str) -> Option<FunctionId> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
         self.inner
             .function_lookup
             .candidates(name)
@@ -509,7 +509,7 @@ impl CompiledUnit {
     /// Finds a user constant by canonical name.
     #[must_use]
     pub fn lookup_constant(&self, name: &str) -> Option<&IrConstant> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
         let value = self
             .inner
             .constant_lookup
@@ -524,7 +524,7 @@ impl CompiledUnit {
     /// Finds a class by normalized name.
     #[must_use]
     pub fn lookup_class(&self, name: &str) -> Option<&ClassEntry> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
         let normalized = normalized_class_name(name);
         let index = self
             .inner
@@ -541,7 +541,7 @@ impl CompiledUnit {
     /// of a deep clone.
     #[must_use]
     pub fn lookup_class_handle(&self, name: &str) -> Option<CompiledClass> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
         let normalized = normalized_class_name(name);
         let index = self
             .inner
@@ -556,7 +556,7 @@ impl CompiledUnit {
     /// Finds any class entry in the underlying IR unit, including conditional declarations.
     #[must_use]
     pub fn lookup_unit_class(&self, name: &str) -> Option<&ClassEntry> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
         let normalized = normalized_class_name(name);
         let index = self
             .inner
@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn symbol_lookups_use_maps_and_preserve_first_duplicate() {
-        php_runtime::layout_stats::reset_layout_stats();
+        php_runtime::experimental::layout_stats::reset_layout_stats();
 
         let mut unit = IrUnit::new(UnitId::new(0));
         unit.constants.push(IrConstant::Int(10));
@@ -839,7 +839,7 @@ mod tests {
         assert!(compiled.lookup_constant("MISSING").is_none());
         assert!(compiled.lookup_class("Missing").is_none());
 
-        let stats = php_runtime::layout_stats::take_layout_stats();
+        let stats = php_runtime::experimental::layout_stats::take_layout_stats();
         assert_eq!(stats.symbol_map_lookups, 6, "{stats:?}");
         assert_eq!(stats.symbol_linear_fallbacks, 0, "{stats:?}");
     }

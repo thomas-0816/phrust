@@ -6,31 +6,21 @@ use crate::xml::{XmlDocument, XmlElement, XmlNode};
 use libxml::bindings::{xmlAttrPtr, xmlGetLastError, xmlNodeGetContent, xmlResetLastError};
 use libxml::error::StructuredError;
 use libxml::parser::{Parser, ParserOptions};
-use libxml::tree::{Document, Node, SaveOptions};
+#[cfg(test)]
+use libxml::tree::SaveOptions;
+use libxml::tree::{Document, Node};
 use libxml::xpath::Context;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
-use std::path::Path;
 
 /// A parsed libxml2 document with collected backend diagnostics.
 pub struct BackendDocument {
     document: Document,
-    errors: Vec<XmlBackendError>,
-}
-
-/// A structured XML backend diagnostic.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct XmlBackendError {
-    pub message: String,
 }
 
 impl BackendDocument {
-    /// Return libxml-style parse diagnostics captured for this document.
-    pub fn errors(&self) -> &[XmlBackendError] {
-        &self.errors
-    }
-
     /// Serialize the libxml2 document as XML without an XML declaration.
+    #[cfg(test)]
     pub fn serialize(&self) -> String {
         self.document.to_string_with_options(SaveOptions {
             no_declaration: true,
@@ -126,23 +116,7 @@ pub fn parse_string(input: &str) -> Result<BackendDocument, String> {
     reset_last_error();
     Parser::default()
         .parse_string_with_options(input.as_bytes(), secure_parse_options())
-        .map(|document| BackendDocument {
-            document,
-            errors: Vec::new(),
-        })
-        .map_err(|error| format_parse_error(&error.to_string()))
-}
-
-/// Parse a file through libxml2 with external network access disabled.
-pub fn parse_file(path: impl AsRef<Path>) -> Result<BackendDocument, String> {
-    let path = path.as_ref().to_string_lossy();
-    reset_last_error();
-    Parser::default()
-        .parse_file_with_options(&path, secure_parse_options())
-        .map(|document| BackendDocument {
-            document,
-            errors: Vec::new(),
-        })
+        .map(|document| BackendDocument { document })
         .map_err(|error| format_parse_error(&error.to_string()))
 }
 
@@ -399,7 +373,6 @@ mod tests {
     fn serializes_and_evaluates_xpath() {
         let backend =
             parse_string("<root><item>A</item><item>B</item></root>").expect("backend document");
-        assert_eq!(backend.errors(), &[]);
         assert_eq!(
             backend.serialize(),
             "<root><item>A</item><item>B</item></root>\n"

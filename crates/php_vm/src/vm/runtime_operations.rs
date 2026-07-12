@@ -94,7 +94,7 @@ fn unsupported_operand_types_error(
         message.clone(),
         source_span,
         stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::TypeError),
+        Some(php_runtime::api::PhpReferenceClassification::TypeError),
     );
     VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
 }
@@ -127,7 +127,7 @@ fn emit_power_zero_negative_exponent_deprecation(
 ) {
     if lhs.as_f64() != 0.0
         || rhs.as_f64() >= 0.0
-        || !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED)
+        || !error_reporting_allows(state, php_runtime::api::PHP_E_DEPRECATED)
     {
         return;
     }
@@ -143,8 +143,8 @@ fn emit_power_zero_negative_exponent_deprecation(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_runtime::PHP_E_DEPRECATED,
+        php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_runtime::api::PHP_E_DEPRECATED,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -165,14 +165,14 @@ pub(super) fn write_object_numeric_cast_warning(
         ),
         source_span,
         Vec::new(),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     );
     emit_vm_diagnostic(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Warning,
-        php_runtime::PHP_E_WARNING,
+        php_runtime::api::PhpDiagnosticChannel::Warning,
+        php_runtime::api::PHP_E_WARNING,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -188,14 +188,14 @@ fn write_non_numeric_value_warning(
         "A non-numeric value encountered",
         source_span,
         Vec::new(),
-        Some(php_runtime::PhpReferenceClassification::Warning),
+        Some(php_runtime::api::PhpReferenceClassification::Warning),
     );
     emit_vm_diagnostic(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Warning,
-        php_runtime::PHP_E_WARNING,
+        php_runtime::api::PhpDiagnosticChannel::Warning,
+        php_runtime::api::PHP_E_WARNING,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -228,7 +228,7 @@ fn non_numeric_string_type_error(
         diagnostic_message.clone(),
         source_span,
         stack_trace_from_captured_trace(&trace).unwrap_or_else(|| stack_trace(compiled, stack)),
-        Some(php_runtime::PhpReferenceClassification::TypeError),
+        Some(php_runtime::api::PhpReferenceClassification::TypeError),
     );
     VmResult::runtime_error_with_diagnostic(output.clone(), diagnostic_message, diagnostic)
 }
@@ -332,16 +332,16 @@ impl Vm {
             output,
             stack,
             state,
-            php_runtime::PHP_E_WARNING,
+            php_runtime::api::PHP_E_WARNING,
             &diagnostic,
         )?;
-        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
             emit_vm_diagnostic(
                 output,
                 state,
                 &diagnostic,
-                php_runtime::PhpDiagnosticChannel::Warning,
-                php_runtime::PHP_E_WARNING,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
             );
             state.diagnostics.push(diagnostic);
         }
@@ -466,7 +466,7 @@ impl Vm {
             };
         }
         if normalize_class_name(&object.class_name()) == "simplexmlelement" {
-            return match php_runtime::xml::simplexml_text(&object) {
+            return match php_runtime::api::xml::simplexml_text(&object) {
                 Value::String(value) => Ok(value),
                 other => Err(self.runtime_error_with_source_span(
                     output,

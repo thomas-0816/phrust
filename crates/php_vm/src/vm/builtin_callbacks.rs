@@ -53,13 +53,13 @@ impl Vm {
         if result.status.is_success() && transform_state.recursion_error {
             state
                 .builtins
-                .set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
+                .set_json_last_error(php_runtime::api::JSON_ERROR_RECURSION);
         }
         if !result.status.is_success() && transform_state.recursion_error {
             result.return_value = Some(Value::Bool(false));
             state
                 .builtins
-                .set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
+                .set_json_last_error(php_runtime::api::JSON_ERROR_RECURSION);
         }
         release_unrooted_direct_object_handle(&original_first);
         result
@@ -79,7 +79,7 @@ impl Vm {
             Value::Array(array) => {
                 let array_id = array.gc_debug_id();
                 if transform_state.active_arrays.contains(&array_id) {
-                    if flags & php_runtime::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                    if flags & php_runtime::api::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                         transform_state.recursion_error = true;
                         return Ok(Value::Null);
                     }
@@ -147,12 +147,12 @@ impl Vm {
                 .contains(&object.id())
         {
             transform_state.recursion_error = true;
-            if flags & php_runtime::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+            if flags & php_runtime::api::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                 return Ok(Value::Null);
             }
             state
                 .builtins
-                .set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
+                .set_json_last_error(php_runtime::api::JSON_ERROR_RECURSION);
             return Err(VmResult::success_no_output(Some(Value::Bool(false))));
         }
         let implements_jsonserializable = match class_implements_in_state(
@@ -345,7 +345,7 @@ impl Vm {
         let (Some(parser), Some(input)) = (parser, input) else {
             return result;
         };
-        let Ok(document) = php_runtime::xml::parse_xml(&input) else {
+        let Ok(document) = php_runtime::api::xml::parse_xml(&input) else {
             return result;
         };
         let mut diagnostics = std::mem::take(&mut result.diagnostics);
@@ -373,7 +373,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         context: &XmlSaxCallbackContext,
-        element: &php_runtime::xml::XmlElement,
+        element: &php_runtime::api::xml::XmlElement,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -382,7 +382,7 @@ impl Vm {
         let name = xml_sax_name(&element.name, context.case_folding);
         let start_callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_START_ELEMENT_HANDLER);
+            .get_property(php_runtime::api::xml::XML_PARSER_START_ELEMENT_HANDLER);
         if let Some(start_callback) = xml_enabled_callback(start_callback) {
             let callback_result = self.call_callable_with_by_ref_value_warnings(
                 compiled,
@@ -415,7 +415,7 @@ impl Vm {
 
         for child in &element.children {
             match child {
-                php_runtime::xml::XmlNode::Element(child) => {
+                php_runtime::api::xml::XmlNode::Element(child) => {
                     if let Some(callback_result) = self.dispatch_xml_element_callbacks(
                         compiled,
                         context,
@@ -429,7 +429,8 @@ impl Vm {
                         return Some(callback_result);
                     }
                 }
-                php_runtime::xml::XmlNode::Text(text) | php_runtime::xml::XmlNode::Cdata(text) => {
+                php_runtime::api::xml::XmlNode::Text(text)
+                | php_runtime::api::xml::XmlNode::Cdata(text) => {
                     if let Some(callback_result) = self.dispatch_xml_character_data_callback(
                         compiled,
                         context,
@@ -443,7 +444,7 @@ impl Vm {
                         return Some(callback_result);
                     }
                 }
-                php_runtime::xml::XmlNode::Comment(text) => {
+                php_runtime::api::xml::XmlNode::Comment(text) => {
                     if let Some(callback_result) = self.dispatch_xml_default_callback(
                         compiled,
                         context,
@@ -462,7 +463,7 @@ impl Vm {
 
         let end_callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_END_ELEMENT_HANDLER);
+            .get_property(php_runtime::api::xml::XML_PARSER_END_ELEMENT_HANDLER);
         if let Some(end_callback) = xml_enabled_callback(end_callback) {
             let callback_result = self.call_callable_with_by_ref_value_warnings(
                 compiled,
@@ -506,7 +507,7 @@ impl Vm {
     ) -> Option<VmResult> {
         let callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_CHARACTER_DATA_HANDLER);
+            .get_property(php_runtime::api::xml::XML_PARSER_CHARACTER_DATA_HANDLER);
         if let Some(callback) = xml_enabled_callback(callback) {
             let callback_result = self.call_callable_with_by_ref_value_warnings(
                 compiled,
@@ -545,7 +546,7 @@ impl Vm {
     ) -> Option<VmResult> {
         let callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_DEFAULT_HANDLER);
+            .get_property(php_runtime::api::xml::XML_PARSER_DEFAULT_HANDLER);
         let callback = xml_enabled_callback(callback)?;
         let callback_result = self.call_callable_with_by_ref_value_warnings(
             compiled,
@@ -751,7 +752,7 @@ impl Vm {
                 message.clone(),
                 RuntimeSourceSpan::default(),
                 stack_trace(compiled, stack),
-                Some(php_runtime::PhpReferenceClassification::Error),
+                Some(php_runtime::api::PhpReferenceClassification::Error),
             );
             return VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic);
         }
@@ -770,7 +771,7 @@ impl Vm {
                     message.clone(),
                     RuntimeSourceSpan::default(),
                     stack_trace(compiled, stack),
-                    Some(php_runtime::PhpReferenceClassification::TypeError),
+                    Some(php_runtime::api::PhpReferenceClassification::TypeError),
                 );
                 return VmResult::runtime_error_with_diagnostic(
                     output.clone(),
@@ -1186,7 +1187,7 @@ impl Vm {
             message.clone(),
             RuntimeSourceSpan::default(),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::TypeError),
+            Some(php_runtime::api::PhpReferenceClassification::TypeError),
         );
         if let Some(call_span) = call_span {
             let result = VmResult::runtime_error_with_diagnostic(
@@ -1232,8 +1233,8 @@ fn emit_iterator_to_array_key_deprecation(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_runtime::PHP_E_DEPRECATED,
+        php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_runtime::api::PHP_E_DEPRECATED,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -1264,7 +1265,7 @@ fn xml_sax_name(name: &str, case_folding: bool) -> String {
     }
 }
 
-fn xml_sax_attributes(element: &php_runtime::xml::XmlElement, case_folding: bool) -> Value {
+fn xml_sax_attributes(element: &php_runtime::api::xml::XmlElement, case_folding: bool) -> Value {
     let mut attributes = PhpArray::new();
     for (name, value) in &element.attributes {
         let key = xml_sax_name(name, case_folding);
@@ -1276,7 +1277,7 @@ fn xml_sax_attributes(element: &php_runtime::xml::XmlElement, case_folding: bool
     Value::Array(attributes)
 }
 
-fn xml_sax_start_tag(element: &php_runtime::xml::XmlElement) -> String {
+fn xml_sax_start_tag(element: &php_runtime::api::xml::XmlElement) -> String {
     let mut tag = String::new();
     tag.push('<');
     tag.push_str(&element.name);

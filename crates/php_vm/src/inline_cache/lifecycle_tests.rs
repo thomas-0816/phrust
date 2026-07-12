@@ -1,7 +1,7 @@
 use super::*;
 use crate::include::IncludePathFileFingerprint;
 use php_ir::ids::{BlockId, FunctionId, InstrId};
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
 use std::path::PathBuf;
 use std::sync::Arc;
 

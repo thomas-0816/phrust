@@ -1128,12 +1128,12 @@ impl Vm {
         for diagnostic in &diagnostics {
             let (level, channel) = match diagnostic.severity() {
                 RuntimeSeverity::Deprecation => (
-                    php_runtime::PHP_E_DEPRECATED,
-                    php_runtime::PhpDiagnosticChannel::Deprecated,
+                    php_runtime::api::PHP_E_DEPRECATED,
+                    php_runtime::api::PhpDiagnosticChannel::Deprecated,
                 ),
                 _ => (
-                    php_runtime::PHP_E_WARNING,
-                    php_runtime::PhpDiagnosticChannel::Warning,
+                    php_runtime::api::PHP_E_WARNING,
+                    php_runtime::api::PhpDiagnosticChannel::Warning,
                 ),
             };
             let handled = match self
@@ -1173,7 +1173,7 @@ impl Vm {
                     ),
                     source_span,
                     stack_trace(compiled, stack),
-                    Some(php_runtime::PhpReferenceClassification::Deprecation),
+                    Some(php_runtime::api::PhpReferenceClassification::Deprecation),
                 ));
                 PhpString::from_bytes(Vec::new())
             }

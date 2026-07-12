@@ -83,7 +83,7 @@ impl Vm {
                 };
                 let mut diagnostics = Vec::new();
                 if session_ini_cannot_change_when_active(&option)
-                    && state.request.session.status() == php_runtime::PHP_SESSION_ACTIVE
+                    && state.request.session.status() == php_runtime::api::PHP_SESSION_ACTIVE
                 {
                     let (started_file, started_line) = state
                         .request
@@ -106,19 +106,19 @@ impl Vm {
                         output,
                         stack,
                         state,
-                        php_runtime::PHP_E_WARNING,
+                        php_runtime::api::PHP_E_WARNING,
                         &diagnostic,
                     ) {
                         Ok(handled) => handled,
                         Err(result) => return result,
                     };
-                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                    if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                         emit_vm_diagnostic(
                             output,
                             state,
                             &diagnostic,
-                            php_runtime::PhpDiagnosticChannel::Warning,
-                            php_runtime::PHP_E_WARNING,
+                            php_runtime::api::PhpDiagnosticChannel::Warning,
+                            php_runtime::api::PHP_E_WARNING,
                         );
                     }
                     diagnostics.push(diagnostic);
@@ -143,19 +143,19 @@ impl Vm {
                         output,
                         stack,
                         state,
-                        php_runtime::PHP_E_WARNING,
+                        php_runtime::api::PHP_E_WARNING,
                         &diagnostic,
                     ) {
                         Ok(handled) => handled,
                         Err(result) => return result,
                     };
-                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                    if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                         emit_vm_diagnostic(
                             output,
                             state,
                             &diagnostic,
-                            php_runtime::PhpDiagnosticChannel::Warning,
-                            php_runtime::PHP_E_WARNING,
+                            php_runtime::api::PhpDiagnosticChannel::Warning,
+                            php_runtime::api::PHP_E_WARNING,
                         );
                     }
                     diagnostics.push(diagnostic);
@@ -178,19 +178,19 @@ impl Vm {
                         output,
                         stack,
                         state,
-                        php_runtime::PHP_E_WARNING,
+                        php_runtime::api::PHP_E_WARNING,
                         &diagnostic,
                     ) {
                         Ok(handled) => handled,
                         Err(result) => return result,
                     };
-                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                    if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
                         emit_vm_diagnostic(
                             output,
                             state,
                             &diagnostic,
-                            php_runtime::PhpDiagnosticChannel::Warning,
-                            php_runtime::PHP_E_WARNING,
+                            php_runtime::api::PhpDiagnosticChannel::Warning,
+                            php_runtime::api::PHP_E_WARNING,
                         );
                     }
                     diagnostics.push(diagnostic);
@@ -213,19 +213,20 @@ impl Vm {
                         output,
                         stack,
                         state,
-                        php_runtime::PHP_E_DEPRECATED,
+                        php_runtime::api::PHP_E_DEPRECATED,
                         &diagnostic,
                     ) {
                         Ok(handled) => handled,
                         Err(result) => return result,
                     };
-                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED) {
+                    if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_DEPRECATED)
+                    {
                         emit_vm_diagnostic(
                             output,
                             state,
                             &diagnostic,
-                            php_runtime::PhpDiagnosticChannel::Deprecated,
-                            php_runtime::PHP_E_DEPRECATED,
+                            php_runtime::api::PhpDiagnosticChannel::Deprecated,
+                            php_runtime::api::PHP_E_DEPRECATED,
                         );
                     }
                     diagnostics.push(diagnostic);

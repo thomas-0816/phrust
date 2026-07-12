@@ -188,7 +188,7 @@ mod tests {
         PHP_E_WARNING, PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, PhpDiagnosticLocation,
         emit_php_diagnostic, error_reporting_allows_level, format_php_diagnostic_line,
     };
-    use crate::{
+    use crate::api::{
         OutputBuffer, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame,
     };
 

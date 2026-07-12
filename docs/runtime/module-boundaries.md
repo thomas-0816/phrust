@@ -8,13 +8,13 @@ imports rather than ad hoc root imports.
 
 | Group | Modules | Ownership |
 | --- | --- | --- |
-| Values and containers | `array`, `string`, `types`, `value`, `reference`, `convert` | PHP value representation, conversion, references, COW-visible helpers |
+| Values and containers | `array`, `string`, `types`, `value`, `reference`, `request_state`, `convert` | PHP value representation, conversion, references, COW-visible helpers |
 | Request and IO services | `context`, `output`, `error_output`, `diagnostic`, `resource`, `ini`, `globals`, `autoload`, `status` | Request-local state, streams/resources, output, diagnostics, globals, include/autoload metadata |
 | Object and control-flow state | `object`, `callable`, `generator`, `fiber`, `gc` | Runtime object metadata, callables, suspension state, debug GC roots |
 | Core services | `datetime`, `serialization`, `session` | Backend-free runtime semantics shared by the VM and extensions |
 | Legacy full-runtime integration | `builtins`, `pcre`, `tokenizer`, `xml`, `xml_backend`, `phar`, `sqlite`, `db` | Feature-gated compatibility surface while extension implementations migrate outward |
 | Extension contract | `extension`, `source_span` | Registration descriptors, call ABI metadata, capabilities, state factories, and shared source locations |
-| Instrumentation and integration | `jit_array`, `layout_stats`, `numeric_string` | JIT/runtime ABI helpers, counters, and measurement-only metadata |
+| Instrumentation and integration | `jit_array`, `layout_stats`, `numeric_string`, `runtime_memory` | JIT/runtime ABI helpers, counters, audited memory access, and measurement-only metadata |
 
 Every top-level runtime module must be represented in this table. New modules
 need an ownership group before they are added to `crates/php_runtime/src/lib.rs`.
@@ -34,5 +34,5 @@ request-state slots.
 
 Downstream crates should import through `php_runtime::api` unless they
 intentionally need a debug or experimental surface documented in
-`docs/api-facades.md`. Crate-root re-exports are compatibility aliases, not a
-place to grow new dependencies.
+`docs/api-facades.md`. Crate-root re-exports are not supported; the facades are
+the place to grow new dependencies.
