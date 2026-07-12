@@ -133,40 +133,40 @@
       "max_lines": 5035
     },
     "crates/php_jit/src/copy_patch.rs": {
-      "max_bytes": 215327,
-      "max_lines": 5514
+      "max_bytes": 204748,
+      "max_lines": 5274
     },
     "crates/php_phpt_tools/src/commands/mod.rs": {
       "max_bytes": 239719,
       "max_lines": 6645
     },
     "crates/php_runtime/src/builtins/modules/core.rs": {
-      "max_bytes": 468652,
-      "max_lines": 14297
+      "max_bytes": 468230,
+      "max_lines": 14292
     },
     "crates/php_vm/src/counters.rs": {
-      "max_bytes": 256988,
-      "max_lines": 7036
+      "max_bytes": 258344,
+      "max_lines": 7071
     },
     "crates/php_vm/src/inline_cache.rs": {
-      "max_bytes": 164766,
-      "max_lines": 5053
+      "max_bytes": 169340,
+      "max_lines": 5147
     },
     "crates/php_vm/src/vm/builtin_classes.rs": {
-      "max_bytes": 330729,
+      "max_bytes": 330725,
       "max_lines": 8770
     },
     "crates/php_vm/src/vm/dense_dispatch.rs": {
-      "max_bytes": 303847,
-      "max_lines": 5942
+      "max_bytes": 306774,
+      "max_lines": 5948
     },
     "crates/php_vm/src/vm/spl.rs": {
-      "max_bytes": 257769,
-      "max_lines": 6930
+      "max_bytes": 257695,
+      "max_lines": 6928
     },
     "crates/php_vm_cli/src/commands.rs": {
-      "max_bytes": 249404,
-      "max_lines": 6715
+      "max_bytes": 249397,
+      "max_lines": 6717
     }
   },
   "module_wide_allowlist": [
@@ -224,38 +224,6 @@
     },
     {
       "id": "crates/php_vm/src/copy_patch_bridge.rs:module_wide_allow:ef203e3f0a19:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/builtin_classes.rs:module_wide_allow:effd818e0121:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/builtin_classes.rs:module_wide_allow:dcabf7cdb6f0:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/ext_redis.rs:module_wide_allow:effd818e0121:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/ext_redis.rs:module_wide_allow:dcabf7cdb6f0:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/reflection.rs:module_wide_allow:effd818e0121:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/reflection.rs:module_wide_allow:dcabf7cdb6f0:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/spl.rs:module_wide_allow:effd818e0121:1",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/vm/spl.rs:module_wide_allow:dcabf7cdb6f0:1",
       "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
     }
   ],
