@@ -514,6 +514,11 @@ enum ArrayCallbackError {
     Message(String),
 }
 
+type UnitFunctionKey = (u64, u32);
+type TrivialMethodPlanCache = Rc<RefCell<HashMap<UnitFunctionKey, Option<TrivialMethodPlan>>>>;
+type LastUseMovePlanCache =
+    Rc<RefCell<HashMap<UnitFunctionKey, Rc<crate::last_use::LastUseMovePlan>>>>;
+
 /// Minimal interpreter VM.
 #[derive(Clone, Debug)]
 pub struct Vm {
@@ -536,7 +541,7 @@ pub struct Vm {
     tiering: Rc<RefCell<TieringState>>,
     internal_function_dispatch_cache: Rc<RefCell<InternalFunctionDispatchCache>>,
     /// Memoized per-(unit, function) trivial-method inline plans.
-    trivial_method_plans: Rc<RefCell<HashMap<(u64, u32), Option<TrivialMethodPlan>>>>,
+    trivial_method_plans: TrivialMethodPlanCache,
     /// Memoized activation-context class-name handles keyed by the exact name
     /// spelling dispatch sees. The normalized/display forms of a spelling never
     /// change, so hot method-call sites attach shared handles with refcount
@@ -569,7 +574,7 @@ pub struct Vm {
     /// Memoized per-(unit, function) last-use move plans (Runtime lever R3).
     /// Built only when `options.last_use_moves` is on; empty and never consulted
     /// otherwise, keeping the default dense read path byte-identical.
-    last_use_move_plans: Rc<RefCell<HashMap<(u64, u32), Rc<crate::last_use::LastUseMovePlan>>>>,
+    last_use_move_plans: LastUseMovePlanCache,
     /// Per-request receiver-class lookup by shared class-name identity.
     object_class_resolution: RefCell<ObjectClassResolution>,
     /// Per-unit resolved constant tables (zend literal-table parity): each
@@ -586,9 +591,9 @@ pub struct Vm {
 /// are intentionally absent.
 #[derive(Clone, Debug)]
 pub struct VmWorkerState {
-    trivial_method_plans: Rc<RefCell<HashMap<(u64, u32), Option<TrivialMethodPlan>>>>,
+    trivial_method_plans: TrivialMethodPlanCache,
     class_name_handles: Rc<RefCell<HashMap<String, ClassNameHandles>>>,
-    last_use_move_plans: Rc<RefCell<HashMap<(u64, u32), Rc<crate::last_use::LastUseMovePlan>>>>,
+    last_use_move_plans: LastUseMovePlanCache,
     resolved_constants: Rc<RefCell<ResolvedConstantTables>>,
     internal_function_dispatch_cache: Rc<RefCell<InternalFunctionDispatchCache>>,
     jit: Rc<RefCell<JitRuntimeState>>,

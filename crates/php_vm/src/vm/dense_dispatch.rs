@@ -3345,29 +3345,15 @@ impl Vm {
                                     // rich path's leaf hook lives — so without this
                                     // the tier never engages on real (dense) code.
                                     #[cfg(feature = "jit-copy-patch")]
-                                    let native = {
-                                        let profile_boundary =
-                                            self.request_profile_boundary_start();
-                                        let result = self.try_execute_copy_patch_leaf(
-                                            compiled,
-                                            function,
-                                            ir_function,
-                                            &call,
-                                            output,
-                                            stack,
-                                            state,
-                                        );
-                                        if result.is_some() {
-                                            self.record_counter_function_profile(
-                                                &ir_function.name,
-                                                ir_function.flags.is_method,
-                                                profile_boundary,
-                                            );
-                                        } else {
-                                            self.request_profile_boundary_discard(profile_boundary);
-                                        }
-                                        result
-                                    };
+                                    let native = self.try_execute_profiled_copy_patch_leaf(
+                                        compiled,
+                                        function,
+                                        ir_function,
+                                        &call,
+                                        output,
+                                        stack,
+                                        state,
+                                    );
                                     #[cfg(not(feature = "jit-copy-patch"))]
                                     let native: Option<VmResult> = None;
                                     if let Some(result) = native {

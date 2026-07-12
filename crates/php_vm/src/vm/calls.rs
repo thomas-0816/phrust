@@ -2298,9 +2298,8 @@ impl Vm {
         // The leaf is compiled against `owner` — the unit whose IR owns the
         // function — exactly like the dense body below.
         #[cfg(feature = "jit-copy-patch")]
-        if let Some(ir_function) = owner.unit().functions.get(function.index()) {
-            let profile_boundary = self.request_profile_boundary_start();
-            if let Some(result) = self.try_execute_copy_patch_leaf(
+        if let Some(ir_function) = owner.unit().functions.get(function.index())
+            && let Some(result) = self.try_execute_profiled_copy_patch_leaf(
                 owner,
                 function,
                 ir_function,
@@ -2308,15 +2307,9 @@ impl Vm {
                 output,
                 stack,
                 state,
-            ) {
-                self.record_counter_function_profile(
-                    &ir_function.name,
-                    ir_function.flags.is_method,
-                    profile_boundary,
-                );
-                return result;
-            }
-            self.request_profile_boundary_discard(profile_boundary);
+            )
+        {
+            return result;
         }
         if let Some(plan) = plan {
             self.record_counter_dense_method_dispatch_attempt();

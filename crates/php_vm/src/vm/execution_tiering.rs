@@ -1,6 +1,39 @@
 use super::*;
 
 impl Vm {
+    #[cfg(feature = "jit-copy-patch")]
+    pub(super) fn try_execute_profiled_copy_patch_leaf(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        function: &IrFunction,
+        call: &FunctionCall<'_>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
+        let profile_boundary = self.request_profile_boundary_start();
+        let result = self.try_execute_copy_patch_leaf(
+            compiled,
+            function_id,
+            function,
+            call,
+            output,
+            stack,
+            state,
+        );
+        if result.is_some() {
+            self.record_counter_function_profile(
+                &function.name,
+                function.flags.is_method,
+                profile_boundary,
+            );
+        } else {
+            self.request_profile_boundary_discard(profile_boundary);
+        }
+        result
+    }
+
     #[cfg(not(feature = "jit-cranelift"))]
     pub(super) fn try_execute_jit_leaf(
         &self,
