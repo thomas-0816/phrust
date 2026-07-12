@@ -276,6 +276,7 @@ pub(crate) fn write_php_compile_error_stdout<W: Write>(
     Ok(false)
 }
 
+
 pub(crate) fn write_frontend_diagnostics<W: Write>(
     stderr: &mut W,
     pipeline: &Pipeline,
@@ -538,7 +539,8 @@ fn write_parser_diagnostic<W: Write>(
 fn semantic_diagnostic_uses_php_fatal_line(id: DiagnosticId) -> bool {
     matches!(
         id,
-        DiagnosticId::ClosureUseDuplicatesParameter
+        DiagnosticId::InvalidIntersectionMember
+            | DiagnosticId::ClosureUseDuplicatesParameter
             | DiagnosticId::DuplicateClosureUseVariable
             | DiagnosticId::ClosureUseAutoGlobal
             | DiagnosticId::ThisParameter

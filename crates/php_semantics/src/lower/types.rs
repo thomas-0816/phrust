@@ -253,24 +253,48 @@ impl TypeLowerer<'_> {
                     span,
                 );
             }
-            HirTypeKind::Intersection { members }
-                if members.iter().any(|member| self.type_is_callable(*member)) =>
-            {
-                self.error(
-                    DiagnosticId::InvalidTypeCallableContext,
-                    "Type callable cannot be part of an intersection type",
-                    span,
-                );
+            HirTypeKind::Intersection { members } => {
+                let invalid = members
+                    .iter()
+                    .filter_map(|member| {
+                        self.intersection_member_type_name(*member)
+                            .map(|name| (*member, name))
+                    })
+                    .collect::<Vec<_>>();
+                for (member, name) in invalid {
+                    let member_span = self.database.source_map().span(member).unwrap_or(span);
+                    self.error(
+                        DiagnosticId::InvalidIntersectionMember,
+                        format!("Type {name} cannot be part of an intersection type"),
+                        member_span,
+                    );
+                }
             }
             _ => {}
         }
     }
 
-    fn type_is_callable(&self, ty: TypeId) -> bool {
-        matches!(
-            self.module().types()[ty].kind(),
-            HirTypeKind::Builtin(BuiltinType::Callable)
-        )
+    /// Reference rendering of an intersection member that is not a class
+    /// type; class types (including self/parent/static) return None.
+    fn intersection_member_type_name(&self, ty: TypeId) -> Option<&'static str> {
+        match self.module().types()[ty].kind() {
+            HirTypeKind::Builtin(BuiltinType::Array) => Some("array"),
+            HirTypeKind::Builtin(BuiltinType::Callable) => Some("callable"),
+            HirTypeKind::Builtin(BuiltinType::Object) => Some("object"),
+            HirTypeKind::Builtin(BuiltinType::Iterable) => Some("Traversable|array"),
+            HirTypeKind::Builtin(BuiltinType::Bool) => Some("bool"),
+            HirTypeKind::Builtin(BuiltinType::Int) => Some("int"),
+            HirTypeKind::Builtin(BuiltinType::Float) => Some("float"),
+            HirTypeKind::Builtin(BuiltinType::String) => Some("string"),
+            HirTypeKind::StaticType => Some("static"),
+            HirTypeKind::Mixed => Some("mixed"),
+            HirTypeKind::Never => Some("never"),
+            HirTypeKind::Void => Some("void"),
+            HirTypeKind::Null => Some("null"),
+            HirTypeKind::False => Some("false"),
+            HirTypeKind::True => Some("true"),
+            _ => None,
+        }
     }
 
     fn check_duplicate_members(&mut self, members: &[TypeId]) {

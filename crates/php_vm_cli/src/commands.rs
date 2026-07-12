@@ -1720,7 +1720,8 @@ fn write_parser_diagnostic<W: Write>(
 fn semantic_diagnostic_uses_php_fatal_line(id: DiagnosticId) -> bool {
     matches!(
         id,
-        DiagnosticId::ClosureUseDuplicatesParameter
+        DiagnosticId::InvalidIntersectionMember
+            | DiagnosticId::ClosureUseDuplicatesParameter
             | DiagnosticId::DuplicateClosureUseVariable
             | DiagnosticId::ClosureUseAutoGlobal
             | DiagnosticId::ThisParameter

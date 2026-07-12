@@ -70,8 +70,12 @@ where
         &mut CompileTimingCollector::disabled(),
     )?;
     if !pipeline.ok() {
-        write_php_compile_error_stdout(stdout, &pipeline)?;
-        write_frontend_diagnostics(stderr, &pipeline)?;
+        // Mirrors the runtime-fatal contract: once the error is rendered in
+        // the reference format on stdout, stderr stays clean so the 2>&1
+        // harness comparison sees exactly what the reference prints.
+        if !write_php_compile_error_stdout(stdout, &pipeline)? {
+            write_frontend_diagnostics(stderr, &pipeline)?;
+        }
         return Ok(EXIT_PHP_ERROR);
     }
     emit_debug_event(
@@ -313,6 +317,27 @@ mod tests {
             "{stdout}"
         );
         assert_eq!(stderr, b"");
+    }
+
+    #[test]
+    fn compile_error_renders_intersection_member_fatal_on_stdout() {
+        let input = test_input("<?php function f(): int&Countable {}");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_PHP_ERROR);
+        let stdout = String::from_utf8(stdout).expect("stdout utf8");
+        assert!(
+            stdout.starts_with(
+                "\nFatal error: Type int cannot be part of an intersection type in"
+            ),
+            "{stdout}"
+        );
+        // Rendered errors keep stderr clean so 2>&1 comparisons match the
+        // reference byte-for-byte.
+        assert!(stderr.is_empty(), "{:?}", String::from_utf8_lossy(&stderr));
     }
 
     #[test]
