@@ -152,11 +152,11 @@ pub mod api {
         parse_form_urlencoded_body, parse_query_string, parse_query_string_with_separators,
     };
     pub use crate::convert::{
-        ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, identical,
-        identical_php, reset_float_string_precision, set_float_string_precision,
-        to_arithmetic_number, to_arithmetic_number_php, to_array_php, to_bool, to_bool_php,
-        to_float, to_float_php, to_int, to_int_php, to_number, to_number_php, to_object_php,
-        to_string, to_string_php,
+        ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, float_fits_int,
+        identical, identical_php, php_float_to_int, reset_float_string_precision,
+        set_float_string_precision, to_arithmetic_number, to_arithmetic_number_php, to_array_php,
+        to_bool, to_bool_php, to_float, to_float_php, to_int, to_int_php, to_number, to_number_php,
+        to_object_php, to_string, to_string_php,
     };
     #[cfg(feature = "full-runtime")]
     pub use crate::db::mysql::{

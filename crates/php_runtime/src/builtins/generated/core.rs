@@ -733,6 +733,14 @@ pub const FUNCTIONS: &[GeneratedBuiltinDescriptor] = &[
         variadic: false,
     },
     GeneratedBuiltinDescriptor {
+        name: "settype",
+        extension: "standard",
+        return_type: Some("bool"),
+        required_parameters: 2,
+        total_parameters: 2,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
         name: "shell_exec",
         extension: "standard",
         return_type: Some("string|false|null"),

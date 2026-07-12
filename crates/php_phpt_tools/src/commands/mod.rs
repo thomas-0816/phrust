@@ -5892,11 +5892,9 @@ mod tests {
                 "| phar | required-composer | 3 | 1 | 0 | 2 | 0 | `runtime-output-mismatch` 2 | no | yes | yes | real-implementation-required |"
             )
         );
-        assert!(
-            report.contains(
-                "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | partial-implementation |"
-            )
-        );
+        assert!(report.contains(
+            "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | partial-implementation |"
+        ));
         assert!(report.contains(
             "| pdo_sqlite | required-framework | 4 | 0 | 1 | 3 | 0 | none | no | no | yes | real-implementation-required |"
         ));

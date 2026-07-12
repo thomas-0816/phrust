@@ -51,7 +51,9 @@ impl ArrayKey {
             Value::Bool(false) => Some(Self::Int(0)),
             Value::Bool(true) => Some(Self::Int(1)),
             Value::Null => Some(Self::String(PhpString::from_bytes(Vec::new()))),
-            Value::Float(value) => Some(Self::Int(value.to_f64() as i64)),
+            Value::Float(value) => {
+                Some(Self::Int(crate::convert::php_float_to_int(value.to_f64())))
+            }
             Value::String(value) => Some(Self::from_php_string(value.clone())),
             Value::Uninitialized => Some(Self::String(PhpString::from_bytes(Vec::new()))),
             Value::Resource(resource) => i64::try_from(resource.id().get()).ok().map(Self::Int),

@@ -827,6 +827,65 @@ impl Vm {
         )
     }
 
+    /// Emits a cast-coercion warning through the user error handler when one
+    /// is installed, mirroring how the reference engine channels these.
+    pub(super) fn emit_cast_coercion_warning(
+        &self,
+        cursor: ExecutionCursor<'_>,
+        id: &'static str,
+        message: String,
+        source_span: RuntimeSourceSpan,
+    ) -> Result<(), Box<VmResult>> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
+        let diagnostic = RuntimeDiagnostic::new(
+            id,
+            RuntimeSeverity::Warning,
+            message,
+            source_span,
+            Vec::new(),
+            Some(php_runtime::api::PhpReferenceClassification::Warning),
+        );
+        let handled = self.dispatch_error_handler(
+            compiled,
+            output,
+            stack,
+            state,
+            php_runtime::api::PHP_E_WARNING,
+            &diagnostic,
+        )?;
+        if !handled && error_reporting_allows(state, php_runtime::api::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::api::PHP_E_WARNING, &diagnostic);
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::api::PhpDiagnosticChannel::Warning,
+                php_runtime::api::PHP_E_WARNING,
+            );
+            state.diagnostics.push(diagnostic);
+        }
+        Ok(())
+    }
+
+    fn emit_nan_coercion_warning(
+        &self,
+        cursor: ExecutionCursor<'_>,
+        target: &str,
+        source_span: RuntimeSourceSpan,
+    ) -> Result<(), Box<VmResult>> {
+        self.emit_cast_coercion_warning(
+            cursor,
+            "E_PHP_RUNTIME_NAN_COERCION_WARNING",
+            format!("unexpected NAN value was coerced to {target}"),
+            source_span,
+        )
+    }
+
     pub(super) fn execute_cast(
         &self,
         kind: CastKind,
@@ -840,18 +899,47 @@ impl Vm {
             stack,
             state,
         } = cursor;
+        let float_src_is_nan =
+            matches!(effective_value(src), Value::Float(value) if value.to_f64().is_nan());
         match kind {
-            CastKind::Bool => Ok(to_bool(src)
-                .map(Value::Bool)
-                .map_err(|message| self.runtime_error(output, compiled, stack, message))?),
+            CastKind::Bool => {
+                if float_src_is_nan {
+                    self.emit_nan_coercion_warning(
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        "bool",
+                        source_span.clone(),
+                    )?;
+                }
+                Ok(to_bool(src)
+                    .map(Value::Bool)
+                    .map_err(|message| self.runtime_error(output, compiled, stack, message))?)
+            }
             CastKind::Int => match src {
                 Value::Object(object) => {
                     write_object_numeric_cast_warning(output, state, object, "int", source_span);
                     Ok(Value::Int(1))
                 }
-                _ => Ok(to_int(src)
-                    .map(Value::Int)
-                    .map_err(|message| self.runtime_error(output, compiled, stack, message))?),
+                _ => {
+                    if let Value::Float(float_value) = effective_value(src) {
+                        let raw = float_value.to_f64();
+                        if !php_runtime::api::float_fits_int(raw) {
+                            let rendered = to_string(&Value::float(raw))
+                                .map(|text| text.to_string_lossy())
+                                .unwrap_or_else(|_| raw.to_string());
+                            self.emit_cast_coercion_warning(
+                                ExecutionCursor::new(compiled, output, stack, state),
+                                "E_PHP_RUNTIME_FLOAT_TO_INT_CAST_WARNING",
+                                format!(
+                                    "The float {rendered} is not representable as an int, cast occurred"
+                                ),
+                                source_span.clone(),
+                            )?;
+                        }
+                    }
+                    Ok(to_int(src)
+                        .map(Value::Int)
+                        .map_err(|message| self.runtime_error(output, compiled, stack, message))?)
+                }
             },
             CastKind::Float => match src {
                 Value::Object(object) => {
@@ -862,12 +950,45 @@ impl Vm {
                     .map(Value::float)
                     .map_err(|message| self.runtime_error(output, compiled, stack, message))?),
             },
-            CastKind::String => self
-                .value_to_string_with_source_span(compiled, src, output, stack, state, source_span)
-                .map(Value::String),
+            CastKind::String => {
+                if float_src_is_nan {
+                    self.emit_nan_coercion_warning(
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        "string",
+                        source_span.clone(),
+                    )?;
+                }
+                self.value_to_string_with_source_span(
+                    compiled,
+                    src,
+                    output,
+                    stack,
+                    state,
+                    source_span,
+                )
+                .map(Value::String)
+            }
             CastKind::Void => Ok(Value::Null),
-            CastKind::Array => Ok(cast_value_to_array(compiled, stack, src)),
-            CastKind::Object => Ok(cast_value_to_object(src)),
+            CastKind::Array => {
+                if float_src_is_nan {
+                    self.emit_nan_coercion_warning(
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        "array",
+                        source_span,
+                    )?;
+                }
+                Ok(cast_value_to_array(compiled, stack, src))
+            }
+            CastKind::Object => {
+                if float_src_is_nan {
+                    self.emit_nan_coercion_warning(
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        "object",
+                        source_span,
+                    )?;
+                }
+                Ok(cast_value_to_object(src))
+            }
         }
     }
 }

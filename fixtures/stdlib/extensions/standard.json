@@ -5039,6 +5039,20 @@
       "implementations": [
         {
           "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "settype",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
           "module": "strings"
         }
       ],

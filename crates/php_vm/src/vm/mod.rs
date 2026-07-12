@@ -13,6 +13,7 @@ mod builtin_fileinfo;
 mod builtin_filter_callbacks;
 mod builtin_intrinsics;
 mod builtin_pcre_callbacks;
+mod builtin_settype;
 mod builtins;
 mod callable_builtins;
 mod calls;

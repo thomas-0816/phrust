@@ -2300,6 +2300,14 @@ impl Vm {
                         ) {
                             return result;
                         }
+                        if let Some(result) = self.try_execute_settype_builtin(
+                            ExecutionCursor::new(compiled, output, stack, state),
+                            &name,
+                            &values,
+                            call_span,
+                        ) {
+                            return result;
+                        }
                         if let Some(result) =
                             try_execute_simple_literal_pcre_builtin(&name, &values, state)
                         {

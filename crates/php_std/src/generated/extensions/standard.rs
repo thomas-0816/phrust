@@ -2267,6 +2267,14 @@ const FUNCTIONS: &[FunctionDescriptor] = &[
         false,
     ),
     FunctionDescriptor::generated(
+        "settype",
+        "standard",
+        SymbolVisibility::PhpVisible,
+        Some("core"),
+        None,
+        false,
+    ),
+    FunctionDescriptor::generated(
         "sha1",
         "standard",
         SymbolVisibility::PhpVisible,

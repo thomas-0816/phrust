@@ -367,6 +367,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("serialize", builtin_serialize, BuiltinCompatibility::Php),
     BuiltinEntry::new("setlocale", builtin_setlocale, BuiltinCompatibility::Php),
     BuiltinEntry::new(
+        "settype",
+        builtin_settype_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "set_error_handler",
         builtin_error_handling_requires_vm,
         BuiltinCompatibility::Php,
@@ -976,6 +981,18 @@ pub(in crate::builtins::modules) fn builtin_get_debug_type(
     Ok(Value::string(php_debug_type(
         &args.into_iter().next().expect("checked arity"),
     )))
+}
+
+pub(in crate::builtins::modules) fn builtin_settype_requires_vm(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("settype", &args, 2)?;
+    Err(BuiltinError::new(
+        "E_PHP_RUNTIME_CALLABLE_CONTEXT_REQUIRED",
+        "settype requires VM cast dispatch",
+    ))
 }
 
 pub(in crate::builtins::modules) fn builtin_get_resource_id(
