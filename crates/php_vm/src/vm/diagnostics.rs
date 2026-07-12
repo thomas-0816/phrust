@@ -331,6 +331,13 @@ pub(super) fn runtime_diagnostic_throwable(diagnostic: &RuntimeDiagnostic) -> Op
         "E_PHP_RUNTIME_SYSVSHM_INVALID" => "Error",
         "E_PHP_VM_UNKNOWN_NAMED_ARG" | "E_PHP_VM_DUPLICATE_NAMED_ARG" => "Error",
         "E_PHP_VM_UNHANDLED_MATCH" => "UnhandledMatchError",
+        "E_PHP_VM_FIBER_SUSPEND_OUTSIDE_FIBER"
+        | "E_PHP_VM_FIBER_ALREADY_RUNNING"
+        | "E_PHP_VM_FIBER_ALREADY_STARTED"
+        | "E_PHP_VM_FIBER_ALREADY_TERMINATED"
+        | "E_PHP_VM_FIBER_NOT_SUSPENDED"
+        | "E_PHP_VM_FIBER_ERRORED"
+        | "E_PHP_VM_FIBER_GET_RETURN_BEFORE_TERMINATION" => "FiberError",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_NON_NUMERIC_STRING" => "TypeError",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",

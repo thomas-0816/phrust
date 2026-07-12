@@ -300,7 +300,31 @@ pub(super) fn execute_rich_call_instruction(
                         values,
                     ) {
                         Ok(value) => value,
-                        Err(result) => return RichDispatchOutcome::Return(Box::new(*result)),
+                        Err(result) => {
+                            if let Some(throwable) = state
+                                .pending_throw
+                                .take()
+                                .or_else(|| runtime_error_throwable(&result))
+                            {
+                                tag_throwable_location(&throwable, compiled, instruction.span);
+                                state.pending_trace =
+                                    Some(capture_backtrace_string(compiled, stack));
+                                if let Some(target) = handle_throw(
+                                    compiled,
+                                    throwable.clone(),
+                                    stack,
+                                    state,
+                                    exception_handlers,
+                                    pending_control,
+                                ) {
+                                    return RichDispatchOutcome::Jump(target);
+                                }
+                                return RichDispatchOutcome::Return(Box::new(
+                                    vm.propagate_exception(output, stack, state, throwable),
+                                ));
+                            }
+                            return RichDispatchOutcome::Return(Box::new(*result));
+                        }
                     };
                     if let Err(message) = stack
                         .frame_mut(frame_index)
@@ -2305,26 +2329,47 @@ pub(super) fn execute_rich_call_instruction(
                         ));
                     }
                 };
-                return RichDispatchOutcome::Return(Box::new(
-                    match vm.suspend_current_fiber(
-                        compiled,
-                        running_fiber,
-                        values,
-                        FiberContinuationState::new(
-                            *dst,
-                            block_id,
-                            instruction_index + 1,
-                            foreach_iterators,
-                            exception_handlers,
-                            pending_control,
-                        ),
-                        output,
-                        stack,
-                    ) {
-                        Ok(result) => result,
-                        Err(result) => *result,
-                    },
-                ));
+                match vm.suspend_current_fiber(
+                    compiled,
+                    running_fiber,
+                    values,
+                    FiberContinuationState::new(
+                        *dst,
+                        block_id,
+                        instruction_index + 1,
+                        foreach_iterators,
+                        exception_handlers,
+                        pending_control,
+                    ),
+                    output,
+                    stack,
+                ) {
+                    Ok(result) => return RichDispatchOutcome::Return(Box::new(result)),
+                    Err(result) => {
+                        if let Some(throwable) = state
+                            .pending_throw
+                            .take()
+                            .or_else(|| runtime_error_throwable(&result))
+                        {
+                            tag_throwable_location(&throwable, compiled, instruction.span);
+                            state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                            if let Some(target) = handle_throw(
+                                compiled,
+                                throwable.clone(),
+                                stack,
+                                state,
+                                exception_handlers,
+                                pending_control,
+                            ) {
+                                return RichDispatchOutcome::Jump(target);
+                            }
+                            return RichDispatchOutcome::Return(Box::new(
+                                vm.propagate_exception(output, stack, state, throwable),
+                            ));
+                        }
+                        return RichDispatchOutcome::Return(Box::new(*result));
+                    }
+                }
             }
             if is_php_token_runtime_class(class_name) {
                 let values = match read_call_args_at_frame(unit, stack, frame_index, args) {

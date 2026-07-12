@@ -41,7 +41,18 @@ impl Vm {
                     args,
                 ) {
                     Ok(value) => value,
-                    Err(result) => return *result,
+                    Err(result) => {
+                        if let Some(throwable) = state
+                            .pending_throw
+                            .take()
+                            .or_else(|| runtime_error_throwable(&result))
+                        {
+                            state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                            state.pending_throw = Some(throwable);
+                            return VmResult::propagating_exception(output.clone());
+                        }
+                        return *result;
+                    }
                 };
                 return VmResult::success_no_output(Some(value));
             }

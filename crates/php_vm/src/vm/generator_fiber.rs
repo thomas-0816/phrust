@@ -409,7 +409,7 @@ impl Vm {
                             output,
                             compiled,
                             stack,
-                            "E_PHP_VM_FIBER_ALREADY_RUNNING: FiberError: fiber is already running",
+                            "E_PHP_VM_FIBER_ALREADY_RUNNING: Cannot start a fiber that has already been started",
                         )));
                     }
                     FiberState::Suspended => {
@@ -417,7 +417,7 @@ impl Vm {
                             output,
                             compiled,
                             stack,
-                            "E_PHP_VM_FIBER_ALREADY_STARTED: FiberError: fiber has already started",
+                            "E_PHP_VM_FIBER_ALREADY_STARTED: Cannot start a fiber that has already been started",
                         )));
                     }
                     FiberState::Terminated | FiberState::Errored => {
@@ -425,7 +425,7 @@ impl Vm {
                             output,
                             compiled,
                             stack,
-                            "E_PHP_VM_FIBER_ALREADY_TERMINATED: FiberError: fiber has already terminated",
+                            "E_PHP_VM_FIBER_ALREADY_TERMINATED: Cannot start a fiber that has already been started",
                         )));
                     }
                 }
@@ -499,7 +499,7 @@ impl Vm {
                         output,
                         compiled,
                         stack,
-                        "E_PHP_VM_FIBER_NOT_SUSPENDED: FiberError: fiber is not suspended",
+                        "E_PHP_VM_FIBER_NOT_SUSPENDED: Cannot resume a fiber that is not suspended",
                     )));
                 }
                 let Some(continuations) = state.fiber_continuations.remove(&fiber.id()) else {
@@ -561,7 +561,7 @@ impl Vm {
                         output,
                         compiled,
                         stack,
-                        "E_PHP_VM_FIBER_NOT_SUSPENDED: FiberError: fiber is not suspended",
+                        "E_PHP_VM_FIBER_NOT_SUSPENDED: Cannot resume a fiber that is not suspended",
                     )));
                 }
                 let throwable = args[0].value.clone();
@@ -643,14 +643,14 @@ impl Vm {
                         output,
                         compiled,
                         stack,
-                        "E_PHP_VM_FIBER_ERRORED: FiberError: fiber terminated with an exception",
+                        "E_PHP_VM_FIBER_ERRORED: Cannot get fiber return value: The fiber threw an exception",
                     ))),
                     FiberState::NotStarted | FiberState::Running | FiberState::Suspended => {
                         Err(Box::new(self.runtime_error(
                             output,
                             compiled,
                             stack,
-                            "E_PHP_VM_FIBER_GET_RETURN_BEFORE_TERMINATION: FiberError: cannot get fiber return value before termination",
+                            "E_PHP_VM_FIBER_GET_RETURN_BEFORE_TERMINATION: Cannot get fiber return value: The fiber has not been started",
                         )))
                     }
                 }
@@ -1002,7 +1002,7 @@ impl Vm {
                 output,
                 compiled,
                 stack,
-                "E_PHP_VM_FIBER_SUSPEND_OUTSIDE_FIBER: Fiber::suspend called outside a running fiber",
+                "E_PHP_VM_FIBER_SUSPEND_OUTSIDE_FIBER: Cannot suspend outside of a fiber",
             )));
         };
         if let Some(name) = args.iter().find_map(|arg| arg.name.as_deref()) {
