@@ -1,0 +1,6 @@
+Call graph:
+    3 Thread_15: php-worker-0
+    + 3 thread_start  (in libsystem_pthread.dylib) + 8  [0x6000]
+    +   3 std::sync::mpmc::Receiver::recv  (in phrust-server) + 4  [0x6004]  list.rs:400
+    +     3 semaphore_wait_trap  (in libsystem_kernel.dylib) + 8  [0x6008]
+Total number in stack (recursive counted multiple, when >=5):

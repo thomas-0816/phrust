@@ -93,6 +93,7 @@ help:
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just wordpress-root-profile Run optional local real WordPress request profile' \
+      '  just wordpress-arm64-sample Capture external ARM64 WordPress CPU samples' \
       '  just wordpress-reference-image Build pinned PHP-FPM/OPcache benchmark image' \
       '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
       '  just wordpress-root-tranche-gate Run strict c1-p50 performance acceptance gate' \
@@ -1153,6 +1154,10 @@ wordpress-real-perf-report:
 wordpress-root-profile:
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
+
+# External, instrumentation-free ARM64 CPU sampling of one pinned PHP worker.
+wordpress-arm64-sample *args:
+    scripts/performance/arm64_work_accounting.py {{args}}
 
 wordpress-benchmark-self-test:
     scripts/performance/wordpress_root_benchmark.py --self-test

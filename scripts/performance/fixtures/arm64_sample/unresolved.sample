@@ -1,0 +1,5 @@
+Call graph:
+    2 Thread_14: php-worker-0
+    + 2 thread_start  (in libsystem_pthread.dylib) + 8  [0x5000]
+    +   2 ???  (in <unknown binary>)  [0x5004]
+Total number in stack (recursive counted multiple, when >=5):
