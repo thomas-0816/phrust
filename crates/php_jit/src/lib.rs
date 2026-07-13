@@ -19,6 +19,7 @@ mod abi;
 mod backend;
 mod code_manager;
 mod cranelift_lowering;
+mod dynamic_code;
 mod eligibility;
 mod helpers;
 mod host_isa;
@@ -30,7 +31,8 @@ pub use abi::{
     JitCValue, JitCValueTag, JitCallResult, JitCallStatus, JitDeoptState, JitExceptionMarker,
     JitFrameHandle, JitFrameView, JitHelperDispatch, JitNativeArgFlags, JitNativeCallArgument,
     JitNativeCallFrame, JitNativeCallKind, JitNativeCallTarget, JitNativeControlRecord,
-    JitNativeDestructorPoint, JitNativeDispatchTrampoline, JitNativeExceptionHandler,
+    JitNativeDestructorPoint, JitNativeDispatchTrampoline, JitNativeDynamicCodeKind,
+    JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
     JitNativeFiberState, JitNativeFrameHeader, JitNativeGeneratorState, JitNativeIndirectionEntry,
     JitNativePcMetadata, JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind,
     JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy, JitOpaqueHandle, JitOpaqueValueKind,
@@ -47,6 +49,10 @@ pub use cranelift_lowering::{
     CraneliftClifSmokeResult, CraneliftLoweringError, CraneliftLoweringResult,
     CraneliftLoweringStats, CraneliftMachineCodeHandle, CraneliftNativeCompiler,
     build_trivial_add_clif_smoke, lower_function_to_cranelift,
+};
+pub use dynamic_code::{
+    DynamicCodeCacheDisposition, DynamicCodeCacheKey, DynamicCodeCompileError,
+    DynamicCodeCompileOnce, DynamicNativeArtifact, DynamicNativeEntry,
 };
 pub use eligibility::{
     JitCandidateKind, JitEligibility, JitEligibilityReason, JitEligibilityReport,
@@ -108,6 +114,8 @@ pub struct JitRuntimeHelperAddresses {
     pub record_array_lookup: usize,
     /// Typed dynamic-call resolver/invoker; never an interpreter dispatcher.
     pub native_call_dispatch: usize,
+    /// Dynamic include/eval/declaration compiler and native-entry invoker.
+    pub native_dynamic_code: usize,
 }
 
 /// Request to compile one future JIT region.
@@ -278,6 +286,19 @@ pub struct JitNativeSuspensionMetadata {
     pub owning_generation_required: bool,
 }
 
+/// Dynamic source/declaration site compiled and invoked through the native
+/// runtime compiler boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitNativeDynamicCodeMetadata {
+    pub function: FunctionId,
+    pub continuation_id: u32,
+    pub kind: JitNativeDynamicCodeKind,
+    pub declared_function: Option<FunctionId>,
+    pub span: IrSpan,
+    pub process_cache: bool,
+    pub restart_cache: bool,
+}
+
 /// Source-level frame resolved from a native PC without interpreter frames.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitNativeBacktraceFrame {
@@ -324,6 +345,7 @@ pub struct JitRegionStateMetadata {
     pub exception_handlers: Vec<JitExceptionHandlerMetadata>,
     pub safepoints: Vec<JitNativeSafepointMetadata>,
     pub suspensions: Vec<JitNativeSuspensionMetadata>,
+    pub dynamic_code: Vec<JitNativeDynamicCodeMetadata>,
 }
 
 impl JitRegionStateMetadata {

@@ -1,6 +1,6 @@
 //! Structured executable Region IR lowered from `php_ir`.
 
-use php_ir::instruction::{IrCallArg, IrCallArgValueKind, TerminatorKind};
+use php_ir::instruction::{IncludeKind, IrCallArg, IrCallArgValueKind, TerminatorKind};
 use php_ir::{
     AttributeEntry, BinaryOp, BlockId, ClassMethodEntry, CompareOp, FunctionEntry, FunctionFlags,
     FunctionId, InstrId, InstructionKind, IrCapture, IrConstant, IrParam, IrReturnType, IrSpan,
@@ -203,6 +203,32 @@ pub enum RegionNativeSuspend {
     },
 }
 
+/// Dynamic compilation/publication operation emitted into generated code.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RegionNativeDynamicCode {
+    Include {
+        dst: RegId,
+        kind: IncludeKind,
+        path: RegionOperand,
+    },
+    Eval {
+        dst: RegId,
+        code: RegionOperand,
+    },
+    DeclareFunction {
+        name: String,
+        function: FunctionId,
+    },
+    DeclareClass {
+        name: String,
+    },
+    MakeClosure {
+        dst: RegId,
+        function: FunctionId,
+        capture_count: u32,
+    },
+}
+
 impl RegionNativeCall {
     /// Returns the fixed-arity userland callee for the allocation-free path.
     /// Every other call shape is resolved by the typed native trampoline.
@@ -273,6 +299,7 @@ pub enum RegionInstructionKind {
     NativeCall(RegionNativeCall),
     NativeControl(RegionNativeControl),
     NativeSuspend(RegionNativeSuspend),
+    NativeDynamicCode(RegionNativeDynamicCode),
     /// Explicit fatal produced by IR lowering; native code returns fatal status.
     RuntimeFatal {
         diagnostic_id: String,
@@ -423,6 +450,13 @@ impl RegionGraph {
                 {
                     callees.insert(target);
                 }
+                if let RegionInstructionKind::NativeDynamicCode(
+                    RegionNativeDynamicCode::DeclareFunction { function, .. }
+                    | RegionNativeDynamicCode::MakeClosure { function, .. },
+                ) = &instruction.kind
+                {
+                    callees.insert(*function);
+                }
             }
         }
         callees.into_iter().collect()
@@ -442,6 +476,18 @@ impl RegionGraph {
         self.blocks.iter().any(|block| {
             block.instructions.iter().any(|instruction| {
                 matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_))
+            })
+        })
+    }
+
+    #[must_use]
+    pub fn has_native_dynamic_code(&self) -> bool {
+        self.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction.kind,
+                    RegionInstructionKind::NativeDynamicCode(_)
+                )
             })
         })
     }
@@ -815,6 +861,48 @@ impl BaselineRegionBuilder {
                         class_name: class_name.clone(),
                         message: lower_operand(unit, *message).ok(),
                     }),
+                    InstructionKind::Include { dst, kind, path } => lower_operand(unit, *path)
+                        .map_or(RegionInstructionKind::MissingLowering, |path| {
+                            RegionInstructionKind::NativeDynamicCode(
+                                RegionNativeDynamicCode::Include {
+                                    dst: *dst,
+                                    kind: *kind,
+                                    path,
+                                },
+                            )
+                        }),
+                    InstructionKind::Eval { dst, code } => lower_operand(unit, *code).map_or(
+                        RegionInstructionKind::MissingLowering,
+                        |code| {
+                            RegionInstructionKind::NativeDynamicCode(
+                                RegionNativeDynamicCode::Eval { dst: *dst, code },
+                            )
+                        },
+                    ),
+                    InstructionKind::DeclareFunction { name, function } => {
+                        RegionInstructionKind::NativeDynamicCode(
+                            RegionNativeDynamicCode::DeclareFunction {
+                                name: name.clone(),
+                                function: *function,
+                            },
+                        )
+                    }
+                    InstructionKind::DeclareClass { name } => {
+                        RegionInstructionKind::NativeDynamicCode(
+                            RegionNativeDynamicCode::DeclareClass { name: name.clone() },
+                        )
+                    }
+                    InstructionKind::MakeClosure {
+                        dst,
+                        function,
+                        captures,
+                    } => RegionInstructionKind::NativeDynamicCode(
+                        RegionNativeDynamicCode::MakeClosure {
+                            dst: *dst,
+                            function: *function,
+                            capture_count: u32::try_from(captures.len()).unwrap_or(u32::MAX),
+                        },
+                    ),
                     InstructionKind::Yield { dst, key, value } => {
                         match (
                             key.map(|key| lower_operand(unit, key)).transpose(),
@@ -850,8 +938,6 @@ impl BaselineRegionBuilder {
                     }
                     InstructionKind::FetchConst { .. }
                     | InstructionKind::RegisterConstant { .. }
-                    | InstructionKind::DeclareFunction { .. }
-                    | InstructionKind::DeclareClass { .. }
                     | InstructionKind::BindReference { .. }
                     | InstructionKind::BindGlobal { .. }
                     | InstructionKind::BindReferenceDim { .. }
@@ -872,11 +958,8 @@ impl BaselineRegionBuilder {
                     | InstructionKind::EmitDiagnostic { .. }
                     | InstructionKind::CloneObject { .. }
                     | InstructionKind::CloneWith { .. }
-                    | InstructionKind::MakeClosure { .. }
                     | InstructionKind::ResolveCallable { .. }
                     | InstructionKind::AcquireCallable { .. }
-                    | InstructionKind::Include { .. }
-                    | InstructionKind::Eval { .. }
                     | InstructionKind::FetchProperty { .. }
                     | InstructionKind::FetchDynamicProperty { .. }
                     | InstructionKind::IssetProperty { .. }

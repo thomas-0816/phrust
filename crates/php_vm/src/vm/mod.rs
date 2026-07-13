@@ -220,8 +220,8 @@ use jit_abi::{
     JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT, JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT,
     jit_array_fetch_int_slow_abi, jit_array_len_abi, jit_concat_string_string_fast,
     jit_count_known_abi, jit_guard_kind_for_side_exit, jit_native_call_dispatch_abi,
-    jit_property_load_monomorphic_fast, jit_record_array_lookup_abi, jit_runtime_helper_table,
-    jit_strlen_known_abi,
+    jit_native_dynamic_code_abi, jit_property_load_monomorphic_fast, jit_record_array_lookup_abi,
+    jit_runtime_helper_table, jit_strlen_known_abi,
 };
 use operand_read::{
     DenseOperandRead, operand_truthy_at_frame, read_operand, read_operand_at_frame,
@@ -784,6 +784,7 @@ impl Vm {
                 property_load: jit_property_load_monomorphic_fast as *const () as usize,
                 record_array_lookup: jit_record_array_lookup_abi as *const () as usize,
                 native_call_dispatch: jit_native_call_dispatch_abi as *const () as usize,
+                native_dynamic_code: jit_native_dynamic_code_abi as *const () as usize,
             },
         ) {
             Ok(compiled) => compiled,

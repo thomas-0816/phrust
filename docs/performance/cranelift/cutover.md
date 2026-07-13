@@ -236,3 +236,34 @@ layout, generation ownership, native resume coverage and forbidden dispatch
 dependencies, executes focused generated yield/yield-from/send/throw/finally/
 fiber tests, runs the existing generator and fiber semantic fixtures, and
 checks all workspace targets.
+
+## Prompt 9 native dynamic source compilation
+
+`Include`, `Eval`, runtime function/class declaration, and known closure
+creation lower to `RegionNativeDynamicCode`. Generated code calls the typed
+`JitNativeDynamicCodeTrampoline`; the operation resolves and validates source,
+compiles the complete unit and its declarations, atomically publishes native
+entries, and only then invokes the requested entry. Missing compiler context
+returns the explicit `COMPILE_REQUIRED` status and never selects a first-run
+fallback executor.
+
+`DynamicCodeCompileOnce` keys artifacts by exact source, dependencies, semantic
+configuration, runtime ABI, and target CPU. One owner compiles outside all
+coordinator locks while concurrent consumers wait for publication. This makes
+nested compilation of a distinct key safe, detects recursive ownership of the
+same key, caches compile errors deterministically, participates in process and
+validated restart caches, and exposes explicit child-after-fork
+reinitialization. Runtime declarations and known closures reference bodies
+included in the same native call graph before their PHP-visible publication.
+Autoload remains the typed native callback kind from Prompt 6.
+
+Run the gate with:
+
+```sh
+nix develop -c just cranelift-native-dynamic-code
+```
+
+It writes `target/cranelift-only/native-dynamic-code.{json,md}`, verifies the
+ABI, Region IR, generated callout, compile-once/cache/fork contracts and source
+invariants, executes focused native/concurrency/cache/error tests plus existing
+include/eval/autoload semantic fixtures, and checks every workspace target.

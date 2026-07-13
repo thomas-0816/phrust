@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn compile_region_graph_native(
     unit: &IrUnit,
     region: &RegionGraph,
-    native_call_dispatch: usize,
+    runtime_helpers: crate::JitRuntimeHelperAddresses,
     request: &JitCompileRequest,
 ) -> Result<NativeScalarRegionCompileResult, CraneliftLoweringError> {
     validate_region_native_coverage(region)?;
@@ -18,19 +18,36 @@ pub(super) fn compile_region_graph_native(
     let needs_call_trampoline = regions
         .values()
         .any(RegionGraph::has_native_trampoline_calls);
-    if needs_call_trampoline && native_call_dispatch == 0 {
+    if needs_call_trampoline && runtime_helpers.native_call_dispatch == 0 {
         return Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_REJECT_NATIVE_CALL_TRAMPOLINE",
             "dynamic or complex call requires the typed native dispatch trampoline",
         ));
     }
+    let needs_dynamic_code = regions.values().any(RegionGraph::has_native_dynamic_code);
+    if needs_dynamic_code && runtime_helpers.native_dynamic_code == 0 {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_DYNAMIC_CODE",
+            "include, eval, or runtime declaration requires the native dynamic-code compiler",
+        ));
+    }
     let native_call_symbol = NATIVE_CALL_DISPATCH_SYMBOL.to_owned();
+    let native_dynamic_code_symbol = NATIVE_DYNAMIC_CODE_SYMBOL.to_owned();
     let mut imports = vec![(
         "region-runtime-helper-abi".to_owned(),
         region.compile_metadata.helper_abi_hash as usize,
     )];
     if needs_call_trampoline {
-        imports.push((native_call_symbol.clone(), native_call_dispatch));
+        imports.push((
+            native_call_symbol.clone(),
+            runtime_helpers.native_call_dispatch,
+        ));
+    }
+    if needs_dynamic_code {
+        imports.push((
+            native_dynamic_code_symbol.clone(),
+            runtime_helpers.native_dynamic_code,
+        ));
     }
     let import_refs = imports
         .iter()
@@ -56,6 +73,26 @@ pub(super) fn compile_region_graph_native(
                             CraneliftLoweringError::new(
                                 "JIT_CRANELIFT_REJECT_NATIVE_CALL_TRAMPOLINE",
                                 format!("failed to declare native call trampoline: {error}"),
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            let native_dynamic_code_helper = if needs_dynamic_code {
+                let pointer_type = module.target_config().pointer_type();
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I64));
+                signature.params.push(AbiParam::new(pointer_type));
+                signature.params.push(AbiParam::new(pointer_type));
+                signature.returns.push(AbiParam::new(types::I32));
+                Some(
+                    module
+                        .declare_function(&native_dynamic_code_symbol, Linkage::Import, &signature)
+                        .map_err(|error| {
+                            CraneliftLoweringError::new(
+                                "JIT_CRANELIFT_REJECT_NATIVE_DYNAMIC_CODE",
+                                format!("failed to declare native dynamic-code compiler: {error}"),
                             )
                         })?,
                 )
@@ -91,6 +128,7 @@ pub(super) fn compile_region_graph_native(
                     func_id,
                     &functions,
                     native_call_helper,
+                    native_dynamic_code_helper,
                 )?;
                 code_bytes = code_bytes.saturating_add(candidate_bytes);
                 native_pc_ranges.append(&mut candidate_ranges);
@@ -134,6 +172,7 @@ fn collect_region_graphs(
     let mut regions = BTreeMap::new();
     regions.insert(root.function, root.clone());
     let mut pending = root.direct_callees();
+    pending.extend(dynamic_class_body_functions(unit, root));
     while let Some(function) = pending.pop() {
         if regions.contains_key(&function) {
             continue;
@@ -151,6 +190,7 @@ fn collect_region_graphs(
         )?;
         validate_region_native_coverage(&region)?;
         pending.extend(region.direct_callees());
+        pending.extend(dynamic_class_body_functions(unit, &region));
         regions.insert(function, region);
     }
     for region in regions.values() {
@@ -159,6 +199,33 @@ fn collect_region_graphs(
         })?;
     }
     Ok(regions)
+}
+
+fn dynamic_class_body_functions(unit: &IrUnit, region: &RegionGraph) -> Vec<FunctionId> {
+    let declared = region
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| {
+            let RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::DeclareClass {
+                name,
+            }) = &instruction.kind
+            else {
+                return None;
+            };
+            Some(name)
+        });
+    let mut functions = std::collections::BTreeSet::new();
+    for name in declared {
+        if let Some(class) = unit
+            .classes
+            .iter()
+            .find(|class| class.name.eq_ignore_ascii_case(name))
+        {
+            functions.extend(class.methods.iter().map(|method| method.function));
+        }
+    }
+    functions.into_iter().collect()
 }
 
 fn validate_region_native_coverage(region: &RegionGraph) -> Result<(), CraneliftLoweringError> {
@@ -296,6 +363,7 @@ fn define_region_graph_function(
     func_id: FuncId,
     functions: &BTreeMap<FunctionId, FuncId>,
     native_call_helper: Option<FuncId>,
+    native_dynamic_code_helper: Option<FuncId>,
 ) -> Result<(u64, Vec<crate::JitNativePcRange>), CraneliftLoweringError> {
     let arity = region_arity(region)?;
     let pointer_type = module.target_config().pointer_type();
@@ -463,6 +531,7 @@ fn define_region_graph_function(
                     &mut builder,
                     functions,
                     native_call_helper,
+                    native_dynamic_code_helper,
                     &blocks,
                     &suspension_blocks,
                     &locals,
@@ -670,6 +739,61 @@ fn region_graph_metadata<'a>(
                             span: instruction.span,
                             live_locals: instruction.live_locals.clone(),
                             owning_generation_required: true,
+                        })
+                    })
+                })
+            })
+            .collect(),
+        dynamic_code: regions
+            .iter()
+            .flat_map(|region| {
+                region.blocks.iter().flat_map(move |block| {
+                    block.instructions.iter().filter_map(move |instruction| {
+                        let RegionInstructionKind::NativeDynamicCode(operation) = &instruction.kind
+                        else {
+                            return None;
+                        };
+                        let (kind, declared_function) = match operation {
+                            RegionNativeDynamicCode::Include { kind, .. } => (
+                                match kind {
+                                    php_ir::instruction::IncludeKind::Include => {
+                                        crate::JitNativeDynamicCodeKind::INCLUDE
+                                    }
+                                    php_ir::instruction::IncludeKind::IncludeOnce => {
+                                        crate::JitNativeDynamicCodeKind::INCLUDE_ONCE
+                                    }
+                                    php_ir::instruction::IncludeKind::Require => {
+                                        crate::JitNativeDynamicCodeKind::REQUIRE
+                                    }
+                                    php_ir::instruction::IncludeKind::RequireOnce => {
+                                        crate::JitNativeDynamicCodeKind::REQUIRE_ONCE
+                                    }
+                                },
+                                None,
+                            ),
+                            RegionNativeDynamicCode::Eval { .. } => {
+                                (crate::JitNativeDynamicCodeKind::EVAL, None)
+                            }
+                            RegionNativeDynamicCode::DeclareFunction { function, .. } => (
+                                crate::JitNativeDynamicCodeKind::DECLARE_FUNCTION,
+                                Some(*function),
+                            ),
+                            RegionNativeDynamicCode::DeclareClass { .. } => {
+                                (crate::JitNativeDynamicCodeKind::DECLARE_CLASS, None)
+                            }
+                            RegionNativeDynamicCode::MakeClosure { function, .. } => (
+                                crate::JitNativeDynamicCodeKind::MAKE_CLOSURE,
+                                Some(*function),
+                            ),
+                        };
+                        Some(crate::JitNativeDynamicCodeMetadata {
+                            function: region.function,
+                            continuation_id: instruction.continuation_id,
+                            kind,
+                            declared_function,
+                            span: instruction.span,
+                            process_cache: true,
+                            restart_cache: true,
                         })
                     })
                 })

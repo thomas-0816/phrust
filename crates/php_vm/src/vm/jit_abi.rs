@@ -63,6 +63,48 @@ pub(super) extern "C" fn jit_native_call_dispatch_abi(
     status
 }
 
+/// Native dynamic-code compiler boundary. A production VM context installs
+/// the include/eval compiler and compile-once cache. Until that context is
+/// present this returns `COMPILE_REQUIRED`; it never executes the source via a
+/// bytecode, rich, or IR fallback.
+#[allow(unsafe_code)]
+pub(super) extern "C" fn jit_native_dynamic_code_abi(
+    vm_context: u64,
+    request: *mut php_jit::JitNativeDynamicCodeRequest,
+    out: *mut php_jit::JitCallResult,
+) -> i32 {
+    if request.is_null() || out.is_null() {
+        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+    }
+    let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: Generated code owns this request for the synchronous call.
+        let request = unsafe { &*request };
+        if request.abi_version != php_jit::JIT_RUNTIME_ABI_VERSION
+            || request.struct_size as usize
+                != std::mem::size_of::<php_jit::JitNativeDynamicCodeRequest>()
+        {
+            php_jit::JitCallStatus::ABI_MISMATCH
+        } else if vm_context == 0 {
+            php_jit::JitCallStatus::COMPILE_REQUIRED
+        } else {
+            // The VM context is deliberately opaque at this ABI boundary. Its
+            // owning executor installs the native compiler callback; treating
+            // an unknown handle as executable would violate handle safety.
+            php_jit::JitCallStatus::RUNTIME_ERROR
+        }
+    }))
+    .unwrap_or(php_jit::JitCallStatus::RUNTIME_ERROR);
+    // SAFETY: `out` is a checked caller-owned result record.
+    unsafe {
+        out.write(php_jit::JitCallResult {
+            status,
+            detail: status.0,
+            value: php_jit::JitAbiSlot::default(),
+        });
+    }
+    status.0 as i32
+}
+
 pub(super) fn jit_guard_kind_for_side_exit(reason: php_jit::SideExitReason) -> Option<GuardKind> {
     match reason {
         php_jit::SideExitReason::TypeMismatch => Some(GuardKind::QuickeningType),
@@ -314,7 +356,7 @@ pub(super) extern "C" fn jit_property_load_monomorphic_fast(
 
 #[cfg(test)]
 mod tests {
-    use super::jit_native_call_dispatch_abi;
+    use super::{jit_native_call_dispatch_abi, jit_native_dynamic_code_abi};
 
     #[test]
     fn native_call_trampoline_requests_compile_without_interpreter_reentry() {
@@ -334,5 +376,19 @@ mod tests {
             php_jit::JitCallStatus::ABI_MISMATCH.0 as i32
         );
         assert_eq!(out.status, php_jit::JitCallStatus::ABI_MISMATCH);
+    }
+
+    #[test]
+    fn native_dynamic_code_boundary_never_uses_first_execution_fallback() {
+        let mut request = php_jit::JitNativeDynamicCodeRequest {
+            kind: php_jit::JitNativeDynamicCodeKind::EVAL,
+            ..php_jit::JitNativeDynamicCodeRequest::default()
+        };
+        let mut out = php_jit::JitCallResult::default();
+        assert_eq!(
+            jit_native_dynamic_code_abi(0, &mut request, &mut out),
+            php_jit::JitCallStatus::COMPILE_REQUIRED.0 as i32
+        );
+        assert_eq!(out.status, php_jit::JitCallStatus::COMPILE_REQUIRED);
     }
 }

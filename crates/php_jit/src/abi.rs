@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{BlockId, FunctionId, InstrId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 7;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 8;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x07c1_a817_0000_0007;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x08c1_a817_0000_0008;
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
 pub const JIT_DEOPT_MAX_SLOTS: usize = 64;
@@ -534,6 +534,81 @@ impl Default for JitNativeCallFrame {
 pub type JitNativeDispatchTrampoline = unsafe extern "C" fn(
     vm_context: u64,
     frame: *mut JitNativeCallFrame,
+    out: *mut JitCallResult,
+) -> i32;
+
+/// Dynamic source/declaration operation executed from generated code.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct JitNativeDynamicCodeKind(pub u32);
+
+impl JitNativeDynamicCodeKind {
+    pub const INCLUDE: Self = Self(1);
+    pub const INCLUDE_ONCE: Self = Self(2);
+    pub const REQUIRE: Self = Self(3);
+    pub const REQUIRE_ONCE: Self = Self(4);
+    pub const EVAL: Self = Self(5);
+    pub const DECLARE_FUNCTION: Self = Self(6);
+    pub const DECLARE_CLASS: Self = Self(7);
+    pub const MAKE_CLOSURE: Self = Self(8);
+}
+
+/// Native compile/publication request for dynamic PHP code.
+///
+/// Source values are tagged scalar values or opaque VM handles. The runtime
+/// resolves and validates them, compiles the complete unit, publishes all
+/// native entries, and only then invokes the requested entry. No instruction
+/// stream or opcode identity crosses this boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JitNativeDynamicCodeRequest {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub kind: JitNativeDynamicCodeKind,
+    pub flags: u32,
+    pub caller_function_id: u32,
+    pub continuation_id: u32,
+    pub result_slot: u32,
+    /// Known declaration/closure body, or `u32::MAX` for source compilation.
+    pub declared_function_id: u32,
+    pub source: JitAbiSlot,
+    /// Exact semantic compiler configuration identity.
+    pub config_hash: u64,
+    /// Exact dependency/source-generation identity known by generated code.
+    pub dependency_identity: u64,
+    /// Stable symbol identity for runtime declaration publication.
+    pub symbol_hash: u64,
+    /// Caller-owned native frame/slot handle used for closure captures.
+    pub caller_frame: u64,
+}
+
+impl Default for JitNativeDynamicCodeRequest {
+    fn default() -> Self {
+        Self {
+            abi_version: JIT_RUNTIME_ABI_VERSION,
+            struct_size: std::mem::size_of::<Self>() as u32,
+            kind: JitNativeDynamicCodeKind::default(),
+            flags: 0,
+            caller_function_id: u32::MAX,
+            continuation_id: u32::MAX,
+            result_slot: u32::MAX,
+            declared_function_id: u32::MAX,
+            source: JitAbiSlot::default(),
+            config_hash: 0,
+            dependency_identity: 0,
+            symbol_hash: 0,
+            caller_frame: 0,
+        }
+    }
+}
+
+/// Runtime dynamic compiler/invoker. Successful return means the requested
+/// PHP code ran through a published native entry. Compile errors use
+/// `RUNTIME_ERROR`; a missing compiler uses `COMPILE_REQUIRED` and may never
+/// fall back to interpreter execution.
+pub type JitNativeDynamicCodeTrampoline = unsafe extern "C" fn(
+    vm_context: u64,
+    request: *mut JitNativeDynamicCodeRequest,
     out: *mut JitCallResult,
 ) -> i32;
 
@@ -1309,11 +1384,12 @@ mod tests {
         JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitCExit, JitCExitTag, JitCFrameView,
         JitCValue, JitCValueTag, JitCallResult, JitCallStatus, JitFrameHandle, JitFrameView,
         JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
-        JitNativeControlRecord, JitNativeExceptionHandler, JitNativeFiberState,
-        JitNativeFrameHeader, JitNativeGeneratorState, JitNativeIndirectionEntry,
-        JitNativePcMetadata, JitNativeRootEntry, JitNativeSuspensionGenerationPolicy,
-        JitOpaqueHandle, JitOpaqueValueKind, JitSideExit, JitVmContextHandle, SideExitReason,
-        helper_id, jit_default_helper_dispatch,
+        JitNativeControlRecord, JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest,
+        JitNativeExceptionHandler, JitNativeFiberState, JitNativeFrameHeader,
+        JitNativeGeneratorState, JitNativeIndirectionEntry, JitNativePcMetadata,
+        JitNativeRootEntry, JitNativeSuspensionGenerationPolicy, JitOpaqueHandle,
+        JitOpaqueValueKind, JitSideExit, JitVmContextHandle, SideExitReason, helper_id,
+        jit_default_helper_dispatch,
     };
 
     #[test]
@@ -1343,7 +1419,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 7);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 8);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);
@@ -1356,6 +1432,7 @@ mod tests {
         assert_eq!(align_of::<JitCExit>(), 8);
         assert_eq!(align_of::<JitNativeCallArgument>(), 8);
         assert_eq!(align_of::<JitNativeCallFrame>(), 8);
+        assert_eq!(align_of::<JitNativeDynamicCodeRequest>(), 8);
         assert_eq!(align_of::<JitNativeControlRecord>(), 8);
         assert_eq!(align_of::<JitNativeExceptionHandler>(), 4);
         assert_eq!(align_of::<JitNativeFrameHeader>(), 8);
@@ -1367,6 +1444,22 @@ mod tests {
             JitNativeCallFrame::default().struct_size as usize,
             size_of::<JitNativeCallFrame>()
         );
+        assert_eq!(
+            JitNativeDynamicCodeRequest::default().struct_size as usize,
+            size_of::<JitNativeDynamicCodeRequest>()
+        );
+    }
+
+    #[test]
+    fn native_dynamic_code_kind_numbers_are_stable() {
+        assert_eq!(JitNativeDynamicCodeKind::INCLUDE.0, 1);
+        assert_eq!(JitNativeDynamicCodeKind::INCLUDE_ONCE.0, 2);
+        assert_eq!(JitNativeDynamicCodeKind::REQUIRE.0, 3);
+        assert_eq!(JitNativeDynamicCodeKind::REQUIRE_ONCE.0, 4);
+        assert_eq!(JitNativeDynamicCodeKind::EVAL.0, 5);
+        assert_eq!(JitNativeDynamicCodeKind::DECLARE_FUNCTION.0, 6);
+        assert_eq!(JitNativeDynamicCodeKind::DECLARE_CLASS.0, 7);
+        assert_eq!(JitNativeDynamicCodeKind::MAKE_CLOSURE.0, 8);
     }
 
     #[test]

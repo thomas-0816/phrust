@@ -105,6 +105,7 @@ help:
       '  just jit-smoke-amd64    Prove native Cranelift execution on AMD64' \
       '  just cranelift-only-precondition Freeze and verify the native-only cutover prerequisites' \
       '  just cranelift-only-no-alternate-emitter Prove the retired native emitter is absent' \
+      '  just cranelift-native-dynamic-code Verify native include/eval/declaration compilation' \
       '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
       '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
@@ -1715,6 +1716,24 @@ cranelift-native-suspensions:
     cargo test -p php_vm frame_reuse_preserves_generator_and_fiber_suspension
     cargo test -p php_vm trace_runtime_records_fiber_suspend_snapshot
     cargo test -p php_runtime fiber_state_transitions_are_explicit
+    cargo check --workspace --all-targets
+
+# Prompt 9 cutover gate: include/eval and visible runtime declarations compile,
+# publish, cache, and invoke native entries before any dynamic PHP execution.
+cranelift-native-dynamic-code:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_dynamic_code_audit
+    scripts/verify/cranelift_native_dynamic_code.py
+    scripts/verify/cranelift_only_stage_ratchet.py
+    cargo test -p php_jit --lib dynamic_code
+    cargo test -p php_jit --lib native_dynamic_code_kind_numbers_are_stable
+    cargo test -p php_jit --lib include_executes_only_after_native_dynamic_compiler_returns_entry_result
+    cargo test -p php_vm native_dynamic_code_boundary_never_uses_first_execution_fallback
+    cargo test -p php_vm include_once_and_require_once_skip_second_execution
+    cargo test -p php_vm include_cache_preserves_include_once_request_tracking
+    cargo test -p php_vm eval_
+    cargo test -p php_vm autoload
     cargo check --workspace --all-targets
 
 jit-cranelift-smoke:

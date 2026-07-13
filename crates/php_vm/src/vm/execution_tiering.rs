@@ -687,6 +687,7 @@ impl Vm {
                 property_load: jit_property_load_monomorphic_fast as *const () as usize,
                 record_array_lookup: jit_record_array_lookup_abi as *const () as usize,
                 native_call_dispatch: jit_native_call_dispatch_abi as *const () as usize,
+                native_dynamic_code: jit_native_dynamic_code_abi as *const () as usize,
             },
         );
         if let Ok(result) = &compile_result

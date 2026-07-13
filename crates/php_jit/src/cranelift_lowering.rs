@@ -11,7 +11,8 @@ use crate::region_ir::build_baseline_region;
 use crate::region_ir::{
     BaselineRegionBuilder, CompileMetadata, NativeCompilerTier, RegionBinaryOp, RegionCallResult,
     RegionCallTarget, RegionCompareOpCode, RegionGraph, RegionInstruction, RegionInstructionKind,
-    RegionNativeCall, RegionNativeControl, RegionNativeSuspend, RegionOperand, RegionTerminator,
+    RegionNativeCall, RegionNativeControl, RegionNativeDynamicCode, RegionNativeSuspend,
+    RegionOperand, RegionTerminator,
 };
 use crate::{
     CraneliftCodeKey, CraneliftCompilerIdentity, JIT_RUNTIME_ABI_HASH, JitCompileRequest,
@@ -282,6 +283,7 @@ const RECORD_ARRAY_LOOKUP_HELPER_SYMBOL: &str = "phrust_jit_record_array_lookup"
 #[cfg(test)]
 const PROPERTY_LOAD_HELPER_SYMBOL: &str = "php_jit_property_load_monomorphic_fast";
 const NATIVE_CALL_DISPATCH_SYMBOL: &str = "phrust_jit_native_call_dispatch";
+const NATIVE_DYNAMIC_CODE_SYMBOL: &str = "phrust_jit_native_dynamic_code";
 
 /// Mandatory Cranelift native compiler.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -354,7 +356,7 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
     match executable_region::compile_region_graph_native(
         unit,
         &region,
-        request.runtime_helpers.native_call_dispatch,
+        request.runtime_helpers,
         request.compile,
     ) {
         Ok(compiled) => {
@@ -400,6 +402,7 @@ fn runtime_helper_abi_hash(helpers: crate::JitRuntimeHelperAddresses) -> u64 {
         helpers.property_load,
         helpers.record_array_lookup,
         helpers.native_call_dispatch,
+        helpers.native_dynamic_code,
     ] {
         for byte in address.to_le_bytes() {
             hash ^= u64::from(byte);
@@ -699,7 +702,7 @@ impl CraneliftNativeCompiler {
             match executable_region::compile_region_graph_native(
                 unit,
                 &region,
-                request.runtime_helpers.native_call_dispatch,
+                request.runtime_helpers,
                 request.compile,
             ) {
                 Ok(compiled) => {
@@ -3453,6 +3456,7 @@ fn lower_region_instruction(
     builder: &mut FunctionBuilder<'_>,
     functions: &BTreeMap<FunctionId, FuncId>,
     native_call_helper: Option<FuncId>,
+    native_dynamic_code_helper: Option<FuncId>,
     blocks: &[ir::Block],
     suspension_blocks: &BTreeMap<u32, ir::Block>,
     locals: &BTreeMap<LocalId, Variable>,
@@ -3654,6 +3658,20 @@ fn lower_region_instruction(
                 resume_state,
                 function,
                 local_count,
+            )?;
+        }
+        RegionInstructionKind::NativeDynamicCode(operation) => {
+            lower_native_dynamic_code(
+                module,
+                builder,
+                native_dynamic_code_helper,
+                locals,
+                registers,
+                operation,
+                instruction,
+                result_out,
+                function,
+                pointer_type,
             )?;
         }
         RegionInstructionKind::Compare { dst, op, lhs, rhs } => {
@@ -4192,6 +4210,224 @@ fn lower_native_call_trampoline(
         RegionCallResult::ReferenceLocal(local) => {
             builder.def_var(local_variable(locals, local)?, value);
         }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_native_dynamic_code(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    native_dynamic_code_helper: Option<FuncId>,
+    locals: &BTreeMap<LocalId, Variable>,
+    registers: &mut BTreeMap<RegId, ir::Value>,
+    operation: &RegionNativeDynamicCode,
+    instruction: &RegionInstruction,
+    result_out: ir::Value,
+    function: FunctionId,
+    pointer_type: ir::Type,
+) -> Result<(), CraneliftLoweringError> {
+    let helper = native_dynamic_code_helper.ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_DYNAMIC_CODE",
+            "dynamic code site has no native compiler/invoker",
+        )
+    })?;
+    let (kind, destination, declared_function, source, symbol_hash, flags) = match operation {
+        RegionNativeDynamicCode::Include { dst, kind, path } => (
+            match kind {
+                php_ir::instruction::IncludeKind::Include => {
+                    crate::JitNativeDynamicCodeKind::INCLUDE
+                }
+                php_ir::instruction::IncludeKind::IncludeOnce => {
+                    crate::JitNativeDynamicCodeKind::INCLUDE_ONCE
+                }
+                php_ir::instruction::IncludeKind::Require => {
+                    crate::JitNativeDynamicCodeKind::REQUIRE
+                }
+                php_ir::instruction::IncludeKind::RequireOnce => {
+                    crate::JitNativeDynamicCodeKind::REQUIRE_ONCE
+                }
+            },
+            Some(*dst),
+            None,
+            Some(*path),
+            0,
+            0,
+        ),
+        RegionNativeDynamicCode::Eval { dst, code } => (
+            crate::JitNativeDynamicCodeKind::EVAL,
+            Some(*dst),
+            None,
+            Some(*code),
+            0,
+            0,
+        ),
+        RegionNativeDynamicCode::DeclareFunction { name, function } => (
+            crate::JitNativeDynamicCodeKind::DECLARE_FUNCTION,
+            None,
+            Some(*function),
+            None,
+            stable_call_symbol_hash(name),
+            0,
+        ),
+        RegionNativeDynamicCode::DeclareClass { name } => (
+            crate::JitNativeDynamicCodeKind::DECLARE_CLASS,
+            None,
+            None,
+            None,
+            stable_call_symbol_hash(name),
+            0,
+        ),
+        RegionNativeDynamicCode::MakeClosure {
+            dst,
+            function,
+            capture_count,
+        } => (
+            crate::JitNativeDynamicCodeKind::MAKE_CLOSURE,
+            Some(*dst),
+            Some(*function),
+            None,
+            0,
+            *capture_count,
+        ),
+    };
+    let request_size = u32::try_from(std::mem::size_of::<crate::JitNativeDynamicCodeRequest>())
+        .map_err(|_| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_NATIVE_DYNAMIC_CODE",
+                "dynamic code request exceeds stack-slot limits",
+            )
+        })?;
+    let request_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        request_size,
+        3,
+    ));
+    let request_ptr = builder.ins().stack_addr(pointer_type, request_slot, 0);
+    let zero = builder.ins().iconst(types::I64, 0);
+    for offset in (0..request_size).step_by(8) {
+        builder.ins().store(
+            MemFlagsData::new(),
+            zero,
+            request_ptr,
+            i32::try_from(offset).unwrap_or(i32::MAX),
+        );
+    }
+    let store_i32 = |builder: &mut FunctionBuilder<'_>, offset: usize, value: u32| {
+        let value = builder.ins().iconst(types::I32, i64::from(value));
+        builder.ins().store(
+            MemFlagsData::new(),
+            value,
+            request_ptr,
+            i32::try_from(offset).unwrap_or(i32::MAX),
+        );
+    };
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, abi_version),
+        crate::JIT_RUNTIME_ABI_VERSION,
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, struct_size),
+        request_size,
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, kind),
+        kind.0,
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, flags),
+        flags,
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, caller_function_id),
+        function.raw(),
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, continuation_id),
+        instruction.continuation_id,
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, result_slot),
+        destination.map_or(u32::MAX, RegId::raw),
+    );
+    store_i32(
+        builder,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, declared_function_id),
+        declared_function.map_or(u32::MAX, FunctionId::raw),
+    );
+    if let Some(source) = source {
+        let source = lower_region_operand(builder, locals, registers, source)?;
+        store_i32(
+            builder,
+            std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, source)
+                + std::mem::offset_of!(crate::JitAbiSlot, tag),
+            3,
+        );
+        builder.ins().store(
+            MemFlagsData::new(),
+            source,
+            request_ptr,
+            (std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, source)
+                + std::mem::offset_of!(crate::JitAbiSlot, payload)) as i32,
+        );
+    }
+    let symbol_hash = builder.ins().iconst(types::I64, symbol_hash as i64);
+    builder.ins().store(
+        MemFlagsData::new(),
+        symbol_hash,
+        request_ptr,
+        std::mem::offset_of!(crate::JitNativeDynamicCodeRequest, symbol_hash) as i32,
+    );
+
+    let out_size = std::mem::size_of::<crate::JitCallResult>() as u32;
+    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        out_size,
+        3,
+    ));
+    let out_ptr = builder.ins().stack_addr(pointer_type, out_slot, 0);
+    let helper_ref = module.declare_func_in_func(helper, builder.func);
+    let vm_context = builder.ins().iconst(types::I64, 0);
+    let helper_call = builder
+        .ins()
+        .call(helper_ref, &[vm_context, request_ptr, out_ptr]);
+    let status = builder.inst_results(helper_call)[0];
+    let success = builder.create_block();
+    let side_exit = builder.create_block();
+    let is_success = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::RETURN.0),
+    );
+    builder.ins().brif(is_success, success, &[], side_exit, &[]);
+    builder.switch_to_block(side_exit);
+    let control_value = builder.ins().stack_load(
+        types::I64,
+        out_slot,
+        (std::mem::offset_of!(crate::JitCallResult, value)
+            + std::mem::offset_of!(crate::JitAbiSlot, payload)) as i32,
+    );
+    builder
+        .ins()
+        .store(MemFlagsData::new(), control_value, result_out, 0);
+    builder.ins().return_(&[status]);
+    builder.switch_to_block(success);
+    if let Some(destination) = destination {
+        let value = builder.ins().stack_load(
+            types::I64,
+            out_slot,
+            (std::mem::offset_of!(crate::JitCallResult, value)
+                + std::mem::offset_of!(crate::JitAbiSlot, payload)) as i32,
+        );
+        registers.insert(destination, value);
     }
     Ok(())
 }
@@ -5351,6 +5587,57 @@ mod tests {
     }
 
     #[test]
+    fn include_executes_only_after_native_dynamic_compiler_returns_entry_result() {
+        extern "C" fn compile_and_invoke(
+            _vm_context: u64,
+            request: *mut crate::JitNativeDynamicCodeRequest,
+            out: *mut crate::JitCallResult,
+        ) -> i32 {
+            assert!(!request.is_null());
+            assert!(!out.is_null());
+            // SAFETY: Generated code owns both records for this synchronous
+            // native dynamic compilation/invocation.
+            let request = unsafe { &*request };
+            assert_eq!(request.abi_version, crate::JIT_RUNTIME_ABI_VERSION);
+            assert_eq!(request.kind, crate::JitNativeDynamicCodeKind::REQUIRE_ONCE);
+            assert_eq!(request.source.payload, 91);
+            // SAFETY: `out` is checked and caller-owned.
+            unsafe {
+                out.write(crate::JitCallResult {
+                    status: crate::JitCallStatus::RETURN,
+                    detail: request.continuation_id,
+                    value: crate::JitAbiSlot {
+                        tag: 3,
+                        flags: 0,
+                        payload: 123,
+                    },
+                });
+            }
+            crate::JitCallStatus::RETURN.0 as i32
+        }
+
+        let (unit, function) = scalar_native_include_fixture();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.region.native-include"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses {
+                native_dynamic_code: compile_and_invoke as *const () as usize,
+                ..crate::JitRuntimeHelperAddresses::default()
+            },
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        let handle = outcome.handle.expect("native include should compile");
+        assert_eq!(
+            handle
+                .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+                .expect("native include entry should execute"),
+            123
+        );
+    }
+
+    #[test]
     fn cranelift_helper_arithmetic_overflow_returns_native_status() {
         let (unit, function) = helper_overflow_fixture();
         let mut backend = CraneliftNativeCompiler;
@@ -5475,6 +5762,7 @@ mod tests {
                 property_load: 0,
                 record_array_lookup: 0,
                 native_call_dispatch: 0,
+                native_dynamic_code: 0,
             },
         });
 
@@ -5522,6 +5810,7 @@ mod tests {
                 property_load: 0,
                 record_array_lookup: 0,
                 native_call_dispatch: 0,
+                native_dynamic_code: 0,
             },
         });
 
@@ -5561,6 +5850,7 @@ mod tests {
                 property_load: 0,
                 record_array_lookup: 0,
                 native_call_dispatch: 0,
+                native_dynamic_code: 0,
             },
         });
 
@@ -5605,6 +5895,7 @@ mod tests {
                 property_load: 0,
                 record_array_lookup: 0,
                 native_call_dispatch: 0,
+                native_dynamic_code: 0,
             },
         });
 
@@ -5994,6 +6285,30 @@ mod tests {
                 dst: result,
                 name: "deployment_function".to_owned(),
                 args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+        (builder.finish(), function)
+    }
+
+    fn scalar_native_include_fixture() -> (php_ir::IrUnit, FunctionId) {
+        let mut builder = IrBuilder::new(UnitId::new(0));
+        let file = builder.add_file("native-include.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("native_include", FunctionFlags::default(), span);
+        builder.set_entry(function);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let block = builder.append_block(function);
+        let path = builder.add_constant(IrConstant::Int(91));
+        let result = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Include {
+                dst: result,
+                kind: php_ir::instruction::IncludeKind::RequireOnce,
+                path: Operand::Constant(path),
             },
             span,
         );
