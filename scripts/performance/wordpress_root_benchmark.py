@@ -42,7 +42,6 @@ DEFAULT_NGINX_IMAGE = "nginx:1.28.0-alpine"
 DEFAULT_OBSERVABLES = (("root", "/"),)
 TARGET_PHP_VERSION = "8.5.7"
 SUPPORTED_CRANELIFT_MACHINES = {"x86_64", "amd64", "aarch64", "arm64"}
-AMD64_MACHINES = {"x86_64", "amd64"}
 CLEAN_TIMING_FORBIDDEN_ENV = (
     "PHRUST_PERF_TRACE",
     "PHRUST_SERVER_PERF_TRACE_VM_COUNTERS",
@@ -54,7 +53,6 @@ CLEAN_TIMING_FORBIDDEN_ENV = (
 # Clean runs override and report these values instead of inheriting ambient
 # state. Ablations and instrumentation remain hard failures above.
 MANAGED_CLEAN_ENV = {
-    "PHRUST_JIT_COPY_PATCH": "1",
     "PHRUST_INCLUDE_REVALIDATE_MS": "2000",
     "PHRUST_WORKER_SYMBOL_EPOCH": "1",
     "PHRUST_PERSISTENT_FEEDBACK": "1",
@@ -220,17 +218,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="run isolated persistent-feedback off/on arms and write one comparison report",
     )
     parser.add_argument(
-        "--copy-patch",
-        choices=("on", "off"),
-        default="on",
-        help="A/B switch for the ARM copy-and-patch native tier",
-    )
-    parser.add_argument(
         "--cranelift-ab",
         action="store_true",
         help=(
-            "run the host-appropriate Cranelift A/B; AMD64 compares managed JIT-off "
-            "with experimental-jit and keeps copy-patch off"
+            "run a managed versus Cranelift A/B with separate diagnostic evidence"
         ),
     )
     parser.add_argument("--strict", action="store_true")
@@ -367,20 +358,18 @@ def run_feedback_ab(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
 
 def run_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
     """Run the host-appropriate clean and diagnostic Cranelift A/B."""
-    if platform.machine().lower() in AMD64_MACHINES:
-        return run_amd64_cranelift_ab(args, out_dir)
-    return run_arm_cranelift_ab(args, out_dir)
+    return run_native_cranelift_ab(args, out_dir)
 
 
-def run_amd64_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
-    """Compare a lean managed baseline with lean Cranelift on AMD64."""
+def run_native_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
+    """Compare a lean managed baseline with lean Cranelift."""
     errors = validate_configuration(args)
     if errors:
         return {
             "schema_version": 2,
             "status": "fail",
             "mode": "cranelift-ab",
-            "architecture": "amd64",
+            "architecture": platform.machine().lower(),
             "timing_eligible": False,
             "arms": {},
             "failures": errors,
@@ -404,7 +393,6 @@ def run_amd64_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str,
         clean_args.cranelift_ab = False
         clean_args.server = server
         clean_args.engine_preset = engine_preset
-        clean_args.copy_patch = "off"
         clean_args.mode = "clean"
         clean_args.baseline = ""
         clean_args.compare = ""
@@ -431,8 +419,6 @@ def run_amd64_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str,
                 ((diagnostic_report.get("profile") or {}).get("attribution") or {}).get("native")
                 or {}
             )
-            if native.get("copy_patch_executed", 0) != 0:
-                failures.append("AMD64 Cranelift arm credited copy-patch execution")
 
         status = combined_status(
             clean_report,
@@ -442,7 +428,6 @@ def run_amd64_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str,
             "status": status,
             "engine_preset": engine_preset,
             "persistent_feedback": clean_args.persistent_feedback,
-            "copy_patch": "off",
             "clean_summary": rel(clean_dir / "summary.json"),
             "diagnostic_summary": (
                 rel(arm_dir / "diagnostic" / "summary.json")
@@ -463,11 +448,10 @@ def run_amd64_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str,
         "schema_version": 2,
         "status": status,
         "mode": "cranelift-ab",
-        "architecture": "amd64",
+        "architecture": platform.machine().lower(),
         "timing_eligible": all(
             report.get("timing_eligible") is True for report in full_reports.values()
         ),
-        "copy_patch_policy": "disabled-for-all-arms",
         "comparisons": {
             "managed-baseline-to-cranelift": build_feedback_ab_ratios(
                 full_reports["managed-baseline"], full_reports["cranelift"]
@@ -489,94 +473,6 @@ def jit_identity_from_native(native: dict[str, Any]) -> dict[str, Any]:
         "abi_version": source_abi.get("version"),
         "abi_hash": descriptor.get("abi_hash", source_abi.get("hash")),
         "cranelift_version": cranelift_dependency_version(),
-    }
-
-
-def run_arm_cranelift_ab(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
-    """Run the existing feedback/copy-patch Cranelift matrix on ARM64."""
-    errors = validate_configuration(args)
-    if errors:
-        return {
-            "schema_version": 2,
-            "status": "fail",
-            "mode": "cranelift-ab",
-            "architecture": "arm64",
-            "timing_eligible": False,
-            "arms": {},
-            "failures": errors,
-        }
-    arms: dict[str, dict[str, Any]] = {}
-    full_reports: dict[str, dict[str, Any]] = {}
-    for feedback in ("off", "on"):
-        for copy_patch in ("off", "on"):
-            arm = f"feedback-{feedback}-copy-patch-{copy_patch}"
-            arm_dir = out_dir / arm
-            arm_dir.mkdir(parents=True, exist_ok=True)
-            clean_args = copy.copy(args)
-            clean_args.cranelift_ab = False
-            clean_args.engine_preset = "experimental-jit"
-            clean_args.persistent_feedback = feedback
-            clean_args.copy_patch = copy_patch
-            clean_args.mode = "clean"
-            clean_args.baseline = ""
-            clean_args.compare = ""
-            clean_args.record_baseline = ""
-            clean_dir = arm_dir / "clean"
-            clean_dir.mkdir(parents=True, exist_ok=True)
-            clean_report = run(clean_args, clean_dir)
-            write_json(clean_report, clean_dir / "summary.json")
-            write_markdown(clean_report, clean_dir / "summary.md")
-
-            diagnostic_args = copy.copy(clean_args)
-            diagnostic_args.mode = "diagnostic"
-            diagnostic_dir = arm_dir / "diagnostic"
-            diagnostic_dir.mkdir(parents=True, exist_ok=True)
-            diagnostic_report = run(diagnostic_args, diagnostic_dir)
-            write_json(diagnostic_report, diagnostic_dir / "summary.json")
-            write_markdown(diagnostic_report, diagnostic_dir / "summary.md")
-            full_reports[arm] = clean_report
-            native = (
-                ((diagnostic_report.get("profile") or {}).get("attribution") or {}).get("native")
-                or {}
-            )
-            arms[arm] = {
-                "status": combined_status(clean_report, diagnostic_report),
-                "persistent_feedback": feedback,
-                "copy_patch": copy_patch,
-                "clean_summary": rel(clean_dir / "summary.json"),
-                "diagnostic_summary": rel(diagnostic_dir / "summary.json"),
-                "phrust_identity": ((clean_report.get("engines") or {}).get("phrust") or {}).get(
-                    "identity"
-                ),
-                "compile": {
-                    "jit_compile_attempts": native.get("jit_compile_attempts"),
-                    "jit_compile_time_nanos": native.get("jit_compile_time_nanos"),
-                    "jit_compiled": native.get("jit_compiled"),
-                },
-                "request_phases_nanos": (diagnostic_report.get("profile") or {}).get(
-                    "phases_nanos", {}
-                ),
-            }
-    statuses = {arm["status"] for arm in arms.values()}
-    status = "fail" if "fail" in statuses else "skip" if "skip" in statuses else "pass"
-    return {
-        "schema_version": 2,
-        "status": status,
-        "mode": "cranelift-ab",
-        "architecture": "arm64",
-        "timing_eligible": all(
-            report.get("timing_eligible") is True for report in full_reports.values()
-        ),
-        "engine_preset": "experimental-jit",
-        "comparisons": {
-            f"feedback-{feedback}-copy-patch-off-to-on": build_feedback_ab_ratios(
-                full_reports[f"feedback-{feedback}-copy-patch-off"],
-                full_reports[f"feedback-{feedback}-copy-patch-on"],
-            )
-            for feedback in ("off", "on")
-        },
-        "arms": arms,
-        "failures": [],
     }
 
 
@@ -1039,7 +935,6 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
     performance_environment["PHRUST_PERSISTENT_FEEDBACK"] = (
         "1" if args.persistent_feedback == "on" else "0"
     )
-    performance_environment["PHRUST_JIT_COPY_PATCH"] = "1" if args.copy_patch == "on" else "0"
     if args.mode == "clean":
         process_env.update(performance_environment)
         process_env.pop("PHRUST_PERF_ABLATION", None)
@@ -1060,7 +955,6 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
     identity["deployment_mode"] = "immutable"
     identity["engine_preset"] = args.engine_preset
     identity["persistent_feedback"] = args.persistent_feedback
-    identity["copy_patch"] = args.copy_patch
     identity["performance_environment"] = (
         performance_environment if args.mode == "clean" else "diagnostic"
     )
@@ -2135,7 +2029,6 @@ def write_cranelift_ab_markdown(report: dict[str, Any], path: Path) -> None:
             f"- `{name}`: {arm['status']}; JIT compiles "
             f"{compile_evidence.get('jit_compile_attempts', 'unavailable')}, compile ns "
             f"{compile_evidence.get('jit_compile_time_nanos', 'unavailable')}; "
-            f"copy-patch `{arm.get('copy_patch', 'unavailable')}`; "
             f"clean `{arm['clean_summary']}`, diagnostic `{diagnostic}`"
         )
     lines.extend(["", "## Comparisons", ""])

@@ -132,10 +132,6 @@
       "max_bytes": 207553,
       "max_lines": 5035
     },
-    "crates/php_jit/src/copy_patch.rs": {
-      "max_bytes": 204748,
-      "max_lines": 5274
-    },
     "crates/php_phpt_tools/src/commands/mod.rs": {
       "max_bytes": 243061,
       "max_lines": 6723
@@ -220,10 +216,6 @@
     },
     {
       "id": "crates/php_source/src/byte_kernel.rs:module_wide_allow:aa9eaf300242:2",
-      "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
-    },
-    {
-      "id": "crates/php_vm/src/copy_patch_bridge.rs:module_wide_allow:ef203e3f0a19:1",
       "reason": "pre-remediation module-wide lint debt; remove when the owning module is split"
     }
   ],

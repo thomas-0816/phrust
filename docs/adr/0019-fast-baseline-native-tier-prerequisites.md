@@ -120,7 +120,6 @@ The focused no-exec gate is:
 
 ```bash
 nix develop -c just baseline-native-stencil-smoke
-nix develop -c just copy-patch-stencil-smoke
 nix develop -c just mid-tier-plan-smoke
 ```
 

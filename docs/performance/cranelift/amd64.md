@@ -26,11 +26,10 @@ CARGO_TARGET_DIR=target/amd64-cranelift \
   --no-default-features --features jit-cranelift
 ```
 
-Run it with copy-patch explicitly disabled:
+Run the Cranelift build directly:
 
 ```bash
-PHRUST_JIT_COPY_PATCH=0 \
-  target/amd64-cranelift/release/phrust-server \
+target/amd64-cranelift/release/phrust-server \
   --docroot "$PHRUST_WORDPRESS_DOCROOT" \
   --front-controller index.php \
   --deployment-mode immutable \
@@ -51,7 +50,6 @@ following are true for the executable fixture:
 - `jit_compiled > 0`;
 - `jit_executed > 0`;
 - `native_platform_unavailable == 0`;
-- `copy_patch_executed == 0`.
 
 The report also contains the host-native Cranelift ISA display, ISA-feature
 fingerprint, runtime ABI hash, JIT configuration hash, code size, and compile
@@ -72,10 +70,10 @@ The recipe builds three source-identical binaries:
 
 The A/B has exactly two clean AMD64 timing arms:
 
-| Arm | Engine preset | Copy-patch |
-| --- | --- | --- |
-| `managed-baseline` | `default` | off |
-| `cranelift` | `experimental-jit` | off |
+| Arm | Engine preset |
+| --- | --- |
+| `managed-baseline` | `default` |
+| `cranelift` | `experimental-jit` |
 
 Clean timing and instrumented diagnostics are separate. Reports include the
 source commit, uncommitted patch SHA-256, binary hashes, `platform.machine`,

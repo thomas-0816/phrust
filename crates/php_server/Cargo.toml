@@ -33,11 +33,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [features]
-default = ["runtime-telemetry", "jit-copy-patch"]
+default = ["runtime-telemetry"]
 runtime-telemetry = [
     "php_executor/runtime-telemetry",
     "php_vm/runtime-telemetry",
     "php_runtime/runtime-telemetry",
 ]
-jit-copy-patch = ["php_executor/jit-copy-patch", "php_vm/jit-copy-patch"]
 jit-cranelift = ["php_executor/jit-cranelift", "php_vm/jit-cranelift"]

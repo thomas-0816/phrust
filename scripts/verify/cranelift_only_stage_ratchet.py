@@ -16,6 +16,7 @@ SCANNED_ROOTS = ("crates", "scripts", "docs", "Cargo.toml", "justfile")
 IGNORED = {
     "scripts/verify/cranelift_only_allowlist.json",
     "scripts/verify/cranelift_only_stage_ratchet.py",
+    "scripts/verify/no_copy_patch.py",
 }
 COPY_PATTERN = re.compile(
     "copy" + r".?" + "patch" + "|jit" + "-copy-patch|PHRUST_JIT_" + "COPY_PATCH",
@@ -45,6 +46,8 @@ def matching_paths(pattern: re.Pattern[str]) -> set[str]:
     matches: set[str] = set()
     for relative in tracked_and_untracked_files():
         path = ROOT / relative
+        if not path.is_file():
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, IsADirectoryError):
@@ -74,7 +77,7 @@ def main() -> int:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     failures: list[str] = []
     for key, pattern in (
-        ("copy_patch_paths", COPY_PATTERN),
+        ("alternate_emitter_paths", COPY_PATTERN),
         ("interpreter_call_paths", INTERPRETER_PATTERN),
     ):
         actual = matching_paths(pattern)
@@ -98,7 +101,7 @@ def main() -> int:
         return 1
     print(
         "cranelift-only stage ratchet passed "
-        f"(stage={config['stage']}, copy_paths={len(config['copy_patch_paths'])}, "
+        f"(stage={config['stage']}, alternate_emitter_paths={len(config['alternate_emitter_paths'])}, "
         f"interpreter_paths={len(config['interpreter_call_paths'])})"
     )
     return 0

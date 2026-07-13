@@ -57,15 +57,6 @@ pub(super) struct RequestProfileOperation<'vm> {
     start: Option<Instant>,
 }
 
-impl RequestProfileOperation<'_> {
-    /// Prevents a speculative operation sample from being recorded when the
-    /// fast path side-exits and the interpreter performs the real operation.
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    pub(super) fn cancel(&mut self) {
-        self.start = None;
-    }
-}
-
 #[derive(Clone, Debug)]
 struct RequestProfileSample {
     inclusive_nanos: u64,

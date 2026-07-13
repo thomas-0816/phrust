@@ -1,5 +1,8 @@
 #[cfg(not(feature = "jit-cranelift"))]
-compile_error!("cranelift_precondition_identity requires --features jit-cranelift");
+fn main() {
+    eprintln!("cranelift_precondition_identity requires --features jit-cranelift");
+    std::process::exit(2);
+}
 
 #[cfg(feature = "jit-cranelift")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

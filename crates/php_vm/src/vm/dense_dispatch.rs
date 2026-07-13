@@ -3361,20 +3361,7 @@ impl Vm {
                                         stack.pop_recycle();
                                         return (*result).into();
                                     }
-                                    // Dense calls bypass the rich-path leaf hook, so
-                                    // engage copy-and-patch directly at this site.
-                                    #[cfg(feature = "jit-copy-patch")]
-                                    let native = self.try_execute_profiled_copy_patch_leaf(
-                                        ExecutionCursor::new(compiled, output, stack, state),
-                                        function,
-                                        ir_function,
-                                        &call,
-                                    );
-                                    #[cfg(not(feature = "jit-copy-patch"))]
-                                    let native: Option<VmResult> = None;
-                                    if let Some(result) = native {
-                                        result
-                                    } else if fast_direct_call.is_none()
+                                    if fast_direct_call.is_none()
                                         && let Some(value) = {
                                         #[cfg(feature = "jit-cranelift")]
                                         {

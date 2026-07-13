@@ -233,17 +233,6 @@ impl Vm {
     ) -> VmResult {
         let owner = &route.owner;
         let plan = route.plan.as_ref();
-        #[cfg(feature = "jit-copy-patch")]
-        if let Some(ir_function) = owner.unit().functions.get(function.index())
-            && let Some(result) = self.try_execute_profiled_copy_patch_leaf(
-                ExecutionCursor::new(owner, output, stack, state),
-                function,
-                ir_function,
-                &call,
-            )
-        {
-            return result;
-        }
         self.record_counter_dense_method_dispatch_attempt();
         if call.resume_continuation.is_some()
             || call.resume_fiber_continuation.is_some()

@@ -65,20 +65,6 @@ impl Vm {
         {
             return self.execute_function(&owner, function_id, call, output, stack, state);
         }
-        // Copy-and-patch native leaf tier runs before dense dispatch so a
-        // recognized scalar-int leaf executes natively rather than densely. A
-        // recognized native→userland tail call performs the callee here, on the
-        // normal path, so the returned `VmResult` (result or exception) is
-        // propagated faithfully.
-        #[cfg(feature = "jit-copy-patch")]
-        if let Some(result) = self.try_execute_copy_patch_leaf(
-            ExecutionCursor::new(compiled, output, stack, state),
-            function_id,
-            function,
-            &call,
-        ) {
-            return result;
-        }
         call = match self.try_execute_cached_dense_function_dispatch(
             compiled,
             function_id,

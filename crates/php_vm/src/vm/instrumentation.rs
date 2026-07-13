@@ -954,56 +954,6 @@ impl Vm {
         }
     }
 
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    pub(super) fn record_counter_copy_patch_executed(&self) {
-        if !self.options.collect_counters {
-            return;
-        }
-        if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters.record_copy_patch_executed();
-        }
-    }
-
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    pub(super) fn record_counter_copy_patch_side_exit(&self, reason: &str) {
-        if !self.options.collect_counters {
-            return;
-        }
-        if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters.record_native_side_exit(reason);
-        }
-    }
-
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    pub(super) fn record_counter_native_leaf_cache_lookup(&self, positive: bool) {
-        if !self.options.collect_counters {
-            return;
-        }
-        if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters.record_native_leaf_cache_lookup(positive);
-        }
-    }
-
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    pub(super) fn record_counter_native_leaf_prewarm(
-        &self,
-        stats: &crate::copy_patch_bridge::NativeLeafPrewarmStats,
-    ) {
-        if !self.options.collect_counters || stats.attempts == 0 {
-            return;
-        }
-        if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters.record_native_leaf_prewarm(
-                stats.attempts,
-                stats.compiled,
-                stats.rejected,
-                stats.code_bytes,
-                stats.compile_time_nanos,
-                &stats.rejections_by_shape,
-            );
-        }
-    }
-
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_bailout(&self) {
         if !self.options.collect_counters {

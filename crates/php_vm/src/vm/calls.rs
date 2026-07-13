@@ -2367,24 +2367,6 @@ impl Vm {
             stack,
             state,
         } = cursor;
-        // Copy-and-patch native leaf tier for method-path calls: dense method
-        // dispatch executes bodies directly (bypassing `execute_function`), so
-        // without this hook a recognized `$this` accessor leaf would never
-        // engage on the default engine. Same placement contract as the hook in
-        // `execute_function`: before dense dispatch, fall through on `None`.
-        // The leaf is compiled against `owner` — the unit whose IR owns the
-        // function — exactly like the dense body below.
-        #[cfg(feature = "jit-copy-patch")]
-        if let Some(ir_function) = owner.unit().functions.get(function.index())
-            && let Some(result) = self.try_execute_profiled_copy_patch_leaf(
-                ExecutionCursor::new(owner, output, stack, state),
-                function,
-                ir_function,
-                &call,
-            )
-        {
-            return result;
-        }
         if let Some(plan) = plan {
             self.record_counter_dense_method_dispatch_attempt();
             // Bodies defined in another unit (an include) execute through

@@ -9440,7 +9440,7 @@ fn direct_frames_elide_argument_vectors_unless_observed() {
     // Plain calls elide the per-call argument snapshot; func_get_args
     // bodies keep it and read the full vector including extras. The Dto
     // property is *typed* so the constructor's assignment stays off the
-    // copy-patch property-store leaf (which executes the whole body natively
+    // retired stencil property-store leaf (which executed the whole body natively
     // with no frame at all) and keeps exercising the direct-constructor-frame
     // path this test asserts; `get` routes through a local for the same
     // reason, staying off the property-load leaf.
@@ -9499,7 +9499,6 @@ fn dense_direct_calls_transfer_caller_sources_without_owned_values() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             execution_format: ExecutionFormat::Auto,
-            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );
@@ -10246,9 +10245,8 @@ fn managed_native_platform_unavailable_keeps_interpreter_fast_paths() {
             inline_caches: InlineCacheMode::On,
             jit: JitMode::Cranelift,
             // This test isolates the unavailable Cranelift tier. On aarch64,
-            // copy-patch is independently available and must not satisfy the
-            // generic native execution counter here.
-            copy_patch_leaf_override: Some(false),
+            // No alternate native emitter may satisfy the generic native
+            // execution counter here.
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10281,9 +10279,7 @@ fn jit_int_leaf_hot_loop_executes_after_warmup() {
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
             // This test proves the Cranelift tier compiles and executes; the
-            // copy-patch leaf tier would otherwise claim this scalar-int leaf
-            // before tiering ever sees it.
-            copy_patch_leaf_override: Some(false),
+            // This fixture isolates Cranelift's scalar-int lowering.
             ..VmOptions::default()
         },
     );
@@ -10309,7 +10305,6 @@ fn dense_cranelift_entry_marshals_direct_callee_slots() {
             collect_layout_source_attribution: true,
             execution_format: ExecutionFormat::Bytecode,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );
@@ -10357,7 +10352,6 @@ fn cranelift_threshold_tiering_compiles_hot_function() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             jit_threshold: 2,
             tiering: TieringOptions {
                 function_entry_threshold: 2,
@@ -10387,7 +10381,6 @@ fn cranelift_eager_tiering_compiles_first_call_for_tests() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             jit_threshold: 1,
             tiering: TieringOptions {
                 jit_eager: true,
@@ -10416,7 +10409,6 @@ fn cranelift_compile_budget_rejection_falls_back_to_interpreter() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             jit_threshold: 1,
             tiering: TieringOptions {
                 jit_eager: true,
@@ -10446,7 +10438,6 @@ fn cranelift_inline_arithmetic_executes_native_and_counts_fast_paths() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10482,7 +10473,6 @@ fn cranelift_same_unit_wrapper_stays_native_across_direct_call() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10632,10 +10622,7 @@ fn cranelift_packed_array_fetch_executes_native_and_counts_fast_hit() {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
             },
-            // The default-on copy-patch tier now compiles this packed-fetch
-            // shape too and would serve the call before Cranelift tiering
-            // fires; this test pins the *Cranelift* packed fetch.
-            copy_patch_leaf_override: Some(false),
+            // This test pins the Cranelift packed-fetch implementation.
             ..VmOptions::default()
         },
     );
@@ -10885,7 +10872,6 @@ fn cranelift_known_strlen_executes_native_and_counts_fast_hit() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10961,7 +10947,6 @@ fn cranelift_known_count_executes_for_packed_and_mixed_arrays() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11170,7 +11155,6 @@ echo perf_jit_unstable_types(4), "\n";
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11216,7 +11200,6 @@ echo perf_jit_unstable_types_debug(4), "\n";
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             jit_blacklist: JitBlacklistMode::Off,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
@@ -11250,7 +11233,6 @@ fn cranelift_constant_return_executes_native_after_abi_check() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11282,7 +11264,6 @@ fn cranelift_compile_cache_reuses_same_function() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 jit_eager: true,
                 function_entry_threshold: 1,
@@ -11419,9 +11400,7 @@ fn jit_on_off_output_is_identical() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            // Compare interpreter vs Cranelift specifically; without this the
-            // copy-patch leaf tier claims the leaf and `jit_executed` stays 0.
-            copy_patch_leaf_override: Some(false),
+            // Compare interpreter and Cranelift specifically.
             ..VmOptions::default()
         },
     );
@@ -23650,115 +23629,6 @@ for ($i = 0; $i < 2; $i++) {
     assert_eq!(
         result.output.to_string_lossy(),
         "1:base-mutated\n2:base-mutated\n3:base-mutated\nXbc\nXbc\n"
-    );
-}
-
-#[test]
-fn property_getter_casts_agree_between_interpreter_and_native_leaf() {
-    // The copy-patch property-load leaf admits trailing scalar casts by
-    // narrowing the expected result tag: a matching tag commits the value
-    // unchanged (identity cast), anything else side-exits so the
-    // interpreter performs the real cast. The first iteration always runs
-    // interpreted and later ones may run natively, so identical output
-    // across iterations pins the parity for both paths.
-    let result = execute_source(
-        "<?php
-class P {
-    public $b = true;
-    public $n = 5;
-    public function cast_matching() { return (bool) $this->b; }
-    public function cast_coercing() { return (bool) $this->n; }
-    public function cast_widening() { return (int) $this->b; }
-    public function untyped_plain() { return $this->n; }
-}
-$p = new P();
-for ($i = 0; $i < 3; $i++) {
-    var_dump($p->cast_matching(), $p->cast_coercing(), $p->cast_widening(), $p->untyped_plain());
-}",
-    );
-
-    assert!(result.status.is_success(), "{:?}", result.status);
-    let expected_round = "bool(true)\nbool(true)\nint(1)\nint(5)\n";
-    assert_eq!(
-        result.output.to_string_lossy(),
-        expected_round.repeat(3),
-        "cast getters must agree across interpreted and native iterations"
-    );
-}
-
-#[test]
-fn property_leaves_roundtrip_string_array_object_and_null() {
-    let result = execute_source_with_options(
-        "<?php
-class Payload {
-    public $value = null;
-    public function get() { return $this->value; }
-    public function put($value) { $this->value = $value; }
-}
-$payload = new Payload();
-$object = new stdClass();
-for ($i = 0; $i < 3; $i++) {
-    $payload->put('wordpress'); echo $payload->get(), '|';
-    $payload->put([10, 20]); echo $payload->get()[1], '|';
-    $payload->put($object); echo $payload->get() === $object ? 'object' : 'bad', '|';
-    $payload->put(null); echo is_null($payload->get()) ? 'null' : 'bad', PHP_EOL;
-}",
-        VmOptions {
-            collect_counters: true,
-            ..VmOptions::default()
-        },
-    );
-
-    assert!(result.status.is_success(), "{:?}", result.status);
-    assert_eq!(
-        result.output.to_string_lossy(),
-        "wordpress|20|object|null\n".repeat(3),
-        "heap/null property values must agree across native and interpreter paths"
-    );
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    assert!(
-        result
-            .counters
-            .as_ref()
-            .is_some_and(|counters| counters.copy_patch_executed >= 4),
-        "mixed property values must actually execute through copy-patch: {:?}",
-        result.counters
-    );
-}
-
-#[test]
-fn value_tailcall_wrappers_roundtrip_mixed_wordpress_shapes() {
-    let result = execute_source_with_options(
-        "<?php
-function sink($value) { return $value; }
-function wrapper($value) { return sink($value); }
-$object = new stdClass();
-for ($i = 0; $i < 3; $i++) {
-    echo wrapper('filter'), '|';
-    echo wrapper([3, 7])[1], '|';
-    echo wrapper($object) === $object ? 'object' : 'bad', '|';
-    echo is_null(wrapper(null)) ? 'null' : 'bad', PHP_EOL;
-}",
-        VmOptions {
-            collect_counters: true,
-            ..VmOptions::default()
-        },
-    );
-
-    assert!(result.status.is_success(), "{:?}", result.status);
-    assert_eq!(
-        result.output.to_string_lossy(),
-        "filter|7|object|null\n".repeat(3),
-        "plain call wrappers must preserve mixed values across native glue"
-    );
-    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-    assert!(
-        result
-            .counters
-            .as_ref()
-            .is_some_and(|counters| counters.copy_patch_executed >= 4),
-        "mixed wrappers must actually execute through copy-patch: {:?}",
-        result.counters
     );
 }
 

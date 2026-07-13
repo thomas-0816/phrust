@@ -6,19 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["jit-copy-patch", "runtime-telemetry"]
+default = ["runtime-telemetry"]
 runtime-telemetry = [
     "php_runtime/runtime-telemetry",
     "php_std/runtime-telemetry",
     "php_extensions/runtime-telemetry",
 ]
 jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift"]
-# Copy-and-patch native tier bridge, on by default. Pulls php_jit (whose
-# copy_patch/code_memory/aarch64 modules are always compiled); no Cranelift.
-# Runtime-gated by PHRUST_JIT_COPY_PATCH (default on; set falsey to disable) and
-# inert on non-aarch64/non-unix hosts. Disable the compile entirely with
-# --no-default-features.
-jit-copy-patch = ["dep:php_jit"]
 
 [dependencies]
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }

@@ -35,10 +35,6 @@ mod aliasing;
 mod bytecode;
 #[doc(hidden)]
 mod compiled_unit;
-/// Copy-and-patch native tier bridge (behind the default-on `jit-copy-patch`
-/// feature; runtime kill switch `PHRUST_JIT_COPY_PATCH=0`).
-#[cfg(feature = "jit-copy-patch")]
-mod copy_patch_bridge;
 #[doc(hidden)]
 mod counters;
 #[doc(hidden)]

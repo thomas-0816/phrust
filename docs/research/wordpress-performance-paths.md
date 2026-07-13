@@ -20,7 +20,7 @@ calls, 1,488 object instantiations, 3,780,107 value clones, 10,957 COW
 separations).
 
 A before/after of a recent interpreter-optimization tranche (object-creation
-cache, frame-shape memoization, dense property-dimension assignment, copy-patch
+cache, frame-shape memoization, dense property-dimension assignment, native-region
 stencil prerequisites) measured **wall-clock neutral** on this request
 (~1.20s -> ~1.19s). Those changes show 5-17% on 300K-repetition micro-benchmarks
 but ~0% on WordPress, because WordPress is one-shot-distributed (low per-item

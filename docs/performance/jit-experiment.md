@@ -118,7 +118,7 @@ Calls, arrays, objects, references, typed parameters/returns, generators,
 fibers, methods, closures, and non-integer values fall back to the interpreter.
 `jit-smoke` compares `--jit=off` and `--jit=cranelift` output, asserts
 `jit_compile_attempts`, `jit_compiled`, `jit_executed`, and `jit_bailouts`, and
-records native machine-code execution, ISA/feature identity, and copy-patch
+records native machine-code execution, ISA/feature identity, and native
 separation. `jit-smoke-amd64` makes these assertions mandatory on AMD64 Linux.
 
 The performance layer provides the tiering policy and stats surface. The JIT remains

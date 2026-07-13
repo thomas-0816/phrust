@@ -49,7 +49,7 @@ mode requires `PHRUST_WORDPRESS_DB_IDENTITY` (for example the SHA-256 of the
 restored SQL dump) so the database snapshot is recorded rather than assumed.
 
 The clean launcher owns and records the performance-sensitive Phrust
-environment (`PHRUST_JIT_COPY_PATCH`, `PHRUST_INCLUDE_REVALIDATE_MS`,
+environment (`PHRUST_INCLUDE_REVALIDATE_MS`,
 `PHRUST_WORKER_SYMBOL_EPOCH`, and `PHRUST_PERSISTENT_FEEDBACK`) and rejects an
 inherited `PHRUST_PERF_ABLATION`. Use `wordpress-root-benchmark-feedback-ab` for
 the isolated persistent-feedback arms plus their joint p50/p95/throughput ratio

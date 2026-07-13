@@ -17,9 +17,7 @@ cargo test -p php_vm_cli
 cargo build -p php_vm_cli --bin php-vm --no-default-features --features jit-cranelift,runtime-telemetry
 
 # This smoke proves the Cranelift tier specifically compiles and executes the
-# int leaf. The copy-patch leaf tier (default-on) would otherwise claim the
-# leaf before Cranelift tiering ever sees it, so isolate it for these runs.
-export PHRUST_JIT_COPY_PATCH=0
+# integer fixture.
 
 "$VM" run --jit=off "$FIXTURES_DIR/int-leaf-hot-loop.php" >"$OUT_DIR/jit-off.out"
 "$VM" run --exec-format=ir --jit=cranelift --counters-json "$OUT_DIR/jit-cranelift-counters.json" "$FIXTURES_DIR/int-leaf-hot-loop.php" >"$OUT_DIR/jit-cranelift.out"
@@ -53,8 +51,6 @@ if hot.get("jit_bailouts", 0) != 0:
     raise SystemExit("[fail] int leaf jit path bailed out")
 if hot.get("native_platform_unavailable", 0) != 0:
     raise SystemExit("[fail] Cranelift reported native platform unavailable")
-if hot.get("copy_patch_executed", 0) != 0:
-    raise SystemExit("[fail] Cranelift smoke credited copy-patch execution")
 if hot.get("jit_process_cache_misses", 0) <= 0:
     raise SystemExit("[fail] Cranelift smoke did not publish through the process code manager")
 if hot.get("jit_code_bytes_live", 0) <= 0 or hot.get("jit_code_generations", 0) <= 0:
@@ -88,7 +84,6 @@ report = {
     "jit_compiled": hot["jit_compiled"],
     "jit_executed": hot["jit_executed"],
     "native_platform_unavailable": hot["native_platform_unavailable"],
-    "copy_patch_executed": hot["copy_patch_executed"],
     "process_code_manager": {
         field: hot.get(field, 0)
         for field in (

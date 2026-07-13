@@ -6,16 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["jit-copy-patch", "runtime-telemetry"]
+default = ["runtime-telemetry"]
 jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift", "php_vm/jit-cranelift"]
-# Copy-and-patch native leaf tier, on by default (runtime-gated by
-# PHRUST_JIT_COPY_PATCH, which defaults on; set falsey to disable). Compile it
-# out with --no-default-features.
-jit-copy-patch = [
-    "php_vm/jit-copy-patch",
-    "php_executor/jit-copy-patch",
-    "php_server/jit-copy-patch",
-]
 runtime-telemetry = [
     "php_server/runtime-telemetry",
     "php_std/runtime-telemetry",

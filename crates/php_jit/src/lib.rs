@@ -15,13 +15,10 @@
 // the one crate whose job requires it.
 #![allow(unsafe_code)]
 
-pub mod aarch64;
 mod abi;
 mod backend;
 #[cfg(feature = "jit-cranelift")]
 mod code_manager;
-pub mod code_memory;
-pub mod copy_patch;
 #[cfg(feature = "jit-cranelift")]
 mod cranelift_lowering;
 mod eligibility;
@@ -29,7 +26,6 @@ mod helpers;
 #[cfg(feature = "jit-cranelift")]
 mod host_isa;
 pub mod region_ir;
-pub mod x86_64;
 
 pub use abi::{
     JIT_DEOPT_MAX_SLOTS, JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiSlot, JitAbiValue,

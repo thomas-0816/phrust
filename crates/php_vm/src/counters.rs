@@ -581,15 +581,6 @@ pub struct VmCounters {
     pub native_candidates: u64,
     pub native_compiled_regions: u64,
     pub native_executions: u64,
-    pub copy_patch_executed: u64,
-    pub native_leaf_cache_positive_hits: u64,
-    pub native_leaf_cache_negative_hits: u64,
-    pub native_leaf_prewarm_attempts: u64,
-    pub native_leaf_prewarm_compiled: u64,
-    pub native_leaf_prewarm_rejected: u64,
-    pub native_leaf_prewarm_code_bytes: u64,
-    pub native_leaf_prewarm_compile_time_nanos: u64,
-    pub native_leaf_rejections_by_shape: BTreeMap<String, u64>,
     pub native_compile_budget_rejections: u64,
     pub native_eligibility_rejections_by_reason: BTreeMap<String, u64>,
     pub native_side_exits_by_reason: BTreeMap<String, u64>,
@@ -4268,65 +4259,6 @@ impl VmCounters {
         push_field(&mut json, "native_executions", self.native_executions, true);
         push_field(
             &mut json,
-            "copy_patch_executed",
-            self.copy_patch_executed,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_cache_positive_hits",
-            self.native_leaf_cache_positive_hits,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_cache_negative_hits",
-            self.native_leaf_cache_negative_hits,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_prewarm_attempts",
-            self.native_leaf_prewarm_attempts,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_prewarm_compiled",
-            self.native_leaf_prewarm_compiled,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_prewarm_rejected",
-            self.native_leaf_prewarm_rejected,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_prewarm_code_bytes",
-            self.native_leaf_prewarm_code_bytes,
-            true,
-        );
-        push_field(
-            &mut json,
-            "native_leaf_prewarm_compile_time_nanos",
-            self.native_leaf_prewarm_compile_time_nanos,
-            true,
-        );
-        json.push_str("  \"native_leaf_rejections_by_shape\": {");
-        for (index, (shape, count)) in self.native_leaf_rejections_by_shape.iter().enumerate() {
-            if index > 0 {
-                json.push_str(", ");
-            }
-            json.push('"');
-            json.push_str(&escape_json(shape));
-            json.push_str("\": ");
-            json.push_str(&count.to_string());
-        }
-        json.push_str("},\n");
-        push_field(
-            &mut json,
             "native_compile_budget_rejections",
             self.native_compile_budget_rejections,
             true,
@@ -6884,7 +6816,6 @@ mod tests {
         assert!(json.contains("\"native_candidates\": 0"));
         assert!(json.contains("\"native_compiled_regions\": 0"));
         assert!(json.contains("\"native_executions\": 0"));
-        assert!(json.contains("\"copy_patch_executed\": 0"));
         assert!(json.contains("\"native_compile_budget_rejections\": 0"));
         assert!(json.contains("\"native_eligibility_rejections_by_reason\": {}"));
         assert!(json.contains("\"native_side_exits_by_reason\": {}"));

@@ -77,12 +77,6 @@ pub struct VmOptions {
     /// Select the experimental performance JIT tier for eligible hot leaf functions.
     /// Unsupported builds or ineligible functions stay on managed VM paths.
     pub jit: JitMode,
-    /// Per-VM override for the copy-and-patch native leaf tier. `None` follows
-    /// the process default (`PHRUST_JIT_COPY_PATCH`, on by default). The tier
-    /// runs before dense dispatch and tiering, so tests or harnesses isolating
-    /// the Cranelift/interpreter paths must set `Some(false)` — the process env
-    /// gate is latched once and cannot be toggled per VM.
-    pub copy_patch_leaf_override: Option<bool>,
     /// Hot-call threshold requested by the CLI for JIT compilation.
     pub jit_threshold: u64,
     /// Process-local JIT blacklist policy.
@@ -149,7 +143,6 @@ impl Default for VmOptions {
             persistent_adaptive_state: false,
             inline_caches: InlineCacheMode::Off,
             jit: JitMode::Off,
-            copy_patch_leaf_override: None,
             jit_threshold: TieringOptions::default().function_entry_threshold,
             jit_blacklist: JitBlacklistMode::On,
             jit_dump_clif: None,

@@ -188,53 +188,6 @@ impl VmCounters {
         self.native_executions += 1;
     }
 
-    #[cfg_attr(
-        not(all(feature = "jit-copy-patch", unix, target_arch = "aarch64")),
-        allow(dead_code)
-    )]
-    pub(crate) fn record_copy_patch_executed(&mut self) {
-        self.copy_patch_executed += 1;
-        self.native_executions += 1;
-    }
-
-    #[cfg_attr(
-        not(all(feature = "jit-copy-patch", unix, target_arch = "aarch64")),
-        allow(dead_code)
-    )]
-    pub(crate) fn record_native_leaf_cache_lookup(&mut self, positive: bool) {
-        if positive {
-            self.native_leaf_cache_positive_hits += 1;
-        } else {
-            self.native_leaf_cache_negative_hits += 1;
-        }
-    }
-
-    #[cfg_attr(
-        not(all(feature = "jit-copy-patch", unix, target_arch = "aarch64")),
-        allow(dead_code)
-    )]
-    pub(crate) fn record_native_leaf_prewarm(
-        &mut self,
-        attempts: u64,
-        compiled: u64,
-        rejected: u64,
-        code_bytes: u64,
-        compile_time_nanos: u64,
-        rejections_by_shape: &std::collections::BTreeMap<String, u64>,
-    ) {
-        self.native_leaf_prewarm_attempts += attempts;
-        self.native_leaf_prewarm_compiled += compiled;
-        self.native_leaf_prewarm_rejected += rejected;
-        self.native_leaf_prewarm_code_bytes += code_bytes;
-        self.native_leaf_prewarm_compile_time_nanos += compile_time_nanos;
-        for (shape, count) in rejections_by_shape {
-            *self
-                .native_leaf_rejections_by_shape
-                .entry(shape.clone())
-                .or_default() += count;
-        }
-    }
-
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_bailout(&mut self) {
         self.jit_bailouts += 1;

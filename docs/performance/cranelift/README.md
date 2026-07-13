@@ -10,6 +10,7 @@ optimization gates.
 - [Helper symbol registry](helper-symbol-registry.md)
 - [Safety audit](safety-audit.md)
 - [Process code manager](code-manager.md)
+- [Cranelift-only cutover](cutover.md)
 - [AMD64 scalar regions, dynamic tiering, and bounded prewarm](amd64.md#scalar-regions-and-calls)
 - [Known gaps](known-gaps.md)
 

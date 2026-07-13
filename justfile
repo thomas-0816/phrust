@@ -94,7 +94,6 @@ help:
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just wordpress-root-profile Run optional local real WordPress request profile' \
       '  just wordpress-arm64-sample Capture external ARM64 WordPress CPU samples' \
-      '  just wordpress-arm64-accounting-gate Classify and gate ARM64 CPU samples' \
       '  just wordpress-reference-image Build pinned PHP-FPM/OPcache benchmark image' \
       '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
       '  just wordpress-root-tranche-gate Run strict c1-p50 performance acceptance gate' \
@@ -103,8 +102,9 @@ help:
       '  just release-cranelift-amd64 Build lean AMD64 Cranelift server' \
       '  just wordpress-root-benchmark-cranelift-amd64 Run managed-vs-Cranelift AMD64 A/B' \
       '  just wordpress-root-tranche-gate-cranelift-amd64 Run strict AMD64 Cranelift c1-p50 gate' \
-      '  just jit-smoke-amd64    Prove native Cranelift execution with copy-patch disabled' \
+      '  just jit-smoke-amd64    Prove native Cranelift execution on AMD64' \
       '  just cranelift-only-precondition Freeze and verify the native-only cutover prerequisites' \
+      '  just cranelift-only-no-alternate-emitter Prove the retired native emitter is absent' \
       '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
       '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
@@ -508,7 +508,7 @@ verify-stdlib:
 # through the perf-build dependency (deduplicated within this invocation).
 # perf-flag-matrix runs via performance-regression; the release-profile and
 # report gates live in verify-performance-extended.
-verify-performance: wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke acceleration-matrix fastest-engine-matrix default-profile-smoke managed-fast-coverage fast-preset-smoke app-flow-smoke baseline-native-stencil-smoke copy-patch-stencil-smoke mid-tier-plan-smoke cache-roundtrip optimizer-diff bytecode-layout-smoke superinstruction-smoke templates-smoke quickening-smoke inline-cache-smoke inline-cache-lookup-benchmark-gate jit-smoke safety-audit-smoke
+verify-performance: wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke acceleration-matrix fastest-engine-matrix default-profile-smoke managed-fast-coverage fast-preset-smoke app-flow-smoke baseline-native-stencil-smoke mid-tier-plan-smoke cache-roundtrip optimizer-diff bytecode-layout-smoke superinstruction-smoke templates-smoke quickening-smoke inline-cache-smoke inline-cache-lookup-benchmark-gate jit-smoke safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
 # Heavy release-profile and report gates, split out of verify-performance so
@@ -1162,14 +1162,6 @@ wordpress-root-profile:
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
 
-# External, instrumentation-free ARM64 CPU sampling of one pinned PHP worker.
-wordpress-arm64-sample *args:
-    scripts/performance/arm64_work_accounting.py {{args}}
-
-# Exclusive, single-owner accounting over the latest external ARM64 sample run.
-wordpress-arm64-accounting-gate *args:
-    scripts/performance/arm64_stack_classifier.py --gate {{args}}
-
 wordpress-benchmark-self-test:
     scripts/performance/wordpress_root_benchmark.py --self-test
 
@@ -1181,17 +1173,15 @@ wordpress-reference-image:
 # Clean timing: release Phrust and stock PHP-FPM/OPcache. This never enables
 # request profiles, VM counters, or trace collection.
 wordpress-root-benchmark *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean {{args}}
 
-# Explicit experimental-JIT arm for the clean WordPress A/B matrix. The
-# default benchmark remains copy-patch-only and is the control arm.
+# Explicit Cranelift arm for the clean WordPress A/B matrix.
 wordpress-root-benchmark-cranelift *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch,jit-cranelift; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit {{args}}
 
-# Lean host-native Cranelift production candidate for x86_64 Linux. Copy-patch
-# is excluded at build time by --no-default-features.
+# Lean host-native Cranelift production candidate for x86_64 Linux.
 release-cranelift-amd64:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1235,12 +1225,12 @@ wordpress-root-tranche-gate-cranelift-amd64 baseline *args:
     CARGO_TARGET_DIR="$cranelift_dir" cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift
     source_commit="$(git rev-parse HEAD)"
     patch_sha256="$(git diff --binary | sha256sum | cut -d' ' -f1)"
-    PHRUST_SERVER="$cranelift_dir/release/phrust-server" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit --copy-patch off --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 --server-source-commit "$source_commit" --server-source-patch-sha256 "$patch_sha256" {{args}}
+    PHRUST_SERVER="$cranelift_dir/release/phrust-server" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 --server-source-commit "$source_commit" --server-source-patch-sha256 "$patch_sha256" {{args}}
 
 # Isolated persistent-feedback A/B using the same lean binary and benchmark
 # contract. Both arms and their joint ratio report share one result directory.
 wordpress-root-benchmark-feedback-ab *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --feedback-ab {{args}}
 
 # Instrumented Phrust-only attribution. Its samples are marked timing-ineligible.
@@ -1251,14 +1241,14 @@ wordpress-root-diagnostics *args:
 # Strict regression gate: compare both engines and a recorded Phrust baseline;
 # missing WordPress or reference PHP is a failure.
 wordpress-root-regression-gate *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
 
 # Prompt-pack tranche acceptance: the leading result is the warm,
 # instrumentation-free WordPress concurrency-1 p50. The ordinary regression
 # recipe remains a no-regression CI guard and does not require a speedup.
 wordpress-root-tranche-gate baseline *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 {{args}}
 
 # Anti-theater guard: fail performance branches that only add docs, reports,
@@ -1379,16 +1369,6 @@ fast-preset-smoke: perf-build
 baseline-native-stencil-smoke: perf-build
     scripts/performance/baseline_native_stencil_smoke.py
 
-copy-patch-stencil-smoke: perf-build
-    scripts/performance/copy_patch_stencil_smoke.py
-
-# Differential check that the native copy-patch tier matches the interpreter and
-# the pinned PHP 8.5.7 reference. Builds php-vm with the feature so native
-# actually engages (aarch64); the harness SKIPs cleanly on unsupported hosts.
-copy-patch-native-diff:
-    cargo build -p php_vm_cli --bin php-vm --features jit-copy-patch
-    scripts/performance/copy_patch_native_diff.py
-
 mid-tier-plan-smoke: perf-build
     scripts/performance/mid_tier_plan_smoke.py
 
@@ -1429,8 +1409,8 @@ release-profile-plan:
 # use the default release build for diagnosis). Measured on microbenches:
 # property reads ~11% faster, concatenation ~5%.
 release-lean:
-    cargo build --release -p php_server --no-default-features --features jit-copy-patch
-    cargo build --release -p php_vm_cli --bin php-vm --no-default-features --features jit-copy-patch
+    cargo build --release -p php_server --no-default-features --features jit-cranelift
+    cargo build --release -p php_vm_cli --bin php-vm --no-default-features --features jit-cranelift
 
 release-benchmark-smoke:
     scripts/performance/release_profiles.py release
@@ -1609,7 +1589,7 @@ jit-smoke-amd64:
         exit 1
     fi
     target_dir="${PHRUST_AMD64_CRANELIFT_SMOKE_TARGET_DIR:-target/amd64-cranelift-smoke}"
-    CARGO_TARGET_DIR="$target_dir" PHRUST_JIT_SMOKE_TARGET_DIR="$target_dir" PHRUST_REQUIRE_AMD64=1 PHRUST_JIT_COPY_PATCH=0 scripts/performance/jit_smoke.sh
+    CARGO_TARGET_DIR="$target_dir" PHRUST_JIT_SMOKE_TARGET_DIR="$target_dir" PHRUST_REQUIRE_AMD64=1 scripts/performance/jit_smoke.sh
 
 # Prompt 0 cutover gate. The final report is written only after every executable
 # prerequisite and the detached pre-cutover oracle have passed.
@@ -1627,6 +1607,15 @@ cranelift-only-precondition:
     mkdir -p target/cranelift-only
     cargo run --quiet -p php_jit --features jit-cranelift --example cranelift_precondition_identity > target/cranelift-only/identity.txt
     scripts/verify/cranelift_only_precondition.py
+
+# Prompt 1 cutover gate: the retired emitter must be absent from source and all
+# product targets must build against the Cranelift feature graph.
+cranelift-only-no-alternate-emitter:
+    scripts/verify/no_""copy""_patch.py
+    scripts/verify/cranelift_only_stage_ratchet.py
+    cargo check --workspace --all-targets --features jit-cranelift
+    cargo build -p php_vm_cli --bins --no-default-features --features jit-cranelift,runtime-telemetry
+    cargo build -p php_server --bin phrust-server --no-default-features --features jit-cranelift,runtime-telemetry
 
 jit-cranelift-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi

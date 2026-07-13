@@ -12,23 +12,15 @@ pub const JIT_HELPER_STATUS_OK: i32 = 0;
 pub const JIT_HELPER_STATUS_FALLBACK: i32 = 1;
 /// Native inline arithmetic overflowed and the VM must fall back.
 pub const JIT_HELPER_STATUS_OVERFLOW: i32 = 2;
-/// A copy-and-patch region requested a native→userland tail call: the region's
-/// prefix ran, left each positional `Int` argument in its buffer slot (see
-/// `copy_patch::TailCallPlan`), and returned without computing a result. The VM
-/// bridge reads the argument slots and performs the userland call through the
-/// normal interpreter path. This is a *region* return status alongside the
-/// region's `0` (OK, result in `result_slot`) and `1` (guard/overflow side
-/// exit); the value `3` is chosen so it never aliases the Cranelift ABI's
-/// [`JIT_HELPER_STATUS_OVERFLOW`] (`2`).
+/// A native region requested a userland tail call after marshaling positional
+/// arguments into its ABI buffer. This is a region return status, not a helper
+/// return status.
 pub const JIT_HELPER_STATUS_TAILCALL: i32 = 3;
 /// Base of the return-and-resume call-request region statuses: a region
 /// returning `RESUME_CALL_BASE + i` has marshaled the positional `Int`
-/// arguments of its `i`-th call site (see `copy_patch::ResumeCallSite`) into
-/// their buffer slots and suspended itself. The VM performs the userland call
-/// through the normal interpreter path, writes the callee's result into the
-/// site's `result_slot`, and re-enters the region at the site's
-/// `resume_offset` with the same buffer — every live value sits in the flat
-/// slot buffer, so re-entry needs no register state. The base is `16` so the
+/// arguments of its `i`-th call site into their buffer slots and suspended
+/// itself. The runtime performs the call, writes the result into the site's
+/// result slot, and enters the corresponding continuation. The base is `16` so the
 /// range never aliases `OK`/`FALLBACK`/`OVERFLOW`/`TAILCALL` and leaves room
 /// for future scalar statuses below it.
 pub const JIT_HELPER_STATUS_RESUME_CALL_BASE: i32 = 16;

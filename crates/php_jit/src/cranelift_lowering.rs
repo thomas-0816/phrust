@@ -2254,8 +2254,7 @@ fn property_load_candidate(
     }
     // Static exactness rule (see the return-type check above): the property's
     // declared type must be exactly the declared return type, so the committed
-    // value provably needs no return-site coercion. This tier has no runtime
-    // result-tag guard (the copy-patch helper does), so untyped or
+    // value provably needs no return-site coercion. Untyped or
     // differently-typed properties reject here.
     if property_entry.type_ != ir_function.return_type {
         return Err(CraneliftLoweringError::new(
@@ -2294,9 +2293,8 @@ fn property_load_candidate(
             )
         })?;
 
-    // Recorded for parity with the copy-patch recognizer; this tier's helper
-    // does not consult it (the static exactness rule above already proves the
-    // committed value has this tag).
+    // The helper does not consult this metadata because the static exactness
+    // rule above already proves the committed value has this tag.
     let expected_result_tag = match ir_function.return_type.as_ref() {
         Some(IrReturnType::Int) => crate::JitCValueTag::Int as u16,
         Some(IrReturnType::Float) => crate::JitCValueTag::FloatBits as u16,

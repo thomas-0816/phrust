@@ -965,7 +965,6 @@ fn native_json(counters: &VmCounters) -> Value {
         ("jit_compile_time_nanos", counters.jit_compile_time_nanos),
         ("jit_compiled", counters.jit_compiled),
         ("jit_executed", counters.jit_executed),
-        ("copy_patch_executed", counters.copy_patch_executed),
         (
             "native_platform_unavailable",
             counters.native_platform_unavailable,
@@ -1371,7 +1370,6 @@ mod tests {
         counters.jit_compile_attempts = 1;
         counters.jit_compiled = 1;
         counters.jit_executed = 1;
-        counters.copy_patch_executed = 0;
         counters.native_platform_unavailable = 0;
         counters
             .jit_compile_descriptors
@@ -1527,10 +1525,6 @@ mod tests {
         assert_eq!(
             profile["attribution"]["native"]["jit_mode"],
             Value::from("cranelift")
-        );
-        assert_eq!(
-            profile["attribution"]["native"]["copy_patch_executed"],
-            Value::from(0)
         );
         assert_eq!(
             profile["attribution"]["native"]["native_platform_unavailable"],

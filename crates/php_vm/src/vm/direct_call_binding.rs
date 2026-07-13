@@ -255,10 +255,15 @@ impl Vm {
                 stack.pop_recycle();
                 return Err(result);
             }
-            let locals = &mut stack
-                .frame_mut(frame_index)
-                .expect("direct callee frame was pushed")
-                .locals;
+            let Some(frame) = stack.frame_mut(frame_index) else {
+                return Err(self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    "E_PHP_VM_DIRECT_CALL_FRAME: direct callee frame is missing",
+                ));
+            };
+            let locals = &mut frame.locals;
             if let Err(message) = locals.set(param.local, value) {
                 let result = self.runtime_error(output, compiled, stack, message);
                 stack.pop_recycle();

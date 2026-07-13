@@ -576,7 +576,6 @@ pub enum GuardedTier {
     InlineCache,
     DenseBytecode,
     RegionIr,
-    CopyPatch,
     Cranelift,
 }
 
@@ -589,7 +588,6 @@ impl GuardedTier {
             Self::InlineCache => "inline_cache",
             Self::DenseBytecode => "dense_bytecode",
             Self::RegionIr => "region_ir",
-            Self::CopyPatch => "copy_patch",
             Self::Cranelift => "cranelift",
         }
     }

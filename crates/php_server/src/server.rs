@@ -630,7 +630,6 @@ mod tests {
         let counters = output.counters.expect("counters should be collected");
         assert_eq!(counters.jit_mode, "off");
         assert_eq!(counters.jit_executed, 0);
-        assert_eq!(counters.native_executions, counters.copy_patch_executed);
         assert!(counters.bytecode_lower_attempts > 0, "{counters:?}");
         assert!(counters.quickening_attempts > 0, "{counters:?}");
         assert!(counters.inline_cache_observations > 0, "{counters:?}");

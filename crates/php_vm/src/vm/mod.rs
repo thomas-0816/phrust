@@ -216,10 +216,6 @@ use crate::inline_cache::{
 use crate::literal_pool::LiteralPool;
 use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
 use crate::tiering::{ExecutionTier, TieringState};
-#[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-pub(crate) use jit_abi::jit_property_load_fetch;
-#[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-pub(crate) use jit_abi::jit_property_store_commit;
 #[cfg(feature = "jit-cranelift")]
 use jit_abi::{
     JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT, JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT,
@@ -924,19 +920,6 @@ impl Vm {
                 },
                 None => VmResult::compile_error(output, message),
             };
-        }
-        #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-        if self
-            .options
-            .copy_patch_leaf_override
-            .unwrap_or_else(crate::copy_patch_bridge::copy_patch_leaf_enabled)
-        {
-            let stats = crate::copy_patch_bridge::prewarm_copy_patch_leaves(
-                &unit,
-                64,
-                std::time::Duration::from_millis(10),
-            );
-            self.record_counter_native_leaf_prewarm(&stats);
         }
         self.warm_literal_pool(unit.unit());
 

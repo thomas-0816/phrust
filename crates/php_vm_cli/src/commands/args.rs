@@ -92,65 +92,6 @@ pub(super) struct BaselineStencilClass {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct CopyPatchStencilReport {
-    pub(super) functions: u64,
-    pub(super) blocks: u64,
-    pub(super) instructions: u64,
-    pub(super) quickened_superinstructions: u64,
-    pub(super) unsupported_instructions: u64,
-    pub(super) patch_sites: u64,
-    pub(super) helper_calls: u64,
-    pub(super) live_state_slots: u64,
-    pub(super) deopt_points: u64,
-    pub(super) compile_cost_units: u64,
-    pub(super) code_size_bytes_estimate: u64,
-    pub(super) stencils: Vec<CopyPatchStencil>,
-    pub(super) unsupported_by_reason: BTreeMap<String, u64>,
-    pub(super) stencil_kinds: BTreeMap<String, u64>,
-}
-
-impl CopyPatchStencilReport {
-    pub(super) fn work_to_compile_ratio(&self) -> String {
-        if self.compile_cost_units == 0 {
-            return "0.000".to_string();
-        }
-        format!(
-            "{:.3}",
-            self.stencils.len() as f64 / self.compile_cost_units as f64
-        )
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CopyPatchStencil {
-    pub(super) function: u32,
-    pub(super) block: u32,
-    pub(super) instruction: u32,
-    pub(super) opcode: &'static str,
-    pub(super) kind: &'static str,
-    pub(super) patch_sites: Vec<&'static str>,
-    pub(super) guard_dependencies: Vec<&'static str>,
-    pub(super) helper_calls: Vec<&'static str>,
-    pub(super) live_state_requirements: Vec<&'static str>,
-    pub(super) side_exit_target: &'static str,
-    pub(super) code_size_bytes_estimate: u64,
-    pub(super) compile_cost_units: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CopyPatchStencilClass {
-    pub(super) kind: &'static str,
-    pub(super) patch_sites: &'static [&'static str],
-    pub(super) guard_dependencies: &'static [&'static str],
-    pub(super) helper_calls: &'static [&'static str],
-    pub(super) live_state_requirements: &'static [&'static str],
-    pub(super) side_exit_target: &'static str,
-    pub(super) code_size_bytes_estimate: u64,
-    pub(super) compile_cost_units: u64,
-    pub(super) unsupported_reason: Option<&'static str>,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct MidTierPlanReport {
     pub(super) quickened_superinstructions: u64,
     pub(super) functions: Vec<MidTierFunctionPlan>,
@@ -482,26 +423,6 @@ pub(super) fn parse_dump_baseline_native_stencil_args(
     }
     let Some(path) = path else {
         return Err("dump-baseline-native-stencil requires <path.php>".to_string());
-    };
-    Ok((path, json))
-}
-
-pub(super) fn parse_dump_copy_patch_stencils_args(args: &[String]) -> Result<(&str, bool), String> {
-    let mut path = None;
-    let mut json = false;
-    for arg in args {
-        if arg == "--json" {
-            json = true;
-        } else if path.is_none() {
-            path = Some(arg.as_str());
-        } else {
-            return Err(format!(
-                "unexpected dump-copy-patch-stencils argument `{arg}`"
-            ));
-        }
-    }
-    let Some(path) = path else {
-        return Err("dump-copy-patch-stencils requires <path.php>".to_string());
     };
     Ok((path, json))
 }
