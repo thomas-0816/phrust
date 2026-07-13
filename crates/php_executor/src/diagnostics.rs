@@ -164,9 +164,6 @@ pub(crate) fn execution_output_from_vm(
         trace: result.trace,
         counters: result.counters.map(|counters| *counters),
         tiering_stats: result.tiering_stats.map(|stats| *stats),
-        quickening_feedback: Vec::new(),
-        callsite_feedback: Vec::new(),
-        persistent_feedback_epochs: None,
     }
 }
 

@@ -34,6 +34,3 @@ pub use source::{
     IncludeDependency, IncludeDirectoryVersion, IncludePathFileFingerprint, LoadedInclude,
     ValidatedIncludeSource, fnv1a_64, include_directory_version, include_path_file_fingerprint,
 };
-
-#[cfg(test)]
-mod tests;

@@ -142,10 +142,10 @@ pub struct RuntimeTemplate {
     pub reference_cow_restrictions: Vec<&'static str>,
     /// Possible side exits.
     pub possible_side_exits: Vec<&'static str>,
-    /// Snapshot slots required for fallback.
+    /// Snapshot slots required for a native slow path or version transition.
     pub snapshot_requirements: Vec<SnapshotEntry>,
-    /// Runtime fallback helper, if any.
-    pub fallback_helper: Option<&'static str>,
+    /// Typed runtime slow-path helper, if any.
+    pub slow_path_helper: Option<&'static str>,
     /// Explicit unsupported PHP semantic cases.
     pub unsupported_php_semantic_cases: Vec<&'static str>,
 }
@@ -662,13 +662,10 @@ mod tests {
         RuntimeTemplateKind, TemplateLoweringContext, TemplateLoweringStatus, TemplateValueClass,
         lower_default_template_catalog, runtime_templates,
     };
-    use crate::region_ir::{
-        RegionInterpretInputs, RegionInterpretStatus, RegionInterpretValue, VmSlotId,
-        interpret_region,
-    };
+    use crate::region_ir::verify_region_graph;
 
     #[test]
-    fn template_int_add_lowers_to_interpretable_region_ir() {
+    fn template_int_add_lowers_to_native_region_ir() {
         let template = find_template(RuntimeTemplateKind::IntAddChecked);
         assert_eq!(template.params[0].value_class, TemplateValueClass::I64);
         let outcome = template.lower(&TemplateLoweringContext::scalar_safe());
@@ -676,15 +673,8 @@ mod tests {
 
         let artifact = outcome.artifact.expect("lowered artifact");
         let graph = artifact.graph.expect("region graph");
-        let result = interpret_region(
-            &graph,
-            &RegionInterpretInputs::new()
-                .with_i64(VmSlotId::new(0), 2)
-                .with_i64(VmSlotId::new(1), 3),
-        );
-
-        assert_eq!(result.status, RegionInterpretStatus::Returned);
-        assert_eq!(result.returned_value, Some(RegionInterpretValue::I64(5)));
+        assert!(!graph.nodes().is_empty());
+        assert!(verify_region_graph(&graph).is_ok());
         assert!(artifact.rule_selection.is_some());
     }
 

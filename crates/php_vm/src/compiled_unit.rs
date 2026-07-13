@@ -19,7 +19,7 @@ use std::{
 
 static NEXT_COMPILED_UNIT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Compiled unit handed to the interpreter.
+/// Authoritative IR unit handed to the native execution coordinator.
 #[derive(Clone)]
 pub struct CompiledUnit {
     inner: Arc<CompiledUnitInner>,
@@ -226,30 +226,6 @@ pub(crate) struct PreparedFunctionFacts {
     pub(crate) has_try_or_finally: bool,
     pub(crate) may_hold_destructor_sensitive_value: bool,
     pub(crate) has_inline_blocker: bool,
-}
-
-/// Dense executable artifact kind cached for one compiled unit.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum DenseExecutionArtifactMode {
-    /// Mixed dense/rich plan used by automatic bytecode execution.
-    Mixed,
-    /// Strict fully dense plan used by bytecode-only execution.
-    Strict,
-}
-
-/// Execution options that affect dense bytecode layout and validity.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct DenseExecutionArtifactKey {
-    /// Dense lowering mode.
-    pub mode: DenseExecutionArtifactMode,
-    /// Whether dense superinstructions have been selected.
-    pub superinstructions: bool,
-    /// Whether profiled dense layout has been applied.
-    pub profiled_layout: bool,
-    /// Profile entries used by profiled layout, kept in stable map order.
-    pub layout_profile_entries: Vec<(String, u64)>,
-    /// Whether dense jump threading has been applied.
-    pub dense_jump_threading: bool,
 }
 
 impl CompiledUnit {

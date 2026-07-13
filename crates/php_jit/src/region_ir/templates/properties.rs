@@ -55,7 +55,7 @@ fn property_slot_fetch_guarded() -> RuntimeTemplate {
                 value_type: RegionValueType::MixedValue,
             },
         ],
-        fallback_helper: Some("interpreter_fetch_property"),
+        slow_path_helper: Some("runtime_fetch_property"),
         unsupported_php_semantic_cases: vec![
             "__get",
             "property hooks",

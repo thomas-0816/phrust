@@ -7,13 +7,10 @@ use std::sync::Arc;
 
 use php_runtime::api::PhpString;
 
-use crate::bytecode::DenseCacheSlot;
 use crate::include::{
     IncludeDirectoryVersion, IncludePathFileFingerprint, ResolvedIncludePath,
     include_path_file_fingerprint, resolution_path_targets,
 };
-use crate::{DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolStats};
-
 use php_ir::{
     ids::{BlockId, ClassId, FunctionId, InstrId},
     instruction::InstructionKind,
@@ -23,6 +20,8 @@ mod method_peek;
 
 /// Fixed guard-list size for experimental polymorphic method/property caches.
 pub const POLYMORPHIC_INLINE_CACHE_LIMIT: usize = 4;
+const NATIVE_CACHE_MEGAMORPHIC_GUARD_MISSES: u64 = 2;
+const NATIVE_CACHE_DISABLE_GUARD_MISSES: u64 = 4;
 
 /// Runtime inline-cache mode.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -129,7 +128,6 @@ pub struct InlineCacheStats {
     pub guard_failures: u64,
     pub megamorphic_transitions: u64,
     pub disabled_transitions: u64,
-    pub protocol: FallbackProtocolStats,
 }
 
 /// VM-managed builtins resolved before generic user/internal function lookup.
@@ -272,7 +270,7 @@ pub struct MethodCallGuardMetadata {
     pub has_magic_call: bool,
 }
 
-/// Resolved method-call target payload kept out of interpreter stack frames.
+/// Resolved method-call target payload kept out of native frame slots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodCallResolvedTarget {
     pub declaring_class: String,
@@ -287,7 +285,7 @@ pub struct MethodCallResolvedTarget {
     pub route: Option<MethodCallDispatchRoute>,
 }
 
-/// Owner unit, execution plan, and declaring-class data a warmed method-call
+/// Owner unit, native entry, and declaring-class data a warmed method-call
 /// site dispatches through directly.
 #[derive(Clone, Debug)]
 pub struct MethodCallDispatchRoute {
@@ -296,9 +294,10 @@ pub struct MethodCallDispatchRoute {
     pub identity: MethodCallRouteIdentity,
     /// Unit whose IR owns the method body.
     pub owner: crate::compiled_unit::CompiledUnit,
-    /// The owner's dense execution plan; the target function is planned
-    /// `Dense` in it at fill time.
-    pub plan: std::sync::Arc<crate::bytecode::DenseExecutionPlan>,
+    /// Published native generation holding the entry alive.
+    pub native_generation: u64,
+    /// Published native entry address.
+    pub native_entry: usize,
     /// Declaring class entry, for trivial-method inlining on the hit path.
     pub declaring_class: crate::compiled_unit::CompiledClass,
     /// Normalized declaring-class name handle for frame class context.
@@ -381,7 +380,7 @@ pub struct PropertyAssignLayoutMetadata {
     pub dynamic_property_fallback: bool,
 }
 
-/// Resolved property-fetch target payload kept out of interpreter stack frames.
+/// Resolved property-fetch target payload kept out of native frame slots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PropertyFetchResolvedTarget {
     pub receiver_class: String,
@@ -427,7 +426,7 @@ impl PropertyFetchCacheTarget {
     }
 }
 
-/// Resolved property-assignment target payload kept out of interpreter stack frames.
+/// Resolved property-assignment target payload kept out of native frame slots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PropertyAssignResolvedTarget {
     pub receiver_class: String,
@@ -998,7 +997,7 @@ pub struct InlineCacheObservation {
     pub miss: bool,
     pub invalidation: bool,
     pub guard_failure: bool,
-    pub fallback_call: bool,
+    pub resolver_required: bool,
     pub monomorphic: bool,
     pub polymorphic: bool,
     pub megamorphic: bool,
@@ -1018,7 +1017,7 @@ impl InlineCacheObservation {
     pub const fn miss() -> Self {
         Self {
             miss: true,
-            fallback_call: true,
+            resolver_required: true,
             ..Self::empty()
         }
     }
@@ -1028,7 +1027,7 @@ impl InlineCacheObservation {
         Self {
             miss: true,
             invalidation: true,
-            fallback_call: true,
+            resolver_required: true,
             ..Self::empty()
         }
     }
@@ -1038,7 +1037,7 @@ impl InlineCacheObservation {
         Self {
             miss: true,
             guard_failure: true,
-            fallback_call: true,
+            resolver_required: true,
             ..Self::empty()
         }
     }
@@ -1055,7 +1054,7 @@ impl InlineCacheObservation {
     pub const fn disabled() -> Self {
         Self {
             miss: true,
-            fallback_call: true,
+            resolver_required: true,
             disabled: true,
             ..Self::empty()
         }
@@ -1073,7 +1072,7 @@ impl InlineCacheObservation {
             miss: false,
             invalidation: false,
             guard_failure: false,
-            fallback_call: false,
+            resolver_required: false,
             monomorphic: false,
             polymorphic: false,
             megamorphic: false,
@@ -1100,7 +1099,6 @@ fn with_kind(kind: InlineCacheKind, observation: InlineCacheObservation) -> Inli
 
 fn record_slot_hit(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
     slot.stats.hits = slot.stats.hits.saturating_add(1);
-    slot.stats.protocol.record_guard_hit();
     InlineCacheObservation {
         seeded: slot.seeded,
         persistent_worker: slot.persistent_worker,
@@ -1112,7 +1110,6 @@ fn record_slot_hit(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
 
 fn record_slot_miss(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
     slot.stats.misses = slot.stats.misses.saturating_add(1);
-    slot.stats.protocol.record_cold_fallback();
     InlineCacheObservation {
         persistent_worker: slot.persistent_worker,
         ..InlineCacheObservation::miss()
@@ -1122,7 +1119,6 @@ fn record_slot_miss(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
 fn record_slot_invalidation(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
     slot.stats.invalidations = slot.stats.invalidations.saturating_add(1);
     slot.stats.misses = slot.stats.misses.saturating_add(1);
-    slot.stats.protocol.record_cold_fallback();
     slot.state = InlineCacheState::Cold;
     let seeded = slot.seeded;
     let persistent_worker = slot.persistent_worker;
@@ -1138,29 +1134,22 @@ fn record_slot_invalidation(slot: &mut InlineCacheSlot) -> InlineCacheObservatio
 fn record_slot_guard_failure(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
     slot.stats.guard_failures = slot.stats.guard_failures.saturating_add(1);
     slot.stats.misses = slot.stats.misses.saturating_add(1);
-    let fallback = slot.stats.protocol.record_guard_fallback();
     let mut observation = InlineCacheObservation {
-        guard_failure: fallback.guard_failure,
-        fallback_call: fallback.fallback_call,
+        guard_failure: true,
+        resolver_required: true,
         miss: true,
         ..InlineCacheObservation::empty()
     };
 
-    if slot.stats.guard_failures >= DISABLE_AFTER_GUARD_MISSES {
-        let disabled = slot.stats.protocol.record_disabled();
+    if slot.stats.guard_failures >= NATIVE_CACHE_DISABLE_GUARD_MISSES {
         slot.stats.disabled_transitions = slot.stats.disabled_transitions.saturating_add(1);
         slot.state = InlineCacheState::Disabled;
         clear_slot_targets(slot);
-        observation.disabled = disabled.disabled;
-    } else if slot.stats.guard_failures >= DEQUICKEN_AFTER_GUARD_MISSES
+        observation.disabled = true;
+    } else if slot.stats.guard_failures >= NATIVE_CACHE_MEGAMORPHIC_GUARD_MISSES
         && slot.stats.megamorphic_transitions == 0
     {
         slot.stats.megamorphic_transitions = slot.stats.megamorphic_transitions.saturating_add(1);
-        slot.stats.protocol.megamorphic_transitions = slot
-            .stats
-            .protocol
-            .megamorphic_transitions
-            .saturating_add(1);
         slot.state = InlineCacheState::Megamorphic;
         observation.megamorphic = true;
     }
@@ -1175,7 +1164,7 @@ fn disabled_slot_observation() -> InlineCacheObservation {
 fn megamorphic_slot_observation() -> InlineCacheObservation {
     InlineCacheObservation {
         miss: true,
-        fallback_call: true,
+        resolver_required: true,
         megamorphic: true,
         ..InlineCacheObservation::empty()
     }
@@ -1186,11 +1175,6 @@ fn mark_slot_megamorphic(slot: &mut InlineCacheSlot) {
         return;
     }
     slot.stats.megamorphic_transitions = slot.stats.megamorphic_transitions.saturating_add(1);
-    slot.stats.protocol.megamorphic_transitions = slot
-        .stats
-        .protocol
-        .megamorphic_transitions
-        .saturating_add(1);
     slot.state = InlineCacheState::Megamorphic;
     clear_slot_targets(slot);
 }
@@ -1300,7 +1284,6 @@ pub struct InlineCacheTable {
     next_id: u32,
     site_ids: BTreeMap<InlineCacheKey, InlineCacheId>,
     slots: Vec<InlineCacheSlot>,
-    dense_bindings: BTreeMap<u64, Arc<[InlineCacheId]>>,
 }
 
 impl InlineCacheTable {
@@ -1452,37 +1435,6 @@ impl InlineCacheTable {
     ) -> InlineCacheObservation {
         self.bind_slot(unit_key, function, block, instruction, kind)
             .1
-    }
-
-    /// Binds compile-time dense slots once per unit. Subsequent executions
-    /// clone the shared ID slice and never traverse the coordinate map.
-    pub fn bind_dense_slots(
-        &mut self,
-        unit_key: u64,
-        descriptors: &[DenseCacheSlot],
-    ) -> (
-        Arc<[InlineCacheId]>,
-        Vec<(DenseCacheSlot, InlineCacheObservation)>,
-    ) {
-        if let Some(ids) = self.dense_bindings.get(&unit_key) {
-            return (Arc::clone(ids), Vec::new());
-        }
-        let mut ids = Vec::with_capacity(descriptors.len());
-        let mut observations = Vec::with_capacity(descriptors.len());
-        for descriptor in descriptors {
-            let (id, observation) = self.bind_slot(
-                unit_key,
-                FunctionId::new(descriptor.function),
-                BlockId::new(descriptor.block),
-                InstrId::new(descriptor.instruction),
-                descriptor.kind,
-            );
-            ids.push(id);
-            observations.push((*descriptor, observation));
-        }
-        let ids: Arc<[InlineCacheId]> = ids.into();
-        self.dense_bindings.insert(unit_key, Arc::clone(&ids));
-        (ids, observations)
     }
 
     #[must_use]
@@ -3177,10 +3129,6 @@ fn inline_cache_key(
 }
 
 #[cfg(test)]
-#[path = "inline_cache/dense_contract_tests.rs"]
-mod dense_contract_tests;
-
-#[cfg(test)]
 #[path = "inline_cache/lifecycle_tests.rs"]
 mod lifecycle_tests;
 
@@ -3479,7 +3427,7 @@ mod tests {
     }
 
     #[test]
-    fn function_call_cache_type_changes_reach_capped_megamorphic_fallback() {
+    fn function_call_cache_type_changes_reach_capped_megamorphic_state() {
         let function = FunctionId::new(0);
         let block = BlockId::new(0);
         let instruction = InstrId::new(0);
@@ -3520,7 +3468,7 @@ mod tests {
                 None,
             );
             assert!(target.is_none());
-            assert!(event.fallback_call);
+            assert!(event.resolver_required);
             saw_megamorphic |= event.megamorphic;
             assert!(!event.disabled);
             table.install_function_call(
@@ -3543,7 +3491,7 @@ mod tests {
         assert!(saw_megamorphic);
         assert_eq!(slot.state, InlineCacheState::Megamorphic);
         assert_eq!(slot.stats.guard_failures, 0);
-        assert_eq!(slot.stats.protocol.fallback_calls, 4);
+        assert_eq!(slot.stats.misses, 4);
         assert_eq!(slot.stats.megamorphic_transitions, 1);
         assert_eq!(slot.stats.disabled_transitions, 0);
         assert_eq!(
@@ -3784,7 +3732,7 @@ mod tests {
     }
 
     #[test]
-    fn method_call_cache_overflow_reaches_megamorphic_fallback() {
+    fn method_call_cache_overflow_reaches_megamorphic_state() {
         let function = FunctionId::new(0);
         let block = BlockId::new(0);
         let instruction = InstrId::new(0);
@@ -3824,7 +3772,7 @@ mod tests {
 
         assert!(target.is_none());
         assert!(event.megamorphic);
-        assert!(event.fallback_call);
+        assert!(event.resolver_required);
         let slot = table.slots.first().expect("slot");
         assert_eq!(slot.state, InlineCacheState::Megamorphic);
         assert!(slot.method_call_entries().is_empty());
@@ -4013,7 +3961,7 @@ mod tests {
     }
 
     #[test]
-    fn property_fetch_cache_overflow_reaches_megamorphic_fallback() {
+    fn property_fetch_cache_overflow_reaches_megamorphic_state() {
         let function = FunctionId::new(0);
         let block = BlockId::new(0);
         let instruction = InstrId::new(0);
@@ -4061,7 +4009,7 @@ mod tests {
 
         assert!(target.is_none());
         assert!(event.megamorphic);
-        assert!(event.fallback_call);
+        assert!(event.resolver_required);
         let slot = table.slots.first().expect("slot");
         assert_eq!(slot.state, InlineCacheState::Megamorphic);
         assert!(slot.property_fetch_entries().is_empty());
@@ -4140,7 +4088,7 @@ mod tests {
         );
         assert!(target.is_none());
         assert!(event.megamorphic);
-        assert!(event.fallback_call);
+        assert!(event.resolver_required);
         assert_eq!(table.slots[0].state, InlineCacheState::Megamorphic);
         assert!(table.slots[0].property_assign_entries().is_empty());
     }

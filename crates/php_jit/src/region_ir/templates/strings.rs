@@ -48,7 +48,7 @@ fn string_concat_exact() -> RuntimeTemplate {
                 value_type: RegionValueType::StringHandle,
             },
         ],
-        fallback_helper: Some("interpreter_concat"),
+        slow_path_helper: Some("runtime_concat"),
         unsupported_php_semantic_cases: vec![
             "object __toString",
             "array to string warning",

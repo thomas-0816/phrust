@@ -1298,69 +1298,14 @@ pub(crate) fn append_vm_counters_to_trace(
         return;
     };
     trace.counters.extend([
-        ("vm_instructions_executed", counters.instructions_executed),
+        ("vm_native_candidates", counters.native_candidates),
         (
-            "vm_bytecode_instructions_executed",
-            counters.bytecode_instructions_executed,
+            "vm_native_compiled_regions",
+            counters.native_compiled_regions,
         ),
-        (
-            "vm_bytecode_lower_attempts",
-            counters.bytecode_lower_attempts,
-        ),
-        (
-            "vm_bytecode_lower_successes",
-            counters.bytecode_lower_successes,
-        ),
-        (
-            "vm_dense_execution_plan_cache_hits",
-            counters.dense_execution_plan_cache_hits,
-        ),
-        (
-            "vm_dense_execution_plan_cache_misses",
-            counters.dense_execution_plan_cache_misses,
-        ),
-        (
-            "vm_entry_rich_instructions_executed",
-            counters.entry_rich_instructions_executed,
-        ),
-        (
-            "vm_include_rich_instructions_executed",
-            counters.include_rich_instructions_executed,
-        ),
-        (
-            "vm_entry_bytecode_instructions_executed",
-            counters.entry_bytecode_instructions_executed,
-        ),
-        (
-            "vm_include_bytecode_instructions_executed",
-            counters.include_bytecode_instructions_executed,
-        ),
-        (
-            "vm_dense_include_entry_attempts",
-            counters.dense_include_entry_attempts,
-        ),
-        (
-            "vm_dense_include_entry_successes",
-            counters.dense_include_entry_successes,
-        ),
-        (
-            "vm_dense_include_entry_fallbacks",
-            counters.dense_include_entry_fallbacks,
-        ),
-        // Calls are counted per interpreter tier; the trace reports the
-        // tier-agnostic totals so dense growth does not zero the metric.
-        (
-            "vm_function_calls",
-            counters.function_calls
-                + counters.dense_direct_call_hits
-                + counters.dense_callable_call_hits,
-        ),
-        (
-            "vm_method_calls",
-            counters.method_calls
-                + counters.dense_method_call_hits
-                + counters.dense_static_call_hits,
-        ),
+        ("vm_native_executions", counters.native_executions),
+        ("vm_function_calls", counters.function_calls),
+        ("vm_method_calls", counters.method_calls),
         ("vm_frame_allocations", counters.frame_allocations),
         ("vm_frame_reuses", counters.frame_reuses),
         ("vm_value_clones", counters.value_clones),
@@ -1390,8 +1335,6 @@ pub(crate) fn append_vm_counters_to_trace(
         ("vm_builtin_call_ic_misses", counters.builtin_call_ic_misses),
         ("vm_includes", counters.includes),
         ("vm_autoloads", counters.autoloads),
-        ("vm_quickening_attempts", counters.quickening_attempts),
-        ("vm_quickening_specialized", counters.quickening_specialized),
         ("vm_inline_cache_hits", counters.inline_cache_hits),
         ("vm_inline_cache_misses", counters.inline_cache_misses),
         (
@@ -1425,19 +1368,6 @@ pub(crate) fn append_vm_counters_to_trace(
             "vm_autoload_class_lookup_ic_misses",
             counters.autoload_class_lookup_ic_misses,
         ),
-        (
-            "vm_dense_functions_executed",
-            counters.dense_functions_executed,
-        ),
-        (
-            "vm_rich_fallback_functions_executed",
-            counters.rich_fallback_functions_executed,
-        ),
-        ("vm_dense_direct_call_hits", counters.dense_direct_call_hits),
-        ("vm_dense_method_call_hits", counters.dense_method_call_hits),
-        ("vm_dense_static_call_hits", counters.dense_static_call_hits),
-        ("vm_dense_call_ic_hits", counters.dense_call_ic_hits),
-        ("vm_dense_call_ic_misses", counters.dense_call_ic_misses),
         (
             "vm_persistent_engine_allocations",
             counters.persistent_engine_allocations,

@@ -1,19 +1,13 @@
 use php_optimizer::OptimizationLevel;
-use php_vm::api::{
-    BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat, InlineCacheMode,
-    JitBlacklistMode, NativeOptimizationPolicy, QuickeningMode, SuperinstructionMode,
-    TieringOptions,
-};
+use php_vm::api::{InlineCacheMode, JitBlacklistMode, NativeOptimizationPolicy, TieringOptions};
 use std::{fmt, str::FromStr};
 
 use crate::PhpExecutorOptions;
 
-/// Canonical product engine profile shared by CLI and server entry points.
+/// Canonical mandatory-native profile shared by CLI and server entry points.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EngineProfileName {
-    /// Non-speculative native compilation with adaptive optimizations disabled.
     Baseline,
-    /// Optimizing Cranelift product default.
     #[default]
     Default,
 }
@@ -75,7 +69,6 @@ impl fmt::Display for ParseEngineProfileError {
 
 impl std::error::Error for ParseEngineProfileError {}
 
-/// Resolved compile and VM options for one profile.
 #[derive(Clone, Debug)]
 pub struct EngineProfile {
     pub name: EngineProfileName,
@@ -90,47 +83,22 @@ impl EngineProfile {
         let mut vm_options = php_vm::api::VmOptions::default();
         let optimization_level = match name {
             EngineProfileName::Baseline => {
-                vm_options.execution_format = ExecutionFormat::Ir;
-                vm_options.dense_include_execution = DenseIncludeMode::Off;
-                vm_options.superinstructions = SuperinstructionMode::Off;
-                vm_options.dense_jump_threading = DenseJumpThreadingMode::Off;
-                vm_options.bytecode_layout = BytecodeLayoutMode::Source;
-                vm_options.quickening = QuickeningMode::Off;
                 vm_options.inline_caches = InlineCacheMode::Off;
                 vm_options.native_optimization = NativeOptimizationPolicy::Baseline;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering.enabled = true;
                 vm_options.tiering.jit_eager = true;
-                vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
-                // The compatibility oracle stays pre-lever: keep the runtime R3/R4
-                // levers off even though they are on in the default runtime.
-                vm_options.last_use_moves = false;
-                vm_options.reuse_class_context_frames = false;
                 OptimizationLevel::O0
             }
             EngineProfileName::Default => {
-                vm_options.execution_format = ExecutionFormat::Auto;
-                vm_options.dense_include_execution = DenseIncludeMode::Auto;
-                vm_options.superinstructions = SuperinstructionMode::On;
-                // Measured at ~zero threaded edges on the corpus while the
-                // rollback snapshot clones the whole dense unit per request;
-                // stays opt-in via --dense-jump-threading until it pays.
-                vm_options.dense_jump_threading = DenseJumpThreadingMode::Off;
-                vm_options.bytecode_layout = BytecodeLayoutMode::Source;
-                vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
-                vm_options.persistent_adaptive_state = true;
                 vm_options.native_optimization = NativeOptimizationPolicy::Optimizing;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
-                vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
-                vm_options.adaptive_tiny_unit_setup_threshold = Some(8);
-                // Runtime R3/R4 levers on in the default runtime.
-                vm_options.last_use_moves = true;
-                vm_options.reuse_class_context_frames = true;
                 OptimizationLevel::O2
             }
         };
+        vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
         let include_optimization_level = match name {
             EngineProfileName::Default => OptimizationLevel::O0,
             EngineProfileName::Baseline => optimization_level,
@@ -169,7 +137,6 @@ impl PhpExecutorOptions {
             optimization_level: profile.optimization_level,
             include_optimization_level: profile.include_optimization_level,
             vm_options: profile.vm_options,
-            collect_quickening_feedback: false,
         }
     }
 }
@@ -177,86 +144,18 @@ impl PhpExecutorOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_vm::api::{
-        BytecodeLayoutMode, DenseIncludeMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode,
-        NativeOptimizationPolicy, QuickeningMode, SuperinstructionMode,
-    };
 
     #[test]
-    fn parses_canonical_profiles_and_fast_alias() {
+    fn profiles_select_only_native_optimization_policy() {
+        let baseline = PhpExecutorOptions::baseline_oracle();
+        let optimized = PhpExecutorOptions::managed_fast_runtime();
         assert_eq!(
-            EngineProfileName::parse("baseline").unwrap(),
-            EngineProfileName::Baseline
-        );
-        assert_eq!(
-            EngineProfileName::parse("default").unwrap(),
-            EngineProfileName::Default
-        );
-        assert_eq!(
-            EngineProfileName::parse("fast").unwrap(),
-            EngineProfileName::Default
-        );
-    }
-
-    #[test]
-    fn default_profile_uses_optimizing_cranelift() {
-        let options = PhpExecutorOptions::managed_fast_runtime();
-
-        assert_eq!(options.optimization_level, OptimizationLevel::O2);
-        assert_eq!(options.include_optimization_level, OptimizationLevel::O0);
-        assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
-        assert_eq!(
-            options.vm_options.dense_include_execution,
-            DenseIncludeMode::Auto
-        );
-        assert_eq!(
-            options.vm_options.superinstructions,
-            SuperinstructionMode::On
-        );
-        assert_eq!(
-            options.vm_options.bytecode_layout,
-            BytecodeLayoutMode::Source
-        );
-        assert_eq!(options.vm_options.quickening, QuickeningMode::On);
-        assert_eq!(options.vm_options.inline_caches, InlineCacheMode::On);
-        assert_eq!(
-            options.vm_options.native_optimization,
-            NativeOptimizationPolicy::Optimizing
-        );
-        assert_eq!(options.vm_options.jit_blacklist, JitBlacklistMode::On);
-        assert!(options.vm_options.tiering.enabled);
-        assert!(options.vm_options.typecheck_fast_paths);
-        assert!(options.vm_options.internal_function_dispatch_cache);
-        // Runtime R3/R4 levers are on in the default runtime.
-        assert!(options.vm_options.last_use_moves);
-        assert!(options.vm_options.reuse_class_context_frames);
-    }
-
-    #[test]
-    fn baseline_profile_keeps_adaptive_features_off() {
-        let options = PhpExecutorOptions::baseline_oracle();
-
-        assert_eq!(options.optimization_level, OptimizationLevel::O0);
-        assert_eq!(options.include_optimization_level, OptimizationLevel::O0);
-        assert_eq!(options.vm_options.execution_format, ExecutionFormat::Ir);
-        assert_eq!(
-            options.vm_options.dense_include_execution,
-            DenseIncludeMode::Off
-        );
-        assert_eq!(
-            options.vm_options.superinstructions,
-            SuperinstructionMode::Off
-        );
-        assert_eq!(options.vm_options.quickening, QuickeningMode::Off);
-        assert_eq!(options.vm_options.inline_caches, InlineCacheMode::Off);
-        assert_eq!(
-            options.vm_options.native_optimization,
+            baseline.vm_options.native_optimization,
             NativeOptimizationPolicy::Baseline
         );
-        assert!(options.vm_options.tiering.enabled);
-        assert!(options.vm_options.tiering.jit_eager);
-        // The oracle must stay pre-lever even though R3/R4 are on by default.
-        assert!(!options.vm_options.last_use_moves);
-        assert!(!options.vm_options.reuse_class_context_frames);
+        assert_eq!(
+            optimized.vm_options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        );
     }
 }

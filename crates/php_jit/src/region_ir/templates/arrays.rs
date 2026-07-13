@@ -53,7 +53,7 @@ fn record_array_lookup_symbol_guard() -> RuntimeTemplate {
         ],
         possible_side_exits: vec!["layout_mismatch", "key_symbol_miss", "reference_cell"],
         snapshot_requirements: array_snapshot(),
-        fallback_helper: Some("interpreter_fetch_dim"),
+        slow_path_helper: Some("runtime_fetch_dim"),
         unsupported_php_semantic_cases: vec![
             "missing-key warning/null behavior",
             "by-reference element access",
@@ -97,7 +97,7 @@ fn packed_array_fetch_readonly() -> RuntimeTemplate {
             "cow_required",
         ],
         snapshot_requirements: array_snapshot(),
-        fallback_helper: Some("interpreter_fetch_dim"),
+        slow_path_helper: Some("runtime_fetch_dim"),
         unsupported_php_semantic_cases: vec![
             "by-reference element access",
             "missing-key warning/null behavior",
@@ -137,7 +137,7 @@ fn packed_foreach_int_sum_metadata_only() -> RuntimeTemplate {
         ],
         possible_side_exits: vec!["layout_mismatch", "non_i64_element", "reference_cell"],
         snapshot_requirements: array_snapshot(),
-        fallback_helper: Some("interpreter_foreach"),
+        slow_path_helper: Some("runtime_foreach"),
         unsupported_php_semantic_cases: vec![
             "destructor during iteration",
             "iterator object",
@@ -174,7 +174,7 @@ fn isset_array_key_interned_exact() -> RuntimeTemplate {
         reference_cow_restrictions: vec!["no reference cells", "no COW separation"],
         possible_side_exits: vec!["key_miss", "reference_cell", "cow_required"],
         snapshot_requirements: array_snapshot(),
-        fallback_helper: Some("interpreter_isset_dim"),
+        slow_path_helper: Some("runtime_isset_dim"),
         unsupported_php_semantic_cases: vec![
             "ArrayAccess object",
             "string offset isset",

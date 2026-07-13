@@ -151,9 +151,9 @@ crates/php_lexer/        PHP lexer/tokenization
 crates/php_syntax/       parser and lossless CST
 crates/php_ast/          typed views over CST nodes
 crates/php_semantics/    semantic frontend, HIR, symbols, diagnostics
-crates/php_ir/           bytecode/IR boundary
+crates/php_ir/           authoritative execution IR
 crates/php_runtime/      runtime values and builtins
-crates/php_vm/           interpreter VM
+crates/php_vm/           native PHP execution coordinator
 crates/php_executor/     reusable in-process PHP execution API
 crates/php_server/       integrated HTTP server
 crates/php_vm_cli/       developer CLI for VM execution

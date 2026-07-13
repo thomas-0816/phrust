@@ -128,7 +128,6 @@ where
     vm_options.trace_includes = input.debug;
     // Drop-in CLI parity with real PHP: no step ceiling. The library default
     // (100k) exists for embedded/test use; the server sets its own limit.
-    vm_options.max_steps = usize::MAX;
     let vm = Vm::with_options(vm_options);
     emit_debug_event(
         stderr,

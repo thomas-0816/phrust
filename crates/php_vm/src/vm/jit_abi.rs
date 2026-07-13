@@ -1,7 +1,6 @@
 // Audited native-tier ABI surface (docs/performance/cranelift/
 // safety-audit.md); compiled only under the JIT features, which the
 // pre-ADR-0020 CLI gate never covered.
-use crate::deopt::GuardKind;
 use php_ir::module::normalize_class_name;
 use php_runtime::api::PhpString;
 use php_runtime::api::Value;
@@ -19,8 +18,8 @@ pub(super) fn jit_runtime_helper_table() -> &'static php_jit::JitRuntimeHelperTa
     &JIT_RUNTIME_HELPER_TABLE
 }
 
-/// Typed native call trampoline entry. Target compilation/lookup is requested
-/// explicitly; this boundary never invokes dense, rich, or IR dispatch.
+/// Typed native call trampoline entry. Target compilation and lookup are
+/// requested explicitly; this boundary has no alternate executor entry.
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_native_call_dispatch_abi(
     _vm_context: u64,
@@ -65,8 +64,8 @@ pub(super) extern "C" fn jit_native_call_dispatch_abi(
 
 /// Native dynamic-code compiler boundary. A production VM context installs
 /// the include/eval compiler and compile-once cache. Until that context is
-/// present this returns `COMPILE_REQUIRED`; it never executes the source via a
-/// bytecode, rich, or IR fallback.
+/// present this returns `COMPILE_REQUIRED`; it never executes source through
+/// an alternate engine.
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_native_dynamic_code_abi(
     vm_context: u64,
@@ -103,17 +102,6 @@ pub(super) extern "C" fn jit_native_dynamic_code_abi(
         });
     }
     status.0 as i32
-}
-
-pub(super) fn jit_guard_kind_for_side_exit(reason: php_jit::SideExitReason) -> Option<GuardKind> {
-    match reason {
-        php_jit::SideExitReason::TypeMismatch => Some(GuardKind::QuickeningType),
-        php_jit::SideExitReason::Overflow => Some(GuardKind::IntAdd),
-        php_jit::SideExitReason::UnsupportedValue => Some(GuardKind::RegionAssumption),
-        php_jit::SideExitReason::GuardFailed => Some(GuardKind::RegionAssumption),
-        php_jit::SideExitReason::HelperStatus => Some(GuardKind::BuiltinCall),
-        php_jit::SideExitReason::ExceptionPending | php_jit::SideExitReason::AbiMismatch => None,
-    }
 }
 
 #[allow(unsafe_code)]
@@ -297,8 +285,8 @@ pub(super) extern "C" fn jit_concat_string_string_fast(
 /// with the specific side-exit status: a non-object or class mismatch is
 /// [`JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT`], an absent property is
 /// [`JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT`], and an uninitialized typed property
-/// is [`JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT`] (the interpreter then throws
-/// the exact `Error`). It only reads a declared property slot — it never mutates,
+/// is [`JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT`] (the native slow block then
+/// raises the exact `Error`). It only reads a declared property slot — it never mutates,
 /// invokes a hook/`__get` (those shapes are excluded at recognition time), or
 /// re-enters the VM.
 pub(crate) fn jit_property_load_fetch(
@@ -379,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn native_dynamic_code_boundary_never_uses_first_execution_fallback() {
+    fn native_dynamic_code_boundary_requires_publication_before_execution() {
         let mut request = php_jit::JitNativeDynamicCodeRequest {
             kind: php_jit::JitNativeDynamicCodeKind::EVAL,
             ..php_jit::JitNativeDynamicCodeRequest::default()

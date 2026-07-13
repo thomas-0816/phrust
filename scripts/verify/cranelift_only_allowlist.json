@@ -1,15 +1,7 @@
 {
   "schema_version": 1,
-  "stage": 10,
+  "stage": 11,
   "pre_cutover_sha": "c300e22a5f389c1e6b022f40184e79c9980e8cd7",
   "alternate_emitter_paths": [],
-  "interpreter_call_paths": [
-    "crates/php_vm/src/vm/calls.rs",
-    "crates/php_vm/src/vm/dense_activation.rs",
-    "crates/php_vm/src/vm/dense_dispatch.rs",
-    "crates/php_vm/src/vm/dense_method_dispatch.rs",
-    "crates/php_vm/src/vm/execution_tiering.rs",
-    "crates/php_vm/src/vm/method_dispatch.rs",
-    "crates/php_vm/src/vm/mod.rs"
-  ]
+  "interpreter_call_paths": []
 }

@@ -35,7 +35,7 @@ fn known_builtin_strlen_exact() -> RuntimeTemplate {
             slot: VmSlotId::new(0),
             value_type: RegionValueType::StringHandle,
         }],
-        fallback_helper: Some("known_strlen_helper"),
+        slow_path_helper: Some("known_strlen_helper"),
         unsupported_php_semantic_cases: vec![
             "object __toString",
             "array/resource conversion diagnostics",
@@ -65,7 +65,7 @@ fn known_builtin_count_packed_exact() -> RuntimeTemplate {
             slot: VmSlotId::new(0),
             value_type: RegionValueType::ArrayHandle,
         }],
-        fallback_helper: Some("known_count_helper"),
+        slow_path_helper: Some("known_count_helper"),
         unsupported_php_semantic_cases: vec![
             "Countable object",
             "non-array TypeError",

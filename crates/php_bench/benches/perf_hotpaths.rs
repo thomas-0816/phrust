@@ -14,7 +14,7 @@ use php_source::byte_kernel;
 use php_syntax::parse_source_file;
 use php_vm::api::{
     CompiledUnit, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache, IncludeLoader,
-    InlineCacheMode, QuickeningMode, Vm, VmOptions,
+    InlineCacheMode, Vm, VmOptions,
 };
 use php_vm::experimental::{
     CallReferenceMask, FunctionCallCacheTarget, FunctionCallShape, InlineCacheKind,
@@ -130,7 +130,6 @@ fn compile_unit(source: &str) -> CompiledUnit {
 fn execute_unit(unit: &CompiledUnit) {
     let vm = Vm::with_options(VmOptions {
         verify_ir: false,
-        quickening: QuickeningMode::On,
         inline_caches: InlineCacheMode::On,
         ..VmOptions::default()
     });

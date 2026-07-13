@@ -4,9 +4,8 @@
 //! which converts whatever tokio worker happens to hold the request into a
 //! temporary blocking thread. Those threads are ephemeral: tokio retires
 //! them after an idle timeout, and every thread-keyed engine structure —
-//! the request-executor cache, the dense execution-plan cache, worker-stable
-//! symbol epochs — is discarded with them and rebuilt from cold on the next
-//! request.
+//! process-local native publication tables and worker-stable symbol epochs —
+//! is discarded with them and rebuilt from cold on the next request.
 //!
 //! The pool replaces that with a fixed set of pinned OS threads that own
 //! PHP execution for the lifetime of the process. Jobs and finished
@@ -20,9 +19,9 @@ use std::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::warn;
 
-/// Worker stack size: the interpreter recurses deeply on nested PHP calls,
-/// so pinned workers get the same generous stack the tokio workers use
-/// (overridable through the same environment variable).
+/// Worker stack size for native PHP frames and runtime helpers. Pinned workers
+/// use the same generous stack as the tokio workers, overridable through the
+/// same environment variable.
 fn php_worker_stack_bytes() -> usize {
     const DEFAULT_PHP_WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
     std::env::var("PHRUST_SERVER_TOKIO_WORKER_STACK_BYTES")

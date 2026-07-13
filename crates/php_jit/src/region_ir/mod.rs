@@ -16,7 +16,6 @@ mod coverage;
 mod dump;
 mod executable;
 mod ids;
-mod interpreter;
 mod node;
 pub mod opt;
 mod osr;
@@ -46,10 +45,6 @@ pub use executable::{
     RegionTerminator, build_baseline_region,
 };
 pub use ids::{ConstId, EntryId, ExitId, NodeId, RegionId, SnapshotId, VmSlotId};
-pub use interpreter::{
-    RegionGuardExitReason, RegionInterpretInputs, RegionInterpretResult, RegionInterpretStatus,
-    RegionInterpretUnsupportedReason, RegionInterpretValue, interpret_region,
-};
 pub use node::{
     RegionCompareOp, RegionConst, RegionEffects, RegionNode, RegionNodeKind, RegionPlacement,
     RegionValueType,

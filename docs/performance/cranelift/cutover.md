@@ -4,30 +4,18 @@ ADR 0017 makes executable Region IR lowered by Cranelift the sole production
 execution contract. The migration is sequential: each prompt must pass its own
 gate and shrink the temporary source allowlist before the next prompt begins.
 
-## Prompt 0 baseline
+## Prompt 0 baseline (historical)
 
-The pre-cutover revision is
-`c300e22a5f389c1e6b022f40184e79c9980e8cd7`. It is checked out detached at
-`../phrust-interpreter-oracle` and built with a separate Cargo target directory.
-The cutover harness invokes that `php-vm` binary as an external process; the
-production workspace has no dependency on an oracle crate or library.
-
-Run the prerequisite gate from the cutover worktree:
-
-```sh
-nix develop -c just cranelift-only-precondition
-```
-
-The gate writes `target/cranelift-only/precondition.json` and
-`target/cranelift-only/precondition.md`. These generated reports record the
-branch and oracle revisions, Cranelift version, Region IR schema, native ABI
-hashes, target triple, and exact Cranelift CPU-feature identity. Reports under
-`target/` are local evidence and must not be committed.
+The pre-cutover revision was
+`c300e22a5f389c1e6b022f40184e79c9980e8cd7`. Its detached comparison harness
+was used only while native coverage was being established. Prompt 11 removed
+that harness together with the old executor. Current differential checks invoke
+the pinned external PHP 8.5.7 reference binary only.
 
 `scripts/verify/cranelift_only_allowlist.json` is the temporary legacy-source
 inventory. New alternate-executor references are rejected immediately. A path
-must be removed from the allowlist in the same prompt that removes its last
-legacy reference. Prompt 14 requires both allowlist categories to be empty.
+was removed from the allowlist in the same prompt that removed its last legacy
+reference. Both executor categories are empty as of Prompt 11.
 
 ## Prompt 1 alternate-emitter removal
 
@@ -297,3 +285,30 @@ It writes `target/cranelift-only/native-version-transitions.{json,md}`, audits
 the state and exact-entry source contracts, proves nested callee routing and
 no effect replay, exercises native OSR/overflow metadata, retains PHP-visible
 overflow and cache-guard semantics, and checks all workspace targets.
+
+## Prompt 11 native execution coordinator
+
+The former test-only executor has been removed rather than hidden behind a
+configuration flag. `php_vm` now contains only compiled-unit preparation,
+request/cache metadata, native helper ABIs, mandatory Cranelift compilation,
+native entry publication, and outer result assembly. The Dense bytecode tree,
+Rich dispatch modules, match-based IR loop, deoptimization/resume protocol,
+quickening, superinstructions, interpreter OSR, and their public options and
+reports no longer exist.
+
+`php_executor`, `php-vm`, and the server expose baseline or optimizing native
+profiles only. Removed executor flags are rejected instead of being accepted
+as no-ops. Runtime counters and request profiles describe native compilation,
+entries, helpers, caches, and side exits; they do not retain migration-era
+instruction-family totals. Differential validation uses the pinned external
+PHP binary and no in-crate migration oracle.
+
+Run the gate with:
+
+```sh
+nix develop -c just cranelift-native-executor
+```
+
+The gate verifies the deleted paths and public names, checks an empty stage-11
+allowlist, builds every workspace target, builds the release server, and scans
+its symbols for Cranelift while rejecting retired executor entry symbols.
