@@ -104,6 +104,7 @@ help:
       '  just wordpress-root-benchmark-cranelift-amd64 Run managed-vs-Cranelift AMD64 A/B' \
       '  just wordpress-root-tranche-gate-cranelift-amd64 Run strict AMD64 Cranelift c1-p50 gate' \
       '  just jit-smoke-amd64    Prove native Cranelift execution with copy-patch disabled' \
+      '  just cranelift-only-precondition Freeze and verify the native-only cutover prerequisites' \
       '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
       '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
@@ -1609,6 +1610,23 @@ jit-smoke-amd64:
     fi
     target_dir="${PHRUST_AMD64_CRANELIFT_SMOKE_TARGET_DIR:-target/amd64-cranelift-smoke}"
     CARGO_TARGET_DIR="$target_dir" PHRUST_JIT_SMOKE_TARGET_DIR="$target_dir" PHRUST_REQUIRE_AMD64=1 PHRUST_JIT_COPY_PATCH=0 scripts/performance/jit_smoke.sh
+
+# Prompt 0 cutover gate. The final report is written only after every executable
+# prerequisite and the detached pre-cutover oracle have passed.
+cranelift-only-precondition:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    oracle_dir="$(realpath "{{justfile_directory()}}/../phrust-interpreter-oracle")"
+    pre_sha="$(python3 -c 'import json; print(json.load(open("scripts/verify/cranelift_only_allowlist.json"))["pre_cutover_sha"])')"
+    test "$(git -C "$oracle_dir" rev-parse HEAD)" = "$pre_sha" || { printf '%s\n' "[fail] oracle worktree is not pinned to $pre_sha" >&2; exit 1; }
+    scripts/verify/cranelift_only_stage_ratchet.py
+    (cd "$oracle_dir" && CARGO_TARGET_DIR=target/oracle cargo build -p php_vm_cli --bin php-vm)
+    PHRUST_INTERPRETER_ORACLE="$oracle_dir/target/oracle/debug/php-vm" scripts/verify/interpreter_oracle.py
+    cargo test -p php_jit --features jit-cranelift
+    cargo test -p php_executor --features jit-cranelift bounded_cranelift_prewarm_populates_cache_without_executing_script
+    mkdir -p target/cranelift-only
+    cargo run --quiet -p php_jit --features jit-cranelift --example cranelift_precondition_identity > target/cranelift-only/identity.txt
+    scripts/verify/cranelift_only_precondition.py
 
 jit-cranelift-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi

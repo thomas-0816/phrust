@@ -28,7 +28,7 @@ under the owning topic directories such as `docs/frontend/`, `docs/runtime/`,
 | [0014](0014-performance-scope.md) | Performance Scope |
 | [0015](0015-bytecode-cache-format.md) | Bytecode Cache Format |
 | [0016](0016-cache-invalidation-model.md) | Inline Cache Invalidation Model |
-| [0017](0017-cranelift-jit-experiment.md) | Cranelift JIT Experiment |
+| [0017](0017-cranelift-jit-experiment.md) | Cranelift-Only Production Execution |
 | [0018](0018-cranelift-memory-safety.md) | Cranelift Memory Safety Boundary |
 | [0019](0019-fast-baseline-native-tier-prerequisites.md) | Fast Baseline Native Tier Prerequisites |
 
