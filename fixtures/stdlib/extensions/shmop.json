@@ -1,0 +1,102 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Shmop"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "shmop",
+        "source": "ext/shmop/shmop.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "shmop"
+        }
+      ],
+      "name": "shmop_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "shmop",
+        "source": "ext/shmop/shmop.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "shmop"
+        }
+      ],
+      "name": "shmop_delete",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "shmop",
+        "source": "ext/shmop/shmop.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "shmop"
+        }
+      ],
+      "name": "shmop_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "shmop",
+        "source": "ext/shmop/shmop.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "shmop"
+        }
+      ],
+      "name": "shmop_read",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "shmop",
+        "source": "ext/shmop/shmop.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "shmop"
+        }
+      ],
+      "name": "shmop_size",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "shmop",
+        "source": "ext/shmop/shmop.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "shmop"
+        }
+      ],
+      "name": "shmop_write",
+      "visibility": "php"
+    }
+  ],
+  "name": "shmop",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -1,0 +1,153 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcadd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bccomp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcdiv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcmod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcmul",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcpow",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcpowmod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcscale",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcsqrt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "bcmath",
+        "source": "ext/bcmath/bcmath.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "bcmath"
+        }
+      ],
+      "name": "bcsub",
+      "visibility": "php"
+    }
+  ],
+  "name": "bcmath",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

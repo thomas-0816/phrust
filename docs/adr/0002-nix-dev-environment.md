@@ -20,9 +20,9 @@ Docker is not the primary development environment for Foundation.
 The dev shell provides:
 
 - Rust tooling: compiler, Cargo, rustfmt, Clippy, and rust-analyzer.
-- Project tools: Git, curl, wget, `just`, jq, ripgrep, fd, and tree.
+- Project tools: Git, curl, `just`, jq, ripgrep, fd, and hyperfine.
 - PHP reference build tools: autoconf, automake, libtool, bison, re2c, make,
-  pkg-config, ccache, CMake, Ninja, and Clang.
+  pkg-config, CMake, Ninja, and Clang.
 - PHP-adjacent libraries: libxml2, SQLite, OpenSSL, zlib, bzip2, xz, and
   libzip.
 - Python 3 for deterministic metadata scripts.

@@ -17,10 +17,19 @@ impl GlobalSymbolTable {
     }
 
     /// Returns an existing slot or creates it with `default`.
-    pub fn ensure_slot(&mut self, name: impl Into<String>, default: Value) -> ReferenceCell {
-        let name = name.into();
+    ///
+    /// Probes borrowed first: the hit path (every superglobal access after
+    /// the first) must not allocate an owned key.
+    pub fn ensure_slot(
+        &mut self,
+        name: impl Into<String> + AsRef<str>,
+        default: Value,
+    ) -> ReferenceCell {
+        if let Some(slot) = self.slots.get(name.as_ref()) {
+            return slot.clone();
+        }
         self.slots
-            .entry(name)
+            .entry(name.into())
             .or_insert_with(|| ReferenceCell::new(default))
             .clone()
     }
@@ -32,7 +41,7 @@ impl GlobalSymbolTable {
     }
 
     /// Writes through a global slot, creating it if necessary.
-    pub fn set(&mut self, name: impl Into<String>, value: Value) {
+    pub fn set(&mut self, name: impl Into<String> + AsRef<str>, value: Value) {
         let slot = self.ensure_slot(name, Value::Uninitialized);
         Lvalue::cell(slot, LvalueKind::GlobalVariable)
             .write_value(value)

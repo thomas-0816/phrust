@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements the common standard math and numeric helpers used by
+The standard library implements the common standard math and numeric helpers used by
 Composer-style bootstrap and framework code:
 
 - `abs`, `min`, `max`
@@ -44,7 +44,7 @@ The following PHP edge surfaces are tracked as
 
 ## Validation
 
-Work item is covered by:
+The standard library is covered by:
 
 - runtime unit tests in `php_runtime::builtins`
 - registry metadata tests in `php_std`

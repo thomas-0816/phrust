@@ -7,6 +7,7 @@ use crate::builtins::{
 };
 use crate::{ArrayKey, CallableValue, PhpArray, PhpString, Value, to_bool, to_int};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 const READLINE_INFO_ORDER: &[&str] = &[
@@ -90,19 +91,55 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 ];
 
 fn builtin_readline(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
         return Err(arity_error("readline", "zero or one argument"));
     }
-    if let Some(prompt) = args.first()
-        && !matches!(prompt, Value::Null)
+    let mut prompt = String::new();
+    if let Some(value) = args.first()
+        && !matches!(value, Value::Null)
     {
-        let _ = string_arg("readline", prompt)?;
+        prompt = string_arg("readline", value)?.to_string_lossy();
     }
-    Ok(Value::Bool(false))
+    let history = context.readline_state().history().to_vec();
+    Ok(ReadlineBackend::for_stdio()
+        .read_line(&prompt, &history)
+        .map(Value::string)
+        .unwrap_or(Value::Bool(false)))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadlineBackend {
+    Noninteractive,
+    Rustyline,
+}
+
+impl ReadlineBackend {
+    fn for_stdio() -> Self {
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            Self::Rustyline
+        } else {
+            Self::Noninteractive
+        }
+    }
+
+    fn read_line(self, prompt: &str, history: &[String]) -> Option<String> {
+        match self {
+            Self::Noninteractive => None,
+            Self::Rustyline => read_line_with_rustyline(prompt, history),
+        }
+    }
+}
+
+fn read_line_with_rustyline(prompt: &str, history: &[String]) -> Option<String> {
+    let mut editor = rustyline::DefaultEditor::new().ok()?;
+    for entry in history {
+        let _ = editor.add_history_entry(entry.as_str());
+    }
+    editor.readline(prompt).ok()
 }
 
 fn builtin_readline_info(
@@ -548,6 +585,14 @@ mod tests {
         assert_eq!(
             call(&mut context, "readline_list_history", vec![]),
             Value::Array(PhpArray::new())
+        );
+    }
+
+    #[test]
+    fn noninteractive_backend_never_reads() {
+        assert_eq!(
+            ReadlineBackend::Noninteractive.read_line("> ", &[String::from("history")]),
+            None
         );
     }
 }

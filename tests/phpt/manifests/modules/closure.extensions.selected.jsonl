@@ -39,5 +39,5 @@
 {"path":"tests/phpt/generated/bcmath/basic.phpt","module":"closure.extensions","kind":"contract","reason":"math support: bounded decimal arithmetic"}
 {"path":"tests/phpt/generated/gmp/basic.phpt","module":"closure.extensions","kind":"contract","reason":"math support: BigInt facade arithmetic"}
 {"path":"tests/phpt/generated/apcu/basic.phpt","module":"closure.extensions","kind":"contract","reason":"in-memory cache APIs: request-local APCu"}
-{"path":"tests/phpt/generated/redis/basic.phpt","module":"closure.extensions","kind":"contract","reason":"in-memory/external cache APIs: Redis probe surface remains explicit"}
-{"path":"tests/phpt/generated/memcached/basic.phpt","module":"closure.extensions","kind":"contract","reason":"in-memory/external cache APIs: Memcached probe surface remains explicit"}
+{"path":"tests/phpt/generated/redis/basic.phpt","module":"closure.extensions","kind":"contract","reason":"endpoint-backed cache APIs: Redis probe surface remains explicit"}
+{"path":"tests/phpt/generated/memcached/basic.phpt","module":"closure.extensions","kind":"contract","reason":"endpoint-backed cache APIs: Memcached probe surface remains explicit"}

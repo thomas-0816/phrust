@@ -1,0 +1,128 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Random\\BrokenRandomEngineError"
+    },
+    {
+      "kind": "interface",
+      "name": "Random\\CryptoSafeEngine"
+    },
+    {
+      "kind": "interface",
+      "name": "Random\\Engine"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\Engine\\Mt19937"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\Engine\\PcgOneseq128XslRr64"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\Engine\\Secure"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\Engine\\Xoshiro256StarStar"
+    },
+    {
+      "kind": "enum",
+      "name": "Random\\IntervalBoundary"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\RandomError"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\RandomException"
+    },
+    {
+      "kind": "class",
+      "name": "Random\\Randomizer"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "random",
+        "source": "ext/random/random.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "mt_getrandmax",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "random",
+        "source": "ext/random/random.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "mt_rand",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "random",
+        "source": "ext/random/random.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "rand",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "random",
+        "source": "ext/random/random.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "random_bytes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "random",
+        "source": "ext/random/random.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "random_int",
+      "visibility": "php"
+    }
+  ],
+  "name": "random",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

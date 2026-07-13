@@ -18,8 +18,11 @@ pub fn display_class_name(name: &str) -> String {
 /// Runtime class table entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassEntry {
-    /// Canonical class lookup name.
-    pub name: String,
+    /// Canonical class lookup name. Shared: every instance of the class
+    /// clones this handle into its storage, so all instances of one runtime
+    /// class alias one allocation (and the handle address doubles as a
+    /// per-class identity for address-keyed resolution caches).
+    pub name: std::sync::Arc<str>,
     /// Canonical parent class lookup name, when declared.
     pub parent: Option<String>,
     /// Canonical interface names implemented or extended by this class-like.

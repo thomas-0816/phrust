@@ -3,3 +3,5 @@
 {"path":"tests/phpt/generated/dom/domdocument-node-apis.phpt"}
 {"path":"tests/phpt/generated/dom/domtext-node-apis.phpt"}
 {"path":"tests/phpt/generated/dom/domdocument-secondary-nodes.phpt"}
+{"path":"tests/phpt/generated/dom/libxml-loadxml-nodes.phpt"}
+{"path":"tests/phpt/generated/dom/domxpath-namednodemap.phpt"}

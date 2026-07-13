@@ -1,18 +1,29 @@
 //! VM-mediated callbacks used by internal builtins.
 
+use super::builtin_adapter::{BuiltinTypeError, builtin_source_span, execute_builtin_entry};
+use super::builtin_callback_validation::{array_callback_type_error, validate_array_callback_arg};
 use super::prelude::*;
+
+struct IteratorBuiltinCall<'a> {
+    function: &'a str,
+    values: &'a [Value],
+    call_span: Option<php_ir::IrSpan>,
+}
 
 impl Vm {
     pub(super) fn execute_json_encode_with_serializable(
         &self,
         entry: BuiltinEntry,
         values: Vec<Value>,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         call_span: Option<php_ir::IrSpan>,
     ) -> VmResult {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let flags = json_encode_flags(&values);
         let Some(first) = values.first().cloned() else {
             return execute_builtin_entry(
@@ -29,14 +40,11 @@ impl Vm {
         let transformed = match self.prepare_json_serializable_value(
             first,
             flags,
-            output,
-            stack,
-            state,
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &mut transform_state,
         ) {
             Ok(value) => value,
-            Err(result) => return result,
+            Err(result) => return *result,
         };
         let mut transformed_values = values;
         transformed_values[0] = transformed;
@@ -49,13 +57,17 @@ impl Vm {
             builtin_source_span(compiled, call_span),
         );
         if result.status.is_success() && transform_state.recursion_error {
-            state.json_last_error = php_runtime::JSON_ERROR_RECURSION;
+            state
+                .builtins
+                .set_json_last_error(php_runtime::api::JSON_ERROR_RECURSION);
         }
         if !result.status.is_success() && transform_state.recursion_error {
             result.return_value = Some(Value::Bool(false));
-            state.json_last_error = php_runtime::JSON_ERROR_RECURSION;
+            state
+                .builtins
+                .set_json_last_error(php_runtime::api::JSON_ERROR_RECURSION);
         }
-        release_unrooted_direct_object_handle(&original_first, stack, state);
+        release_unrooted_direct_object_handle(&original_first);
         result
     }
 
@@ -63,17 +75,20 @@ impl Vm {
         &self,
         value: Value,
         flags: i64,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         transform_state: &mut JsonSerializableEncodeState,
-    ) -> Result<Value, VmResult> {
+    ) -> Result<Value, Box<VmResult>> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         match effective_value(&value) {
             Value::Array(array) => {
                 let array_id = array.gc_debug_id();
                 if transform_state.active_arrays.contains(&array_id) {
-                    if flags & php_runtime::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                    if flags & php_runtime::api::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                         transform_state.recursion_error = true;
                         return Ok(Value::Null);
                     }
@@ -85,10 +100,7 @@ impl Vm {
                     let element = match self.prepare_json_serializable_value(
                         element.clone(),
                         flags,
-                        output,
-                        stack,
-                        state,
-                        compiled,
+                        ExecutionCursor::new(compiled, output, stack, state),
                         transform_state,
                     ) {
                         Ok(value) => value,
@@ -105,19 +117,13 @@ impl Vm {
             Value::Object(object) => self.prepare_json_serializable_object(
                 object,
                 flags,
-                output,
-                stack,
-                state,
-                compiled,
+                ExecutionCursor::new(compiled, output, stack, state),
                 transform_state,
             ),
             Value::Reference(cell) => self.prepare_json_serializable_value(
                 cell.get(),
                 flags,
-                output,
-                stack,
-                state,
-                compiled,
+                ExecutionCursor::new(compiled, output, stack, state),
                 transform_state,
             ),
             value => Ok(value),
@@ -128,23 +134,31 @@ impl Vm {
         &self,
         object: ObjectRef,
         flags: i64,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         transform_state: &mut JsonSerializableEncodeState,
-    ) -> Result<Value, VmResult> {
+    ) -> Result<Value, Box<VmResult>> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         if transform_state.active_objects.contains(&object.id())
             || state
+                .builtins
                 .json_serializable_active_objects
                 .contains(&object.id())
         {
             transform_state.recursion_error = true;
-            if flags & php_runtime::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+            if flags & php_runtime::api::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                 return Ok(Value::Null);
             }
-            state.json_last_error = php_runtime::JSON_ERROR_RECURSION;
-            return Err(VmResult::success_no_output(Some(Value::Bool(false))));
+            state
+                .builtins
+                .set_json_last_error(php_runtime::api::JSON_ERROR_RECURSION);
+            return Err(Box::new(VmResult::success_no_output(Some(Value::Bool(
+                false,
+            )))));
         }
         let implements_jsonserializable = match class_implements_in_state(
             compiled,
@@ -154,46 +168,47 @@ impl Vm {
             &mut Vec::new(),
         ) {
             Ok(result) => result,
-            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+            Err(message) => {
+                return Err(Box::new(
+                    self.runtime_error(output, compiled, stack, message),
+                ));
+            }
         };
         if !implements_jsonserializable {
             return Ok(Value::Object(object));
         }
         transform_state.active_objects.push(object.id());
-        state.json_serializable_active_objects.push(object.id());
+        state
+            .builtins
+            .json_serializable_active_objects
+            .push(object.id());
         let result = self.call_object_method_callable(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             object.clone(),
             "jsonSerialize",
             Vec::new(),
             None,
-            output,
-            stack,
-            state,
         );
         if !result.status.is_success() {
             let _ = transform_state.active_objects.pop();
-            let _ = state.json_serializable_active_objects.pop();
-            return Err(result);
+            let _ = state.builtins.json_serializable_active_objects.pop();
+            return Err(Box::new(result));
         }
         let serialized = result.return_value.unwrap_or(Value::Null);
         if matches!(effective_value(&serialized), Value::Object(returned) if returned.id() == object.id())
         {
             let _ = transform_state.active_objects.pop();
-            let _ = state.json_serializable_active_objects.pop();
+            let _ = state.builtins.json_serializable_active_objects.pop();
             return Ok(serialized);
         }
         let transformed = self.prepare_json_serializable_value(
             serialized,
             flags,
-            output,
-            stack,
-            state,
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             transform_state,
         );
         let _ = transform_state.active_objects.pop();
-        let _ = state.json_serializable_active_objects.pop();
+        let _ = state.builtins.json_serializable_active_objects.pop();
         transformed
     }
 
@@ -201,12 +216,15 @@ impl Vm {
         &self,
         entry: BuiltinEntry,
         values: Vec<Value>,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         call_span: Option<php_ir::IrSpan>,
     ) -> VmResult {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let handle = values
             .first()
             .and_then(|value| match effective_value(value) {
@@ -230,26 +248,20 @@ impl Vm {
         let original_return_value = result.return_value.clone();
         let mut diagnostics = std::mem::take(&mut result.diagnostics);
         if let Some(result) = self.call_curl_response_callback(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &handle,
             "__curl_headerfunction",
             "__curl_last_response_headers",
-            output,
-            stack,
-            state,
             &mut diagnostics,
         ) && !result.status.is_success()
         {
             return result;
         }
         if let Some(result) = self.call_curl_response_callback(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &handle,
             "__curl_writefunction",
             "__curl_last_response_body",
-            output,
-            stack,
-            state,
             &mut diagnostics,
         ) && !result.status.is_success()
         {
@@ -260,15 +272,18 @@ impl Vm {
 
     fn call_curl_response_callback(
         &self,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         handle: &ObjectRef,
         callback_property: &str,
         payload_property: &str,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
         diagnostics: &mut Vec<RuntimeDiagnostic>,
     ) -> Option<VmResult> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let callback = handle.get_property(callback_property)?;
         if !curl_callback_is_enabled(&callback) {
             return None;
@@ -295,12 +310,15 @@ impl Vm {
         &self,
         entry: BuiltinEntry,
         values: Vec<Value>,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         call_span: Option<php_ir::IrSpan>,
     ) -> VmResult {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let parser = values
             .first()
             .and_then(|value| match effective_value(value) {
@@ -333,7 +351,7 @@ impl Vm {
         let (Some(parser), Some(input)) = (parser, input) else {
             return result;
         };
-        let Ok(document) = php_runtime::xml::parse_xml(&input) else {
+        let Ok(document) = php_runtime::api::xml::parse_xml(&input) else {
             return result;
         };
         let mut diagnostics = std::mem::take(&mut result.diagnostics);
@@ -343,12 +361,9 @@ impl Vm {
             case_folding,
         };
         if let Some(callback_result) = self.dispatch_xml_element_callbacks(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &context,
             &document.root,
-            output,
-            stack,
-            state,
             &mut diagnostics,
         ) && !callback_result.status.is_success()
         {
@@ -359,22 +374,25 @@ impl Vm {
 
     fn dispatch_xml_element_callbacks(
         &self,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         context: &XmlSaxCallbackContext,
-        element: &php_runtime::xml::XmlElement,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
+        element: &php_runtime::api::xml::XmlElement,
         diagnostics: &mut Vec<RuntimeDiagnostic>,
     ) -> Option<VmResult> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let name = xml_sax_name(&element.name, context.case_folding);
         let start_callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_START_ELEMENT_HANDLER);
-        if xml_callback_is_enabled(&start_callback) {
+            .get_property(php_runtime::api::xml::XML_PARSER_START_ELEMENT_HANDLER);
+        if let Some(start_callback) = xml_enabled_callback(start_callback) {
             let callback_result = self.call_callable_with_by_ref_value_warnings(
                 compiled,
-                start_callback.unwrap(),
+                start_callback,
                 vec![
                     CallArgument::positional(Value::Object(context.parser.clone())),
                     CallArgument::positional(Value::string(name.as_bytes().to_vec())),
@@ -389,12 +407,9 @@ impl Vm {
                 return Some(callback_result);
             }
         } else if let Some(callback_result) = self.dispatch_xml_default_callback(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             context,
             &xml_sax_start_tag(element),
-            output,
-            stack,
-            state,
             diagnostics,
         ) && !callback_result.status.is_success()
         {
@@ -403,42 +418,34 @@ impl Vm {
 
         for child in &element.children {
             match child {
-                php_runtime::xml::XmlNode::Element(child) => {
+                php_runtime::api::xml::XmlNode::Element(child) => {
                     if let Some(callback_result) = self.dispatch_xml_element_callbacks(
-                        compiled,
+                        ExecutionCursor::new(compiled, output, stack, state),
                         context,
                         child,
-                        output,
-                        stack,
-                        state,
                         diagnostics,
                     ) && !callback_result.status.is_success()
                     {
                         return Some(callback_result);
                     }
                 }
-                php_runtime::xml::XmlNode::Text(text) | php_runtime::xml::XmlNode::Cdata(text) => {
+                php_runtime::api::xml::XmlNode::Text(text)
+                | php_runtime::api::xml::XmlNode::Cdata(text) => {
                     if let Some(callback_result) = self.dispatch_xml_character_data_callback(
-                        compiled,
+                        ExecutionCursor::new(compiled, output, stack, state),
                         context,
                         text,
-                        output,
-                        stack,
-                        state,
                         diagnostics,
                     ) && !callback_result.status.is_success()
                     {
                         return Some(callback_result);
                     }
                 }
-                php_runtime::xml::XmlNode::Comment(text) => {
+                php_runtime::api::xml::XmlNode::Comment(text) => {
                     if let Some(callback_result) = self.dispatch_xml_default_callback(
-                        compiled,
+                        ExecutionCursor::new(compiled, output, stack, state),
                         context,
                         &format!("<!--{text}-->"),
-                        output,
-                        stack,
-                        state,
                         diagnostics,
                     ) && !callback_result.status.is_success()
                     {
@@ -450,11 +457,11 @@ impl Vm {
 
         let end_callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_END_ELEMENT_HANDLER);
-        if xml_callback_is_enabled(&end_callback) {
+            .get_property(php_runtime::api::xml::XML_PARSER_END_ELEMENT_HANDLER);
+        if let Some(end_callback) = xml_enabled_callback(end_callback) {
             let callback_result = self.call_callable_with_by_ref_value_warnings(
                 compiled,
-                end_callback.unwrap(),
+                end_callback,
                 vec![
                     CallArgument::positional(Value::Object(context.parser.clone())),
                     CallArgument::positional(Value::string(name.as_bytes().to_vec())),
@@ -468,12 +475,9 @@ impl Vm {
                 return Some(callback_result);
             }
         } else if let Some(callback_result) = self.dispatch_xml_default_callback(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             context,
             &format!("</{}>", element.name),
-            output,
-            stack,
-            state,
             diagnostics,
         ) && !callback_result.status.is_success()
         {
@@ -484,21 +488,24 @@ impl Vm {
 
     fn dispatch_xml_character_data_callback(
         &self,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         context: &XmlSaxCallbackContext,
         text: &str,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
         diagnostics: &mut Vec<RuntimeDiagnostic>,
     ) -> Option<VmResult> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_CHARACTER_DATA_HANDLER);
-        if xml_callback_is_enabled(&callback) {
+            .get_property(php_runtime::api::xml::XML_PARSER_CHARACTER_DATA_HANDLER);
+        if let Some(callback) = xml_enabled_callback(callback) {
             let callback_result = self.call_callable_with_by_ref_value_warnings(
                 compiled,
-                callback.unwrap(),
+                callback,
                 vec![
                     CallArgument::positional(Value::Object(context.parser.clone())),
                     CallArgument::positional(Value::string(text.as_bytes().to_vec())),
@@ -511,35 +518,33 @@ impl Vm {
             return Some(callback_result);
         }
         self.dispatch_xml_default_callback(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             context,
             text,
-            output,
-            stack,
-            state,
             diagnostics,
         )
     }
 
     fn dispatch_xml_default_callback(
         &self,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
         context: &XmlSaxCallbackContext,
         data: &str,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
         diagnostics: &mut Vec<RuntimeDiagnostic>,
     ) -> Option<VmResult> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         let callback = context
             .parser
-            .get_property(php_runtime::xml::XML_PARSER_DEFAULT_HANDLER);
-        if !xml_callback_is_enabled(&callback) {
-            return None;
-        }
+            .get_property(php_runtime::api::xml::XML_PARSER_DEFAULT_HANDLER);
+        let callback = xml_enabled_callback(callback)?;
         let callback_result = self.call_callable_with_by_ref_value_warnings(
             compiled,
-            callback.unwrap(),
+            callback,
             vec![
                 CallArgument::positional(Value::Object(context.parser.clone())),
                 CallArgument::positional(Value::string(data.as_bytes().to_vec())),
@@ -560,7 +565,7 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
         compiled: &CompiledUnit,
-    ) -> Result<Vec<Value>, VmResult> {
+    ) -> Result<Vec<Value>, Box<VmResult>> {
         let kind = DebugOutputBuiltin::from_name(builtin);
         values
             .into_iter()
@@ -578,7 +583,7 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
         compiled: &CompiledUnit,
-    ) -> Result<Value, VmResult> {
+    ) -> Result<Value, Box<VmResult>> {
         match value {
             Value::Object(object) => self
                 .debug_info_object_value(kind, &object, output, stack, state, compiled)
@@ -606,14 +611,14 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
         compiled: &CompiledUnit,
-    ) -> Result<Option<Value>, VmResult> {
+    ) -> Result<Option<Value>, Box<VmResult>> {
         let Some(return_value) =
             self.call_debug_info_method(kind, compiled, object, output, stack, state)?
         else {
             return Ok(spl_internal_debug_info_object(object).map(Value::Object));
         };
         let Value::Array(properties) = return_value else {
-            return Err(self.runtime_error(
+            return Err(Box::new(self.runtime_error(
                 output,
                 compiled,
                 stack,
@@ -621,7 +626,7 @@ impl Vm {
                     "E_PHP_VM_DEBUGINFO_RETURN_TYPE: {}::__debugInfo() must return an array",
                     object.display_name()
                 ),
-            ));
+            )));
         };
         Ok(Some(Value::Object(debug_info_object(object, properties))))
     }
@@ -634,7 +639,7 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
-    ) -> Result<Option<Value>, VmResult> {
+    ) -> Result<Option<Value>, Box<VmResult>> {
         let Some(_class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
             return Ok(None);
         };
@@ -647,7 +652,11 @@ impl Vm {
         ) {
             Ok(Some(method)) => method,
             Ok(None) => return Ok(None),
-            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+            Err(message) => {
+                return Err(Box::new(
+                    self.runtime_error(output, compiled, stack, message),
+                ));
+            }
         };
         if resolved.method.flags.is_static
             || resolved.method.flags.is_private
@@ -666,7 +675,10 @@ impl Vm {
             .any(|active| active == &guard)
         {
             kind.write_recursion(output);
-            return Err(VmResult::success(output.clone(), Some(Value::Null)));
+            return Err(Box::new(VmResult::success(
+                output.clone(),
+                Some(Value::Null),
+            )));
         }
         state.magic_method_stack.push(guard);
         let class_owner = class_owner_in_state(compiled, state, &resolved.class.name);
@@ -687,7 +699,7 @@ impl Vm {
         );
         let _ = state.magic_method_stack.pop();
         if !result.status.is_success() {
-            return Err(result);
+            return Err(Box::new(result));
         }
         Ok(Some(result.return_value.unwrap_or(Value::Null)))
     }
@@ -697,11 +709,14 @@ impl Vm {
         name: &str,
         values: &[Value],
         call_span: Option<php_ir::IrSpan>,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
+        cursor: ExecutionCursor<'_>,
     ) -> Option<VmResult> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         match name {
             "iterator_apply" => {
                 Some(self.execute_iterator_apply(values, output, stack, state, compiled))
@@ -741,7 +756,7 @@ impl Vm {
                 message.clone(),
                 RuntimeSourceSpan::default(),
                 stack_trace(compiled, stack),
-                Some(php_runtime::PhpReferenceClassification::Error),
+                Some(php_runtime::api::PhpReferenceClassification::Error),
             );
             return VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic);
         }
@@ -760,7 +775,7 @@ impl Vm {
                     message.clone(),
                     RuntimeSourceSpan::default(),
                     stack_trace(compiled, stack),
-                    Some(php_runtime::PhpReferenceClassification::TypeError),
+                    Some(php_runtime::api::PhpReferenceClassification::TypeError),
                 );
                 return VmResult::runtime_error_with_diagnostic(
                     output.clone(),
@@ -783,6 +798,16 @@ impl Vm {
                 ArrayCallbackError::BuiltinType { function, actual } => {
                     array_callback_type_error(output, compiled, stack, function, &actual)
                 }
+                ArrayCallbackError::BuiltinTypeMessage(message) => BuiltinTypeError {
+                    output,
+                    compiled,
+                    stack,
+                    state,
+                    function: "iterator_apply",
+                    values,
+                    call_span: None,
+                }
+                .result(message),
                 ArrayCallbackError::Message(message) => {
                     self.runtime_error(output, compiled, stack, message)
                 }
@@ -817,15 +842,12 @@ impl Vm {
                 iterators.insert(RegId::new(0), iterator);
                 iterators
             }
-            Err(result) => return result,
+            Err(result) => return *result,
         };
         let mut count = 0_i64;
         loop {
             match self.next_foreach_value(
-                compiled,
-                output,
-                stack,
-                state,
+                ExecutionCursor::new(compiled, output, stack, state),
                 &mut iterator,
                 RegId::new(0),
                 false,
@@ -855,14 +877,16 @@ impl Vm {
                 Err(result) => {
                     self.annotate_iterator_builtin_iteration_failure(
                         &result,
-                        "iterator_apply",
-                        values,
-                        None,
+                        IteratorBuiltinCall {
+                            function: "iterator_apply",
+                            values,
+                            call_span: None,
+                        },
                         compiled,
                         stack,
                         state,
                     );
-                    return result;
+                    return *result;
                 }
             }
         }
@@ -894,12 +918,9 @@ impl Vm {
             values,
             source.clone(),
             call_span,
-            output,
-            stack,
-            state,
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
         ) {
-            return result;
+            return *result;
         }
         let mut iterator = match self.foreach_iterator_from_value(
             compiled,
@@ -914,15 +935,12 @@ impl Vm {
                 iterators.insert(RegId::new(0), iterator);
                 iterators
             }
-            Err(result) => return result,
+            Err(result) => return *result,
         };
         let mut count = 0_i64;
         loop {
             match self.next_foreach_value(
-                compiled,
-                output,
-                stack,
-                state,
+                ExecutionCursor::new(compiled, output, stack, state),
                 &mut iterator,
                 RegId::new(0),
                 false,
@@ -932,14 +950,16 @@ impl Vm {
                 Err(result) => {
                     self.annotate_iterator_builtin_iteration_failure(
                         &result,
-                        "iterator_count",
-                        values,
-                        call_span,
+                        IteratorBuiltinCall {
+                            function: "iterator_count",
+                            values,
+                            call_span,
+                        },
                         compiled,
                         stack,
                         state,
                     );
-                    return result;
+                    return *result;
                 }
             }
         }
@@ -970,12 +990,9 @@ impl Vm {
             values,
             effective_value(&values[0]),
             call_span,
-            output,
-            stack,
-            state,
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
         ) {
-            return result;
+            return *result;
         }
         let preserve_keys = match values.get(1) {
             Some(value) => match to_bool(value) {
@@ -1013,15 +1030,12 @@ impl Vm {
                 iterators.insert(RegId::new(0), iterator);
                 iterators
             }
-            Err(result) => return result,
+            Err(result) => return *result,
         };
         let mut result = PhpArray::new();
         loop {
             match self.next_foreach_value(
-                compiled,
-                output,
-                stack,
-                state,
+                ExecutionCursor::new(compiled, output, stack, state),
                 &mut iterator,
                 RegId::new(0),
                 true,
@@ -1036,7 +1050,7 @@ impl Vm {
                             &key, call_span, output, stack, state, compiled,
                         ) {
                             Ok(key) => key,
-                            Err(result) => return result,
+                            Err(result) => return *result,
                         };
                         result.insert(key, value);
                     } else {
@@ -1047,14 +1061,16 @@ impl Vm {
                 Err(result) => {
                     self.annotate_iterator_builtin_iteration_failure(
                         &result,
-                        "iterator_to_array",
-                        values,
-                        call_span,
+                        IteratorBuiltinCall {
+                            function: "iterator_to_array",
+                            values,
+                            call_span,
+                        },
                         compiled,
                         stack,
                         state,
                     );
-                    return result;
+                    return *result;
                 }
             }
         }
@@ -1068,7 +1084,7 @@ impl Vm {
         stack: &CallStack,
         state: &mut ExecutionState,
         compiled: &CompiledUnit,
-    ) -> Result<ArrayKey, VmResult> {
+    ) -> Result<ArrayKey, Box<VmResult>> {
         match effective_value(key) {
             Value::Float(float) => {
                 let number = float.to_f64();
@@ -1098,27 +1114,30 @@ impl Vm {
                 );
                 Ok(ArrayKey::String(PhpString::from_bytes(Vec::new())))
             }
-            Value::Array(_) => Err(self.runtime_error(
+            Value::Array(_) => Err(Box::new(self.runtime_error(
                 output,
                 compiled,
                 stack,
                 "E_PHP_VM_ARRAY_KEY_CONVERSION: Cannot access offset of type array on array",
-            )),
-            other => array_key_from_value(&other)
-                .map_err(|message| self.runtime_error(output, compiled, stack, message)),
+            ))),
+            other => Ok(array_key_from_value(&other)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message))?),
         }
     }
 
     fn annotate_iterator_builtin_iteration_failure(
         &self,
         result: &VmResult,
-        function: &str,
-        values: &[Value],
-        call_span: Option<php_ir::IrSpan>,
+        call: IteratorBuiltinCall<'_>,
         compiled: &CompiledUnit,
         stack: &CallStack,
         state: &mut ExecutionState,
     ) {
+        let IteratorBuiltinCall {
+            function,
+            values,
+            call_span,
+        } = call;
         let Some(call_span) = call_span else {
             return;
         };
@@ -1146,11 +1165,14 @@ impl Vm {
         values: &[Value],
         value: Value,
         call_span: Option<php_ir::IrSpan>,
-        output: &OutputBuffer,
-        stack: &CallStack,
-        state: &mut ExecutionState,
-        compiled: &CompiledUnit,
-    ) -> Result<(), VmResult> {
+        cursor: ExecutionCursor<'_>,
+    ) -> Result<(), Box<VmResult>> {
+        let ExecutionCursor {
+            compiled,
+            output,
+            stack,
+            state,
+        } = cursor;
         if iterator_function_accepts_iterable(compiled, state, &value)
             .map_err(|message| self.runtime_error(output, compiled, stack, message))?
         {
@@ -1166,7 +1188,7 @@ impl Vm {
             message.clone(),
             RuntimeSourceSpan::default(),
             stack_trace(compiled, stack),
-            Some(php_runtime::PhpReferenceClassification::TypeError),
+            Some(php_runtime::api::PhpReferenceClassification::TypeError),
         );
         if let Some(call_span) = call_span {
             let result = VmResult::runtime_error_with_diagnostic(
@@ -1180,14 +1202,14 @@ impl Vm {
                     compiled, stack, function, values, call_span,
                 ));
                 state.pending_throw = Some(throwable);
-                return Err(result);
+                return Err(Box::new(result));
             }
         }
-        Err(VmResult::runtime_error_with_diagnostic(
+        Err(Box::new(VmResult::runtime_error_with_diagnostic(
             output.clone(),
             message,
             diagnostic,
-        ))
+        )))
     }
 }
 
@@ -1212,8 +1234,8 @@ fn emit_iterator_to_array_key_deprecation(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_runtime::PHP_E_DEPRECATED,
+        php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_runtime::api::PHP_E_DEPRECATED,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -1232,8 +1254,8 @@ fn xml_parser_case_folding(parser: &ObjectRef) -> bool {
     }
 }
 
-fn xml_callback_is_enabled(callback: &Option<Value>) -> bool {
-    !matches!(callback, None | Some(Value::Null))
+fn xml_enabled_callback(callback: Option<Value>) -> Option<Value> {
+    callback.filter(|value| !matches!(value, Value::Null))
 }
 
 fn xml_sax_name(name: &str, case_folding: bool) -> String {
@@ -1244,7 +1266,7 @@ fn xml_sax_name(name: &str, case_folding: bool) -> String {
     }
 }
 
-fn xml_sax_attributes(element: &php_runtime::xml::XmlElement, case_folding: bool) -> Value {
+fn xml_sax_attributes(element: &php_runtime::api::xml::XmlElement, case_folding: bool) -> Value {
     let mut attributes = PhpArray::new();
     for (name, value) in &element.attributes {
         let key = xml_sax_name(name, case_folding);
@@ -1256,7 +1278,7 @@ fn xml_sax_attributes(element: &php_runtime::xml::XmlElement, case_folding: bool
     Value::Array(attributes)
 }
 
-fn xml_sax_start_tag(element: &php_runtime::xml::XmlElement) -> String {
+fn xml_sax_start_tag(element: &php_runtime::api::xml::XmlElement) -> String {
     let mut tag = String::new();
     tag.push('<');
     tag.push_str(&element.name);
@@ -1287,7 +1309,7 @@ fn xml_sax_escape_attribute(value: &str) -> String {
 
 #[derive(Default)]
 struct JsonSerializableEncodeState {
-    active_arrays: Vec<usize>,
+    active_arrays: Vec<u64>,
     active_objects: Vec<u64>,
     recursion_error: bool,
 }

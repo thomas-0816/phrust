@@ -1,36 +1,36 @@
 //! Runtime implementations of the SPL classes (iterators, ArrayObject/ArrayIterator,
 //! SplStack/Queue/DoublyLinkedList, SplHeap/PriorityQueue, SplFixedArray, SplObjectStorage,
 //! Recursive* iterators, and related helpers), extracted from the VM module.
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::result_large_err)]
 
 use super::prelude::*;
 
 pub(super) fn is_spl_iterator_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "arrayiterator"
-            | "recursivearrayiterator"
-            | "directoryiterator"
-            | "filesystemiterator"
-            | "recursivedirectoryiterator"
-            | "iteratoriterator"
-            | "limititerator"
-            | "emptyiterator"
-            | "appenditerator"
-            | "recursiveiteratoriterator"
-            | "cachingiterator"
-            | "recursivecachingiterator"
-            | "regexiterator"
-            | "recursiveregexiterator"
-            | "norewinditerator"
-            | "infiniteiterator"
-            | "filteriterator"
-            | "recursivefilteriterator"
-            | "parentiterator"
-            | "recursivetreeiterator"
-            | "multipleiterator"
-            | "globiterator"
+    spl_class_name_is(
+        class_name,
+        &[
+            "arrayiterator",
+            "recursivearrayiterator",
+            "directoryiterator",
+            "filesystemiterator",
+            "recursivedirectoryiterator",
+            "iteratoriterator",
+            "limititerator",
+            "emptyiterator",
+            "appenditerator",
+            "recursiveiteratoriterator",
+            "cachingiterator",
+            "recursivecachingiterator",
+            "regexiterator",
+            "recursiveregexiterator",
+            "norewinditerator",
+            "infiniteiterator",
+            "filteriterator",
+            "recursivefilteriterator",
+            "parentiterator",
+            "recursivetreeiterator",
+            "multipleiterator",
+            "globiterator",
+        ],
     )
 }
 
@@ -43,35 +43,49 @@ pub(super) fn is_supported_spl_runtime_class(class_name: &str) -> bool {
 }
 
 pub(super) fn is_spl_interface_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "traversable"
-            | "iterator"
-            | "iteratoraggregate"
-            | "arrayaccess"
-            | "countable"
-            | "serializable"
-            | "outeriterator"
-            | "seekableiterator"
-            | "recursiveiterator"
+    spl_class_name_is(
+        class_name,
+        &[
+            "traversable",
+            "iterator",
+            "iteratoraggregate",
+            "arrayaccess",
+            "countable",
+            "serializable",
+            "outeriterator",
+            "seekableiterator",
+            "recursiveiterator",
+        ],
     )
 }
 
 pub(super) fn is_spl_array_access_runtime_class(class_name: &str) -> bool {
     is_spl_container_runtime_class(class_name)
-        || matches!(
-            normalize_class_name(class_name).as_str(),
-            "arrayiterator"
-                | "recursivearrayiterator"
-                | "cachingiterator"
-                | "recursivecachingiterator"
+        || spl_class_name_is(
+            class_name,
+            &[
+                "arrayiterator",
+                "recursivearrayiterator",
+                "cachingiterator",
+                "recursivecachingiterator",
+            ],
         )
 }
 
+/// Allocation-free equivalent of matching `normalize_class_name(name)`
+/// against lowercase literals: trims the root slash and compares
+/// case-insensitively, so raw and pre-normalized spellings both match.
+fn spl_class_name_is(name: &str, expected: &[&str]) -> bool {
+    let name = name.trim_start_matches('\\');
+    expected
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 pub(super) fn spl_runtime_marker(object: &ObjectRef) -> Option<String> {
-    let class_name = normalize_class_name(&object.class_name());
-    if is_supported_spl_runtime_class(&class_name) {
-        return Some(class_name);
+    let handle = object.class_name_handle();
+    if is_supported_spl_runtime_class(handle.trim_start_matches('\\')) {
+        return Some(normalize_class_name(&handle));
     }
     let marker = object.get_property(SPL_RUNTIME_CLASS_PROPERTY)?;
     let Value::String(value) = effective_value(&marker) else {
@@ -2022,7 +2036,7 @@ pub(super) fn spl_iterator_class(class_name: &str) -> RuntimeClassEntry {
         interfaces.push("OuterIterator".to_owned());
     }
     RuntimeClassEntry {
-        name: normalize_class_name(class_name),
+        name: normalize_class_name(class_name).into(),
         parent: match normalized.as_str() {
             "directoryiterator" => Some(normalize_class_name("SplFileInfo")),
             "filesystemiterator" => Some(normalize_class_name("DirectoryIterator")),
@@ -2036,11 +2050,11 @@ pub(super) fn spl_iterator_class(class_name: &str) -> RuntimeClassEntry {
             _ => None,
         },
         interfaces,
-        methods: Vec::new(),
-        properties: Vec::new(),
-        constants: Vec::new(),
-        enum_cases: Vec::new(),
-        attributes: Vec::new(),
+        methods: vec![],
+        properties: vec![],
+        constants: vec![],
+        enum_cases: vec![],
+        attributes: vec![],
         enum_backing_type: None,
         constructor_id: None,
         flags: RuntimeClassFlags::default(),
@@ -2107,10 +2121,7 @@ pub(super) const SPL_CACHING_STRING_FLAGS: i64 = SPL_CACHING_CALL_TOSTRING
     | SPL_CACHING_TOSTRING_USE_INNER;
 
 pub(super) fn is_spl_caching_iterator_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "cachingiterator" | "recursivecachingiterator"
-    )
+    spl_class_name_is(class_name, &["cachingiterator", "recursivecachingiterator"])
 }
 
 pub(super) fn spl_filtering_iterator_accepts_current(object: &ObjectRef) -> bool {
@@ -4431,14 +4442,16 @@ pub(super) fn spl_rii_note_array_string_warning(object: &ObjectRef) {
 }
 
 pub(super) fn is_spl_container_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "arrayobject"
-            | "splfixedarray"
-            | "splobjectstorage"
-            | "spldoublylinkedlist"
-            | "splstack"
-            | "splqueue"
+    spl_class_name_is(
+        class_name,
+        &[
+            "arrayobject",
+            "splfixedarray",
+            "splobjectstorage",
+            "spldoublylinkedlist",
+            "splstack",
+            "splqueue",
+        ],
     )
 }
 
@@ -5044,17 +5057,17 @@ pub(super) fn spl_container_class(class_name: &str) -> RuntimeClassEntry {
         interfaces.push("ArrayAccess".to_owned());
     }
     RuntimeClassEntry {
-        name: normalize_class_name(class_name),
+        name: normalize_class_name(class_name).into(),
         parent: match normalized.as_str() {
             "splstack" | "splqueue" => Some(normalize_class_name("SplDoublyLinkedList")),
             _ => None,
         },
         interfaces,
-        methods: Vec::new(),
-        properties: Vec::new(),
-        constants: Vec::new(),
-        enum_cases: Vec::new(),
-        attributes: Vec::new(),
+        methods: vec![],
+        properties: vec![],
+        constants: vec![],
+        enum_cases: vec![],
+        attributes: vec![],
         enum_backing_type: None,
         constructor_id: None,
         flags: RuntimeClassFlags::default(),
@@ -5471,9 +5484,9 @@ pub(super) fn spl_object_storage_detach(object: &ObjectRef, key: &Value) -> Resu
 }
 
 pub(super) fn is_spl_heap_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "splheap" | "splmaxheap" | "splminheap" | "splpriorityqueue"
+    spl_class_name_is(
+        class_name,
+        &["splheap", "splmaxheap", "splminheap", "splpriorityqueue"],
     )
 }
 
@@ -5714,7 +5727,7 @@ pub(super) fn call_spl_heap_method(
 pub(super) fn spl_heap_class(class_name: &str) -> RuntimeClassEntry {
     let normalized = normalize_class_name(class_name);
     RuntimeClassEntry {
-        name: normalized.clone(),
+        name: normalized.clone().into(),
         parent: match normalized.as_str() {
             "splmaxheap" | "splminheap" => Some(normalize_class_name("SplHeap")),
             _ => None,
@@ -5724,7 +5737,7 @@ pub(super) fn spl_heap_class(class_name: &str) -> RuntimeClassEntry {
             "Traversable".to_owned(),
             "Countable".to_owned(),
         ],
-        methods: Vec::new(),
+        methods: vec![],
         properties: Vec::new(),
         constants: Vec::new(),
         enum_cases: Vec::new(),
@@ -6278,9 +6291,9 @@ pub(super) fn spl_priority_queue_extract_flags(object: &ObjectRef) -> i64 {
 }
 
 pub(super) fn is_spl_file_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "splfileinfo" | "splfileobject" | "spltempfileobject"
+    spl_class_name_is(
+        class_name,
+        &["splfileinfo", "splfileobject", "spltempfileobject"],
     )
 }
 
@@ -6728,7 +6741,7 @@ pub(super) fn spl_file_info_result_class(
             let display_name = class.display_name.clone();
             (
                 RuntimeClassEntry {
-                    name: normalize_class_name(&class.name),
+                    name: normalize_class_name(&class.name).into(),
                     parent: class.parent.clone(),
                     interfaces: class.interfaces.clone(),
                     methods: Vec::new(),
@@ -6755,7 +6768,7 @@ pub(super) fn spl_file_info_result_base_class(class_name: &str) -> (RuntimeClass
     } else {
         (
             RuntimeClassEntry {
-                name: normalize_class_name(class_name),
+                name: normalize_class_name(class_name).into(),
                 parent: Some(normalize_class_name("SplFileInfo")),
                 interfaces: Vec::new(),
                 methods: Vec::new(),
@@ -6775,7 +6788,7 @@ pub(super) fn spl_file_info_result_base_class(class_name: &str) -> (RuntimeClass
 pub(super) fn spl_file_class(class_name: &str) -> RuntimeClassEntry {
     let normalized = normalize_class_name(class_name);
     RuntimeClassEntry {
-        name: normalize_class_name(class_name),
+        name: normalize_class_name(class_name).into(),
         parent: match normalized.as_str() {
             "splfileobject" | "spltempfileobject" => Some(normalize_class_name("SplFileInfo")),
             _ => None,

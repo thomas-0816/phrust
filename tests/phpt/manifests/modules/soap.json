@@ -1,17 +1,17 @@
 {
   "schema_version":"phpt-module-plan-v1",
   "module":"soap",
-  "priority":"bounded-facade focused",
+  "priority":"bounded-client focused",
   "selected_manifest":"tests/phpt/manifests/modules/soap.selected.jsonl",
   "corpus_count":589,
-  "selected_count":2,
-  "pass_count":2,
+  "selected_count":3,
+  "pass_count":3,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":577,
-  "scope":["extension_loaded(\"soap\")","SOAP helper function checks","SOAP legacy and generated class visibility","SOAP constants","SoapParam/SoapHeader/SoapVar constructors","SoapFault properties and recognition"],
-  "non_scope":["full upstream ext/soap corpus","complete SoapClient and SoapServer calls","WSDL","HTTP transport","XML schema","encoding and persistence behavior","full Exception inheritance layout for SoapFault"],
+  "known_failure_count":576,
+  "scope":["extension_loaded(\"soap\")","SOAP helper function checks","SOAP legacy and generated class visibility","SOAP constants","SoapParam/SoapHeader/SoapVar constructors","SoapFault properties and recognition","local WSDL metadata parsing","non-WSDL SoapClient envelope generation and loopback HTTP in Rust tests","XML-backed SoapServer fault response for unsupported callback dispatch"],
+  "non_scope":["full upstream ext/soap corpus","complete SoapClient and SoapServer calls","remote non-loopback HTTP without PHRUST_NET_TESTS","full WSDL/schema/type binding","SOAP encoding rules, typemaps, headers, and persistence behavior","full Exception inheritance layout for SoapFault","actual SoapServer PHP callback invocation"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=soap","nix develop -c just verify-phpt"],
-  "next_step":"Grow SoapClient/SoapServer behind local WSDL and serializer fixtures before promoting upstream SOAP PHPTs."
+  "next_step":"Grow WSDL/schema binding, header handling, and SoapServer callback invocation before promoting upstream SOAP PHPTs."
 }

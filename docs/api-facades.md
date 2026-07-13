@@ -12,8 +12,8 @@ crate-root compatibility re-exports.
 - `php_runtime::debug` is for tests and GC/debug tooling that intentionally
   inspects weak handles or internal reference/object state.
 - `php_runtime::experimental` is for instrumentation and native/JIT integration
-  helpers such as layout stats, numeric-string cache telemetry, and JIT array
-  ABI helpers.
+  helpers such as layout stats, numeric-string cache telemetry, JIT array ABI
+  helpers, and the VM-coupled PCRE compiler/cache backend.
 
 ## VM
 
@@ -24,16 +24,15 @@ crate-root compatibility re-exports.
   JIT planning, region profiling, persistent feedback, deoptimization, and
   low-level VM counters.
 
-## Compatibility Re-exports
+## Root Surface
 
-Crate-root re-exports remain for compatibility during the migration, but they are
-not the intended import style. `nix develop -c just source-integrity` runs a
-facade import check that rejects new root `php_vm::...` or `php_runtime::...`
-usage unless it is documented in `scripts/verify/api_facade_allowlist.txt`.
+Crate-root compatibility re-exports have been removed. `php_runtime` exposes
+only `api`, `debug`, and `experimental`; `php_vm` exposes only `api` and
+`experimental`. `nix develop -c just source-integrity` rejects direct internal
+imports and any accidental new public root module, item, or re-export.
 
-The current allowlist is limited to legacy `php_vm` implementation files that
-still consume runtime internals directly. Downstream crates should not add new
-entries; move imports to `api`, `debug`, or `experimental` instead.
+The facade allowlist is intentionally empty. New code must classify imports as
+stable, debug-only, or experimental instead of adding a compatibility alias.
 
 ## Dependency Boundary Exceptions
 

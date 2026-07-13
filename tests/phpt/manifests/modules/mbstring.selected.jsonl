@@ -3,6 +3,8 @@
 {"path":"tests/phpt/generated/mbstring/utf8-encoding-state.phpt"}
 {"path":"tests/phpt/generated/mbstring/utf8-position-functions.phpt"}
 {"path":"tests/phpt/generated/mbstring/legacy-encoding-registry.phpt"}
+{"path":"tests/phpt/generated/mbstring/encoding-registry-expanded.phpt"}
+{"path":"tests/phpt/generated/mbstring/string-helper-surface.phpt"}
 {"path":"ext/mbstring/tests/bug26639.phpt"}
 {"path":"ext/mbstring/tests/bug43841.phpt"}
 {"path":"ext/mbstring/tests/bug52681.phpt"}

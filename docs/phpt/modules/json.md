@@ -2,7 +2,7 @@
 
 - Priority: 17.6 promoted
 - Selected manifest: `tests/phpt/manifests/modules/json.selected.jsonl`
-- the selected close gate: 90 PASS, 3 SKIP, 0 FAIL, 0 BORK from 93 selected fixtures
+- the selected close gate: 91 PASS, 3 SKIP, 0 FAIL, 0 BORK from 94 selected fixtures
 
 ## Scope
 
@@ -36,6 +36,7 @@
 - `tests/phpt/generated/json/json-encode-basics.phpt`
 - `tests/phpt/generated/json/json-encode-common-flags.phpt`
 - `tests/phpt/generated/json/json-decode-basics.phpt`
+- `tests/phpt/generated/json/json-encode-enums.phpt`
 - `tests/phpt/generated/json/json-last-error-state.phpt`
 - `tests/phpt/generated/json/json-throw-on-error.phpt`
 - `ext/json/tests/001.phpt`
@@ -90,7 +91,7 @@
 
 ## Evidence
 
-- Expanded the selected harness to 93 rows: 5 generated fixtures and all 88
+- Expanded the selected harness to 94 rows: 6 generated fixtures and all 88
   upstream `ext/json` rows.
 - Added generated oracle fixtures for encode basics, encode common flags, decode
   basics, last-error state transitions, and `JSON_THROW_ON_ERROR`.
@@ -101,8 +102,8 @@
   after focused target probes reached PASS.
 - Latest full selected module gate after the full upstream corpus promotion,
   with reference and target reuse disabled:
-  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR=/private/tmp/phrust-phpt-json-selected-audit nix develop -c just phpt-dev-module MODULE=json`.
-  Reference: 93 PASS. Target: 90 PASS / 3 SKIP / 0 FAIL / 0 BORK.
+  `PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=json`.
+  Reference: 94 PASS. Target: 91 PASS / 3 SKIP / 0 FAIL / 0 BORK.
 - The three target skips are prerequisite-gated rows, not JSON target
   mismatches: `ext/json/tests/bug41403.phpt` and
   `ext/json/tests/bug42785.phpt` require German locale support through
@@ -113,7 +114,7 @@
   `bug68992.phpt`, `bug71835.phpt`, `bug72069.phpt`, and `bug73113.phpt`
   reached PASS with reference and target reuse disabled.
 - Latest selected module gate after full upstream-corpus promotion:
-  target 90 PASS / 3 SKIP; 0 non-green outcomes.
+  target 91 PASS / 3 SKIP; 0 non-green outcomes.
 - Added request-frame recursion tracking for nested `JsonSerializable`
   `json_encode($this)` calls so recursive re-entry reports
   `JSON_ERROR_RECURSION` instead of overflowing the Rust stack.
@@ -163,7 +164,7 @@
 - Associative `json_decode` now normalizes canonical decimal object keys to
   PHP integer array keys while preserving non-canonical numeric strings such as
   `"012"`.
-- The full upstream `ext/json` corpus is selected: 88 upstream rows plus 5
+- The full upstream `ext/json` corpus is selected: 88 upstream rows plus 6
   generated fixtures.
 
 ## Next Step

@@ -90,5 +90,6 @@ fn is_host_generated_source_artifact(path: &str) -> bool {
             | "ext/json/json_parser.tab.h"
             | "ext/opcache/jit/ir/ir_emit_aarch64.h"
             | "main/build-defs.h"
+            | "main/php_config.h"
     )
 }

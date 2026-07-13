@@ -1,0 +1,20 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": false,
+  "functions": [
+    {
+      "implementation_gap": "metadata-only internal test fixture",
+      "implementations": [],
+      "name": "__php_std_test_probe",
+      "signature_gap": "internal test-only symbol",
+      "visibility": "internal_test"
+    }
+  ],
+  "name": "test",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

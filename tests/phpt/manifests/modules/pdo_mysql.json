@@ -10,8 +10,8 @@
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":167,
-  "scope":["extension_loaded(\"pdo_mysql\")","PDO MySQL driver discovery through pdo_drivers and PDO::getAvailableDrivers","generated Pdo\\\\Mysql class metadata","opt-in live mysql: PDO DSN query and prepared statement smoke when PHRUST_MYSQL_TEST_DSN is set"],
-  "non_scope":["unix socket DSNs","SSL and persistent connection attributes","native/emulated prepare mode parity","mysqlnd/libmysql protocol parity"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=pdo_mysql","nix develop -c just verify-phpt"],
+  "scope":["extension_loaded(\"pdo_mysql\")","PDO MySQL driver discovery through pdo_drivers and PDO::getAvailableDrivers","generated Pdo\\\\Mysql class metadata","mysql: host, port, dbname, charset, and unix_socket DSN parsing through MysqlConnectOptions","opt-in live mysql: PDO DSN query and prepared statement smoke when PHRUST_MYSQL_TEST_DSN is set"],
+  "non_scope":["SSL and persistent connection attributes","native/emulated prepare mode parity","mysqlnd/libmysql protocol parity"],
+  "target_gates":["nix develop -c cargo fmt --all --check","nix develop -c cargo test -p php_runtime pdo_mysql -- --nocapture","nix develop -c cargo test -p php_vm pdo -- --nocapture","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pdo_mysql","nix develop -c just mysqli-integration"],
   "next_step":"Promote upstream pdo_mysql statement and attribute PHPTs once native/emulated prepare and mysqlnd metadata parity are implemented."
 }

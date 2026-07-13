@@ -1,16 +1,23 @@
 //! XML extension builtins for the bounded runtime slice.
 
-use super::core::{arity_error, int_arg, php_argument_type_name, string_arg};
+use super::core::{arity_error, int_arg, php_argument_type_name, resolve_runtime_path, string_arg};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
 use crate::{Value, normalize_class_name, xml};
+use std::fs;
+use std::io::Write;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "xmlwriter_open_memory",
         builtin_xmlwriter_open_memory,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "xmlwriter_open_uri",
+        builtin_xmlwriter_open_uri,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -61,6 +68,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "xmlwriter_output_memory",
         builtin_xmlwriter_output_memory,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "xmlwriter_flush",
+        builtin_xmlwriter_flush,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -163,6 +175,23 @@ fn builtin_xmlwriter_open_memory(
     }
     let object = xml::new_xml_writer();
     let _ = xml::xml_writer_open_memory(&object);
+    Ok(Value::Object(object))
+}
+
+fn builtin_xmlwriter_open_uri(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("xmlwriter_open_uri", "one argument"));
+    }
+    let uri = string_arg("xmlwriter_open_uri", &args[0])?.to_string_lossy();
+    if !write_xmlwriter_uri(context, &uri, &[]) {
+        return Ok(Value::Bool(false));
+    }
+    let object = xml::new_xml_writer();
+    let _ = xml::xml_writer_open_uri(&object, &uri);
     Ok(Value::Object(object))
 }
 
@@ -320,7 +349,30 @@ fn builtin_xmlwriter_output_memory(
         ));
     }
     let writer = xml_writer_arg("xmlwriter_output_memory", &args[0])?;
-    Ok(xml::xml_writer_output_memory(&writer))
+    let flush = xmlwriter_bool_arg("xmlwriter_output_memory", args.get(1))?.unwrap_or(true);
+    Ok(xml::xml_writer_output_memory(&writer, flush))
+}
+
+fn builtin_xmlwriter_flush(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(arity_error("xmlwriter_flush", "one or two arguments"));
+    }
+    let writer = xml_writer_arg("xmlwriter_flush", &args[0])?;
+    let empty = xmlwriter_bool_arg("xmlwriter_flush", args.get(1))?.unwrap_or(true);
+    let Some(uri) = xml::xml_writer_uri(&writer) else {
+        return Ok(xml::xml_writer_flush_memory(&writer, empty));
+    };
+    let bytes = xml::xml_writer_pending_bytes(&writer);
+    if write_xmlwriter_uri(context, &uri, &bytes) {
+        xml::xml_writer_clear_buffer(&writer);
+        Ok(Value::Int(bytes.len() as i64))
+    } else {
+        Ok(Value::Bool(false))
+    }
 }
 
 fn xml_writer_arg(function: &str, value: &Value) -> Result<crate::ObjectRef, BuiltinError> {
@@ -343,6 +395,33 @@ fn string_arg_for_xmlwriter_content(value: &Value) -> Result<String, BuiltinErro
         return Ok(String::new());
     }
     Ok(string_arg("xmlwriter_write_element", value)?.to_string_lossy())
+}
+
+fn xmlwriter_bool_arg(function: &str, value: Option<&Value>) -> Result<Option<bool>, BuiltinError> {
+    value
+        .map(|value| {
+            crate::convert::to_bool(value).map_err(|message| {
+                BuiltinError::new(
+                    "E_PHP_RUNTIME_BUILTIN_TYPE",
+                    format!("{function}(): {message}"),
+                )
+            })
+        })
+        .transpose()
+}
+
+fn write_xmlwriter_uri(context: &BuiltinContext<'_>, uri: &str, bytes: &[u8]) -> bool {
+    let resolved = resolve_runtime_path(context, uri);
+    if !context.filesystem_capabilities().allows_path(&resolved) {
+        return false;
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&resolved)
+        .and_then(|mut file| file.write_all(bytes))
+        .is_ok()
 }
 
 fn builtin_xml_parser_create(

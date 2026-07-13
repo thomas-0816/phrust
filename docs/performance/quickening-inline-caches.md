@@ -29,7 +29,7 @@ deopt, and they must be removable without rewriting the compiled unit.
 
 ## Tiering Policy
 
-Work item adds a request-local tiering controller above quickening, inline
+The performance layer provides a request-local tiering controller above quickening, inline
 caches, and the experimental JIT. The controller is intentionally small and
 does not own PHP semantics. It records:
 
@@ -94,7 +94,7 @@ An inline-cache entry should contain:
 
 ## Shared Guard/Fallback Protocol
 
-Work item unifies quickening and inline-cache miss handling through the
+The engine unifies quickening and inline-cache miss handling through the
 `FallbackProtocolStats` structure. Every installed fast path follows the same
 order:
 
@@ -193,7 +193,7 @@ and argument binding logic. It must fall back for autoload/eval/include changes,
 disabled functions, dynamic callables, changed defaults, by-reference errors,
 or any exception-producing binding path.
 
-The implemented Work item function-call IC caches guarded `CallFunction`
+The implemented the function-call IC caches guarded `CallFunction`
 resolution for current-unit user functions, include-defined dynamic functions,
 VM-managed builtins, and registered internal builtins. Each slot is keyed by
 compiled unit, function, block, instruction, and IC kind. The guard checks the
@@ -207,6 +207,9 @@ user-function or builtin execution path as the baseline resolver. Includes,
 eval attempts, and autoload registration changes conservatively bump the epoch;
 a stale slot records an invalidation and refreshes through generic resolution.
 Guard or metadata mismatches record a fallback and use the generic resolver.
+User-function targets carry the owning `CompiledUnit` cache identity next to the
+canonical `FunctionId`; current-unit and dynamic-unit routes therefore cannot
+alias merely because two unit allocations reused the same function index.
 
 The builtin intrinsic set is deliberately small and runs only while
 `--inline-caches=on`: `strlen` for direct strings, `count` for direct arrays,
@@ -231,10 +234,14 @@ path that would change PHP call semantics.
 The implemented method-call IC supports capped polymorphic receiver entries for
 successful concrete `CallMethod` resolution in current-unit classes and
 include-defined dynamic classes. Each slot is keyed by compiled unit, function,
-block, instruction, and IC kind. The guarded target records receiver class id,
-class/method epoch, declaring method slot, visibility context, static/final/private
-flags, override state, call shape, by-reference compatibility, and magic
-`__call` state. Cache hits still call `validate_method_callable` and then
+block, instruction, and IC kind. The cache key owns the normalized method,
+receiver, and visibility-scope names once. The adjacent guard records receiver
+`ClassId`, class/method epochs, declaring method slot, static/final/private flags,
+override state, call shape, by-reference compatibility, and magic `__call`
+state. Dense warmed routes own a clone of the declaring `CompiledUnit` handle
+plus its canonical `Arc<ClassEntry>` and compare an explicit
+unit/class/function/method-slot identity rather than allocation addresses.
+Cache hits still call `validate_method_callable` and then
 tail-call the same `execute_function` path as baseline dispatch. Magic `__call`
 is intentionally not cached as a concrete method target; missing or inaccessible
 methods continue through generic dispatch.
@@ -297,7 +304,7 @@ tracked in counters but not yet reachable from an executable PHP fixture.
 
 ### `FETCH_CLASS_CONST` And Static Property Metadata
 
-The implemented Work item class/static IC is monomorphic and
+The implemented the class/static IC is monomorphic and
 resolution-only. It covers class constants, enum cases, and static-property
 metadata under the shared `ClassConstantStaticProperty` IC family. Each slot is
 guarded by resolved class name, member name, cache sub-kind, request-local

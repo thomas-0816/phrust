@@ -20,87 +20,19 @@
       devShells = forAllSystems (
         system:
         let
+          pkgs = import nixpkgs { inherit system; };
           isDarwin = nixpkgs.lib.hasSuffix "-darwin" system;
-        in
-        if isDarwin then
-        let
-          pkgs = import nixpkgs { inherit system; };
-        in
-          {
-            default = pkgs.mkShellNoCC {
-              packages = with pkgs; [
-                git
-                just
-                jq
-                hyperfine
-                ripgrep
-                fd
-                ccache
-                sccache
-                cargo-deny
-                cargo-machete
-                cargo-llvm-cov
-                cargo-mutants
-                cargo-fuzz
-                cargo-semver-checks
-                sonar-scanner-cli
-                file
-                pkg-config
-                python3
-              ];
-              PHP_REF_SERIES = "8.5";
-              PHP_REF_VERSION = "8.5.7";
-              PHP_REF_TAG = "php-8.5.7";
-              PHP_REF_REPO = "https://github.com/php/php-src.git";
-              PHPRUST_LIBMAGIC_LIB_DIR = "${pkgs.file}/lib";
-              PHPRUST_LIBMAGIC_INCLUDE_DIR = "${pkgs.file.dev}/include";
-              RUST_BACKTRACE = "1";
-              CARGO_REGISTRIES_CRATES_IO_PROTOCOL = "sparse";
-              SCCACHE_CACHE_SIZE = "20G";
-              shellHook = ''
-                export CARGO_TARGET_DIR="$PWD/target"
-                export SCCACHE_DIR="$PWD/.cache/sccache"
-                export CCACHE_DIR="$PWD/.cache/ccache"
-                mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR" "$CCACHE_DIR"
-                if command -v sccache >/dev/null 2>&1; then
-                  export RUSTC_WRAPPER="$(command -v sccache)"
-                else
-                  unset RUSTC_WRAPPER
-                  printf '%s\n' '[skip] sccache unavailable; using host rustc directly' >&2
-                fi
-                printf '%s\n' 'phrust Darwin host dev shell' >&2
-                printf '  Cargo target: %s\n' "$CARGO_TARGET_DIR" >&2
-                printf '%s\n' '  just help' >&2
-                printf '%s\n' '  just verify' >&2
-              '';
-            };
-          }
-        else
-        let
-          pkgs = import nixpkgs { inherit system; };
-          inherit (pkgs) lib;
-          commonPackages = with pkgs; [
-            rustc
-            cargo
-            rustfmt
-            clippy
-            rust-analyzer
-            llvmPackages.llvm
 
+          # Tooling both shells provide. Darwin deliberately uses the host
+          # Rust toolchain and host clang; Linux pins the full toolchain and
+          # native build inputs below.
+          commonPackages = with pkgs; [
             git
-            curl
-            wget
-            cacert
             just
             jq
-            diffutils
+            hyperfine
             ripgrep
             fd
-            hyperfine
-            tree
-            tzdata
-
-            ccache
             sccache
             cargo-nextest
             cargo-deny
@@ -110,44 +42,50 @@
             cargo-fuzz
             cargo-semver-checks
             sonar-scanner-cli
-
+            file
+            libxml2
+            pkg-config
             python3
           ];
 
-          nativeBuildPackages = with pkgs; [
+          linuxPackages = with pkgs; [
+            rustc
+            cargo
+            rustfmt
+            clippy
+            rust-analyzer
+            llvmPackages.llvm
+
+            curl
+            cacert
+            tzdata
+
             autoconf
             automake
             libtool
             bison
             re2c
             gnumake
-            pkg-config
             cmake
             ninja
             clang
-            libxml2
+            llvmPackages.libclang
             sqlite
             openssl
             zlib
             bzip2
             xz
             libzip
-            file
             pcre2
-          ];
 
-          linuxDevPackages = with pkgs; [
             gdb
             mold
             valgrind
             perf
             shellcheck
-          ] ++ nativeBuildPackages;
-        in
-        {
-          default = pkgs.mkShellNoCC {
-            packages = commonPackages ++ linuxDevPackages;
+          ];
 
+          commonEnv = {
             PHP_REF_SERIES = "8.5";
             PHP_REF_VERSION = "8.5.7";
             PHP_REF_TAG = "php-8.5.7";
@@ -155,34 +93,66 @@
             PHPRUST_LIBMAGIC_LIB_DIR = "${pkgs.file}/lib";
             PHPRUST_LIBMAGIC_INCLUDE_DIR = "${pkgs.file.dev}/include";
             RUST_BACKTRACE = "1";
-            RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
-            CARGO_INCREMENTAL = "0";
-            LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
-            LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
-            SCCACHE_CACHE_SIZE = "20G";
             CARGO_REGISTRIES_CRATES_IO_PROTOCOL = "sparse";
-
-            shellHook =
-              ''
-                export CARGO_TARGET_DIR="$PWD/target"
-                export SCCACHE_DIR="$PWD/.cache/sccache"
-                export CCACHE_DIR="$PWD/.cache/ccache"
-                mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR" "$CCACHE_DIR"
-                export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
-                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
-                case " ''${RUSTFLAGS:-} " in
-                  *" -C link-arg=-fuse-ld=mold "*) ;;
-                  *) export RUSTFLAGS="-C link-arg=-fuse-ld=mold ''${RUSTFLAGS:-}" ;;
-                esac
-              ''
-              + ''
-              echo "phrust dev shell" >&2
-              echo "  Rust cache: $SCCACHE_DIR" >&2
-              echo "  Cargo target: $CARGO_TARGET_DIR" >&2
-              echo "  just help" >&2
-              echo "  just verify" >&2
-            '';
+            SCCACHE_CACHE_SIZE = "20G";
           };
+
+          commonHook = ''
+            export CARGO_TARGET_DIR="$PWD/target"
+            export SCCACHE_DIR="$PWD/.cache/sccache"
+            mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR"
+          '';
+
+          bannerHook = name: ''
+            printf '%s\n' '${name}' >&2
+            printf '  Cargo target: %s\n' "$CARGO_TARGET_DIR" >&2
+            printf '%s\n' '  just help' >&2
+            printf '%s\n' '  just verify' >&2
+          '';
+        in
+        {
+          default =
+            if isDarwin then
+              pkgs.mkShellNoCC (
+                commonEnv
+                // {
+                  packages = commonPackages;
+                  shellHook =
+                    commonHook
+                    + ''
+                      if command -v sccache >/dev/null 2>&1; then
+                        export RUSTC_WRAPPER="$(command -v sccache)"
+                      else
+                        unset RUSTC_WRAPPER
+                        printf '%s\n' '[skip] sccache unavailable; using host rustc directly' >&2
+                      fi
+                    ''
+                    + bannerHook "phrust Darwin host dev shell";
+                }
+              )
+            else
+              pkgs.mkShellNoCC (
+                commonEnv
+                // {
+                  packages = commonPackages ++ linuxPackages;
+                  RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
+                  CARGO_INCREMENTAL = "0";
+                  LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
+                  LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";
+                  shellHook =
+                    commonHook
+                    + ''
+                      export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+                      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
+                      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
+                      case " ''${RUSTFLAGS:-} " in
+                        *" -C link-arg=-fuse-ld=mold "*) ;;
+                        *) export RUSTFLAGS="-C link-arg=-fuse-ld=mold ''${RUSTFLAGS:-}" ;;
+                      esac
+                    ''
+                    + bannerHook "phrust dev shell";
+                }
+              );
         }
       );
     };

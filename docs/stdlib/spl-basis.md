@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item enables the SPL extension by default for the Standard library runtime
+The standard library enables the SPL extension by default for the Standard library runtime
 registry and exposes the Composer-facing SPL basis:
 
 - `spl_autoload_register`
@@ -28,7 +28,7 @@ lowercase hexadecimal rendering of that identity.
 The VM accepts SPL exception classes as internal throwable catch types and maps
 their parent hierarchy for catch matching and `instanceof`.
 
-Work item adds an internal-object MVP for core SPL iterator classes:
+The standard library provides an internal-object MVP for core SPL iterator classes:
 
 - `ArrayIterator`
 - `RecursiveArrayIterator`
@@ -47,7 +47,7 @@ them, `count()` over Countable iterator MVP objects, and MVP
 `iterator_count()`/`iterator_to_array()` support for arrays and the same
 Traversable object path.
 
-Work item adds Composer/framework-facing SPL container MVPs:
+The standard library provides Composer/framework-facing SPL container MVPs:
 
 - `ArrayObject`
 - `SplFixedArray`
@@ -63,7 +63,7 @@ supports attach/detach/contains/count/foreach plus info access through the
 method API. The list/stack/queue classes use simple internal vector storage for
 push/pop/shift/unshift/top/bottom/count and foreach.
 
-Work item adds SPL file class MVPs:
+The standard library provides SPL file class MVPs:
 
 - `SplFileInfo`
 - `SplFileObject`

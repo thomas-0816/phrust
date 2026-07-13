@@ -20,7 +20,7 @@ Each `FunctionSignature` records its kind, optional source name, source span,
 by-reference return marker, optional return type, ordered parameters,
 function-like flags, and arrow-function body span when applicable.
 
-Work item adds `FunctionLikeFlags` for:
+The semantic frontend provides `FunctionLikeFlags` for:
 
 - by-reference returns
 - static methods, static closures, and static arrows
@@ -80,7 +80,7 @@ evaluation, `$this` runtime availability checks, or default-value evaluation.
 
 `fixtures/semantic/functions/` covers basic signatures, by-reference and
 variadic parameters, defaults, duplicate parameters, variadic ordering, and
-closure-use duplicate validation. Work item also covers void/never returns,
+closure-use duplicate validation. The semantic frontend also covers void/never returns,
 generator flags, closure captures, arrow function bodies, and static closure
 `$this` diagnostics.
 

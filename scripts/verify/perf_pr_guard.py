@@ -33,6 +33,7 @@ HOT_PATH_PREFIXES = (
     "crates/php_vm/src/vm/",
 )
 GATE_PREFIXES = (
+    "crates/php_bench/benches/",
     "scripts/performance/",
     "scripts/verify/",
     "justfile",
@@ -143,6 +144,14 @@ def self_test() -> int:
             [
                 "crates/php_vm/src/vm/mod.rs",
                 "scripts/performance/profiler_overhead_gate.py",
+            ],
+            False,
+        ),
+        (
+            "hot-path change with criterion benchmark passes",
+            [
+                "crates/php_vm/src/vm/method_dispatch.rs",
+                "crates/php_bench/benches/perf_hotpaths.rs",
             ],
             False,
         ),

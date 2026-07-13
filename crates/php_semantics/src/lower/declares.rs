@@ -4,11 +4,11 @@ use crate::FrontendDatabase;
 use crate::diagnostics::{DiagnosticId, DiagnosticPhase, DiagnosticSeverity, SemanticDiagnostic};
 use crate::hir::{DeclareDirective, DeclareValue, HirDeclare, ModuleId};
 use php_ast::{
-    AstNode, DeclareStmt, InlineHtmlStmt, StatementList, descendant_nodes, syntax_child_nodes,
-    syntax_child_tokens,
+    AstNode, AstToken, DeclareStmt, InlineHtmlStmt, StatementList, TokenView, descendant_nodes,
+    descendant_tokens, syntax_child_nodes,
 };
 use php_source::TextRange;
-use php_syntax::{SyntaxNode, SyntaxToken};
+use php_syntax::SyntaxNode;
 
 /// Collects `declare` metadata and emits reference-safe diagnostics.
 pub fn collect_declare_directives(
@@ -72,8 +72,11 @@ fn check_directive(
 }
 
 fn parse_directives(node: &SyntaxNode) -> Vec<DeclareDirective> {
-    let tokens: Vec<_> = syntax_child_tokens(node)
+    let tokens: Vec<_> = descendant_tokens::<TokenView<'_>>(node)
         .filter(|token| !token.kind().is_trivia())
+        .skip_while(|token| token.text() != "(")
+        .skip(1)
+        .take_while(|token| token.text() != ")")
         .collect();
     let mut directives = Vec::new();
     let mut index = 0;
@@ -111,7 +114,7 @@ fn parse_directives(node: &SyntaxNode) -> Vec<DeclareDirective> {
             ));
             break;
         };
-        let value = declare_value(value_token);
+        let value = declare_value(&value_token);
         let span = TextRange::new(
             name_span.start().to_usize(),
             value_token.text_range().end().to_usize(),
@@ -127,7 +130,7 @@ fn parse_directives(node: &SyntaxNode) -> Vec<DeclareDirective> {
     directives
 }
 
-fn declare_value(token: &SyntaxToken) -> DeclareValue {
+fn declare_value(token: &TokenView<'_>) -> DeclareValue {
     match token.kind().name().as_str() {
         "T_LNUMBER" => token
             .text()

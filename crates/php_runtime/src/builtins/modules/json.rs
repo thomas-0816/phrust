@@ -5,7 +5,7 @@ use super::super::context::{
     JSON_ERROR_INVALID_PROPERTY_NAME, JSON_ERROR_NONE, JSON_ERROR_STATE_MISMATCH,
     JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_ERROR_UTF16, JSON_INVALID_UTF8_IGNORE,
     JSON_INVALID_UTF8_SUBSTITUTE, JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
-    json_error_message,
+    JsonBuiltinServices, json_error_message,
 };
 use super::core::*;
 use crate::builtins::{
@@ -43,8 +43,27 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
 ];
 
-pub(in crate::builtins::modules) fn builtin_json_encode(
-    context: &mut BuiltinContext<'_>,
+macro_rules! json_builtin_adapter {
+    ($entry:ident => $implementation:ident) => {
+        pub(in crate::builtins::modules) fn $entry(
+            context: &mut BuiltinContext<'_>,
+            args: Vec<Value>,
+            span: RuntimeSourceSpan,
+        ) -> BuiltinResult {
+            let mut services = context.json_services();
+            $implementation(&mut services, args, span)
+        }
+    };
+}
+
+json_builtin_adapter!(builtin_json_encode => json_encode);
+json_builtin_adapter!(builtin_json_decode => json_decode);
+json_builtin_adapter!(builtin_json_validate => json_validate);
+json_builtin_adapter!(builtin_json_last_error => json_last_error);
+json_builtin_adapter!(builtin_json_last_error_msg => json_last_error_msg);
+
+fn json_encode(
+    context: &mut JsonBuiltinServices<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -93,8 +112,8 @@ pub(in crate::builtins::modules) fn builtin_json_encode(
         Err(code) => json_failure(context, flags, code),
     }
 }
-pub(in crate::builtins::modules) fn builtin_json_decode(
-    context: &mut BuiltinContext<'_>,
+fn json_decode(
+    context: &mut JsonBuiltinServices<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -166,7 +185,11 @@ pub(in crate::builtins::modules) fn builtin_json_decode(
     }
 }
 
-fn json_decode_failure(context: &mut BuiltinContext<'_>, flags: i64, code: i64) -> BuiltinResult {
+fn json_decode_failure(
+    context: &mut JsonBuiltinServices<'_>,
+    flags: i64,
+    code: i64,
+) -> BuiltinResult {
     if flags & JSON_THROW_ON_ERROR != 0 {
         Err(
             BuiltinError::new("E_PHP_RUNTIME_JSON_EXCEPTION", json_error_message(code))
@@ -363,8 +386,8 @@ fn parse_json_hex4(bytes: &[u8]) -> Option<u16> {
     Some(value)
 }
 
-pub(in crate::builtins::modules) fn builtin_json_validate(
-    context: &mut BuiltinContext<'_>,
+fn json_validate(
+    context: &mut JsonBuiltinServices<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -434,16 +457,18 @@ pub(in crate::builtins::modules) fn builtin_json_validate(
         }
     }
 }
-pub(in crate::builtins::modules) fn builtin_json_last_error(
-    context: &mut BuiltinContext<'_>,
+#[inline(always)]
+fn json_last_error(
+    context: &mut JsonBuiltinServices<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("json_last_error", &args, 0)?;
     Ok(Value::Int(context.json_last_error().0))
 }
-pub(in crate::builtins::modules) fn builtin_json_last_error_msg(
-    context: &mut BuiltinContext<'_>,
+#[inline(always)]
+fn json_last_error_msg(
+    context: &mut JsonBuiltinServices<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {

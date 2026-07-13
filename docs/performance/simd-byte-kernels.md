@@ -1,7 +1,5 @@
 # SIMD and Byte-Kernel Facade
 
-Date: 2026-07-05.
-
 `php_source::byte_kernel` provides the shared byte-kernel facade for source,
 runtime string, HTML, and JSON scanning. The public API is safe, byte-oriented,
 and intentionally narrow:

@@ -7,10 +7,10 @@ use crate::builtins::{
 };
 use crate::{
     ArrayKey, MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
-    MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MYSQLND_CLIENT_INFO,
-    MYSQLND_CLIENT_VERSION, MysqlConnectOptions, MysqlError, ObjectRef, PhpArray, PhpString,
-    ReferenceCell, RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
-    RuntimeSeverity, Value,
+    MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MYSQLI_STORE_RESULT,
+    MYSQLI_USE_RESULT, MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION, MysqlConnectOptions,
+    MysqlError, ObjectRef, PhpArray, PhpString, ReferenceCell, RuntimeBringupDiagnosticContext,
+    RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity, Value,
 };
 use std::env;
 
@@ -21,6 +21,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "mysqli_autocommit",
+        builtin_mysqli_autocommit,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_begin_transaction",
+        builtin_mysqli_begin_transaction,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "mysqli_character_set_name",
         builtin_mysqli_character_set_name,
         BuiltinCompatibility::Php,
@@ -28,6 +38,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "mysqli_close",
         builtin_mysqli_close,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_commit",
+        builtin_mysqli_commit,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -111,8 +126,18 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "mysqli_get_client_stats",
+        builtin_mysqli_get_client_stats,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "mysqli_get_client_version",
         builtin_mysqli_get_client_version,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_get_connection_stats",
+        builtin_mysqli_get_connection_stats,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -141,6 +166,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "mysqli_multi_query",
+        builtin_mysqli_multi_query,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_next_result",
+        builtin_mysqli_next_result,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "mysqli_num_fields",
         builtin_mysqli_num_fields,
         BuiltinCompatibility::Php,
@@ -153,6 +188,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "mysqli_options",
         builtin_mysqli_options,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_ping",
+        builtin_mysqli_ping,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -181,6 +221,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "mysqli_rollback",
+        builtin_mysqli_rollback,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "mysqli_select_db",
         builtin_mysqli_select_db,
         BuiltinCompatibility::Php,
@@ -188,6 +233,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "mysqli_set_charset",
         builtin_mysqli_set_charset,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_store_result",
+        builtin_mysqli_store_result,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -261,8 +311,18 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "mysqli_stmt_result_metadata",
+        builtin_mysqli_stmt_result_metadata,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "mysqli_stmt_sqlstate",
         builtin_mysqli_stmt_sqlstate,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_use_result",
+        builtin_mysqli_use_result,
         BuiltinCompatibility::Php,
     ),
 ];
@@ -301,6 +361,28 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_client_version(
 ) -> BuiltinResult {
     expect_arity("mysqli_get_client_version", &args, 0)?;
     Ok(Value::Int(MYSQLND_CLIENT_VERSION))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_get_client_stats(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_get_client_stats", &args, 0)?;
+    Ok(mysqli_stats_array(context.mysql_state().is_some(), None))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_get_connection_stats(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_get_connection_stats", &args, 1)?;
+    let object = mysqli_object_arg("mysqli_get_connection_stats", args.first())?;
+    Ok(mysqli_stats_array(
+        context.mysql_state().is_some(),
+        mysqli_connection_id(&object),
+    ))
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_real_connect(
@@ -683,13 +765,20 @@ pub(in crate::builtins::modules) fn builtin_mysqli_insert_id(
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_more_results(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_more_results", &args, 1)?;
-    let _object = mysqli_object_arg("mysqli_more_results", args.first())?;
-    Ok(Value::Bool(false))
+    let object = mysqli_object_arg("mysqli_more_results", args.first())?;
+    let Some(id) = mysqli_connection_id(&object) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(
+        context
+            .mysql_state()
+            .is_some_and(|state| state.more_results(id)),
+    ))
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_connect_errno(
@@ -752,9 +841,151 @@ pub(in crate::builtins::modules) fn builtin_mysqli_options(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_options", &args, 3)?;
-    let _object = mysqli_object_arg("mysqli_options", args.first())?;
-    let _option = int_arg("mysqli_options", &args[1])?;
+    let object = mysqli_object_arg("mysqli_options", args.first())?;
+    let option = int_arg("mysqli_options", &args[1])?;
+    set_mysqli_option(&object, option, args[2].clone());
     Ok(Value::Bool(true))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_ping(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_ping", &args, 1)?;
+    mysqli_connection_operation(
+        context,
+        args.first(),
+        "mysqli_ping",
+        "ping",
+        span,
+        |state, id| state.ping(id),
+    )
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_autocommit(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_autocommit", &args, 2)?;
+    let mode = mysqli_bool_arg("mysqli_autocommit", &args[1])?;
+    mysqli_connection_operation(
+        context,
+        args.first(),
+        "mysqli_autocommit",
+        "autocommit",
+        span,
+        |state, id| state.autocommit(id, mode),
+    )
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_begin_transaction(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_mysqli_arity("mysqli_begin_transaction", args.len(), 1, 3)?;
+    mysqli_connection_operation(
+        context,
+        args.first(),
+        "mysqli_begin_transaction",
+        "begin_transaction",
+        span,
+        |state, id| state.begin_transaction(id),
+    )
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_commit(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_mysqli_arity("mysqli_commit", args.len(), 1, 3)?;
+    mysqli_connection_operation(
+        context,
+        args.first(),
+        "mysqli_commit",
+        "commit",
+        span,
+        |state, id| state.commit(id),
+    )
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_rollback(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_mysqli_arity("mysqli_rollback", args.len(), 1, 3)?;
+    mysqli_connection_operation(
+        context,
+        args.first(),
+        "mysqli_rollback",
+        "rollback",
+        span,
+        |state, id| state.rollback(id),
+    )
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_multi_query(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_multi_query", &args, 2)?;
+    let sql = string_arg("mysqli_multi_query", &args[1])?.to_string_lossy();
+    mysqli_connection_operation(
+        context,
+        args.first(),
+        "mysqli_multi_query",
+        "multi_query",
+        span,
+        |state, id| state.multi_query(id, &sql).map(|_| ()),
+    )
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_next_result(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_next_result", &args, 1)?;
+    let object = mysqli_object_arg("mysqli_next_result", args.first())?;
+    let Some(id) = mysqli_connection_id(&object) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(
+        context
+            .mysql_state()
+            .is_some_and(|state| state.next_result(id)),
+    ))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_store_result(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_mysqli_arity("mysqli_store_result", args.len(), 1, 2)?;
+    if args
+        .get(1)
+        .map(|value| int_arg("mysqli_store_result", value))
+        .transpose()?
+        .is_some_and(|mode| mode != MYSQLI_STORE_RESULT && mode != MYSQLI_USE_RESULT)
+    {
+        return Ok(Value::Bool(false));
+    }
+    mysqli_buffered_result_from_connection(context, "mysqli_store_result", args.first())
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_use_result(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_use_result", &args, 1)?;
+    mysqli_buffered_result_from_connection(context, "mysqli_use_result", args.first())
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_select_db(
@@ -1075,6 +1306,27 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_get_result(
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_get_result", &args, 1)?;
     let stmt = mysqli_stmt_object_arg("mysqli_stmt_get_result", args.first())?;
+    let Some(statement_id) = mysqli_stmt_id(&stmt) else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(state) = context.mysql_state() else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(result_id) = state.stmt_result(statement_id) else {
+        return Ok(Value::Bool(false));
+    };
+    let result = mysqli_result_object(result_id);
+    result.set_property("num_rows", Value::Int(state.num_rows(result_id)));
+    Ok(Value::Object(result))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_stmt_result_metadata(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_stmt_result_metadata", &args, 1)?;
+    let stmt = mysqli_stmt_object_arg("mysqli_stmt_result_metadata", args.first())?;
     let Some(statement_id) = mysqli_stmt_id(&stmt) else {
         return Ok(Value::Bool(false));
     };
@@ -1586,13 +1838,25 @@ fn mysqli_options_from_args(
         .map(|value| int_arg("mysqli_real_connect", value))
         .transpose()?
         .and_then(|port| u16::try_from(port).ok());
+    let socket = args
+        .get(5)
+        .and_then(|value| {
+            if matches!(value, Value::Null) {
+                None
+            } else {
+                Some(value)
+            }
+        })
+        .map(|value| string_arg("mysqli_real_connect", value).map(|value| value.to_string_lossy()))
+        .transpose()?;
 
-    Ok(MysqlConnectOptions::from_parts(
+    Ok(MysqlConnectOptions::from_parts_with_socket(
         &host,
         &user,
         &password,
         database.as_deref(),
         port,
+        socket.as_deref(),
     ))
 }
 
@@ -1603,6 +1867,156 @@ fn mysqli_sqlite_compat_enabled() -> bool {
             "1" | "true" | "yes" | "on"
         )
     })
+}
+
+fn mysqli_connection_operation(
+    context: &mut BuiltinContext<'_>,
+    value: Option<&Value>,
+    function_name: &'static str,
+    operation: &'static str,
+    span: RuntimeSourceSpan,
+    f: impl FnOnce(&mut crate::MysqlState, i64) -> Result<(), MysqlError>,
+) -> BuiltinResult {
+    let object = mysqli_object_arg(function_name, value)?;
+    let Some(id) = mysqli_connection_id(&object) else {
+        record_mysqli_diagnostic(
+            context,
+            mysqli_diagnostic_meta(
+                "E_PHP_MYSQLI_QUERY_FAILED",
+                function_name,
+                operation,
+                "invalid_handle",
+                MysqliDiagnosticTarget::default(),
+            )
+            .with_mysql_error(1, "HY000", "not an open MySQL connection"),
+            span,
+        );
+        return Ok(Value::Bool(false));
+    };
+    let Some(state) = context.mysql_state() else {
+        record_mysqli_diagnostic(
+            context,
+            mysqli_diagnostic_meta(
+                "E_PHP_MYSQLI_CAPABILITY_DISABLED",
+                function_name,
+                operation,
+                "runtime_state_unavailable",
+                MysqliDiagnosticTarget::default(),
+            )
+            .with_mysql_error(2002, "HY000", "mysqli runtime state is unavailable"),
+            span,
+        );
+        return Ok(Value::Bool(false));
+    };
+    match f(state, id) {
+        Ok(()) => {
+            sync_mysqli_status_properties(&object, state);
+            Ok(Value::Bool(true))
+        }
+        Err(error) => {
+            sync_mysqli_status_properties(&object, state);
+            let error = error.clone();
+            let _ = state;
+            record_mysqli_error_diagnostic(
+                context,
+                mysqli_diagnostic_meta(
+                    "E_PHP_MYSQLI_QUERY_FAILED",
+                    function_name,
+                    operation,
+                    "enabled",
+                    MysqliDiagnosticTarget::default_enabled(),
+                ),
+                &error,
+                span,
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn mysqli_buffered_result_from_connection(
+    context: &mut BuiltinContext<'_>,
+    function_name: &'static str,
+    value: Option<&Value>,
+) -> BuiltinResult {
+    let object = mysqli_object_arg(function_name, value)?;
+    let Some(id) = mysqli_connection_id(&object) else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(result_id) = context
+        .mysql_state()
+        .and_then(|state| state.store_result(id))
+    else {
+        return Ok(Value::Bool(false));
+    };
+    let result = mysqli_result_object(result_id);
+    if let Some(state) = context.mysql_state() {
+        result.set_property("num_rows", Value::Int(state.num_rows(result_id)));
+    }
+    Ok(Value::Object(result))
+}
+
+fn mysqli_bool_arg(name: &str, value: &Value) -> Result<bool, BuiltinError> {
+    Ok(match value {
+        Value::Bool(value) => *value,
+        Value::Int(value) => *value != 0,
+        Value::Null | Value::Uninitialized => false,
+        Value::String(value) => !value.is_empty() && value.as_bytes() != b"0",
+        other => {
+            return Err(argument_type_error(name, "2", "bool", other));
+        }
+    })
+}
+
+fn set_mysqli_option(object: &ObjectRef, option: i64, value: Value) {
+    let mut options = match object.get_property("__mysqli_options") {
+        Some(Value::Array(options)) => options,
+        _ => PhpArray::new(),
+    };
+    options.insert(ArrayKey::Int(option), value);
+    object.set_property("__mysqli_options", Value::Array(options));
+}
+
+fn mysqli_stats_array(has_runtime_state: bool, connection_id: Option<i64>) -> Value {
+    let mut stats = PhpArray::new();
+    let active_connections = i64::from(has_runtime_state && connection_id.is_some());
+    for (name, value) in [
+        ("bytes_sent", 0),
+        ("bytes_received", 0),
+        ("packets_sent", 0),
+        ("packets_received", 0),
+        ("protocol_overhead_in", 0),
+        ("protocol_overhead_out", 0),
+        ("connect_success", active_connections),
+        ("connect_failure", 0),
+        ("active_connections", active_connections),
+        ("active_persistent_connections", 0),
+        ("explicit_close", 0),
+        ("implicit_close", 0),
+        ("disconnect_close", 0),
+        ("in_middle_of_command_close", 0),
+        ("init_command_executed_count", 0),
+        ("rows_fetched_from_server_normal", 0),
+        ("rows_fetched_from_server_ps", 0),
+        ("rows_buffered_from_client_normal", 0),
+        ("rows_buffered_from_client_ps", 0),
+        ("rows_fetched_from_client_normal_buffered", 0),
+        ("rows_fetched_from_client_ps_buffered", 0),
+        ("rows_fetched_from_client_normal_unbuffered", 0),
+        ("rows_fetched_from_client_ps_unbuffered", 0),
+        ("rows_fetched_from_client_ps_cursor", 0),
+        ("rows_skipped_normal", 0),
+        ("rows_skipped_ps", 0),
+        ("copy_on_write_saved", 0),
+        ("copy_on_write_performed", 0),
+        ("command_buffer_too_small", 0),
+    ] {
+        stats.insert(
+            ArrayKey::String(PhpString::from_bytes(name.as_bytes().to_vec())),
+            Value::Int(value),
+        );
+    }
+    Value::Array(stats)
 }
 
 fn fetch_array(
@@ -1661,7 +2075,7 @@ pub fn mysqli_stmt_object(statement_id: i64) -> ObjectRef {
 
 fn mysqli_runtime_class(name: &str) -> crate::ClassEntry {
     crate::ClassEntry {
-        name: crate::normalize_class_name(name),
+        name: crate::normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -2049,5 +2463,149 @@ mod tests {
         .expect("mysqli_more_results should be available for wpdb flush");
 
         assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn mysqli_stats_functions_return_mysqlnd_shaped_arrays() {
+        let mut output = OutputBuffer::default();
+        let mut mysql = crate::MysqlState::default();
+        let id = mysql
+            .connect_sqlite_compat()
+            .expect("SQLite compatibility connection should open");
+        let object = mysqli_object(Some(id));
+        let mut context = BuiltinContext::new(&mut output);
+        context.set_mysql_state(&mut mysql);
+
+        let client_stats =
+            builtin_mysqli_get_client_stats(&mut context, Vec::new(), RuntimeSourceSpan::default())
+                .expect("client stats should return an array");
+        let connection_stats = builtin_mysqli_get_connection_stats(
+            &mut context,
+            vec![Value::Object(object)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("connection stats should return an array");
+
+        for value in [client_stats, connection_stats] {
+            let Value::Array(stats) = value else {
+                panic!("mysqli stats should return arrays");
+            };
+            assert!(
+                stats
+                    .get(&ArrayKey::String(PhpString::from("active_connections")))
+                    .is_some()
+            );
+            assert!(
+                stats
+                    .get(&ArrayKey::String(PhpString::from("bytes_sent")))
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn mysqli_ping_and_transactions_use_runtime_backend() {
+        let mut output = OutputBuffer::default();
+        let mut mysql = crate::MysqlState::default();
+        let id = mysql
+            .connect_sqlite_compat()
+            .expect("SQLite compatibility connection should open");
+        let object = mysqli_object(Some(id));
+        let mut context = BuiltinContext::new(&mut output);
+        context.set_mysql_state(&mut mysql);
+
+        assert_eq!(
+            builtin_mysqli_ping(
+                &mut context,
+                vec![Value::Object(object.clone())],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("ping should run"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            builtin_mysqli_autocommit(
+                &mut context,
+                vec![Value::Object(object.clone()), Value::Bool(false)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("autocommit should run"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            builtin_mysqli_begin_transaction(
+                &mut context,
+                vec![Value::Object(object.clone())],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("begin should run"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            builtin_mysqli_commit(
+                &mut context,
+                vec![Value::Object(object)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("commit should run"),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn mysqli_multi_query_store_and_next_result_use_buffered_results() {
+        let mut output = OutputBuffer::default();
+        let mut mysql = crate::MysqlState::default();
+        let id = mysql
+            .connect_sqlite_compat()
+            .expect("SQLite compatibility connection should open");
+        let object = mysqli_object(Some(id));
+        let mut context = BuiltinContext::new(&mut output);
+        context.set_mysql_state(&mut mysql);
+
+        assert_eq!(
+            builtin_mysqli_multi_query(
+                &mut context,
+                vec![
+                    Value::Object(object.clone()),
+                    Value::string("SELECT 1 AS one; SELECT 2 AS two"),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("multi query should run"),
+            Value::Bool(true)
+        );
+        let first = builtin_mysqli_store_result(
+            &mut context,
+            vec![Value::Object(object.clone())],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("first result should be available");
+        assert!(matches!(first, Value::Object(_)));
+        assert_eq!(
+            builtin_mysqli_more_results(
+                &mut context,
+                vec![Value::Object(object.clone())],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("more results should run"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            builtin_mysqli_next_result(
+                &mut context,
+                vec![Value::Object(object.clone())],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("next result should run"),
+            Value::Bool(true)
+        );
+        let second = builtin_mysqli_use_result(
+            &mut context,
+            vec![Value::Object(object)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("second result should be available");
+        assert!(matches!(second, Value::Object(_)));
     }
 }

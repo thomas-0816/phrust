@@ -2,8 +2,12 @@
 {"path":"tests/phpt/generated/wp.db-network/curl-default-off.phpt","module":"curl","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-wp-db-network-v3","reason":"keeps HTTP execution default-off without PHRUST_NET_TESTS"}
 {"path":"tests/phpt/generated/wp.db-network/curl-local-http.phpt","module":"curl","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-wp-db-network-v3","reason":"covers explicit local HTTP execution when network tests and URL are configured"}
 {"path":"tests/phpt/generated/curl/local-post-redirect-headers.phpt","module":"curl","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"manual-closure-application-extensions-v1","reason":"covers explicit local POST fields, outgoing headers, redirects, response headers, and header-size info when a deterministic local server is configured"}
+{"path":"tests/phpt/generated/curl/local-connection-error.phpt","module":"curl","kind":"contract","generated_timestamp":"20260709T000000Z","generator_version":"manual-phrust-extension-continuation-v1","reason":"covers libcurl-backed local connection failure errno and error propagation"}
+{"path":"tests/phpt/generated/curl/local-multi-select-info.phpt","module":"curl","kind":"contract","generated_timestamp":"20260709T000000Z","generator_version":"manual-phrust-extension-continuation-v1","reason":"covers libcurl-backed multi exec/select/info_read completion against an explicitly configured loopback endpoint"}
+{"path":"tests/phpt/generated/curl/constants-options-metadata.phpt","module":"curl","kind":"contract","generated_timestamp":"20260709T000000Z","generator_version":"manual-phrust-extension-continuation-v1","reason":"covers CURL-3 common constants, supported option storage, version metadata shape, getinfo defaults, and unsupported option failure"}
 {"path":"ext/curl/tests/curl_escape.phpt"}
 {"path":"ext/curl/tests/curl_multi_strerror_001.phpt"}
+{"path":"ext/curl/tests/curl_multi_select_basic1.phpt"}
 {"path":"ext/curl/tests/curl_version_basic_001.phpt"}
 {"path":"ext/curl/tests/curl_strerror_001.phpt"}
 {"path":"ext/curl/tests/curl_share_setopt_basic001.phpt"}

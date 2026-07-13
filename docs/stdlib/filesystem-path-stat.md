@@ -2,8 +2,8 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds PHP-visible path helpers and a capability-gated stat MVP.
-Work item extends the same capability model to file I/O; see
+The standard library provides PHP-visible path helpers and a capability-gated stat MVP.
+The standard library extends the same capability model to file I/O; see
 `docs/stdlib/file-io.md`.
 
 ## Implemented Functions

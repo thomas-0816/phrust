@@ -1191,6 +1191,12 @@ fn push_properties_json(out: &mut String, result: &FrontendResult) {
                 });
                 out.push_str("\",\"span\":");
                 push_span_json(out, hook.span());
+                out.push_str(",\"uses_backing_storage\":");
+                out.push_str(if hook.uses_backing_storage() {
+                    "true"
+                } else {
+                    "false"
+                });
                 out.push('}');
             }
             out.push_str("],\"attributes\":");
@@ -1467,9 +1473,23 @@ fn push_statement_kind_json(out: &mut String, kind: &hir::HirStmtKind) {
             out.push_str(",\"body\":");
             push_stmt_ids_json(out, body);
         }
-        hir::HirStmtKind::Global { variables } | hir::HirStmtKind::Static { variables } => {
+        hir::HirStmtKind::Global { variables } => {
             out.push_str(",\"variables\":");
             push_expr_ids_json(out, variables);
+        }
+        hir::HirStmtKind::Static { locals } => {
+            out.push_str(",\"locals\":[");
+            for (index, local) in locals.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"variable\":");
+                out.push_str(&local.variable.raw().to_string());
+                out.push_str(",\"initializer\":");
+                push_optional_expr_id_json(out, local.initializer);
+                out.push('}');
+            }
+            out.push(']');
         }
         hir::HirStmtKind::Unset { expressions } | hir::HirStmtKind::Echo { expressions } => {
             out.push_str(",\"expressions\":");
@@ -1504,10 +1524,17 @@ fn push_expression_kind_json(out: &mut String, kind: &hir::HirExprKind) {
             out.push_str(&escape_json(text));
             out.push('"');
         }
-        hir::HirExprKind::Variable { name } => {
+        hir::HirExprKind::Variable {
+            name,
+            sigil_count,
+            dynamic,
+        } => {
             out.push_str(",\"name\":\"");
             out.push_str(&escape_json(name));
-            out.push('"');
+            out.push_str("\",\"sigil_count\":");
+            out.push_str(&sigil_count.to_string());
+            out.push_str(",\"dynamic\":");
+            push_optional_expr_id_json(out, *dynamic);
         }
         hir::HirExprKind::Name { resolution } => {
             out.push_str(",\"source\":\"");
@@ -2285,6 +2312,29 @@ mod tests {
                 && candidate.is_allowed()
         }));
         assert!(result.to_json().contains("\"const_exprs\":["));
+    }
+
+    #[test]
+    fn static_local_initializers_are_typed_constant_expressions() {
+        let result = analyze_source("<?php function f() { static $value = 3; }");
+        let module = result
+            .database()
+            .module(result.module().module_id())
+            .expect("module");
+
+        assert!(!result.has_errors());
+        assert!(module.statements().iter().any(|(_, statement)| {
+            matches!(
+                statement.kind(),
+                hir::HirStmtKind::Static { locals }
+                    if locals.len() == 1 && locals[0].initializer.is_some()
+            )
+        }));
+        assert!(module.const_exprs().iter().any(|(_, candidate)| {
+            candidate.context() == hir::ConstExprContext::StaticLocalInitializer
+                && candidate.folded_value() == Some(&hir::ConstValue::Int(3))
+                && candidate.is_allowed()
+        }));
     }
 
     #[test]

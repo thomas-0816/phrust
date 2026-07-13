@@ -1,0 +1,1565 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "CurlHandle"
+    },
+    {
+      "kind": "class",
+      "name": "CurlMultiHandle"
+    },
+    {
+      "kind": "class",
+      "name": "CurlShareHandle"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "CURLM_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLM_BAD_HANDLE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLM_CALL_MULTI_PERFORM",
+      "value": {
+        "kind": "int",
+        "value": -1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLE_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLE_UNSUPPORTED_PROTOCOL",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLE_WRITE_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 23
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLE_BAD_CONTENT_ENCODING",
+      "value": {
+        "kind": "int",
+        "value": 61
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLSHE_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLSHE_BAD_OPTION",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_SSL",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_IPV6",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_LIBZ",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_NTLM",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_ASYNCHDNS",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_SPNEGO",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_LARGEFILE",
+      "value": {
+        "kind": "int",
+        "value": 512
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_IDN",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_SSPI",
+      "value": {
+        "kind": "int",
+        "value": 2048
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_CONV",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_TLSAUTH_SRP",
+      "value": {
+        "kind": "int",
+        "value": 16384
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_NTLM_WB",
+      "value": {
+        "kind": "int",
+        "value": 32768
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_HTTP2",
+      "value": {
+        "kind": "int",
+        "value": 65536
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_UNIX_SOCKETS",
+      "value": {
+        "kind": "int",
+        "value": 524288
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_HTTPS_PROXY",
+      "value": {
+        "kind": "int",
+        "value": 2097152
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_BROTLI",
+      "value": {
+        "kind": "int",
+        "value": 8388608
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_ALTSVC",
+      "value": {
+        "kind": "int",
+        "value": 16777216
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_HTTP3",
+      "value": {
+        "kind": "int",
+        "value": 33554432
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_ZSTD",
+      "value": {
+        "kind": "int",
+        "value": 67108864
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_UNICODE",
+      "value": {
+        "kind": "int",
+        "value": 134217728
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_HSTS",
+      "value": {
+        "kind": "int",
+        "value": 268435456
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_VERSION_GSASL",
+      "value": {
+        "kind": "int",
+        "value": 536870912
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_NONE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_1_0",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_1_1",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_2_0",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_2",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_2TLS",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_HTTP_VERSION_3",
+      "value": {
+        "kind": "int",
+        "value": 30
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLAUTH_BASIC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLAUTH_DIGEST",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLAUTH_NEGOTIATE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLAUTH_NTLM",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLAUTH_ANY",
+      "value": {
+        "kind": "int",
+        "value": -17
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLAUTH_ANYSAFE",
+      "value": {
+        "kind": "int",
+        "value": -18
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROTO_HTTP",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROTO_HTTPS",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROTO_FTP",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROTO_FTPS",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROTO_FILE",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROTO_ALL",
+      "value": {
+        "kind": "int",
+        "value": -1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROXY_HTTP",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROXY_HTTP_1_0",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROXY_SOCKS4",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROXY_SOCKS5",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROXY_SOCKS4A",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLPROXY_SOCKS5_HOSTNAME",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_URL",
+      "value": {
+        "kind": "int",
+        "value": 10002
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_RETURNTRANSFER",
+      "value": {
+        "kind": "int",
+        "value": 19913
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_TIMEOUT",
+      "value": {
+        "kind": "int",
+        "value": 13
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_TIMEOUT_MS",
+      "value": {
+        "kind": "int",
+        "value": 155
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_FOLLOWLOCATION",
+      "value": {
+        "kind": "int",
+        "value": 52
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HEADER",
+      "value": {
+        "kind": "int",
+        "value": 42
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_NOBODY",
+      "value": {
+        "kind": "int",
+        "value": 44
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_USERAGENT",
+      "value": {
+        "kind": "int",
+        "value": 10018
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_REFERER",
+      "value": {
+        "kind": "int",
+        "value": 10016
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_ACCEPT_ENCODING",
+      "value": {
+        "kind": "int",
+        "value": 10102
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_ENCODING",
+      "value": {
+        "kind": "int",
+        "value": 10102
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HTTP_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 84
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_CONNECTTIMEOUT",
+      "value": {
+        "kind": "int",
+        "value": 78
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_CONNECTTIMEOUT_MS",
+      "value": {
+        "kind": "int",
+        "value": 156
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_MAXREDIRS",
+      "value": {
+        "kind": "int",
+        "value": 68
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_FAILONERROR",
+      "value": {
+        "kind": "int",
+        "value": 45
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_AUTOREFERER",
+      "value": {
+        "kind": "int",
+        "value": 58
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_COOKIE",
+      "value": {
+        "kind": "int",
+        "value": 10022
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_COOKIEFILE",
+      "value": {
+        "kind": "int",
+        "value": 10031
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_COOKIEJAR",
+      "value": {
+        "kind": "int",
+        "value": 10082
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_COOKIESESSION",
+      "value": {
+        "kind": "int",
+        "value": 96
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_DNS_CACHE_TIMEOUT",
+      "value": {
+        "kind": "int",
+        "value": 92
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HTTPHEADER",
+      "value": {
+        "kind": "int",
+        "value": 10023
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HTTPGET",
+      "value": {
+        "kind": "int",
+        "value": 80
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HTTPPROXYTUNNEL",
+      "value": {
+        "kind": "int",
+        "value": 61
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HEADERFUNCTION",
+      "value": {
+        "kind": "int",
+        "value": 20079
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_WRITEFUNCTION",
+      "value": {
+        "kind": "int",
+        "value": 20011
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_BUFFERSIZE",
+      "value": {
+        "kind": "int",
+        "value": 98
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_CAINFO",
+      "value": {
+        "kind": "int",
+        "value": 10065
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_HTTPAUTH",
+      "value": {
+        "kind": "int",
+        "value": 107
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_IPRESOLVE",
+      "value": {
+        "kind": "int",
+        "value": 113
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_NOPROXY",
+      "value": {
+        "kind": "int",
+        "value": 10177
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PORT",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROTOCOLS",
+      "value": {
+        "kind": "int",
+        "value": 181
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXY",
+      "value": {
+        "kind": "int",
+        "value": 10004
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXYAUTH",
+      "value": {
+        "kind": "int",
+        "value": 111
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXYPORT",
+      "value": {
+        "kind": "int",
+        "value": 59
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXYTYPE",
+      "value": {
+        "kind": "int",
+        "value": 101
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXYUSERNAME",
+      "value": {
+        "kind": "int",
+        "value": 10175
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXYPASSWORD",
+      "value": {
+        "kind": "int",
+        "value": 10176
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PROXYUSERPWD",
+      "value": {
+        "kind": "int",
+        "value": 10006
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_REDIR_PROTOCOLS",
+      "value": {
+        "kind": "int",
+        "value": 182
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_TCP_NODELAY",
+      "value": {
+        "kind": "int",
+        "value": 121
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_USERNAME",
+      "value": {
+        "kind": "int",
+        "value": 10173
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PASSWORD",
+      "value": {
+        "kind": "int",
+        "value": 10174
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_USERPWD",
+      "value": {
+        "kind": "int",
+        "value": 10005
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_POST",
+      "value": {
+        "kind": "int",
+        "value": 47
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_POSTFIELDS",
+      "value": {
+        "kind": "int",
+        "value": 10015
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_CUSTOMREQUEST",
+      "value": {
+        "kind": "int",
+        "value": 10036
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_PRIVATE",
+      "value": {
+        "kind": "int",
+        "value": 10103
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_SHARE",
+      "value": {
+        "kind": "int",
+        "value": 10100
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_SSLCERT",
+      "value": {
+        "kind": "int",
+        "value": 10025
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_SSLKEY",
+      "value": {
+        "kind": "int",
+        "value": 10087
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_SSL_VERIFYPEER",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_SSL_VERIFYHOST",
+      "value": {
+        "kind": "int",
+        "value": 81
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_SSLVERSION",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLOPT_VERBOSE",
+      "value": {
+        "kind": "int",
+        "value": 41
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_IPRESOLVE_WHATEVER",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_IPRESOLVE_V4",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_IPRESOLVE_V6",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_DEFAULT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_TLSv1",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_SSLv2",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_SSLv3",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_TLSv1_0",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_TLSv1_1",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_TLSv1_2",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_SSLVERSION_TLSv1_3",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_EFFECTIVE_URL",
+      "value": {
+        "kind": "int",
+        "value": 1048577
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_HTTP_CODE",
+      "value": {
+        "kind": "int",
+        "value": 2097154
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_RESPONSE_CODE",
+      "value": {
+        "kind": "int",
+        "value": 2097154
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_HEADER_SIZE",
+      "value": {
+        "kind": "int",
+        "value": 2097163
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_HTTP_CONNECTCODE",
+      "value": {
+        "kind": "int",
+        "value": 2097174
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_TOTAL_TIME",
+      "value": {
+        "kind": "int",
+        "value": 3145731
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_NAMELOOKUP_TIME",
+      "value": {
+        "kind": "int",
+        "value": 3145732
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_CONNECT_TIME",
+      "value": {
+        "kind": "int",
+        "value": 3145733
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_PRETRANSFER_TIME",
+      "value": {
+        "kind": "int",
+        "value": 3145734
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_SIZE_DOWNLOAD",
+      "value": {
+        "kind": "int",
+        "value": 3145736
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_CONTENT_TYPE",
+      "value": {
+        "kind": "int",
+        "value": 1048594
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_STARTTRANSFER_TIME",
+      "value": {
+        "kind": "int",
+        "value": 3145745
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_REDIRECT_COUNT",
+      "value": {
+        "kind": "int",
+        "value": 2097172
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_REDIRECT_TIME",
+      "value": {
+        "kind": "int",
+        "value": 3145747
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_REQUEST_SIZE",
+      "value": {
+        "kind": "int",
+        "value": 2097164
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLINFO_PRIVATE",
+      "value": {
+        "kind": "int",
+        "value": 1048597
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLSHOPT_SHARE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURLSHOPT_UNSHARE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_LOCK_DATA_COOKIE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CURL_LOCK_DATA_DNS",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_copy_handle",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_escape",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_exec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_getinfo",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_add_handle",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_exec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_info_read",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_remove_handle",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_select",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_multi_strerror",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_reset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_setopt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_setopt_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_share_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_share_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_share_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_share_setopt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_share_strerror",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_strerror",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_unescape",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "curl",
+        "source": "ext/curl/curl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "curl"
+        }
+      ],
+      "name": "curl_version",
+      "visibility": "php"
+    }
+  ],
+  "name": "curl",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

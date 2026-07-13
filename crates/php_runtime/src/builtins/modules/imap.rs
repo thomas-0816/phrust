@@ -1,10 +1,13 @@
 //! Deterministic IMAP facade with explicit no-backend behavior.
 
 use super::core::{argument_type_error, arity_error, int_arg, string_arg};
-use crate::builtins::{BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult};
+use crate::builtins::{
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, ImapConnectionConfig,
+    ImapMailboxSnapshot,
+};
 use crate::{
-    ArrayKey, BuiltinError, ClassEntry, ClassFlags, ObjectRef, PhpArray, RuntimeSourceSpan, Value,
-    normalize_class_name,
+    ArrayKey, BuiltinError, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString,
+    RuntimeSourceSpan, Value, normalize_class_name,
 };
 
 const IMAP_CONNECTION_CLASS: &str = "IMAP\\Connection";
@@ -177,8 +180,12 @@ fn builtin_imap_open(
     let mailbox = string_arg("imap_open", &args[0])?
         .to_string_lossy()
         .to_owned();
-    let _user = string_arg("imap_open", &args[1])?;
-    let _password = string_arg("imap_open", &args[2])?;
+    let user = string_arg("imap_open", &args[1])?
+        .to_string_lossy()
+        .to_owned();
+    let password = string_arg("imap_open", &args[2])?
+        .to_string_lossy()
+        .to_owned();
     let flags = optional_int("imap_open", args.get(3), 0)?;
     if let Some(value) = args.get(4) {
         let _ = int_arg("imap_open", value)?;
@@ -194,6 +201,16 @@ fn builtin_imap_open(
         ));
     }
     let id = context.imap_state().open(mailbox, flags);
+    if let Some(config) =
+        parse_mailbox_connection(&context.imap_state().mailbox(id).unwrap_or_default())
+        && live_imap_endpoint_enabled(context, &config)
+        && !context
+            .imap_state()
+            .open_backend(id, &config, &user, &password)
+    {
+        context.imap_state().close(id);
+        return Ok(Value::Bool(false));
+    }
     Ok(Value::Object(imap_connection_object(id)))
 }
 
@@ -257,6 +274,17 @@ fn builtin_imap_headers(
     if !context.imap_state().is_open(id) {
         return Ok(Value::Bool(false));
     }
+    if context.imap_state().has_backend(id) {
+        return Ok(context
+            .imap_state()
+            .backend_headers(id)
+            .map(|headers| {
+                Value::Array(PhpArray::from_packed(
+                    headers.into_iter().map(Value::string).collect(),
+                ))
+            })
+            .unwrap_or(Value::Bool(false)));
+    }
     Ok(Value::Array(PhpArray::new()))
 }
 
@@ -292,6 +320,13 @@ fn builtin_imap_fetchbody(
     if !context.imap_state().is_open(id) || message <= 0 {
         return Ok(Value::Bool(false));
     }
+    if context.imap_state().has_backend(id) {
+        return Ok(context
+            .imap_state()
+            .backend_fetch_body(id, message)
+            .map(|bytes| Value::String(PhpString::from_bytes(bytes)))
+            .unwrap_or(Value::Bool(false)));
+    }
     Ok(Value::string(""))
 }
 
@@ -308,6 +343,13 @@ fn builtin_imap_fetchheader(
     optional_int("imap_fetchheader", args.get(2), 0)?;
     if !context.imap_state().is_open(id) || message <= 0 {
         return Ok(Value::Bool(false));
+    }
+    if context.imap_state().has_backend(id) {
+        return Ok(context
+            .imap_state()
+            .backend_fetch_header(id, message)
+            .map(|bytes| Value::String(PhpString::from_bytes(bytes)))
+            .unwrap_or(Value::Bool(false)));
     }
     Ok(Value::string(""))
 }
@@ -362,12 +404,25 @@ fn builtin_imap_search(
         return Err(arity_error("imap_search", "two to four arguments"));
     }
     let id = imap_connection_id_arg("imap_search", &args[0])?;
-    let _criteria = string_arg("imap_search", &args[1])?;
+    let criteria = string_arg("imap_search", &args[1])?
+        .to_string_lossy()
+        .to_owned();
     for value in args.iter().skip(2) {
         let _ = int_arg("imap_search", value)?;
     }
     if !context.imap_state().is_open(id) {
         return Ok(Value::Bool(false));
+    }
+    if context.imap_state().has_backend(id) {
+        let Some(matches) = context.imap_state().backend_search(id, &criteria) else {
+            return Ok(Value::Bool(false));
+        };
+        if matches.is_empty() {
+            return Ok(Value::Bool(false));
+        }
+        return Ok(Value::Array(PhpArray::from_packed(
+            matches.into_iter().map(Value::Int).collect(),
+        )));
     }
     Ok(Value::Bool(false))
 }
@@ -405,6 +460,11 @@ fn builtin_imap_status(
     if !context.imap_state().is_open(id) {
         return Ok(Value::Bool(false));
     }
+    if let Some(snapshot) = context.imap_state().backend_mailbox(id) {
+        return Ok(Value::Object(status_object_from_snapshot(
+            mailbox, &snapshot,
+        )));
+    }
     Ok(Value::Object(status_object(mailbox)))
 }
 
@@ -415,6 +475,10 @@ fn builtin_imap_check(
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_check", &args)?;
     let state = context.imap_state();
+    if let Some(snapshot) = state.backend_mailbox(id) {
+        let mailbox = state.mailbox(id).unwrap_or_default();
+        return Ok(Value::Object(check_object(mailbox, &snapshot)));
+    }
     let Some(mailbox) = state.mailbox(id) else {
         return Ok(Value::Bool(false));
     };
@@ -434,6 +498,10 @@ fn builtin_imap_mailboxmsginfo(
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_mailboxmsginfo", &args)?;
     let state = context.imap_state();
+    if let Some(snapshot) = state.backend_mailbox(id) {
+        let mailbox = state.mailbox(id).unwrap_or_default();
+        return Ok(Value::Object(mailbox_info_object(mailbox, &snapshot)));
+    }
     let Some(mailbox) = state.mailbox(id) else {
         return Ok(Value::Bool(false));
     };
@@ -458,6 +526,9 @@ fn builtin_imap_num_msg(
     if !context.imap_state().is_open(id) {
         return Ok(Value::Bool(false));
     }
+    if let Some(snapshot) = context.imap_state().backend_mailbox(id) {
+        return Ok(Value::Int(snapshot.exists));
+    }
     Ok(Value::Int(0))
 }
 
@@ -469,6 +540,9 @@ fn builtin_imap_num_recent(
     let id = single_connection_arg("imap_num_recent", &args)?;
     if !context.imap_state().is_open(id) {
         return Ok(Value::Bool(false));
+    }
+    if let Some(snapshot) = context.imap_state().backend_mailbox(id) {
+        return Ok(Value::Int(snapshot.recent));
     }
     Ok(Value::Int(0))
 }
@@ -672,6 +746,69 @@ fn imap_connection_id_arg(function: &'static str, value: &Value) -> Result<i64, 
     }
 }
 
+fn parse_mailbox_connection(mailbox: &str) -> Option<ImapConnectionConfig> {
+    let rest = mailbox.strip_prefix('{')?;
+    let (server, mailbox_name) = rest.split_once('}')?;
+    let mut parts = server.split('/');
+    let authority = parts.next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    let flags = parts
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let ssl = flags.iter().any(|flag| flag == "ssl" || flag == "tls");
+    let novalidate_cert = flags.iter().any(|flag| flag == "novalidate-cert");
+    let (host, port) = authority
+        .rsplit_once(':')
+        .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
+        .map_or_else(
+            || (authority.to_owned(), if ssl { 993 } else { 143 }),
+            |(host, port)| (host.to_owned(), port),
+        );
+    Some(ImapConnectionConfig {
+        host,
+        port,
+        ssl,
+        novalidate_cert,
+        mailbox: if mailbox_name.is_empty() {
+            "INBOX".to_owned()
+        } else {
+            mailbox_name.to_owned()
+        },
+    })
+}
+
+fn live_imap_endpoint_enabled(context: &BuiltinContext<'_>, config: &ImapConnectionConfig) -> bool {
+    context.network_requests_enabled()
+        && context
+            .env_value("PHRUST_IMAP_LIVE_ENDPOINT")
+            .is_some_and(|endpoint| endpoint == format!("{}:{}", config.host, config.port))
+}
+
+fn check_object(mailbox: String, snapshot: &ImapMailboxSnapshot) -> ObjectRef {
+    std_object(&[
+        ("Date", Value::string("")),
+        ("Driver", Value::string("phrust-imap")),
+        ("Mailbox", Value::string(mailbox)),
+        ("Nmsgs", Value::Int(snapshot.exists)),
+        ("Recent", Value::Int(snapshot.recent)),
+    ])
+}
+
+fn mailbox_info_object(mailbox: String, snapshot: &ImapMailboxSnapshot) -> ObjectRef {
+    std_object(&[
+        ("Date", Value::string("")),
+        ("Driver", Value::string("phrust-imap")),
+        ("Mailbox", Value::string(mailbox)),
+        ("Nmsgs", Value::Int(snapshot.exists)),
+        ("Recent", Value::Int(snapshot.recent)),
+        ("Unread", Value::Int(snapshot.unseen)),
+        ("Deleted", Value::Int(0)),
+        ("Size", Value::Int(0)),
+    ])
+}
+
 fn status_object(mailbox: String) -> ObjectRef {
     std_object(&[
         ("flags", Value::Int(31)),
@@ -680,6 +817,18 @@ fn status_object(mailbox: String) -> ObjectRef {
         ("unseen", Value::Int(0)),
         ("uidnext", Value::Int(1)),
         ("uidvalidity", Value::Int(1)),
+        ("mailbox", Value::string(mailbox)),
+    ])
+}
+
+fn status_object_from_snapshot(mailbox: String, snapshot: &ImapMailboxSnapshot) -> ObjectRef {
+    std_object(&[
+        ("flags", Value::Int(31)),
+        ("messages", Value::Int(snapshot.exists)),
+        ("recent", Value::Int(snapshot.recent)),
+        ("unseen", Value::Int(snapshot.unseen)),
+        ("uidnext", Value::Int(snapshot.uid_next)),
+        ("uidvalidity", Value::Int(snapshot.uid_validity)),
         ("mailbox", Value::string(mailbox)),
     ])
 }
@@ -701,7 +850,7 @@ fn imap_connection_object(id: i64) -> ObjectRef {
 
 fn runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -805,5 +954,30 @@ mod tests {
             .expect("expunge"),
             Value::Bool(true)
         );
+    }
+
+    #[test]
+    fn imap_mailbox_parser_extracts_endpoint_tls_flags_and_name() {
+        assert_eq!(
+            parse_mailbox_connection("{mail.example.test:993/imap/ssl/novalidate-cert}Archive"),
+            Some(ImapConnectionConfig {
+                host: "mail.example.test".to_owned(),
+                port: 993,
+                ssl: true,
+                novalidate_cert: true,
+                mailbox: "Archive".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_mailbox_connection("{127.0.0.1/imap}INBOX"),
+            Some(ImapConnectionConfig {
+                host: "127.0.0.1".to_owned(),
+                port: 143,
+                ssl: false,
+                novalidate_cert: false,
+                mailbox: "INBOX".to_owned(),
+            })
+        );
+        assert_eq!(parse_mailbox_connection("INBOX"), None);
     }
 }

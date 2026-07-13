@@ -1,0 +1,13 @@
+[package]
+name = "php_extensions"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }
+
+[features]
+default = ["runtime-telemetry"]
+runtime-telemetry = ["php_runtime/runtime-telemetry"]

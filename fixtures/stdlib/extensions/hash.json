@@ -1,0 +1,619 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "HashContext"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "HASH_HMAC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_CRC32 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_CRC32",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_MD5 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_MD5",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_SHA1 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_SHA1",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_HAVAL256 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_HAVAL256",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_RIPEMD160 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_RIPEMD160",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_TIGER is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_TIGER",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_GOST is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_GOST",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_CRC32B is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_CRC32B",
+      "value": {
+        "kind": "int",
+        "value": 9
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_HAVAL224 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_HAVAL224",
+      "value": {
+        "kind": "int",
+        "value": 10
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_HAVAL192 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_HAVAL192",
+      "value": {
+        "kind": "int",
+        "value": 11
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_HAVAL160 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_HAVAL160",
+      "value": {
+        "kind": "int",
+        "value": 12
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_HAVAL128 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_HAVAL128",
+      "value": {
+        "kind": "int",
+        "value": 13
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_TIGER128 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_TIGER128",
+      "value": {
+        "kind": "int",
+        "value": 14
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_TIGER160 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_TIGER160",
+      "value": {
+        "kind": "int",
+        "value": 15
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_MD4 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_MD4",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_SHA256 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_SHA256",
+      "value": {
+        "kind": "int",
+        "value": 17
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_ADLER32 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_ADLER32",
+      "value": {
+        "kind": "int",
+        "value": 18
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_SHA224 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_SHA224",
+      "value": {
+        "kind": "int",
+        "value": 19
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_SHA512 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_SHA512",
+      "value": {
+        "kind": "int",
+        "value": 20
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_SHA384 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_SHA384",
+      "value": {
+        "kind": "int",
+        "value": 21
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_WHIRLPOOL is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_WHIRLPOOL",
+      "value": {
+        "kind": "int",
+        "value": 22
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_RIPEMD128 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_RIPEMD128",
+      "value": {
+        "kind": "int",
+        "value": 23
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_RIPEMD256 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_RIPEMD256",
+      "value": {
+        "kind": "int",
+        "value": 24
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_RIPEMD320 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_RIPEMD320",
+      "value": {
+        "kind": "int",
+        "value": 25
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_SNEFRU256 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_SNEFRU256",
+      "value": {
+        "kind": "int",
+        "value": 27
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_MD2 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_MD2",
+      "value": {
+        "kind": "int",
+        "value": 28
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_FNV132 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_FNV132",
+      "value": {
+        "kind": "int",
+        "value": 29
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_FNV1A32 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_FNV1A32",
+      "value": {
+        "kind": "int",
+        "value": 30
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_FNV164 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_FNV164",
+      "value": {
+        "kind": "int",
+        "value": 31
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_FNV1A64 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_FNV1A64",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_JOAAT is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_JOAAT",
+      "value": {
+        "kind": "int",
+        "value": 33
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_CRC32C is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_CRC32C",
+      "value": {
+        "kind": "int",
+        "value": 34
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_MURMUR3A is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_MURMUR3A",
+      "value": {
+        "kind": "int",
+        "value": 35
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_MURMUR3C is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_MURMUR3C",
+      "value": {
+        "kind": "int",
+        "value": 36
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_MURMUR3F is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_MURMUR3F",
+      "value": {
+        "kind": "int",
+        "value": 37
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_XXH32 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_XXH32",
+      "value": {
+        "kind": "int",
+        "value": 38
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_XXH64 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_XXH64",
+      "value": {
+        "kind": "int",
+        "value": 39
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_XXH3 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_XXH3",
+      "value": {
+        "kind": "int",
+        "value": 40
+      }
+    },
+    {
+      "deprecation": "Constant MHASH_XXH128 is deprecated since 8.5, as the mhash*() functions were deprecated",
+      "name": "MHASH_XXH128",
+      "value": {
+        "kind": "int",
+        "value": 41
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_algos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_copy",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_equals",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_final",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_hkdf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_hmac",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_hmac_algos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_hmac_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_pbkdf2",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_update",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_update_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "hash_update_stream",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "mhash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "mhash_count",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "mhash_get_block_size",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "mhash_get_hash_name",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "hash",
+        "source": "ext/hash/hash.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "hash"
+        }
+      ],
+      "name": "mhash_keygen_s2k",
+      "visibility": "php"
+    }
+  ],
+  "name": "hash",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -853,7 +853,9 @@ fn string_for_encoding(
         }
         "ISO-8859-1" => Ok(input.iter().map(|byte| char::from(*byte)).collect()),
         "ISO-8859-2" | "Windows-1252" | "SJIS" | "EUC-JP" | "ISO-2022-JP" => {
-            let encoding = encoding_rs_backend(encoding).expect("canonical encoding has backend");
+            let encoding = encoding_rs_backend(encoding).ok_or_else(|| {
+                argument_value_error(name, "encoding", "must be a supported encoding")
+            })?;
             let (text, _encoding_used, had_errors) = encoding.decode(input);
             if had_errors {
                 Err(argument_value_error(
@@ -895,7 +897,7 @@ fn bytes_for_encoding(text: &str, encoding: &str) -> Option<Vec<u8>> {
             Some(output)
         }
         "ISO-8859-2" | "Windows-1252" | "SJIS" | "EUC-JP" | "ISO-2022-JP" => {
-            let encoding = encoding_rs_backend(encoding).expect("canonical encoding has backend");
+            let encoding = encoding_rs_backend(encoding)?;
             let (bytes, _encoding_used, had_errors) = encoding.encode(text);
             if had_errors {
                 None

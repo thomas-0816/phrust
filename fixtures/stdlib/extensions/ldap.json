@@ -1,0 +1,1015 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "LDAP\\Connection"
+    },
+    {
+      "kind": "class",
+      "name": "LDAP\\Result"
+    },
+    {
+      "kind": "class",
+      "name": "LDAP\\ResultEntry"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "LDAP_DEREF_NEVER",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_DEREF_SEARCHING",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_DEREF_FINDING",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_DEREF_ALWAYS",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_ADD",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_REMOVE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_REMOVE_ALL",
+      "value": {
+        "kind": "int",
+        "value": 18
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_REPLACE",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_ATTRIB",
+      "value": {
+        "kind": "string",
+        "value": "attrib"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_MODTYPE",
+      "value": {
+        "kind": "string",
+        "value": "modtype"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_MODIFY_BATCH_VALUES",
+      "value": {
+        "kind": "string",
+        "value": "values"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_ESCAPE_FILTER",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_ESCAPE_DN",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_DEREF",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_PROTOCOL_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 17
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_REFERRALS",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_X_TLS_REQUIRE_CERT",
+      "value": {
+        "kind": "int",
+        "value": 24582
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_X_TLS_NEVER",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_X_TLS_HARD",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_X_TLS_DEMAND",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_X_TLS_ALLOW",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LDAP_OPT_X_TLS_TRY",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_8859_to_t61",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_add",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_add_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_bind",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_bind_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_compare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_count_entries",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_count_references",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_delete",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_delete_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_dn2ufn",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_err2str",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_escape",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_exop",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_exop_passwd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_exop_refresh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_exop_sync",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_exop_whoami",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_explode_dn",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_first_attribute",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_first_entry",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_first_reference",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_free_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_get_attributes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_get_dn",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_get_entries",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_get_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_get_values",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_get_values_len",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_list",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_mod_add",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_mod_add_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_mod_del",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_mod_del_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_mod_replace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_mod_replace_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_modify",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_modify_batch",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_next_attribute",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_next_entry",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_next_reference",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_parse_exop",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_parse_reference",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_parse_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_read",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_rename",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_rename_ext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_sasl_bind",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_search",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_set_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_set_rebind_proc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_start_tls",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_t61_to_8859",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ldap",
+        "source": "ext/ldap/ldap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ldap"
+        }
+      ],
+      "name": "ldap_unbind",
+      "visibility": "php"
+    }
+  ],
+  "name": "ldap",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

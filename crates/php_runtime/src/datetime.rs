@@ -479,7 +479,7 @@ fn date_object(class_name: &str, timestamp: i64, timezone: &str) -> Value {
 
 fn date_class(name: &str, is_interface: bool) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

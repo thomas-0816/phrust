@@ -232,7 +232,9 @@ pub(super) fn haval_digest(input: &[u8], output_bits: usize, passes: usize) -> V
 fn transform(state: &mut [u32; 8], block: &[u8], passes: usize) {
     let mut x = [0_u32; 32];
     for (word, bytes) in x.iter_mut().zip(block.chunks_exact(4)) {
-        *word = u32::from_le_bytes(bytes.try_into().expect("four-byte chunk"));
+        let mut chunk = [0_u8; 4];
+        chunk.copy_from_slice(bytes);
+        *word = u32::from_le_bytes(chunk);
     }
 
     let mut e = *state;

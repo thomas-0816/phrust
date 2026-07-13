@@ -8,8 +8,10 @@ publish = false
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+php_executor = { path = "../php_executor", version = "0.0.0" }
 php_ir = { path = "../php_ir", version = "0.0.0" }
 php_lexer = { path = "../php_lexer", version = "0.1.0" }
+php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0" }
 php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_source = { path = "../php_source", version = "0.0.0" }
@@ -19,3 +21,7 @@ php_vm = { path = "../php_vm", version = "0.0.0" }
 [[bench]]
 name = "perf_hotpaths"
 harness = false
+
+[patch.crates-io]
+pcre2 = { path = "../../third_party/rust/pcre2" }
+tiger = { path = "../../third_party/rust/tiger" }

@@ -1,0 +1,33 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Imagick"
+    },
+    {
+      "kind": "class",
+      "name": "ImagickDraw"
+    },
+    {
+      "kind": "class",
+      "name": "ImagickException"
+    },
+    {
+      "kind": "class",
+      "name": "ImagickPixel"
+    },
+    {
+      "kind": "class",
+      "name": "ImagickPixelIterator"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "imagick",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

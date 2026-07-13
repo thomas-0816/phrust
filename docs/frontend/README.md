@@ -1,0 +1,35 @@
+# Frontend Documentation
+
+Semantic frontend (HIR, name resolution, declarations, diagnostics) reference documentation.
+
+## Index
+
+- [AST View Model](ast-view-model.md)
+- [Attributes](attributes.md)
+- [Class Context Checks](class-context-checks.md)
+- [Class-Like HIR](class-like-hir.md)
+- [Class Member HIR](class-member-hir.md)
+- [Compile-Time Diagnostics](compile-time-diagnostics.md)
+- [Constant Expressions](constant-expressions.md)
+- [Declaration Model](declaration-model.md)
+- [Declare Directives](declare-directives.md)
+- [Semantic frontend Definition of Done](definition-of-done.md)
+- [Enum Semantics](enum-semantics.md)
+- [Expression and Statement HIR](expression-statement-hir.md)
+- [Function-Like Semantics](function-like-semantics.md)
+- [Function Signatures](function-signatures.md)
+- [HIR Model](hir-model.md)
+- [Incremental Frontend API Preparation](incremental-frontend-api.md)
+- [Modifier Model](modifiers.md)
+- [PHP Name Resolution](php-name-resolution.md)
+- [PHP 8.5 Semantic Frontend Notes](php85-semantics.md)
+- [Semantic Frontend to Runtime Boundary](runtime-boundary.md)
+- [Scope Model](scope-model.md)
+- [Semantic Fixtures](semantic-fixtures.md)
+- [Semantic Frontend Architecture](semantic-frontend-architecture.md)
+- [Semantic Known Gaps](semantic-known-gaps.md)
+- [Semantic Reference Oracle](semantic-reference-oracle.md)
+- [Symbol Table Model](symbol-table-model.md)
+- [Trait Use HIR](trait-use-hir.md)
+- [Type Lowering](type-lowering.md)
+- [Semantic Frontend Validation Summary](validation-summary.md)

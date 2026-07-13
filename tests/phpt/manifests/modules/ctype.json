@@ -16,6 +16,6 @@
     "PHP 8.5 legacy non-string fallback behavior for integers, object diagnostics, and false-returning non-strings"
   ],
   "non_scope": [],
-  "target_gates": ["just phpt-dev-module MODULE=ctype"],
+  "target_gates": ["cargo test -p php_extensions ctype", "just phpt-dev-module MODULE=ctype"],
   "next_step": "Keep ctype selected against the full upstream module target."
 }

@@ -455,6 +455,19 @@ def apply_overrides(
         reason = parts.get("reason", "").strip()
         if not reason:
             raise ValueError(f"{overrides_path}:{line_number}: override lacks reason=...")
+        alias_of = parts.get("alias_of", "").lower()
+        if alias_of:
+            if alias_of not in functions:
+                raise ValueError(
+                    f"{overrides_path}:{line_number}: unknown alias target {alias_of!r}"
+                )
+            if name in functions:
+                raise ValueError(
+                    f"{overrides_path}:{line_number}: alias target already exists {name!r}"
+                )
+            functions[name] = replace(functions[alias_of], name=parts["name"])
+            override_count += 1
+            continue
         if name not in functions:
             raise ValueError(f"{overrides_path}:{line_number}: unknown function {name!r}")
         function = functions[name]

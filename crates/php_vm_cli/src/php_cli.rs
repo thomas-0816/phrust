@@ -988,7 +988,9 @@ mod tests {
 
     #[test]
     fn run_code_prints_php_version() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stdin = TestInput(Cursor::new(Vec::new()));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -1081,7 +1083,9 @@ mod tests {
 
     #[test]
     fn run_file_seeds_argv_and_argc() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("argv");
         fs::create_dir_all(&root).expect("mkdir");
         let script = root.join("fixture.php");
@@ -1116,7 +1120,9 @@ mod tests {
 
     #[test]
     fn run_code_exposes_stdin_resource() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stdin = TestInput(Cursor::new(b"payload".to_vec()));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -1137,7 +1143,9 @@ mod tests {
 
     #[test]
     fn successful_warning_output_does_not_emit_internal_stderr_diagnostics() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stdin = TestInput(Cursor::new(Vec::new()));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -1164,7 +1172,9 @@ mod tests {
 
     #[test]
     fn env_debug_writes_timeline_without_changing_stdout() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous_debug = env::var("PHRUST_DEBUG").ok();
         let previous_format = env::var("PHRUST_ERROR_FORMAT").ok();
         unsafe {
@@ -1194,7 +1204,9 @@ mod tests {
 
     #[test]
     fn include_path_define_affects_include_resolution() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("include-path");
         let lib = root.join("lib");
         fs::create_dir_all(&lib).expect("mkdir");
@@ -1222,7 +1234,9 @@ mod tests {
 
     #[test]
     fn run_file_emits_filter_default_startup_deprecation() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("filter-default-startup-deprecation");
         fs::create_dir_all(&root).expect("mkdir");
         let script = root.join("fixture.php");
@@ -1258,7 +1272,9 @@ mod tests {
 
     #[test]
     fn run_file_suppresses_filter_default_startup_deprecation_by_default() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("filter-default-startup-deprecation-off");
         fs::create_dir_all(&root).expect("mkdir");
         let script = root.join("fixture.php");
@@ -1286,7 +1302,9 @@ mod tests {
 
     #[test]
     fn run_file_honors_error_reporting_for_filter_default_startup_deprecation() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("filter-default-startup-deprecation-masked");
         fs::create_dir_all(&root).expect("mkdir");
         let script = root.join("fixture.php");
@@ -1318,7 +1336,9 @@ mod tests {
 
     #[test]
     fn run_file_honors_display_errors_for_filter_default_startup_deprecation() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("filter-default-startup-deprecation-display-off");
         fs::create_dir_all(&root).expect("mkdir");
         let script = root.join("fixture.php");
@@ -1350,7 +1370,9 @@ mod tests {
 
     #[test]
     fn config_file_loads_minimal_ini_and_d_overrides() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("ini-config");
         let lib_from_ini = root.join("ini-lib");
         let lib_from_define = root.join("define-lib");
@@ -1393,7 +1415,9 @@ mod tests {
 
     #[test]
     fn lint_file_does_not_execute_side_effects() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = temp_root("lint");
         fs::create_dir_all(&root).expect("mkdir");
         let marker = root.join("marker.txt");
@@ -1428,7 +1452,9 @@ mod tests {
 
     #[test]
     fn exposes_cli_sapi_and_non_empty_php_binary() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stdin = TestInput(Cursor::new(Vec::new()));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -1450,7 +1476,9 @@ mod tests {
 
     #[test]
     fn prints_modules_phpinfo_and_ini_report() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stdin = TestInput(Cursor::new(Vec::new()));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();

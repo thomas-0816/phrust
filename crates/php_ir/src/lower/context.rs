@@ -190,7 +190,7 @@ fn collect_variable_spans(frontend: &FrontendResult) -> HashMap<String, Vec<Text
     };
     let source_map = frontend.database().source_map();
     for (expr_id, expr) in module.expressions().iter() {
-        let HirExprKind::Variable { name } = expr.kind() else {
+        let HirExprKind::Variable { name, .. } = expr.kind() else {
             continue;
         };
         let Some(span) = source_map.span(SourceMappedId::from(expr_id)) else {

@@ -1,9 +1,11 @@
 //! Arginfo, parameter validation, and builtin coercion support.
 
 use crate::generated::arginfo as generated_arginfo;
+#[cfg(test)]
+use php_runtime::api::PhpString;
 use php_runtime::api::{
-    CallableValue, PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
-    to_bool, to_float, to_int, to_string,
+    CallableValue, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value, to_bool, to_float,
+    to_int, to_string,
 };
 use php_runtime::experimental::layout_stats;
 use php_runtime::experimental::numeric_string::{
@@ -45,6 +47,29 @@ pub fn function_metadata_indexed(
             .collect()
     });
     lower_index.get(&name.to_ascii_lowercase()).copied()
+}
+
+/// Parsed runtime arginfo indexed once for the lifetime of the process.
+///
+/// Entries whose php-src type surface needs class-table context remain absent
+/// and continue through the builtin's compatibility fallback.
+#[must_use]
+pub fn function_arginfo_indexed(name: &str) -> Option<&'static FunctionArgInfo> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static INDEX: OnceLock<HashMap<&'static str, FunctionArgInfo>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        generated_arginfo::GENERATED_FUNCTIONS
+            .iter()
+            .filter_map(|metadata| {
+                FunctionArgInfo::from_generated(metadata).map(|info| (metadata.name, info))
+            })
+            .collect()
+    });
+    if let Some(info) = index.get(name) {
+        return Some(info);
+    }
+    index.get(name.to_ascii_lowercase().as_str())
 }
 
 /// PHP builtin coercion mode.
@@ -176,7 +201,7 @@ pub enum DefaultValue {
     /// Default int.
     Int(i64),
     /// Default string bytes.
-    String(PhpString),
+    String(&'static [u8]),
 }
 
 /// One parameter descriptor.
@@ -358,6 +383,12 @@ impl ValidatedArguments {
     pub fn diagnostics(&self) -> &[RuntimeDiagnostic] {
         &self.diagnostics
     }
+
+    /// Moves validated values and diagnostics to the caller without cloning.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<Value>, Vec<RuntimeDiagnostic>) {
+        (self.values, self.diagnostics)
+    }
 }
 
 /// Central argument validator for PHP standard-library builtins.
@@ -380,91 +411,117 @@ impl ArgumentValidator {
         args: &[Value],
         span: RuntimeSourceSpan,
     ) -> Result<ValidatedArguments, ArginfoError> {
-        let required = info
-            .params()
-            .iter()
-            .filter(|param| param.is_required())
-            .count();
-        let variadic = info.params().last().is_some_and(ParameterInfo::is_variadic);
-        if args.len() < required {
-            return Err(ArginfoError::type_error(
-                "E_PHP_STD_MISSING_ARGUMENT",
-                format!(
-                    "{}() expects at least {} argument{}, {} given",
-                    info.name(),
-                    required,
-                    plural(required),
-                    args.len()
-                ),
-                span,
-            ));
-        }
-        if !variadic && args.len() > info.params().len() {
-            let expected = if required == info.params().len() {
-                format!(
-                    "{}() expects exactly {} argument{}, {} given",
-                    info.name(),
-                    info.params().len(),
-                    plural(info.params().len()),
-                    args.len()
-                )
-            } else {
-                format!(
-                    "{}() expects at most {} argument{}, {} given",
-                    info.name(),
-                    info.params().len(),
-                    plural(info.params().len()),
-                    args.len()
-                )
-            };
-            return Err(ArginfoError::type_error(
-                "E_PHP_STD_TOO_MANY_ARGUMENTS",
-                expected,
-                span,
-            ));
-        }
-
-        let mut values = Vec::new();
+        validate_arity(info, args.len(), span.clone())?;
+        let mut values = Vec::with_capacity(info.params().len().max(args.len()));
         let mut diagnostics = Vec::new();
         for (index, arg) in args.iter().enumerate() {
-            let param = if let Some(param) = info.params().get(index) {
-                param
-            } else {
-                info.params().last().expect("variadic param exists")
-            };
-            if self.should_deprecate_null_scalar_coercion(param, arg) {
-                diagnostics.push(RuntimeDiagnostic::new(
-                    "E_PHP_STD_NULL_SCALAR_ARG",
-                    RuntimeSeverity::Deprecation,
-                    format!(
-                        "{}(): Passing null to parameter #{} (${}) of type {} is deprecated",
-                        info.name(),
-                        index + 1,
-                        param.name(),
-                        param.type_spec().display()
-                    ),
-                    span.clone(),
-                    Vec::new(),
-                    None,
-                ));
-            }
+            let param = parameter_for_argument(info, index);
+            self.record_null_scalar_deprecation(info, index, param, arg, &span, &mut diagnostics);
             values.push(self.coerce(info.name(), index, param, arg, span.clone())?);
         }
-
-        for param in info.params().iter().skip(args.len()) {
-            match param.default() {
-                DefaultValue::None => {}
-                DefaultValue::Null => values.push(Value::Null),
-                DefaultValue::Bool(value) => values.push(Value::Bool(*value)),
-                DefaultValue::Int(value) => values.push(Value::Int(*value)),
-                DefaultValue::String(value) => values.push(Value::String(value.clone())),
-            }
-        }
-
+        append_defaults(info, args.len(), &mut values);
         Ok(ValidatedArguments {
             values,
             diagnostics,
         })
+    }
+
+    /// Validates and coerces an owned positional vector in place.
+    pub fn validate_owned(
+        &self,
+        info: &FunctionArgInfo,
+        mut args: Vec<Value>,
+        span: RuntimeSourceSpan,
+    ) -> Result<ValidatedArguments, ArginfoError> {
+        validate_arity(info, args.len(), span.clone())?;
+
+        let mut diagnostics = Vec::new();
+        for (index, arg) in args.iter_mut().enumerate() {
+            let param = parameter_for_argument(info, index);
+            self.record_null_scalar_deprecation(info, index, param, arg, &span, &mut diagnostics);
+            self.coerce_owned(info.name(), index, param, arg, span.clone())?;
+        }
+        append_defaults(info, args.len(), &mut args);
+
+        Ok(ValidatedArguments {
+            values: args,
+            diagnostics,
+        })
+    }
+
+    fn record_null_scalar_deprecation(
+        &self,
+        info: &FunctionArgInfo,
+        index: usize,
+        param: &ParameterInfo,
+        value: &Value,
+        span: &RuntimeSourceSpan,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) {
+        if self.should_deprecate_null_scalar_coercion(param, value) {
+            diagnostics.push(RuntimeDiagnostic::new(
+                "E_PHP_STD_NULL_SCALAR_ARG",
+                RuntimeSeverity::Deprecation,
+                format!(
+                    "{}(): Passing null to parameter #{} (${}) of type {} is deprecated",
+                    info.name(),
+                    index + 1,
+                    param.name(),
+                    param.type_spec().display()
+                ),
+                span.clone(),
+                Vec::new(),
+                None,
+            ));
+        }
+    }
+
+    fn coerce_owned(
+        &self,
+        function: &str,
+        index: usize,
+        param: &ParameterInfo,
+        value: &mut Value,
+        span: RuntimeSourceSpan,
+    ) -> Result<(), ArginfoError> {
+        if param
+            .type_spec()
+            .atoms()
+            .iter()
+            .any(|atom| exact_type_matches(*atom, value))
+            || matches!(value, Value::Null) && param.type_spec().is_nullable()
+        {
+            return Ok(());
+        }
+        let replacement = if self.mode == CoercionMode::Weak {
+            if is_int_float_union(param.type_spec()) {
+                weak_coerce_int_float_union(value)
+            } else {
+                param
+                    .type_spec()
+                    .atoms()
+                    .iter()
+                    .find_map(|atom| weak_coerce(*atom, value))
+            }
+        } else {
+            None
+        };
+        if let Some(replacement) = replacement {
+            *value = replacement;
+            return Ok(());
+        }
+        Err(ArginfoError::type_error(
+            "E_PHP_STD_TYPE_ERROR",
+            format!(
+                "{}(): Argument #{} (${}) must be of type {}, {} given",
+                function,
+                index + 1,
+                param.name(),
+                param.type_spec().display(),
+                value_type(value)
+            ),
+            span,
+        ))
     }
 
     fn should_deprecate_null_scalar_coercion(&self, param: &ParameterInfo, value: &Value) -> bool {
@@ -595,6 +652,75 @@ pub enum ArginfoErrorClass {
     ValueError,
 }
 
+fn validate_arity(
+    info: &FunctionArgInfo,
+    argument_count: usize,
+    span: RuntimeSourceSpan,
+) -> Result<(), ArginfoError> {
+    let required = info
+        .params()
+        .iter()
+        .filter(|param| param.is_required())
+        .count();
+    let variadic = info.params().last().is_some_and(ParameterInfo::is_variadic);
+    if argument_count < required {
+        return Err(ArginfoError::type_error(
+            "E_PHP_STD_MISSING_ARGUMENT",
+            format!(
+                "{}() expects at least {} argument{}, {} given",
+                info.name(),
+                required,
+                plural(required),
+                argument_count
+            ),
+            span,
+        ));
+    }
+    if !variadic && argument_count > info.params().len() {
+        let expected = if required == info.params().len() {
+            format!(
+                "{}() expects exactly {} argument{}, {} given",
+                info.name(),
+                info.params().len(),
+                plural(info.params().len()),
+                argument_count
+            )
+        } else {
+            format!(
+                "{}() expects at most {} argument{}, {} given",
+                info.name(),
+                info.params().len(),
+                plural(info.params().len()),
+                argument_count
+            )
+        };
+        return Err(ArginfoError::type_error(
+            "E_PHP_STD_TOO_MANY_ARGUMENTS",
+            expected,
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn parameter_for_argument(info: &FunctionArgInfo, index: usize) -> &ParameterInfo {
+    info.params()
+        .get(index)
+        .unwrap_or_else(|| info.params().last().expect("variadic param exists"))
+}
+
+fn append_defaults(info: &FunctionArgInfo, argument_count: usize, values: &mut Vec<Value>) {
+    for param in info.params().iter().skip(argument_count) {
+        match param.default() {
+            DefaultValue::None => {}
+            DefaultValue::Null => values.push(Value::Null),
+            DefaultValue::Bool(value) => values.push(Value::Bool(*value)),
+            DefaultValue::Int(value) => values.push(Value::Int(*value)),
+            DefaultValue::String(value) => values.push(Value::string(value.to_vec())),
+        }
+    }
+}
+
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
@@ -660,6 +786,24 @@ fn match_exact(atom: ArgType, value: &Value) -> Option<Value> {
             Some(materialize_builtin_argument(value))
         }
         _ => None,
+    }
+}
+
+fn exact_type_matches(atom: ArgType, value: &Value) -> bool {
+    match (atom, value) {
+        (ArgType::Mixed, _) => true,
+        (ArgType::Null, Value::Null) => true,
+        (ArgType::Bool, Value::Bool(_)) => true,
+        (ArgType::Int, Value::Int(_)) => true,
+        (ArgType::Float, Value::Float(_)) => true,
+        (ArgType::String, Value::String(_)) => true,
+        (ArgType::Array, Value::Array(_)) => true,
+        (ArgType::Object, Value::Object(_) | Value::Fiber(_) | Value::Generator(_)) => true,
+        (ArgType::Object, Value::Callable(callable)) => {
+            matches!(callable.as_ref(), CallableValue::Closure(_))
+        }
+        (ArgType::Callable, Value::Callable(_) | Value::String(_)) => true,
+        _ => false,
     }
 }
 
@@ -777,7 +921,7 @@ mod tests {
 
     fn empty_class(name: &str) -> ClassEntry {
         ClassEntry {
-            name: name.to_owned(),
+            name: name.to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -1015,6 +1159,29 @@ mod tests {
             Some(&1),
             "{source_stats:?}"
         );
+    }
+
+    #[test]
+    fn owned_validation_reuses_the_argument_vector_without_handle_clones() {
+        let info = FunctionArgInfo::new(
+            "owned_sample",
+            vec![ParameterInfo::required(
+                "items",
+                TypeSpec::one(ArgType::Array),
+            )],
+            TypeSpec::one(ArgType::Mixed),
+        );
+        let arguments = vec![Value::Array(PhpArray::from_packed(vec![Value::Int(1)]))];
+
+        layout_stats::reset_layout_stats();
+        let validated = ArgumentValidator::new(CoercionMode::Strict)
+            .validate_owned(&info, arguments, span())
+            .expect("owned array argument validates");
+        let stats = layout_stats::take_layout_stats();
+
+        assert!(matches!(validated.values(), [Value::Array(_)]));
+        assert_eq!(stats.value_clones, 0, "{stats:?}");
+        assert_eq!(stats.array_handle_clones, 0, "{stats:?}");
     }
 
     #[test]

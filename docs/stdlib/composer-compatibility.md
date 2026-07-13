@@ -15,9 +15,9 @@ nix develop -c just composer-smoke
 - Composer-style `platform_check.php` fixtures
 - source-mode smoke without network, plugins, scripts, or Packagist
 
-## Work item Coverage
+## Coverage
 
-Work item wires the CLI include roots into runtime filesystem
+The standard library wires the CLI include roots into runtime filesystem
 capabilities, so `include_path`, `stream_resolve_include_path`,
 `include`/`require`, and SPL autoload callbacks see the same bounded local
 fixture roots.
@@ -36,7 +36,7 @@ nix develop -c scripts/stdlib_diff.py --file tests/fixtures/stdlib/_harness/comp
 nix develop -c just composer-smoke
 ```
 
-## Work item Generated Fixture
+## Generated Fixture
 
 `tests/fixtures/stdlib/composer/basic_project` is a checked-in, offline
 Composer-like project. It includes:
@@ -59,7 +59,7 @@ that `require 'autoload.php'` loads the files helper, autoloads the PSR-4
 class, autoloads the classmap class, and handles a missing class without a
 runtime crash.
 
-## Work item Autoload Smoke
+## Autoload Smoke
 
 `just composer-smoke-autoload` runs the dedicated autoload-order fixture through
 the Standard library differential harness:
@@ -74,7 +74,7 @@ before class method use, PSR-4 and classmap classes load, repeated
 `include_once 'autoload.php'` is stable, the autoload stack is not duplicated by
 the repeated include, and missing classes remain non-fatal.
 
-## Work item Platform Checks
+## Platform Checks
 
 `just composer-smoke-platform` runs Composer-style platform checks through the
 Standard library differential harness:
@@ -93,7 +93,7 @@ focused mbstring PHPT/module gates own that policy. The companion
 `platform_version_compare.php` fixture pins Composer-relevant comparison
 operators and prerelease labels against the PHP 8.5.7 reference.
 
-## Work item Process Capability Surface
+## Process Capability Surface
 
 `just process-capability-smoke` runs a VM-only fixture that proves Composer-facing
 process probes are defined but default-off:
@@ -108,7 +108,7 @@ The fixture checks `proc_open`, `popen`, `shell_exec`, `exec`, `passthru`, and
 or crashing. Differential comparison is intentionally not used for this fixture
 because reference PHP would execute the host command.
 
-## Work item Source-Mode Smoke
+## Source-Mode Smoke
 
 `just composer-smoke-source` runs an opt-in Composer source checkout smoke:
 

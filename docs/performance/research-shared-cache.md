@@ -1,6 +1,6 @@
 # Performance Shared Cache Research Spike
 
-Work item investigates future shared-cache options for SAPI or daemon layers.
+This note investigates future shared-cache options for SAPI or daemon layers.
 Performance does not add production shared memory code.
 
 ## Options

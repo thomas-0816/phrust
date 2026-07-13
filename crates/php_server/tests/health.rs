@@ -573,7 +573,7 @@ fn server_request_profile_source_attribution_mode_collects_attribution() {
     let profile: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
             .expect("parse profile json");
-    assert_eq!(profile["schema_version"], serde_json::Value::from(1));
+    assert_eq!(profile["schema_version"], serde_json::Value::from(2));
     assert_eq!(
         profile["attribution"]["vm_counters_collected"],
         serde_json::Value::from(true)
@@ -1089,6 +1089,10 @@ fn non_session_request_with_session_cookie_does_not_load_session_store() {
         "{metrics}"
     );
     assert!(
+        metrics.contains("phrust_server_session_id_generations_total 0\n"),
+        "{metrics}"
+    );
+    assert!(
         metrics.contains("phrust_server_session_finalize_skipped_inactive_total 1\n"),
         "{metrics}"
     );
@@ -1170,6 +1174,7 @@ fn server_persists_web_sessions_across_requests() {
         &[("Cookie", &cookie_pair)],
         "",
     );
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
 
     stop_child(child);
     fs::remove_dir_all(session_dir).expect("remove session temp dir");
@@ -1181,6 +1186,10 @@ fn server_persists_web_sessions_across_requests() {
     assert_eq!(
         response_body(&after_destroy),
         format!("id={session_id}\nn=1\nstatus=2\n")
+    );
+    assert!(
+        metrics.contains("phrust_server_session_id_generations_total 1\n"),
+        "{metrics}"
     );
 }
 
@@ -1772,7 +1781,14 @@ fn server_runs_session_requests_without_global_execution_lock() {
     .expect("write slow session fixture");
     let mut child = start_server(
         &docroot,
-        &["--max-in-flight", "4", "--max-execution-ms", "5000"],
+        &[
+            "--max-in-flight",
+            "4",
+            "--cpu-execution-limit",
+            "3",
+            "--max-execution-ms",
+            "5000",
+        ],
     );
 
     let address = read_listening_address(&mut child);
@@ -1807,6 +1823,143 @@ fn server_runs_session_requests_without_global_execution_lock() {
     assert!(
         elapsed < Duration::from_millis(1_000),
         "session requests were serialized: elapsed={elapsed:?}"
+    );
+}
+
+#[test]
+fn server_cpu_execution_limit_queues_php_without_limiting_http_admission() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("cpu_queue.php"),
+        "<?php\nusleep(250000);\necho \"done\\n\";\n",
+    )
+    .expect("write CPU queue fixture");
+    let mut child = start_server(
+        &docroot,
+        &[
+            "--max-in-flight",
+            "4",
+            "--cpu-execution-limit",
+            "1",
+            "--request-timeout-ms",
+            "5000",
+            "--max-execution-ms",
+            "5000",
+        ],
+    );
+
+    let address = read_listening_address(&mut child);
+    let start = Arc::new(Barrier::new(4));
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let address = address.clone();
+        let start = Arc::clone(&start);
+        handles.push(std::thread::spawn(move || {
+            start.wait();
+            http_request(&address, "GET", "/cpu_queue.php")
+        }));
+    }
+    start.wait();
+    let responses = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("join queued request"))
+        .collect::<Vec<_>>();
+    let elapsed = started.elapsed();
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    for response in responses {
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.ends_with("done\n"), "{response}");
+    }
+    assert!(
+        elapsed >= Duration::from_millis(650),
+        "CPU execution limit did not serialize PHP work: elapsed={elapsed:?}"
+    );
+    assert!(
+        metrics.contains("phrust_server_cpu_execution_queued_total 2"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_cpu_execution_current 0"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_cpu_execution_timeouts_total 0"),
+        "{metrics}"
+    );
+}
+
+#[test]
+fn server_cpu_execution_queue_timeout_is_observable() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("cpu_queue_timeout.php"),
+        "<?php\nusleep(250000);\necho \"done\\n\";\n",
+    )
+    .expect("write CPU queue timeout fixture");
+    let mut child = start_server(
+        &docroot,
+        &[
+            "--max-in-flight",
+            "4",
+            "--cpu-execution-limit",
+            "1",
+            "--request-timeout-ms",
+            "100",
+            "--max-execution-ms",
+            "5000",
+        ],
+    );
+
+    let address = read_listening_address(&mut child);
+    let start = Arc::new(Barrier::new(3));
+    let handles = (0..2)
+        .map(|_| {
+            let address = address.clone();
+            let start = Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                http_request(&address, "GET", "/cpu_queue_timeout.php")
+            })
+        })
+        .collect::<Vec<_>>();
+    start.wait();
+    let responses = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("join queue timeout request"))
+        .collect::<Vec<_>>();
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|response| response.starts_with("HTTP/1.1 200 OK"))
+            .count(),
+        1,
+        "{responses:?}"
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|response| response.starts_with("HTTP/1.1 503 Service Unavailable"))
+            .count(),
+        1,
+        "{responses:?}"
+    );
+    assert!(
+        metrics.contains("phrust_server_cpu_execution_timeouts_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_cpu_execution_rejected_total 1"),
+        "{metrics}"
     );
 }
 
@@ -2069,18 +2222,34 @@ fn assert_named_profile_contains(profiles: &serde_json::Value, expected_name_fra
         "profile exclusive_nanos should not exceed inclusive_nanos: {entry}"
     );
     assert!(
-        entry.get("rich_instructions").is_some(),
-        "profile rich_instructions should be present: {entry}"
+        entry.get("inclusive_rich_instructions").is_some(),
+        "profile inclusive_rich_instructions should be present: {entry}"
     );
     assert!(
-        entry.get("dense_instructions").is_some(),
-        "profile dense_instructions should be present: {entry}"
+        entry.get("exclusive_rich_instructions").is_some(),
+        "profile exclusive_rich_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("inclusive_dense_instructions").is_some(),
+        "profile inclusive_dense_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("exclusive_dense_instructions").is_some(),
+        "profile exclusive_dense_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("inclusive_work").is_some() && entry.get("exclusive_work").is_some(),
+        "profile inclusive/exclusive work should be present: {entry}"
     );
 }
 
 fn assert_operation_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
     let entry = find_profile_entry(profiles, expected_name_fragment);
     assert_profile_count_and_inclusive_nanos(entry);
+    assert_eq!(
+        entry.get("accounting").and_then(serde_json::Value::as_str),
+        Some("secondary_overlapping_inclusive")
+    );
 }
 
 fn assert_counter_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {

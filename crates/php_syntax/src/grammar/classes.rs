@@ -61,6 +61,8 @@ fn parse_class_like(parser: &mut Parser<'_>, named_required: bool) {
         } else {
             parser.error_expected("expected class-like declaration name", &["T_STRING"]);
         }
+    } else if parser.at(symbol(b'(')) {
+        expressions::parse_call_tail(parser);
     }
 
     consume_until_class_body(parser);

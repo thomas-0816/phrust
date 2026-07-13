@@ -1,6 +1,7 @@
 //! Pcre builtin registry slice.
 
 use super::core::*;
+use crate::builtins::context::{PcreBuiltinServices, PcreCallbackServices, PcreServiceAccess};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, RuntimeSourceSpan,
@@ -53,8 +54,39 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("preg_split", builtin_preg_split, BuiltinCompatibility::Php),
 ];
 
-pub(in crate::builtins::modules) fn builtin_preg_match(
+macro_rules! pcre_builtin_adapter {
+    ($entry:ident => $implementation:ident) => {
+        pub(in crate::builtins::modules) fn $entry(
+            context: &mut BuiltinContext<'_>,
+            args: Vec<Value>,
+            span: RuntimeSourceSpan,
+        ) -> BuiltinResult {
+            let mut services = context.pcre_services();
+            $implementation(&mut services, args, span)
+        }
+    };
+}
+
+pcre_builtin_adapter!(builtin_preg_match => preg_match);
+pcre_builtin_adapter!(builtin_preg_match_all => preg_match_all);
+pcre_builtin_adapter!(builtin_preg_replace => preg_replace);
+pcre_builtin_adapter!(builtin_preg_filter => preg_filter);
+pcre_builtin_adapter!(builtin_preg_split => preg_split);
+pcre_builtin_adapter!(builtin_preg_grep => preg_grep);
+pcre_builtin_adapter!(builtin_preg_last_error => preg_last_error);
+pcre_builtin_adapter!(builtin_preg_last_error_msg => preg_last_error_msg);
+
+pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
     context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    let mut services = context.pcre_callback_services();
+    preg_replace_callback(&mut services, args, span)
+}
+
+fn preg_match(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -83,6 +115,24 @@ pub(in crate::builtins::modules) fn builtin_preg_match(
         assign_reference_arg(args.get(2), Value::packed_array(Vec::new()));
         return Ok(Value::Bool(false));
     };
+    if let Ok(Some(literal)) = pcre::simple_literal_pattern(&pattern) {
+        validate_preg_match_flags("preg_match", "#4 ($flags)", flags)?;
+        return match find_literal_match(subject_bytes, literal.as_bytes(), start_offset) {
+            Some((start, end)) => {
+                assign_reference_arg(
+                    args.get(2),
+                    preg_single_capture_array(subject_bytes, start, end, flags),
+                );
+                context.clear_preg_last_error();
+                Ok(Value::Int(1))
+            }
+            None => {
+                assign_reference_arg(args.get(2), Value::packed_array(Vec::new()));
+                context.clear_preg_last_error();
+                Ok(Value::Int(0))
+            }
+        };
+    }
     let Some(compiled) = compile_preg_pattern(context, "preg_match", pattern, span) else {
         return Ok(Value::Bool(false));
     };
@@ -142,8 +192,24 @@ fn preg_single_capture_array(subject: &[u8], start: usize, end: usize, flags: i6
     Value::packed_array(vec![capture])
 }
 
-pub(in crate::builtins::modules) fn builtin_preg_match_all(
-    context: &mut BuiltinContext<'_>,
+fn find_literal_match(haystack: &[u8], needle: &[u8], start: usize) -> Option<(usize, usize)> {
+    if needle.is_empty() || start > haystack.len() {
+        return None;
+    }
+    let last_start = haystack.len().checked_sub(needle.len())?;
+    let first = needle[0];
+    let mut index = start;
+    while index <= last_start {
+        if haystack[index] == first && &haystack[index..index + needle.len()] == needle {
+            return Some((index, index + needle.len()));
+        }
+        index += 1;
+    }
+    None
+}
+
+fn preg_match_all(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -270,8 +336,8 @@ fn validate_preg_match_all_flags(flags: i64) -> Result<(), BuiltinError> {
     }
     Ok(())
 }
-pub(in crate::builtins::modules) fn builtin_preg_replace(
-    context: &mut BuiltinContext<'_>,
+fn preg_replace(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -283,6 +349,9 @@ pub(in crate::builtins::modules) fn builtin_preg_replace(
         .map(|value| int_arg("preg_replace", value))
         .transpose()?
         .unwrap_or(-1);
+    if let Some(result) = preg_replace_simple_literal_scalar(context, &args, limit)? {
+        return Ok(result);
+    }
     let Some(specs) = preg_replace_specs(context, "preg_replace", &args[0], &args[1], span)? else {
         return Ok(Value::Null);
     };
@@ -296,8 +365,73 @@ pub(in crate::builtins::modules) fn builtin_preg_replace(
     Ok(result)
 }
 
-pub(in crate::builtins::modules) fn builtin_preg_filter(
-    context: &mut BuiltinContext<'_>,
+fn preg_replace_simple_literal_scalar(
+    context: &mut PcreBuiltinServices<'_, '_>,
+    args: &[Value],
+    limit: i64,
+) -> Result<Option<Value>, BuiltinError> {
+    let pattern = match deref_value(&args[0]) {
+        Value::String(pattern) => pattern,
+        _ => return Ok(None),
+    };
+    let replacement = match deref_value(&args[1]) {
+        Value::String(replacement) => replacement,
+        _ => return Ok(None),
+    };
+    let subject = match deref_value(&args[2]) {
+        Value::String(subject) => subject,
+        _ => return Ok(None),
+    };
+    if replacement
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(*byte, b'$' | b'\\'))
+    {
+        return Ok(None);
+    }
+    let Ok(Some(literal)) = pcre::simple_literal_pattern(&pattern) else {
+        return Ok(None);
+    };
+    let mut count = 0i64;
+    let replaced = replace_literal_bytes(
+        subject.as_bytes(),
+        literal.as_bytes(),
+        replacement.as_bytes(),
+        limit,
+        &mut count,
+    );
+    assign_reference_arg(args.get(4), Value::Int(count));
+    context.clear_preg_last_error();
+    Ok(Some(Value::string(replaced)))
+}
+
+fn replace_literal_bytes(
+    subject: &[u8],
+    needle: &[u8],
+    replacement: &[u8],
+    limit: i64,
+    count: &mut i64,
+) -> Vec<u8> {
+    let mut output = Vec::with_capacity(subject.len());
+    let mut cursor = 0usize;
+    while cursor <= subject.len() {
+        if limit >= 0 && *count >= limit {
+            break;
+        }
+        let Some((start, end)) = find_literal_match(subject, needle, cursor) else {
+            break;
+        };
+        output.extend_from_slice(&subject[cursor..start]);
+        output.extend_from_slice(replacement);
+        cursor = end;
+        *count += 1;
+    }
+    output.extend_from_slice(&subject[cursor..]);
+    output
+}
+
+fn preg_filter(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -323,7 +457,7 @@ pub(in crate::builtins::modules) fn builtin_preg_filter(
 }
 
 fn preg_replace_specs(
-    context: &mut BuiltinContext<'_>,
+    context: &mut PcreBuiltinServices<'_, '_>,
     function_name: &str,
     pattern: &Value,
     replacement: &Value,
@@ -402,8 +536,8 @@ impl PregReplaceReplacements {
         }
     }
 }
-pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
-    context: &mut BuiltinContext<'_>,
+fn preg_replace_callback(
+    context: &mut PcreCallbackServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -474,8 +608,8 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback_array(
     ))
 }
 
-pub(in crate::builtins::modules) fn builtin_preg_split(
-    context: &mut BuiltinContext<'_>,
+fn preg_split(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -494,6 +628,17 @@ pub(in crate::builtins::modules) fn builtin_preg_split(
         .map(|value| int_arg("preg_split", value))
         .transpose()?
         .unwrap_or(0);
+    if flags & pcre::PREG_SPLIT_DELIM_CAPTURE == 0
+        && let Ok(Some(literal)) = pcre::simple_literal_pattern(&pattern)
+    {
+        return preg_split_literal(
+            context,
+            subject.as_bytes(),
+            literal.as_bytes(),
+            limit,
+            flags,
+        );
+    }
     let Some(compiled) = compile_preg_pattern(context, "preg_split", pattern, span) else {
         return Ok(Value::Bool(false));
     };
@@ -537,7 +682,7 @@ pub(in crate::builtins::modules) fn builtin_preg_split(
 }
 
 fn preg_split_non_empty_matches(
-    context: &mut BuiltinContext<'_>,
+    context: &mut PcreBuiltinServices<'_, '_>,
     compiled: &pcre::CompiledPattern,
     subject_bytes: &[u8],
     limit: i64,
@@ -578,8 +723,39 @@ fn preg_split_non_empty_matches(
     Ok(Value::Array(pieces))
 }
 
+fn preg_split_literal(
+    context: &mut PcreBuiltinServices<'_, '_>,
+    subject_bytes: &[u8],
+    needle: &[u8],
+    limit: i64,
+    flags: i64,
+) -> BuiltinResult {
+    let mut pieces = PhpArray::new();
+    let mut last_end = 0usize;
+    let mut emitted = 0i64;
+    while last_end <= subject_bytes.len() {
+        if limit > 0 && emitted >= limit - 1 {
+            break;
+        }
+        let Some((start, end)) = find_literal_match(subject_bytes, needle, last_end) else {
+            break;
+        };
+        append_split_piece(
+            &mut pieces,
+            &subject_bytes[last_end..start],
+            last_end,
+            flags,
+        );
+        last_end = end;
+        emitted += 1;
+    }
+    append_split_piece(&mut pieces, &subject_bytes[last_end..], last_end, flags);
+    context.clear_preg_last_error();
+    Ok(Value::Array(pieces))
+}
+
 fn preg_split_with_empty_matches(
-    context: &mut BuiltinContext<'_>,
+    context: &mut PcreBuiltinServices<'_, '_>,
     compiled: &pcre::CompiledPattern,
     subject_bytes: &[u8],
     limit: i64,
@@ -673,8 +849,8 @@ fn next_split_search_offset(subject: &[u8], offset: usize, utf8_mode: bool) -> u
         .map_or(offset + 1, |character| offset + character.len_utf8())
 }
 
-pub(in crate::builtins::modules) fn builtin_preg_grep(
-    context: &mut BuiltinContext<'_>,
+fn preg_grep(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -687,6 +863,23 @@ pub(in crate::builtins::modules) fn builtin_preg_grep(
         .map(|value| int_arg("preg_grep", value))
         .transpose()?
         .unwrap_or(0);
+    if let Ok(Some(literal)) = pcre::simple_literal_pattern(&pattern) {
+        let Value::Array(input) = deref_value(&args[1]) else {
+            return Err(type_error("preg_grep", "array", &args[1]));
+        };
+        let mut output = PhpArray::new();
+        for (key, value) in input.iter() {
+            let text = context
+                .string_cast_value(value, span.clone())
+                .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
+            let is_match = find_literal_match(text.as_bytes(), literal.as_bytes(), 0).is_some();
+            if is_match != (flags & pcre::PREG_GREP_INVERT != 0) {
+                output.insert(key.clone(), value.clone());
+            }
+        }
+        context.clear_preg_last_error();
+        return Ok(Value::Array(output));
+    }
     let Some(compiled) = compile_preg_pattern(context, "preg_grep", pattern, span.clone()) else {
         return Ok(Value::Bool(false));
     };
@@ -695,7 +888,8 @@ pub(in crate::builtins::modules) fn builtin_preg_grep(
     };
     let mut output = PhpArray::new();
     for (key, value) in input.iter() {
-        let text = string_cast_value(context, value, span.clone())
+        let text = context
+            .string_cast_value(value, span.clone())
             .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
         if let Err(error) = context
             .pcre_cache()
@@ -730,16 +924,16 @@ pub(in crate::builtins::modules) fn builtin_preg_quote(
         .and_then(|delimiter| delimiter.as_bytes().first().copied());
     Ok(Value::string(pcre::preg_quote(text.as_bytes(), delimiter)))
 }
-pub(in crate::builtins::modules) fn builtin_preg_last_error(
-    context: &mut BuiltinContext<'_>,
+fn preg_last_error(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("preg_last_error", &args, 0)?;
     Ok(Value::Int(context.preg_last_error().0))
 }
-pub(in crate::builtins::modules) fn builtin_preg_last_error_msg(
-    context: &mut BuiltinContext<'_>,
+fn preg_last_error_msg(
+    context: &mut PcreBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -748,7 +942,7 @@ pub(in crate::builtins::modules) fn builtin_preg_last_error_msg(
 }
 
 fn preg_replace_failure(
-    context: &mut BuiltinContext<'_>,
+    context: &mut PcreBuiltinServices<'_, '_>,
     error: pcre::PcreFailure,
 ) -> BuiltinResult {
     context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));

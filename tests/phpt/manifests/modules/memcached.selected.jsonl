@@ -1,2 +1,3 @@
 {"path":"tests/phpt/generated/memcached/basic.phpt"}
 {"path":"tests/phpt/generated/memcached/options-advanced.phpt"}
+{"path":"tests/phpt/generated/memcached/live-endpoint.phpt"}

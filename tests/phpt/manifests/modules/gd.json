@@ -4,14 +4,14 @@
   "priority":"bounded GD-compatible media fallback",
   "selected_manifest":"tests/phpt/manifests/modules/gd.selected.jsonl",
   "corpus_count":312,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":2,
+  "pass_count":2,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":310,
-  "scope":["gd_info","GdImage","imagecreatefromstring","imagecreatefromjpeg","imagecreatefrompng","imagecreatetruecolor","imagesx","imagesy","imagecopyresampled","imagejpeg","imagepng","imagedestroy"],
-  "non_scope":["full GD drawing API","fonts/text rendering","alpha/blending matrix","AVIF/WebP writing","Imagick"],
+  "scope":["gd_info","GdImage","imagecreatefromstring","imagecreatefromjpeg","imagecreatefrompng","imagecreatetruecolor","imagesx","imagesy","imagecolorallocate","imagecolorallocatealpha","imagecolortransparent","imagefill","imagefilledrectangle","imagerectangle","imageline","imagecopy","imagecopyresized","imagecopyresampled","imagecopymerge","imagescale","imagerotate","imageflip","imagealphablending","imagesavealpha","imagejpeg","imagepng","imagedestroy"],
+  "non_scope":["GIF/WebP codecs without enabled image crate features","libgd-exact palette semantics","fonts/text rendering","complete alpha/blending matrix","AVIF/WebP writing","Imagick"],
   "target_gates":["nix develop -c cargo test -p php_runtime gd","nix develop -c cargo test -p php_vm","nix develop -c just phpt-dev-module MODULE=gd","nix develop -c just verify-phpt"],
   "next_step":"Expand GD only with focused fixtures and approved image dependency policy."
 }

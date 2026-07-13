@@ -1,0 +1,33 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "FFI"
+    },
+    {
+      "kind": "class",
+      "name": "FFI\\CData"
+    },
+    {
+      "kind": "class",
+      "name": "FFI\\CType"
+    },
+    {
+      "kind": "class",
+      "name": "FFI\\Exception"
+    },
+    {
+      "kind": "class",
+      "name": "FFI\\ParserException"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "ffi",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

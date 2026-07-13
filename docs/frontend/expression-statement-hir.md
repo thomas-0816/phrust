@@ -1,6 +1,6 @@
 # Expression and Statement HIR
 
-Work item lowers expressions and statements into structural HIR. The lowering
+The semantic frontend lowers expressions and statements into structural HIR. The lowering
 is intentionally non-executing: includes, eval, exit, calls, object creation,
 and PHP 8.5 forms are represented as nodes only.
 

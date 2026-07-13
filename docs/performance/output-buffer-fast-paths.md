@@ -1,6 +1,6 @@
 # Performance Output Buffer Fast Paths
 
-Work item keeps PHP-visible output semantics unchanged while reducing
+The performance layer keeps PHP-visible output semantics unchanged while reducing
 avoidable work in string-heavy output paths.
 
 ## Implemented Paths

@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds directory resources and deterministic local directory/glob
+The standard library provides directory resources and deterministic local directory/glob
 helpers on top of the Standard library filesystem capability model.
 
 ## Implemented Functions

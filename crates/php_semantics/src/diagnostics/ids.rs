@@ -45,6 +45,8 @@ pub enum DiagnosticId {
     InvalidTypeParentContext,
     /// `callable` type used in a disallowed context.
     InvalidTypeCallableContext,
+    /// Non-class type used as an intersection member.
+    InvalidIntersectionMember,
     /// Duplicate type alternative in a union or intersection.
     DuplicateTypeAlternative,
     /// Duplicate declaration modifier.
@@ -123,6 +125,7 @@ impl DiagnosticId {
             Self::InvalidTypeSelfContext => "E_PHP_INVALID_TYPE_SELF_CONTEXT",
             Self::InvalidTypeParentContext => "E_PHP_INVALID_TYPE_PARENT_CONTEXT",
             Self::InvalidTypeCallableContext => "E_PHP_INVALID_TYPE_CALLABLE_CONTEXT",
+            Self::InvalidIntersectionMember => "E_PHP_INVALID_INTERSECTION_MEMBER",
             Self::DuplicateTypeAlternative => "E_PHP_DUPLICATE_TYPE_ALTERNATIVE",
             Self::DuplicateModifier => "E_PHP_DUPLICATE_MODIFIER",
             Self::IncompatibleModifiers => "E_PHP_INCOMPATIBLE_MODIFIERS",

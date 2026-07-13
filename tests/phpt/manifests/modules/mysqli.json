@@ -4,14 +4,14 @@
   "priority":"wordpress mysqli MVP classification",
   "selected_manifest":"tests/phpt/manifests/modules/mysqli.selected.jsonl",
   "corpus_count":442,
-  "selected_count":2,
-  "pass_count":2,
-  "skip_count":0,
+  "selected_count":10,
+  "pass_count":6,
+  "skip_count":4,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":442,
-  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes","WordPress mysqli MVP visibility","opt-in SQLite compatibility query/fetch/status flow"],
-  "non_scope":["full mysqli PHPT parity","prepared statements until selected fixtures require them","mysqlnd/libmysql behavior","Zend extension ABI","MySQL wire-protocol parity for the SQLite compatibility adapter"],
+  "known_failure_count":432,
+  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes","WordPress mysqli MVP visibility","opt-in SQLite compatibility query/fetch/status flow","mysqlnd-shaped stats/options/ping/transaction/multi-result operations under the phrust-only SQLite compatibility fixture","selected prepared-statement bind-param, bind-result, get-result, and result-metadata behavior"],
+  "non_scope":["full mysqli PHPT parity","complete mysqlnd/libmysql behavior","Zend extension ABI","MySQL wire-protocol parity for the SQLite compatibility adapter","connection pooling for p: persistent host syntax"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=mysqli","nix develop -c just verify-phpt"],
-  "next_step":"Broaden prepared-statement coverage only with selected fixtures; keep live MySQL/MariaDB under PHRUST_MYSQL_TEST_DSN and SQLite compatibility under PHRUST_MYSQLI_SQLITE_COMPAT."
+  "next_step":"Continue upstream mysqli corpus promotion behind explicit live MySQL/MariaDB DSNs; keep SQLite compatibility under PHRUST_MYSQLI_SQLITE_COMPAT and do not report it as protocol parity."
 }

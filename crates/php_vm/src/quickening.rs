@@ -313,6 +313,21 @@ impl PartialEq for QuickeningTable {
 impl Eq for QuickeningTable {}
 
 impl QuickeningTable {
+    pub(crate) fn touched_site_count(&self) -> usize {
+        self.entries.len().saturating_add(
+            self.dense_functions
+                .iter()
+                .map(|function| {
+                    function
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.is_touched())
+                        .count()
+                })
+                .sum::<usize>(),
+        )
+    }
+
     /// Observes one instruction dispatch and updates metadata only.
     pub fn observe(
         &mut self,

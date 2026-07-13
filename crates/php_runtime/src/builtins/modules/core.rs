@@ -7,7 +7,7 @@ use super::super::context::{
     JSON_INVALID_UTF8_SUBSTITUTE, JSON_NUMERIC_CHECK, JSON_PARTIAL_OUTPUT_ON_ERROR,
     JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
     JSON_UNESCAPED_LINE_TERMINATORS, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE,
-    json_error_message,
+    JsonBuiltinServices, PcreCallbackServiceAccess, PcreServiceAccess, json_error_message,
 };
 use super::super::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
@@ -366,6 +366,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new("serialize", builtin_serialize, BuiltinCompatibility::Php),
     BuiltinEntry::new("setlocale", builtin_setlocale, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "settype",
+        builtin_settype_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "set_error_handler",
         builtin_error_handling_requires_vm,
@@ -976,6 +981,18 @@ pub(in crate::builtins::modules) fn builtin_get_debug_type(
     Ok(Value::string(php_debug_type(
         &args.into_iter().next().expect("checked arity"),
     )))
+}
+
+pub(in crate::builtins::modules) fn builtin_settype_requires_vm(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("settype", &args, 2)?;
+    Err(BuiltinError::new(
+        "E_PHP_RUNTIME_CALLABLE_CONTEXT_REQUIRED",
+        "settype requires VM cast dispatch",
+    ))
 }
 
 pub(in crate::builtins::modules) fn builtin_get_resource_id(
@@ -2366,9 +2383,9 @@ pub(in crate::builtins::modules) fn php_value_to_json_checked(
 struct JsonEncodeState {
     partial: bool,
     first_error: Option<i64>,
-    active_arrays: Vec<usize>,
+    active_arrays: Vec<u64>,
     active_objects: Vec<u64>,
-    active_references: Vec<usize>,
+    active_references: Vec<u64>,
     depth: usize,
     max_depth: usize,
 }
@@ -2834,8 +2851,8 @@ fn json_pretty_indent_for_php(encoded: &str) -> String {
     normalized
 }
 
-pub(in crate::builtins::modules) fn compile_preg_pattern(
-    context: &mut BuiltinContext<'_>,
+pub(in crate::builtins::modules) fn compile_preg_pattern<S: PcreServiceAccess>(
+    context: &mut S,
     function_name: &str,
     pattern: PhpString,
     span: RuntimeSourceSpan,
@@ -2857,7 +2874,7 @@ pub(in crate::builtins::modules) fn compile_preg_pattern(
     }
 }
 
-fn pcre_match_limits_from_ini(context: &BuiltinContext<'_>) -> pcre::PcreMatchLimits {
+fn pcre_match_limits_from_ini<S: PcreServiceAccess>(context: &S) -> pcre::PcreMatchLimits {
     pcre::PcreMatchLimits {
         backtrack_limit: pcre_ini_u32(context, "pcre.backtrack_limit"),
         recursion_limit: pcre_ini_u32(context, "pcre.recursion_limit"),
@@ -2867,14 +2884,14 @@ fn pcre_match_limits_from_ini(context: &BuiltinContext<'_>) -> pcre::PcreMatchLi
     }
 }
 
-fn pcre_ini_u32(context: &BuiltinContext<'_>, name: &str) -> Option<u32> {
+fn pcre_ini_u32<S: PcreServiceAccess>(context: &S, name: &str) -> Option<u32> {
     context
         .ini_get(name)
         .and_then(|value| value.trim().parse::<u32>().ok())
 }
 
-pub(in crate::builtins::modules) fn preg_failure(
-    context: &mut BuiltinContext<'_>,
+pub(in crate::builtins::modules) fn preg_failure<S: PcreServiceAccess>(
+    context: &mut S,
     error: pcre::PcreFailure,
 ) -> BuiltinResult {
     context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
@@ -3045,8 +3062,8 @@ pub(in crate::builtins::modules) fn preg_replace_bytes(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::builtins::modules) fn preg_replace_callback_subject(
-    context: &mut BuiltinContext<'_>,
+pub(in crate::builtins::modules) fn preg_replace_callback_subject<S: PcreCallbackServiceAccess>(
+    context: &mut S,
     compiled: &pcre::CompiledPattern,
     callback: BuiltinEntry,
     subject: &Value,
@@ -3105,8 +3122,8 @@ pub(in crate::builtins::modules) fn preg_replace_callback_subject(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
-    context: &mut BuiltinContext<'_>,
+pub(in crate::builtins::modules) fn preg_replace_callback_bytes<S: PcreCallbackServiceAccess>(
+    context: &mut S,
     compiled: &pcre::CompiledPattern,
     callback: BuiltinEntry,
     subject: &[u8],
@@ -3129,8 +3146,8 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
                 return Ok(false);
             }
             output.extend_from_slice(&subject[last_end..full.start()]);
-            let callback_result = (callback.function())(
-                context,
+            let callback_result = context.invoke_builtin(
+                callback,
                 vec![pcre::captures_to_array_with_names(
                     &captures,
                     compiled.capture_names(),
@@ -3259,7 +3276,7 @@ pub(in crate::builtins::modules) fn append_split_piece(
 }
 
 pub(in crate::builtins::modules) fn json_failure(
-    context: &mut BuiltinContext<'_>,
+    context: &mut JsonBuiltinServices<'_>,
     flags: i64,
     code: i64,
 ) -> BuiltinResult {
@@ -3276,14 +3293,14 @@ pub(in crate::builtins::modules) fn json_failure(
 
 pub(in crate::builtins::modules) fn json_std_class() -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name("stdClass"),
+        name: normalize_class_name("stdClass").into(),
         parent: None,
-        interfaces: Vec::new(),
-        methods: Vec::new(),
-        properties: Vec::new(),
-        constants: Vec::new(),
-        enum_cases: Vec::new(),
-        attributes: Vec::new(),
+        interfaces: vec![],
+        methods: vec![],
+        properties: vec![],
+        constants: vec![],
+        enum_cases: vec![],
+        attributes: vec![],
         enum_backing_type: None,
         constructor_id: None,
         flags: ClassFlags::default(),
@@ -6510,19 +6527,14 @@ mod tests {
         JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, PHP_QUERY_RFC3986, PHP_RAND_MAX,
         RuntimeSourceSpan, SORT_FLAG_CASE, SORT_NUMERIC, SORT_REGULAR, SORT_STRING,
     };
+    use crate::api::*;
     use crate::builtins::context::{
         JSON_BIGINT_AS_STRING, JSON_ERROR_CTRL_CHAR, JSON_ERROR_DEPTH, JSON_ERROR_NON_BACKED_ENUM,
         JSON_ERROR_NONE, JSON_ERROR_STATE_MISMATCH, JSON_FORCE_OBJECT, JSON_HEX_AMP, JSON_HEX_APOS,
         JSON_HEX_QUOT, JSON_HEX_TAG, JSON_NUMERIC_CHECK, JSON_OBJECT_AS_ARRAY,
         JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
     };
-    use crate::{
-        ArrayKey, BuiltinRegistry, ClassEntry, ClassEnumBackingType, ClassFlags,
-        ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, ClosurePayload,
-        FilesystemCapabilities, ObjectRef, OutputBuffer, PhpArray, PhpString, ReferenceCell,
-        ResourceTable, RuntimeHttpResponseState, RuntimeType, StreamFlags, StreamMetadata,
-        StrtokState, Value, datetime, layout_stats, normalize_class_name, pcre,
-    };
+    use crate::{datetime, layout_stats, pcre};
     use std::path::PathBuf;
 
     fn call(name: &str, args: Vec<Value>, output: &mut OutputBuffer) -> Value {
@@ -7579,8 +7591,8 @@ mod tests {
             Value::string("resource (stream)")
         );
 
-        assert!(resources.close(crate::ResourceId::new(1)));
-        assert!(!resources.close(crate::ResourceId::new(1)));
+        assert!(resources.close(ResourceId::new(1)));
+        assert!(!resources.close(ResourceId::new(1)));
         assert_eq!(
             call("get_resource_type", vec![resource.clone()], &mut output),
             Value::string("Unknown")
@@ -10188,7 +10200,7 @@ mod tests {
 
     fn empty_class(name: &str) -> ClassEntry {
         ClassEntry {
-            name: normalize_class_name(name),
+            name: normalize_class_name(name).into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -10230,7 +10242,7 @@ mod tests {
             });
         }
         ClassEntry {
-            name: normalize_class_name(name),
+            name: normalize_class_name(name).into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -10314,7 +10326,7 @@ mod tests {
             vec![
                 Value::user_function_callable("test1"),
                 Value::closure(crate::ClosurePayload::new(3, Vec::new()).with_debug(Some(
-                    crate::ClosureDebugInfo {
+                    ClosureDebugInfo {
                         name: "{closure:/tmp/source.php:7}".to_owned(),
                         file: "/tmp/source.php".to_owned(),
                         line: 7,
@@ -10332,7 +10344,7 @@ mod tests {
                             Value::Int(2),
                         )],
                     )
-                    .with_debug(Some(crate::ClosureDebugInfo {
+                    .with_debug(Some(ClosureDebugInfo {
                         name: "{closure:/tmp/source.php:9}".to_owned(),
                         file: "/tmp/source.php".to_owned(),
                         line: 9,
@@ -10390,7 +10402,7 @@ mod tests {
                     )],
                 )
                 .with_bound_this(Some(bound_this))
-                .with_debug(Some(crate::ClosureDebugInfo {
+                .with_debug(Some(ClosureDebugInfo {
                     name: "{closure:/tmp/order.php:3}".to_owned(),
                     file: "/tmp/order.php".to_owned(),
                     line: 3,
@@ -11737,6 +11749,19 @@ mod tests {
                 &mut output
             ),
             Value::string("?a=1&amp;b=2&#038;c=3&#x26;d=4")
+        );
+        assert_eq!(
+            call(
+                "htmlspecialchars",
+                vec![
+                    Value::string("PhrustBenchmark &raquo; Feed"),
+                    Value::Int(3),
+                    Value::string("UTF-8"),
+                    Value::Bool(false)
+                ],
+                &mut output
+            ),
+            Value::string("PhrustBenchmark &raquo; Feed")
         );
         assert_eq!(
             call(

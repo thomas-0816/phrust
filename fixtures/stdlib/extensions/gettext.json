@@ -1,0 +1,153 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "_",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "bind_textdomain_codeset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "bindtextdomain",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "dcgettext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "dcngettext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "dgettext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "dngettext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "gettext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "ngettext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gettext",
+        "source": "ext/gettext/gettext.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gettext"
+        }
+      ],
+      "name": "textdomain",
+      "visibility": "php"
+    }
+  ],
+  "name": "gettext",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

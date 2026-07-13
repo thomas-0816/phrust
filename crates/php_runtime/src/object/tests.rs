@@ -7,7 +7,7 @@ mod identity_storage {
     #[test]
     fn object_refs_preserve_identity_and_independent_properties() {
         let class = ClassEntry {
-            name: "box".to_owned(),
+            name: "box".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -53,7 +53,7 @@ mod identity_storage {
     #[test]
     fn object_clone_shallow_copies_properties_with_new_identity() {
         let class = ClassEntry {
-            name: "box".to_owned(),
+            name: "box".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -87,7 +87,7 @@ mod identity_storage {
     #[test]
     fn destructor_queue_mvp_can_key_objects_by_stable_identity() {
         let class = ClassEntry {
-            name: "destructible".to_owned(),
+            name: "destructible".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -112,7 +112,7 @@ mod identity_storage {
     #[test]
     fn released_object_ids_are_reused_in_lifo_order() {
         let class = ClassEntry {
-            name: "box".to_owned(),
+            name: "box".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -142,7 +142,7 @@ mod identity_storage {
     #[test]
     fn object_refs_preserve_parent_metadata_and_declared_properties() {
         let class = ClassEntry {
-            name: "child".to_owned(),
+            name: "child".to_owned().into(),
             parent: Some("base".to_owned()),
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -181,7 +181,7 @@ mod identity_storage {
     #[test]
     fn object_storage_keeps_first_order_slot_for_overridden_properties() {
         let class = ClassEntry {
-            name: "child".to_owned(),
+            name: "child".to_owned().into(),
             parent: Some("base".to_owned()),
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -248,7 +248,7 @@ mod identity_storage {
     #[test]
     fn property_storage_skips_static_slots_and_unsets_dynamic_slots() {
         let class = ClassEntry {
-            name: "slots".to_owned(),
+            name: "slots".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -294,7 +294,7 @@ mod identity_storage {
     #[test]
     fn private_property_debug_label_uses_encoded_declaring_class() {
         let class = ClassEntry {
-            name: "child".to_owned(),
+            name: "child".to_owned().into(),
             parent: Some("base".to_owned()),
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -327,7 +327,7 @@ mod identity_storage {
     #[test]
     fn property_hooks_virtual_properties_do_not_allocate_backing_storage() {
         let class = ClassEntry {
-            name: "hooks".to_owned(),
+            name: "hooks".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -366,7 +366,7 @@ mod identity_storage {
     /// property (present with the `Uninitialized` sentinel, not absent).
     fn representative_class() -> ClassEntry {
         ClassEntry {
-            name: "child".to_owned(),
+            name: "child".to_owned().into(),
             parent: Some("base".to_owned()),
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -558,7 +558,7 @@ mod enum_metadata {
     #[test]
     fn enum_case_metadata_initializes_name_and_value_slots() {
         let class = ClassEntry {
-            name: "priority".to_owned(),
+            name: "priority".to_owned().into(),
             parent: None,
             interfaces: vec!["unitenum".to_owned(), "backedenum".to_owned()],
             methods: Vec::new(),
@@ -644,7 +644,7 @@ mod attribute_reflection_metadata {
             span: Some((1, 20, 42)),
         };
         let class = ClassEntry {
-            name: "with_attributes".to_owned(),
+            name: "with_attributes".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -680,7 +680,7 @@ mod attribute_reflection_metadata {
             span: Some((0, 12, 28)),
         };
         let class = ClassEntry {
-            name: "reflectiontarget".to_owned(),
+            name: "reflectiontarget".to_owned().into(),
             parent: Some("basecontroller".to_owned()),
             interfaces: vec!["reflectioncontract".to_owned()],
             methods: vec![ClassMethodEntry {
@@ -743,7 +743,7 @@ mod attribute_reflection_metadata {
         );
 
         let enum_class = ClassEntry {
-            name: "runtime_status_fixture".to_owned(),
+            name: "runtime_status_fixture".to_owned().into(),
             parent: None,
             interfaces: vec!["unitenum".to_owned(), "backedenum".to_owned()],
             methods: Vec::new(),
@@ -798,7 +798,7 @@ mod class_metadata {
     #[test]
     fn late_static_class_constants_remain_class_metadata() {
         let class = ClassEntry {
-            name: "meta".to_owned(),
+            name: "meta".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -828,7 +828,7 @@ mod class_metadata {
     #[test]
     fn trait_method_origin_metadata_is_not_lost() {
         let class = ClassEntry {
-            name: "uses_trait".to_owned(),
+            name: "uses_trait".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: vec![ClassMethodEntry {
@@ -854,7 +854,7 @@ mod class_metadata {
     #[test]
     fn interface_metadata_is_preserved_on_class_entries() {
         let class = ClassEntry {
-            name: "implementation".to_owned(),
+            name: "implementation".to_owned().into(),
             parent: Some("base".to_owned()),
             interfaces: vec!["runnable".to_owned(), "stringable".to_owned()],
             methods: Vec::new(),
@@ -874,7 +874,7 @@ mod class_metadata {
     #[test]
     fn iterator_interface_metadata_is_preserved() {
         let class = ClassEntry {
-            name: "cursor".to_owned(),
+            name: "cursor".to_owned().into(),
             parent: None,
             interfaces: vec!["iterator".to_owned(), "iteratoraggregate".to_owned()],
             methods: Vec::new(),
@@ -903,7 +903,7 @@ mod magic_metadata {
     #[test]
     fn magic_property_method_metadata_is_preserved_for_vm_dispatch() {
         let class = ClassEntry {
-            name: "overloaded".to_owned(),
+            name: "overloaded".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: vec![
@@ -961,7 +961,7 @@ mod magic_metadata {
     #[test]
     fn serialization_magic_method_metadata_is_preserved_for_gap_reporting() {
         let class = ClassEntry {
-            name: "serializable_box".to_owned(),
+            name: "serializable_box".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: vec![

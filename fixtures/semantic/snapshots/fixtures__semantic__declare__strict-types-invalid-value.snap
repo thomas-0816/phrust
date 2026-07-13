@@ -10,7 +10,7 @@ symbols:
   - function strict_types_invalid_fixture
 hir_summary:
   statements: 3
-  expressions: 3
+  expressions: 6
   types: 2
   const_exprs: 0
   class_likes: 0

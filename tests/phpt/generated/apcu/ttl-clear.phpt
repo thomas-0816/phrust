@@ -1,5 +1,5 @@
 --TEST--
-APCu request-local TTL and clear-cache behavior
+APCu process-local TTL and clear-cache behavior
 --SKIPIF--
 <?php if (!extension_loaded("apcu")) die("skip apcu extension not loaded"); ?>
 --FILE--

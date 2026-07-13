@@ -4,8 +4,10 @@
 
 - Reflection metadata for functions, parameters, classes, methods, properties,
   attributes, enums, and extensions.
-- Aggregate selected reflection behavior is verified through 22 selected PHPT
+- Aggregate selected reflection behavior is verified through 23 selected PHPT
   fixtures against the php-src oracle.
+- App extension class/function/method owner metadata is covered for PDO, curl,
+  zip, fileinfo, OpenSSL object classes, DOM, and intl.
 
 ## Known gaps
 

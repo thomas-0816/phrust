@@ -1,7 +1,5 @@
 # Builtin Intrinsics Ladder
 
-Date: 2026-06-28.
-
 This note defines the fastest-engine intrinsic ladder for hot PHP internal
 functions. Intrinsics are exact fast paths over existing VM/runtime semantics,
 not alternate standard-library implementations.

@@ -1,7 +1,5 @@
 # Hot/Cold Semantic Splitting
 
-Date: 2026-06-28.
-
 This audit tracks the current hot/cold boundary for interpreter fast paths. The
 policy is conservative: the VM may keep exact fast guards in hot opcode
 handlers, but diagnostics, conversions, magic behavior, references, COW,

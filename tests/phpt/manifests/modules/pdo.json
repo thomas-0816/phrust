@@ -4,14 +4,14 @@
   "priority":"data-platform classification",
   "selected_manifest":"tests/phpt/manifests/modules/pdo.selected.jsonl",
   "corpus_count":296,
-  "selected_count":3,
-  "pass_count":3,
+  "selected_count":4,
+  "pass_count":4,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":296,
-  "scope":["extension_loaded(\"pdo\")","PDO class platform probe","PDOException platform probe","SQLite DSN construction","PDO exec/query/prepare","PDOStatement execute/fetch/fetchAll/fetchColumn/rowCount/columnCount","transactions","lastInsertId","selected ERRMODE_EXCEPTION failures"],
+  "scope":["extension_loaded(\"pdo\")","PDO class platform probe","PDOException platform probe","SQLite DSN construction","PDO exec/query/prepare","PDOStatement execute/fetch/fetchAll/fetchColumn/rowCount/columnCount","transactions","PDO::inTransaction","lastInsertId","selected ERRMODE_EXCEPTION failures","pdo_drivers php-src oracle fixture"],
   "non_scope":["network database clients","non-SQLite PDO drivers","full cursor scrollability","Zend extension ABI"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=pdo","nix develop -c just verify-phpt"],
+  "target_gates":["nix develop -c cargo fmt --all --check","nix develop -c cargo test -p php_runtime pdo -- --nocapture","nix develop -c cargo test -p php_vm pdo -- --nocapture","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pdo","nix develop -c just composer-smoke"],
   "next_step":"Broaden non-SQLite drivers and advanced cursor/attribute behavior only with selected fixtures."
 }

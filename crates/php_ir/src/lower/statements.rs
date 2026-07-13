@@ -266,8 +266,8 @@ impl LoweringContext<'_> {
             HirStmtKind::Unset { expressions } => {
                 self.lower_unset_stmt(builder, function, block, stmt_id, expressions)
             }
-            HirStmtKind::Static { variables } => {
-                self.lower_static_stmt(builder, function, block, stmt_id, variables)
+            HirStmtKind::Static { locals } => {
+                self.lower_static_stmt(builder, function, block, stmt_id, locals)
             }
             HirStmtKind::Global { variables } => {
                 self.lower_global_stmt(builder, function, block, stmt_id, variables)
@@ -329,25 +329,26 @@ impl LoweringContext<'_> {
             return block;
         };
         let span = span_from_range(self.file, self.span_for(SourceMappedId::from(stmt_id)));
-        let names = if variables.is_empty() {
-            self.global_names_from_stmt_source(stmt_id)
-        } else {
-            variables
-                .into_iter()
-                .filter_map(|variable| {
-                    let expression = module.expressions().get(variable)?;
-                    let HirExprKind::Variable { name } = expression.kind() else {
-                        self.unsupported(
-                            UnsupportedFeature::HirStatement,
-                            self.span_for(SourceMappedId::from(variable)),
-                            "dynamic global variables are not lowered to IR in runtime-semantics",
-                        );
-                        return None;
-                    };
-                    Some(local_name(name).to_owned())
-                })
-                .collect()
-        };
+        let names: Vec<_> = variables
+            .into_iter()
+            .filter_map(|variable| {
+                let expression = module.expressions().get(variable)?;
+                let HirExprKind::Variable {
+                    name,
+                    sigil_count: 1,
+                    dynamic: None,
+                } = expression.kind()
+                else {
+                    self.unsupported(
+                        UnsupportedFeature::HirStatement,
+                        self.span_for(SourceMappedId::from(variable)),
+                        "dynamic global variables are not lowered to IR in runtime-semantics",
+                    );
+                    return None;
+                };
+                Some(local_name(name).to_owned())
+            })
+            .collect();
         for name in names {
             let local = builder.intern_local(function, &name);
             builder.emit(
@@ -374,46 +375,15 @@ impl LoweringContext<'_> {
             .map(|(_, name, function)| (name.clone(), *function))
     }
 
-    pub(super) fn global_names_from_stmt_source(&mut self, stmt_id: StmtId) -> Vec<String> {
-        let range = self.span_for(SourceMappedId::from(stmt_id));
-        let Some(source) = self.source_text.slice(range) else {
-            return Vec::new();
-        };
-        let source = source.to_owned();
-        let Some(rest) = source.trim().strip_prefix("global") else {
-            return Vec::new();
-        };
-        rest.trim_end_matches(';')
-            .split(',')
-            .filter_map(|item| {
-                let name = item.trim();
-                let name = name.strip_prefix('$')?;
-                if name.is_empty()
-                    || !name
-                        .chars()
-                        .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                {
-                    self.unsupported(
-                        UnsupportedFeature::HirStatement,
-                        range,
-                        "dynamic global variables are not lowered to IR in runtime-semantics",
-                    );
-                    return None;
-                }
-                Some(name.to_owned())
-            })
-            .collect()
-    }
-
     pub(super) fn lower_static_stmt(
         &mut self,
         builder: &mut IrBuilder,
         function: FunctionId,
         block: BlockId,
         stmt_id: StmtId,
-        variables: Vec<ExprId>,
+        locals: Vec<php_semantics::hir::HirStaticLocal>,
     ) -> BlockId {
-        let specs = self.static_local_specs(stmt_id, &variables);
+        let specs = self.static_local_specs(&locals);
         let mut current = block;
         for spec in specs {
             let local = builder.intern_local(function, &spec.name);
@@ -1151,32 +1121,9 @@ impl LoweringContext<'_> {
                 .frontend
                 .database()
                 .module(self.frontend.module().module_id())?;
-            destructuring_patterns(module, value_target, &|parent, fallback, element| {
-                self.destructuring_source_index(parent, fallback, element)
-            })?
+            destructuring_patterns(module, value_target)?
         };
         self.destructuring_targets_from_patterns(builder, function, patterns)
-    }
-
-    fn destructuring_source_index(
-        &self,
-        parent: ExprId,
-        fallback: usize,
-        element: ExprId,
-    ) -> Option<usize> {
-        let parent_range = self.span_for(SourceMappedId::from(parent));
-        let element_range = self.span_for(SourceMappedId::from(element));
-        if element_range.start() <= parent_range.start()
-            || element_range.start() > parent_range.end()
-        {
-            return Some(fallback);
-        }
-        let source = self.source_text.slice(php_source::TextRange::new(
-            parent_range.start().to_usize(),
-            element_range.start().to_usize(),
-        ))?;
-        let index = source.bytes().filter(|byte| *byte == b',').count();
-        Some(index)
     }
 
     pub(super) fn destructuring_targets_from_patterns(

@@ -1,0 +1,708 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "POSIX_F_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_X_OK",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_W_OK",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_R_OK",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_PC_NAME_MAX",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_PC_PATH_MAX",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_SC_NPROCESSORS_ONLN",
+      "value": {
+        "kind": "int",
+        "value": 58
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_SC_OPEN_MAX",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_CORE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_CPU",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_DATA",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_FSIZE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_NOFILE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_RSS",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "POSIX_RLIMIT_STACK",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_access",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_ctermid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_eaccess",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_fpathconf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_get_last_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getcwd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getegid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_geteuid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getgid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getgrgid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getgrnam",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getgroups",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getlogin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getpgid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getpgrp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getpid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getppid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getpwnam",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getpwuid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getrlimit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getsid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_getuid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_initgroups",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_isatty",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_kill",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_mkfifo",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_mknod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_pathconf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_setegid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_seteuid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_setgid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_setpgid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_setrlimit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_setsid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_setuid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_strerror",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_sysconf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_times",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_ttyname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "posix",
+        "source": "ext/posix/posix.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "posix"
+        }
+      ],
+      "name": "posix_uname",
+      "visibility": "php"
+    }
+  ],
+  "name": "posix",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

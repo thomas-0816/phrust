@@ -1,0 +1,17 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Pdo\\Mysql"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "pdo_mysql",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

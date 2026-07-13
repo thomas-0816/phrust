@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds pragmatic standard-library helpers for binary/hex, base64,
+The standard library provides pragmatic standard-library helpers for binary/hex, base64,
 selected PHP hash algorithms, common HTML escaping, URL encoding, and a simple
 `http_build_query` MVP.
 

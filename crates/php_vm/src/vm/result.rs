@@ -1,12 +1,14 @@
 use crate::counters::VmCounters;
 use crate::tiering::TieringStats;
+#[cfg(test)]
 use php_diagnostics::{
     DiagnosticEnvelope, DiagnosticLayer, DiagnosticPhase, DiagnosticSeverity, DiagnosticSuggestion,
 };
-use php_runtime::{
+use php_runtime::api::{
     ExecutionStatus, OutputBuffer, ReferenceCell, RuntimeDiagnostic, RuntimeHttpResponseState,
     SessionState, UploadRegistry, Value,
 };
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 /// Execution result.
@@ -18,12 +20,18 @@ pub struct VmResult {
     pub output: OutputBuffer,
     /// Structured runtime diagnostics emitted during execution.
     pub diagnostics: Vec<RuntimeDiagnostic>,
-    /// Request-local HTTP response state accumulated by web-response builtins.
-    pub http_response: RuntimeHttpResponseState,
+    /// Request-local HTTP response state accumulated by web-response
+    /// builtins. Boxed and optional: only the outermost `execute` boundary
+    /// attaches it, while every nested function return moves a `VmResult`
+    /// by value.
+    pub http_response: Option<Box<RuntimeHttpResponseState>>,
     /// Request-local upload registry state after PHP code has executed.
-    pub upload_registry: UploadRegistry,
-    /// Request-local session state after PHP code has executed.
-    pub session: SessionState,
+    /// Boxed for the same reason.
+    pub upload_registry: Option<Box<UploadRegistry>>,
+    /// Request-local session state after PHP code has executed. Boxed and
+    /// optional: only the outermost `execute` boundary attaches it, while
+    /// every nested function return moves a `VmResult` by value.
+    pub session: Option<Box<SessionState>>,
     /// Return value when execution returned successfully.
     pub return_value: Option<Value>,
     /// True when the return value came from an explicit PHP `return`.
@@ -32,31 +40,24 @@ pub struct VmResult {
     pub process_exit_code: Option<i32>,
     /// Whether the process must terminate directly instead of returning to the caller.
     pub process_exit_terminates_process: bool,
-    pub(super) yielded: Option<super::GeneratorYield>,
-    pub(super) fiber_suspension: Option<super::FiberSuspension>,
+    /// Boxed: generator/fiber suspensions are rare relative to plain
+    /// returns, and `VmResult` moves by value on every function return.
+    pub(super) yielded: Option<Box<super::GeneratorYield>>,
+    pub(super) fiber_suspension: Option<Box<super::FiberSuspension>>,
     pub(super) return_ref: Option<ReferenceCell>,
     /// Deterministic trace events captured when `VmOptions::trace` is enabled.
     pub trace: Vec<String>,
-    /// Optional performance VM/runtime counters.
-    pub counters: Option<VmCounters>,
-    /// Optional performance tiering stats.
-    pub tiering_stats: Option<TieringStats>,
-}
-
-/// VM control-flow signal, kept separate from runtime diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum VmControlFlow {
-    /// Function return.
-    Return(Option<Value>),
-    /// Future exception throw signal.
-    Throw(Value),
-    /// Loop break signal.
-    Break,
-    /// Loop continue signal.
-    Continue,
+    /// Optional performance VM/runtime counters. Boxed: the flat counter
+    /// struct is multiple kilobytes and only the outermost `execute`
+    /// boundary attaches it, while every nested function return moves a
+    /// `VmResult` by value.
+    pub counters: Option<Box<VmCounters>>,
+    /// Optional performance tiering stats. Boxed for the same reason.
+    pub tiering_stats: Option<Box<TieringStats>>,
 }
 
 /// Structured VM max-step diagnostic context.
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmStepLimitDiagnostic {
     /// Configured maximum VM steps.
@@ -71,6 +72,7 @@ pub struct VmStepLimitDiagnostic {
     pub opcode: Option<String>,
 }
 
+#[cfg(test)]
 impl VmStepLimitDiagnostic {
     /// Converts this step-limit failure to the shared diagnostic envelope.
     #[must_use]
@@ -112,12 +114,9 @@ impl VmResult {
             status: ExecutionStatus::success(),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
-            // Never observed: overwritten at the request boundary from
-            // `state.session`, discarded for inner-call returns. Cheap default
-            // avoids three heap Strings on every function return.
-            session: SessionState::placeholder(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
             return_value,
             returned_explicitly: false,
             process_exit_code: None,
@@ -144,10 +143,9 @@ impl VmResult {
             status: ExecutionStatus::success(),
             output,
             diagnostics,
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
-            // See `success`: never-observed placeholder, allocation-free.
-            session: SessionState::placeholder(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
             return_value,
             returned_explicitly: false,
             process_exit_code: None,
@@ -175,6 +173,8 @@ impl VmResult {
         result
     }
 
+    #[cold]
+    #[inline(never)]
     pub(crate) fn runtime_error_with_diagnostic(
         output: OutputBuffer,
         message: impl Into<String>,
@@ -184,9 +184,9 @@ impl VmResult {
             status: ExecutionStatus::runtime_error(message),
             output,
             diagnostics: vec![diagnostic],
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
-            session: SessionState::default(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
             return_value: None,
             returned_explicitly: false,
             process_exit_code: None,
@@ -200,14 +200,16 @@ impl VmResult {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub(super) fn compile_error(output: OutputBuffer, message: impl Into<String>) -> Self {
         Self {
             status: ExecutionStatus::compile_error(message),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
-            session: SessionState::default(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
             return_value: None,
             returned_explicitly: false,
             process_exit_code: None,
@@ -226,9 +228,9 @@ impl VmResult {
             status: ExecutionStatus::unsupported(message),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
-            session: SessionState::default(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
             return_value: None,
             returned_explicitly: false,
             process_exit_code: None,
@@ -253,9 +255,9 @@ impl VmResult {
             ),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
-            session: SessionState::default(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
             return_value: None,
             returned_explicitly: false,
             process_exit_code: None,
@@ -296,5 +298,21 @@ mod tests {
         assert_eq!(json["context"]["block_id"], "2");
         assert_eq!(json["context"]["instruction_id"], "3");
         assert_eq!(json["context"]["opcode"], "jump");
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+
+    /// `VmResult` is returned by value from every nested function call, so
+    /// inline payload growth multiplies across the whole interpreter. The
+    /// unboxed counters struct alone once pushed this to ~5.7 KB per return.
+    #[test]
+    fn vm_result_stays_call_sized() {
+        let size = std::mem::size_of::<super::VmResult>();
+        assert!(
+            size <= 320,
+            "VmResult grew to {size} bytes; it is moved by value on every function return — box new large fields"
+        );
     }
 }

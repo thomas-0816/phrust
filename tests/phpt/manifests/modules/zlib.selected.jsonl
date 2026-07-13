@@ -53,3 +53,4 @@
 {"path":"ext/zlib/tests/zlib_get_coding_type_br.phpt","module":"zlib","kind":"upstream","reason":"covers unsupported br encoding coding-type behavior"}
 {"path":"ext/zlib/tests/zlib_wrapper_fflush_basic.phpt","module":"zlib","kind":"upstream","reason":"covers target-green zlib wrapper fflush behavior"}
 {"path":"tests/basic/req44164.phpt","module":"zlib","kind":"upstream","reason":"covers Content-Length output with zlib.output_compression enabled"}
+{"path":"tests/phpt/generated/zlib/stream-filters.phpt","module":"zlib","kind":"generated","reason":"covers zlib.deflate and zlib.inflate stream filters"}

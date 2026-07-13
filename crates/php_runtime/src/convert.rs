@@ -66,8 +66,9 @@ pub fn to_bool(value: &Value) -> Result<bool, String> {
         Value::Bool(value) => Ok(*value),
         Value::Int(value) => Ok(*value != 0),
         Value::Float(value) => {
+            // NAN is truthy in PHP: only exactly 0.0/-0.0 convert to false.
             let value = value.to_f64();
-            Ok(value != 0.0 && !value.is_nan())
+            Ok(value != 0.0)
         }
         Value::String(value) => Ok(!value.is_empty() && value.as_bytes() != b"0"),
         Value::Uninitialized => Err("cannot convert uninitialized value to bool".to_owned()),
@@ -196,13 +197,43 @@ fn php_scientific_float_string(value: f64) -> String {
     output
 }
 
+/// Whether a float is exactly representable in the PHP int domain, mirroring
+/// ZEND_DOUBLE_FITS_LONG (finite and within [i64::MIN, i64::MAX + 1)).
+#[must_use]
+pub fn float_fits_int(value: f64) -> bool {
+    let min = i64::MIN as f64;
+    value.is_finite() && value >= min && value < -min
+}
+
+/// Converts a float to a PHP int with zend_dval_to_lval semantics: non-finite
+/// values become 0 and out-of-range values reduce modulo 2^64 into the i64
+/// domain instead of saturating.
+#[must_use]
+pub fn php_float_to_int(value: f64) -> i64 {
+    if float_fits_int(value) {
+        return value as i64;
+    }
+    if !value.is_finite() {
+        return 0;
+    }
+    let two_pow_64 = 2.0_f64.powi(64);
+    let mut modulus = value % two_pow_64;
+    if modulus < 0.0 {
+        modulus += two_pow_64;
+    }
+    if modulus >= -(i64::MIN as f64) {
+        modulus -= two_pow_64;
+    }
+    modulus as i64
+}
+
 /// Converts a value to an integer using explicit PHP cast rules in the subset.
 pub fn to_int(value: &Value) -> Result<i64, String> {
     match value {
         Value::Null | Value::Bool(false) => Ok(0),
         Value::Bool(true) => Ok(1),
         Value::Int(value) => Ok(*value),
-        Value::Float(value) => Ok(value.to_f64() as i64),
+        Value::Float(value) => Ok(php_float_to_int(value.to_f64())),
         Value::String(value) => Ok(classify_php_string(value)
             .value
             .map_or(0, NumericStringValue::to_i64)),
@@ -642,7 +673,7 @@ fn type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use crate::api::{
         AttributeEntry, ClassConstantEntry, ClassEntry, ClassEnumCaseEntry, ClassFlags,
         ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, ObjectRef,
     };
@@ -659,6 +690,26 @@ mod tests {
         assert!(to_bool(&Value::string(b"00".to_vec())).unwrap());
         assert!(!to_bool(&Value::packed_array(Vec::new())).unwrap());
         assert!(to_bool(&Value::packed_array(vec![Value::Int(1)])).unwrap());
+        // NAN is truthy: only exactly zero floats are false.
+        assert!(to_bool(&Value::float(f64::NAN)).unwrap());
+        assert!(!to_bool(&Value::float(0.0)).unwrap());
+        assert!(!to_bool(&Value::float(-0.0)).unwrap());
+    }
+
+    #[test]
+    fn float_to_int_uses_zend_dval_to_lval_semantics() {
+        assert_eq!(php_float_to_int(f64::NAN), 0);
+        assert_eq!(php_float_to_int(f64::INFINITY), 0);
+        assert_eq!(php_float_to_int(f64::NEG_INFINITY), 0);
+        assert_eq!(php_float_to_int(3.7), 3);
+        assert_eq!(php_float_to_int(-3.7), -3);
+        // Out-of-range floats reduce modulo 2^64 like the reference engine.
+        assert_eq!(php_float_to_int(1e30), 5_076_964_154_930_102_272);
+        assert_eq!(php_float_to_int(-1e30), -5_076_964_154_930_102_272);
+        assert!(float_fits_int(9.2e18));
+        assert!(!float_fits_int(9.3e18));
+        assert!(!float_fits_int(f64::NAN));
+        assert_eq!(to_int(&Value::float(f64::NAN)).unwrap(), 0);
     }
 
     #[test]
@@ -703,7 +754,7 @@ mod tests {
     #[test]
     fn objects_compare_by_properties_for_same_class() {
         let class = ClassEntry {
-            name: "sample".to_string(),
+            name: "sample".to_string().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -980,16 +1031,16 @@ mod tests {
         assert!(identical(&alias, &other_reference));
 
         let class = crate::ClassEntry {
-            name: "Box".to_owned(),
+            name: "Box".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
-            properties: vec![crate::ClassPropertyEntry {
+            properties: vec![ClassPropertyEntry {
                 name: "value".to_owned(),
                 default: Value::Int(1),
                 type_: None,
-                flags: crate::ClassPropertyFlags::default(),
-                hooks: crate::ClassPropertyHooks::default(),
+                flags: ClassPropertyFlags::default(),
+                hooks: ClassPropertyHooks::default(),
                 attributes: Vec::new(),
             }],
             constants: Vec::new(),

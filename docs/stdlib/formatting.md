@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements a deterministic formatting MVP for `printf`,
+The standard library implements a deterministic formatting MVP for `printf`,
 `sprintf`, `vprintf`, and `vsprintf`.
 
 Supported format surface:

@@ -4,8 +4,10 @@
 //! elsewhere in the crate legitimately enable recording via
 //! `reset_layout_stats`.
 
-use php_runtime::layout_stats::{RuntimeLayoutStats, reset_layout_stats, take_layout_stats};
-use php_runtime::{PhpArray, PhpString, Value};
+use php_runtime::api::{PhpArray, PhpString, Value};
+use php_runtime::experimental::layout_stats::{
+    RuntimeLayoutStats, reset_layout_stats, take_layout_stats,
+};
 
 #[test]
 fn recorders_are_noops_until_reset_enables_recording() {

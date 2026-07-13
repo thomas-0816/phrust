@@ -1,0 +1,4 @@
+{"surface":"ZipArchive::setCompressionName","gap":"non-store compression writes require libzip-compatible compression output; current writer only emits stored entries","examples":["CM_DEFLATE","CM_BZIP2","CM_XZ"]}
+{"surface":"ZipArchive::setCompressionIndex","gap":"non-store compression writes require libzip-compatible compression output; current writer only emits stored entries","examples":["CM_DEFLATE","CM_BZIP2","CM_XZ"]}
+{"surface":"ZipArchive encryption","gap":"password and encryption read/write semantics require libzip-compatible encryption support","examples":["setEncryptionName","setEncryptionIndex","setPassword"]}
+{"surface":"ZipArchive streaming/callbacks/attributes","gap":"libzip stateful APIs are not represented by the current in-memory stored-entry writer","examples":["getStream","registerProgressCallback","registerCancelCallback","setExternalAttributesName","setExternalAttributesIndex"]}

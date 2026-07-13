@@ -426,11 +426,16 @@ def run_engine(
 ) -> Run:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     command = command_for(engine, fixture, mode, scenario)
+    environment = normalized_env(tmp_dir)
+    # This matrix isolates Cranelift from the earlier copy-and-patch tier.
+    # Copy-and-patch is default-on and otherwise consumes the same leaf calls
+    # before either the interpreter baseline or Cranelift can observe them.
+    environment["PHRUST_JIT_COPY_PATCH"] = "0"
     started = time.perf_counter()
     completed = subprocess.run(
         command,
         cwd=ROOT,
-        env=normalized_env(tmp_dir),
+        env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

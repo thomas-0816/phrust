@@ -16,6 +16,39 @@ if [ ! -x "$ENGINE" ]; then
     exit 1
 fi
 
+python3 - <<'PY'
+from pathlib import Path
+
+inline_cache = Path("crates/php_vm/src/inline_cache.rs").read_text(encoding="utf-8")
+# The route helpers move between vm submodules as the dispatch code is
+# refactored; scan every file that can legitimately host the contracts.
+vm = "".join(
+    Path(name).read_text(encoding="utf-8")
+    for name in (
+        "crates/php_vm/src/vm/mod.rs",
+        "crates/php_vm/src/vm/calls.rs",
+        "crates/php_vm/src/vm/method_dispatch.rs",
+        "crates/php_vm/src/vm/inline_cache_access.rs",
+    )
+    if Path(name).exists()
+)
+
+forbidden = "Arc::new(declaring_class.clone())"
+if forbidden in vm:
+    raise SystemExit(f"[fail] warmed method route deep-clones its class: {forbidden}")
+
+required = {
+    "stable method route identity": "pub identity: MethodCallRouteIdentity",
+    "stable function owner identity": "unit_identity: u64",
+    "canonical declaring class handle": "owner.lookup_class_handle(&declaring_class.name)",
+    "stable compiled-unit cache key": "compiled.cache_identity()",
+}
+combined = inline_cache + vm
+for contract, needle in required.items():
+    if needle not in combined:
+        raise SystemExit(f"[fail] inline-cache route contract missing: {contract}")
+PY
+
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/*
 
@@ -408,5 +441,12 @@ if on_disabled != 0:
 if on_call_ic_megamorphic_fallbacks <= 0:
     raise SystemExit("[fail] function-call IC recorded no megamorphic fallback for dynamic call fixture")
 PY
+
+cargo test -p php_vm \
+    inline_cache::lifecycle_tests::typed_slot_layout_is_smaller_than_legacy_option_layout \
+    -- --exact --nocapture
+cargo test -p php_vm \
+    inline_cache::dense_contract_tests::dense_slot_binding_reaches_all_payloads_without_coordinate_map_access \
+    -- --exact
 
 printf '[pass] inline-cache smoke compared %s fixture(s)\n' "$fixture_count"

@@ -1,0 +1,6 @@
+Call graph:
+    4 Thread_11: php-worker-0
+    + 4 thread_start  (in libsystem_pthread.dylib) + 8  [0x2000]
+    +   4 php_vm::vm::arguments::bind_arguments  (in phrust-server) + 4  [0x2004]  arguments.rs:10
+    +     4 _xzm_free  (in libsystem_malloc.dylib) + 4  [0x2008]
+Total number in stack (recursive counted multiple, when >=5):

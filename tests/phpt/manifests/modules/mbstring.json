@@ -4,14 +4,14 @@
   "priority":"extension-policy focused",
   "selected_manifest":"tests/phpt/manifests/modules/mbstring.selected.jsonl",
   "corpus_count":420,
-  "selected_count":116,
-  "pass_count":61,
+  "selected_count":118,
+  "pass_count":63,
   "skip_count":55,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":307,
-  "scope":["bounded UTF-8 mb_strlen/mb_substr","bounded UTF-8 mb_strtolower/mb_strtoupper","bounded UTF-8 mb_strpos/mb_stripos including offset bounds","bounded UTF-8/8bit mb_strrpos and mb_strripos reverse position behavior","selected UTF-8 and 8bit mb_substr_count coverage","selected encoding mb_detect_encoding and mb_check_encoding","request-local mb_internal_encoding","selected encoding mb_convert_encoding","ISO-8859-1, Windows-1252, and Shift_JIS conversion/check/detect/length/substr/strpos coverage","mb_list_encodings, mb_encoding_aliases, and mb_substitute_character coverage","legacy single-byte include support for promoted upstream fixtures"],
-  "non_scope":["remaining 307 ext/mbstring upstream failures","full legacy encoding conversion matrix","mbregex and Oniguruma integration","locale-sensitive casing beyond selected UTF-8 fixtures","unsupported mbstring functions","MIME/header helpers and width/cut APIs"],
+  "scope":["bounded UTF-8 mb_strlen/mb_substr","bounded UTF-8 mb_strtolower/mb_strtoupper","bounded UTF-8 mb_strpos/mb_stripos including offset bounds","bounded UTF-8/8bit mb_strrpos and mb_strripos reverse position behavior","selected UTF-8 and 8bit mb_substr_count coverage","selected encoding mb_detect_encoding and mb_check_encoding","request-local mb_internal_encoding","selected encoding mb_convert_encoding","central encoding registry with aliases and encode/decode/detect support flags","UTF-8, 8BIT/Binary, ASCII, ISO-8859-1, Windows-1252, Shift_JIS/SJIS, EUC-JP, and ISO-2022-JP conversion/check/detect/list coverage","mb_list_encodings, mb_encoding_aliases, and mb_substitute_character coverage","mb_strcut, mb_strwidth, mb_strimwidth, mb_convert_case, mb_ucfirst, mb_lcfirst, mb_ord, mb_chr, and mb_parse_str selected coverage","legacy single-byte include support for promoted upstream fixtures"],
+  "non_scope":["remaining 307 ext/mbstring upstream failures","full PHP legacy encoding conversion matrix beyond the selected registry","mbregex and Oniguruma integration","locale-sensitive casing beyond selected UTF-8 fixtures","MIME/header helpers beyond selected parse_str alias coverage"],
   "target_gates":["REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR=/private/tmp/phrust-phpt-mbstring-selected-expanded nix develop -c just phpt-dev-module MODULE=mbstring","PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_MANIFEST=/private/tmp/phrust-mbstring-full-manifest.jsonl PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR=/private/tmp/phrust-phpt-mbstring-full-target-strpos nix develop -c just phpt-module-target MODULE=mbstring","nix develop -c cargo test -p php_runtime mbstring -- --nocapture","nix develop -c cargo test -p php_std mbstring"],
   "next_step":"Use a mbstring-enabled oracle for additional upstream promotions, then close legacy encoding, mbregex, MIME/helper, width/cut/count, convert-case, and exact diagnostic gaps."
 }

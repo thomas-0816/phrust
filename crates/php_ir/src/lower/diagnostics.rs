@@ -9,6 +9,9 @@ use php_diagnostics::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Stable code for an unresolved trait used during declaration composition.
+pub const MISSING_TRAIT_DIAGNOSTIC_CODE: &str = "E_PHP_IR_TRAIT_NOT_FOUND";
+
 /// Stable unsupported-feature classification.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +73,76 @@ pub enum UnsupportedFeature {
     ObjectPropertyModifier,
     /// Catch types outside `Exception`/`Throwable` are outside the exception MVP.
     CatchType,
+}
+
+/// Class-like declaration that owns a missing trait use.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingTraitOwnerKind {
+    /// Named class declaration.
+    Class,
+    /// Interface declaration.
+    Interface,
+    /// Trait declaration.
+    Trait,
+    /// Enum declaration.
+    Enum,
+    /// Anonymous class expression.
+    AnonymousClass,
+}
+
+/// Structured data for an unresolved trait composition request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MissingTraitDiagnostic {
+    /// Stable machine-readable code independent of rendered prose.
+    pub code: String,
+    /// Fully resolved and normalized trait name used for lookup.
+    pub normalized_name: String,
+    /// Trait spelling used at the source site, including aliases when present.
+    pub display_name: String,
+    /// Normalized name of the class-like declaration using the trait.
+    pub owner_normalized_name: String,
+    /// Source-facing name of the class-like declaration using the trait.
+    pub owner_display_name: String,
+    /// Kind of class-like declaration using the trait.
+    pub owner_kind: MissingTraitOwnerKind,
+    /// Source path recorded in the IR file table.
+    pub source_name: String,
+    /// Source file and byte span of the trait-use declaration.
+    pub span: IrSpan,
+}
+
+impl MissingTraitDiagnostic {
+    /// Creates one structured missing-trait diagnostic payload.
+    #[must_use]
+    pub fn new(
+        normalized_name: impl Into<String>,
+        display_name: impl Into<String>,
+        owner_normalized_name: impl Into<String>,
+        owner_display_name: impl Into<String>,
+        owner_kind: MissingTraitOwnerKind,
+        source_name: impl Into<String>,
+        span: IrSpan,
+    ) -> Self {
+        Self {
+            code: MISSING_TRAIT_DIAGNOSTIC_CODE.to_string(),
+            normalized_name: normalized_name.into(),
+            display_name: display_name.into(),
+            owner_normalized_name: owner_normalized_name.into(),
+            owner_display_name: owner_display_name.into(),
+            owner_kind,
+            source_name: source_name.into(),
+            span,
+        }
+    }
+}
+
+/// Typed lowering data used by compiler control flow.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LoweringDiagnosticPayload {
+    /// A trait-use declaration refers to a trait absent from this compilation.
+    MissingTrait(MissingTraitDiagnostic),
 }
 
 impl UnsupportedFeature {
@@ -178,6 +251,9 @@ pub struct LoweringDiagnostic {
     pub span: IrSpan,
     /// Human-readable message.
     pub message: String,
+    /// Optional typed data for consumers that need to act on the diagnostic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<LoweringDiagnosticPayload>,
 }
 
 /// Optional context for rendering a lowering diagnostic as a shared envelope.
@@ -200,6 +276,31 @@ pub struct LoweringDiagnosticContext {
 }
 
 impl LoweringDiagnostic {
+    /// Creates a generic unsupported-feature diagnostic without typed payload.
+    #[must_use]
+    pub fn unsupported(
+        feature: UnsupportedFeature,
+        span: IrSpan,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: feature.diagnostic_id().to_string(),
+            feature,
+            span,
+            message: message.into(),
+            payload: None,
+        }
+    }
+
+    /// Returns structured missing-trait data when this diagnostic carries it.
+    #[must_use]
+    pub fn missing_trait(&self) -> Option<&MissingTraitDiagnostic> {
+        match self.payload.as_ref() {
+            Some(LoweringDiagnosticPayload::MissingTrait(payload)) => Some(payload),
+            None => None,
+        }
+    }
+
     /// Converts this lowering diagnostic to the shared diagnostic envelope.
     #[must_use]
     pub fn to_diagnostic_envelope(
@@ -210,6 +311,25 @@ impl LoweringDiagnostic {
         let mut metadata = BTreeMap::new();
         metadata.insert("feature".to_string(), self.feature.as_str().to_string());
         metadata.insert("file_id".to_string(), self.span.file.raw().to_string());
+        if let Some(missing_trait) = self.missing_trait() {
+            metadata.insert("typed_code".to_string(), missing_trait.code.clone());
+            metadata.insert(
+                "missing_trait".to_string(),
+                missing_trait.normalized_name.clone(),
+            );
+            metadata.insert(
+                "missing_trait_display".to_string(),
+                missing_trait.display_name.clone(),
+            );
+            metadata.insert(
+                "owner".to_string(),
+                missing_trait.owner_normalized_name.clone(),
+            );
+            metadata.insert(
+                "owner_display".to_string(),
+                missing_trait.owner_display_name.clone(),
+            );
+        }
         if let Some(origin) = &context.origin {
             metadata.insert("origin".to_string(), origin.clone());
         }
@@ -258,4 +378,89 @@ pub(super) struct EarlyDiagnostic {
     pub(super) severity: IrDiagnosticSeverity,
     pub(super) diagnostic_id: String,
     pub(super) message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LoweringOptions, lower_frontend_result};
+    use php_semantics::analyze_source;
+
+    #[test]
+    fn missing_trait_diagnostic_preserves_rendering_and_structured_identity() {
+        let source = concat!(
+            "<?php namespace App\\Feature; ",
+            "use Vendor\\Package\\MiXeD_Trait_used_by_Name as Alias_9; ",
+            "class OwnerThing { use Alias_9; }"
+        );
+        let frontend = analyze_source(source);
+        let result = lower_frontend_result(
+            &frontend,
+            LoweringOptions {
+                source_path: "fixtures/odd-trait.php".to_string(),
+                source_text: Some(source.to_string()),
+                ..LoweringOptions::default()
+            },
+        );
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.missing_trait().is_some())
+            .expect("missing-trait diagnostic");
+        let payload = diagnostic.missing_trait().expect("typed payload");
+
+        assert_eq!(diagnostic.id, "E_PHP_IR_UNSUPPORTED_TRAIT_RUNTIME");
+        assert_eq!(
+            diagnostic.message,
+            concat!(
+                "E_PHP_IR_TRAIT_NOT_FOUND: trait ",
+                "vendor\\package\\mixed_trait_used_by_name used by ",
+                "app\\feature\\ownerthing is not declared"
+            )
+        );
+        assert_eq!(payload.code, MISSING_TRAIT_DIAGNOSTIC_CODE);
+        assert_eq!(
+            payload.normalized_name,
+            "vendor\\package\\mixed_trait_used_by_name"
+        );
+        assert_eq!(payload.display_name, "Alias_9");
+        assert_eq!(payload.owner_normalized_name, "app\\feature\\ownerthing");
+        assert_eq!(payload.owner_display_name, "App\\Feature\\OwnerThing");
+        assert_eq!(payload.owner_kind, MissingTraitOwnerKind::Class);
+        assert_eq!(payload.source_name, "fixtures/odd-trait.php");
+        assert_eq!(payload.span, diagnostic.span);
+    }
+
+    #[test]
+    fn missing_trait_payload_round_trips_deterministically() {
+        let source = "<?php namespace Demo; trait OwnerTrait { use \\Vendor\\Qualified_Trait; }";
+        let frontend = analyze_source(source);
+        let result = lower_frontend_result(
+            &frontend,
+            LoweringOptions {
+                source_path: "fixtures/qualified.php".to_string(),
+                source_text: Some(source.to_string()),
+                ..LoweringOptions::default()
+            },
+        );
+        let diagnostic = result
+            .diagnostics
+            .into_iter()
+            .find(|diagnostic| diagnostic.missing_trait().is_some())
+            .expect("missing-trait diagnostic");
+
+        let json = serde_json::to_string(&diagnostic).expect("serialize diagnostic");
+        let decoded: LoweringDiagnostic =
+            serde_json::from_str(&json).expect("deserialize diagnostic");
+        assert_eq!(decoded, diagnostic);
+        assert_eq!(
+            serde_json::to_string(&decoded).expect("serialize decoded diagnostic"),
+            json
+        );
+        let payload = decoded.missing_trait().expect("typed payload");
+        assert_eq!(payload.normalized_name, "vendor\\qualified_trait");
+        assert_eq!(payload.display_name, "\\Vendor\\Qualified_Trait");
+        assert_eq!(payload.owner_normalized_name, "demo\\ownertrait");
+        assert_eq!(payload.owner_kind, MissingTraitOwnerKind::Trait);
+    }
 }

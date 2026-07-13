@@ -1,0 +1,428 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "MB_CASE_UPPER",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_LOWER",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_TITLE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_FOLD",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_UPPER_SIMPLE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_LOWER_SIMPLE",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_TITLE_SIMPLE",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MB_CASE_FOLD_SIMPLE",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_check_encoding",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_chr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_convert_case",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_convert_encoding",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_detect_encoding",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_encoding_aliases",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_internal_encoding",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_lcfirst",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_list_encodings",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_ord",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_parse_str",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strcut",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strimwidth",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_stripos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strlen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strripos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strrpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strtolower",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strtoupper",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_strwidth",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_substitute_character",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_substr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_substr_count",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mbstring",
+        "source": "ext/mbstring/mbstring.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mbstring"
+        }
+      ],
+      "name": "mb_ucfirst",
+      "visibility": "php"
+    }
+  ],
+  "name": "mbstring",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -2,10 +2,9 @@
 
 - Priority: 18.6 promoted
 - Selected manifest: `tests/phpt/manifests/modules/pcre.selected.jsonl`
-- the selected close gate: 163 PASS, 10 SKIP, 0 FAIL, 0 BORK from 173 selected fixtures
-- Latest selected module gate after this promotion: target 163 PASS / 10 SKIP;
-  0 non-green outcomes. The three extra skips are upstream slow/performance
-  fixtures gated by `SKIP_SLOW_TESTS=1` and `SKIP_PERF_SENSITIVE=1`.
+- the selected close gate: 166 PASS, 7 SKIP, 0 FAIL, 0 BORK from 173 selected fixtures
+- Latest selected module gate after this promotion: reference 166 PASS / 7 SKIP
+  and target 166 PASS / 7 SKIP; 0 non-green outcomes.
 
 ## Scope
 
@@ -186,7 +185,7 @@
 
 ## Target Gates
 
-- `SKIP_SLOW_TESTS=1 SKIP_PERF_SENSITIVE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pcre`
+- `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pcre`
 - `nix develop -c cargo test -p php_runtime pcre`
 - `nix develop -c cargo test -p php_vm`
 

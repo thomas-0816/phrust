@@ -9,15 +9,18 @@ done
 
 for script in \
   scripts/verify/foundation.sh \
-  scripts/verify/lexer.sh \
-  scripts/verify/parser.sh \
-  scripts/verify/frontend.sh \
-  scripts/verify/runtime.sh \
-  scripts/verify/runtime-semantics.sh
+  scripts/verify/lexer.sh
 do
   test -x "$script"
 done
 
+recipes="$(just --summary)"
+for recipe in verify-frontend verify-runtime verify-stdlib verify-performance verify-phpt; do
+  case " $recipes " in
+    *" $recipe "*) ;;
+    *) printf '[error] missing validation recipe: %s\n' "$recipe" >&2; exit 1;;
+  esac
+done
 test -f docs/foundation/validation-summary.md
 test -f docs/lexer/validation-summary.md
 test -f docs/parser/validation-summary.md

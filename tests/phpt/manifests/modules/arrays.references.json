@@ -3,14 +3,14 @@
   "module":"arrays.references",
   "priority":8,
   "selected_manifest":"tests/phpt/manifests/modules/arrays.references.selected.jsonl",
-  "corpus_count":6,
-  "pass_count":6,
-  "skip_count":0,
-  "fail_count":0,
+  "corpus_count":273,
+  "pass_count":78,
+  "skip_count":13,
+  "fail_count":182,
   "bork_count":0,
-  "known_failure_count":0,
-  "scope":["ordered arrays","key normalization","append","unset holes","isset/empty array dimensions","array element references","copy-on-write separation","foreach by-value snapshots","foreach by-reference over local arrays"],
-  "non_scope":["SPL collection classes","object property references","by-reference method returns","ReflectionReference","extension-specific iterable objects"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=arrays.references"],
-  "next_step":"Keep the selected core array/reference gate green while promoting broader php-src reference, object, SPL, and extension cases into later focused modules."
+  "known_failure_count":182,
+  "scope":["ordered arrays","key conversion","references","copy-on-write","foreach"],
+  "non_scope":["SPL collection classes"],
+  "target_gates":["nix develop -c just phpt-module MODULE=standard.arrays"],
+  "next_step":"Close array data-model and reference/COW gaps before array builtins."
 }

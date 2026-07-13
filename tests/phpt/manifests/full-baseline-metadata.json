@@ -1,11 +1,12 @@
 {
   "schema_version":"phpt-full-baseline-v1",
-  "timestamp":"20260624T210848Z",
+  "timestamp":"20260712T101615Z",
   "corpus_count":21548,
-  "pass_count":1088,
-  "skip_count":64,
-  "fail_count":19941,
-  "bork_count":455,
-  "known_failure_count":20396,
+  "pass_count":5668,
+  "skip_count":3137,
+  "xfail_count":8,
+  "fail_count":12592,
+  "bork_count":143,
+  "known_failure_count":12735,
   "failure_manifest":"tests/phpt/manifests/full-known-failures.jsonl"
 }

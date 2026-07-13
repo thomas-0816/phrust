@@ -16,15 +16,20 @@ As of this Runtime semantics audit, there are no Rust `unsafe` blocks, `unsafe f
 definitions, or unsafe trait impls under `crates/`. Matches are documentation
 text only.
 
-The required hardening lint is:
+Unsafe enforcement lives in the crate roots: `php_runtime` and `php_vm`
+declare `#![deny(unsafe_code)]`, with the audited module exceptions from
+ADR 0020 (`php_runtime::runtime_memory`) and ADR 0021
+(`php_vm::frame_memory`) plus the documented JIT-surface allowances. Any
+newly introduced unsafe code outside those modules fails every build. The
+focused lint remains available:
 
 ```bash
 nix develop -c just runtime-hardening-lints
 ```
 
-That target runs Clippy for `php_runtime` and `php_vm` with
-`-D warnings -D unsafe-code`, so any newly introduced unsafe code in the
-runtime or VM fails `verify-runtime`.
+It runs Clippy for `php_runtime` and `php_vm` with `-D warnings` and is a
+strict subset of the workspace `just lint`, which combined runs and CI
+execute; `verify-runtime` therefore does not repeat it.
 
 ## Clippy Allow Inventory
 

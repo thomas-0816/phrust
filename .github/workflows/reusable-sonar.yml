@@ -39,7 +39,7 @@ jobs:
 
       - name: Checkout
         if: ${{ steps.sonar_secrets.outputs.skip != 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -49,7 +49,7 @@ jobs:
 
       - name: Cache SonarQube scanner
         if: ${{ steps.sonar_secrets.outputs.skip != 'true' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.sonar/cache
           key: sonar-${{ runner.os }}-${{ hashFiles('sonar-project.properties') }}

@@ -33,7 +33,7 @@ AST views should provide stable source identity through byte ranges and, where
 needed, lightweight source AST IDs. Those IDs are local to a parsed source file
 and are not a replacement for semantic symbol IDs.
 
-## Work item Core Surface
+## Core Surface
 
 The initial `php_ast` core exposes:
 
@@ -50,7 +50,7 @@ The initial `php_ast` core exposes:
 These views are structural only. They do not collect declarations, resolve
 names, lower HIR, or emit semantic diagnostics.
 
-## Work item Declaration and Member Views
+## Declaration and Member Views
 
 The declaration surface now includes:
 
@@ -68,7 +68,7 @@ under `NEW_EXPR`, and trait adaptations as tokens under `TRAIT_USE_DECL`.
 `php_ast` exposes those shapes honestly instead of adding synthetic parser
 nodes.
 
-### Work item SyntaxKind -> AstView
+### SyntaxKind -> AstView
 
 | SyntaxKind | Ast view |
 | --- | --- |
@@ -95,7 +95,7 @@ nodes.
 `PropertyItem`, and `EnumCase` reflect current Parser CST shapes. They do not
 invent separate parser nodes or perform semantic validation.
 
-## Work item Statement, Expression, and Type Views
+## Statement, Expression, and Type Views
 
 The AST surface now includes structural views for the parser's statement,
 expression, type, and PHP 8.5 node families:

@@ -4,7 +4,7 @@ version = "8.5.7"
 tag = "php-8.5.7"
 repository = "https://github.com/php/php-src.git"
 commit = "35eab8c08bc590758d05813b0ff7a3d8c3e67b79"
-resolved_at_utc = "2026-06-19T19:32:13Z"
+resolved_at_utc = "2026-07-09T16:23:45Z"
 
 [paths]
 local_checkout = "third_party/php-src"

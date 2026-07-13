@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
 
 /// Request-local literal pool.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

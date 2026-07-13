@@ -3,19 +3,20 @@ use crate::{
     access_log::AccessLogger,
     metrics::ServerMetrics,
     perf_trace::PerfTraceWriter,
-    persistent_metadata::{PersistentMetadataStats, PersistentMetadataStore},
+    persistent_metadata::PersistentMetadataStats,
     request_profile::RequestProfileWriter,
-    server::ServerError,
+    server::{PreloadError, ServerError},
 };
 use crate::{multipart::MultipartConfig, routing::RouteConfig, session_store::SessionStore};
 use php_diagnostics::DiagnosticOutputFormat;
 use php_executor::{
-    CompiledScriptCache, CompiledScriptCacheLookup, EngineProfileName, IncludeCache, IncludeLoader,
-    OptimizationLevel, PhpExecutionError, PhpExecutor, PhpExecutorOptions, PhpScriptCacheInput,
+    CompiledScriptCache, CompiledScriptCacheLookup, EngineProfileName, ExecutorIncludeCompiler,
+    IncludeCache, IncludeLoader, OptimizationLevel, PhpExecutionError, PhpExecutor,
+    PhpExecutorOptions, PhpScriptCacheInput,
 };
 use php_vm::api::{
-    DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode, QuickeningMode,
-    QuickeningSiteSnapshot,
+    CacheInstanceId, DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode,
+    QuickeningMode, VmError,
 };
 use std::{
     net::SocketAddr,
@@ -32,14 +33,36 @@ use tracing::warn;
 #[derive(Clone, Debug)]
 pub(crate) struct AppState {
     pub(crate) route_config: RouteConfig,
+    pub(crate) request: RequestRuntimeConfig,
+    pub(crate) concurrency: ConcurrencyServices,
+    pub(crate) observability: ObservabilityState,
+    pub(crate) capabilities: CapabilityState,
+    pub(crate) sessions: SessionServices,
+    pub(crate) transport: RequestTransport,
+    pub(crate) services: RuntimeServices,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RequestRuntimeConfig {
     pub(crate) max_body_bytes: usize,
     pub(crate) multipart_config: MultipartConfig,
     pub(crate) request_timeout: Duration,
     pub(crate) execution_time_limit: Option<Duration>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConcurrencyServices {
     pub(crate) in_flight: Arc<Semaphore>,
     pub(crate) max_in_flight: usize,
-    pub(crate) metrics: Arc<ServerMetrics>,
-    pub(crate) engine: Arc<ServerEngineState>,
+    pub(crate) cpu_execution: Arc<Semaphore>,
+    pub(crate) cpu_execution_limit: usize,
+    /// Pinned PHP execution threads; sized to `cpu_execution_limit` so the
+    /// pool and the CPU semaphore describe the same concurrency budget.
+    pub(crate) php_workers: Arc<crate::worker_pool::PhpWorkerPool>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ObservabilityState {
     pub(crate) metrics_token: Option<String>,
     pub(crate) access_log: Option<Arc<AccessLogger>>,
     pub(crate) perf_trace: Option<Arc<PerfTraceWriter>>,
@@ -48,17 +71,35 @@ pub(crate) struct AppState {
     pub(crate) request_profile_vm_counters: bool,
     pub(crate) request_profile_source_attribution: bool,
     pub(crate) request_profile_trigger_header: bool,
-    pub(crate) network_requests_enabled: bool,
-    pub(crate) env_snapshot: Arc<Vec<(String, String)>>,
     pub(crate) debug: bool,
     pub(crate) error_format: DiagnosticOutputFormat,
     pub(crate) debug_log: Option<PathBuf>,
-    pub(crate) request_counter: Arc<AtomicU64>,
-    pub(crate) session_config: SessionConfig,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CapabilityState {
+    pub(crate) network_requests_enabled: bool,
+    pub(crate) env_snapshot: Arc<Vec<(String, String)>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SessionServices {
+    pub(crate) config: SessionConfig,
     pub(crate) session_store: Arc<SessionStore>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RequestTransport {
     pub(crate) local_addr: SocketAddr,
     pub(crate) request_scheme: &'static str,
     pub(crate) http3_alt_svc: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RuntimeServices {
+    pub(crate) metrics: Arc<ServerMetrics>,
+    pub(crate) engine: Arc<ServerEngineState>,
+    pub(crate) request_counter: Arc<AtomicU64>,
 }
 
 pub(crate) fn server_env_snapshot<I>(env: I) -> Arc<Vec<(String, String)>>
@@ -79,7 +120,6 @@ pub(crate) struct ServerEngineState {
     pub(crate) script_cache: Arc<CompiledScriptCache>,
     pub(crate) include_cache: Arc<IncludeCache>,
     pub(crate) compile_optimization_level: OptimizationLevel,
-    persistent_metadata: Arc<PersistentMetadataStore>,
     dense_includes: Option<DenseIncludeMode>,
     perf_ablation: ServerPerfAblation,
 }
@@ -88,7 +128,7 @@ pub(crate) struct ServerEngineState {
 pub(crate) struct RequestExecutorCacheKey {
     engine_profile: EngineProfileName,
     max_vm_steps: usize,
-    include_cache_addr: usize,
+    include_cache_id: CacheInstanceId,
     compile_optimization_level: OptimizationLevel,
     dense_includes: Option<DenseIncludeMode>,
     perf_ablation: ServerPerfAblation,
@@ -119,7 +159,6 @@ impl ServerEngineState {
             script_cache,
             include_cache,
             compile_optimization_level,
-            persistent_metadata: Arc::new(PersistentMetadataStore::default()),
             dense_includes,
             perf_ablation,
         }
@@ -135,19 +174,26 @@ impl ServerEngineState {
             options.vm_options.max_steps = self.max_vm_steps;
             options
         };
+        options.collect_quickening_feedback = false;
+        options.vm_options.persistent_adaptive_state = persistent_feedback_enabled();
         self.apply_engine_overrides(&mut options);
         options
     }
 
     fn apply_engine_overrides(&self, options: &mut PhpExecutorOptions) {
-        let quickening_seed = self.persistent_metadata.quickening_templates();
-        if !quickening_seed.is_empty() {
-            options.vm_options.quickening_seed = quickening_seed;
-        }
         if let Some(mode) = self.dense_includes {
             options.vm_options.dense_include_execution = mode;
         }
-        options.vm_options.include_optimization_level = self.compile_optimization_level;
+        options.include_optimization_level = self.compile_optimization_level;
+        // Worker-stable symbol epochs are the server's production default:
+        // request workers replay the same includes, so slot-indexed inline
+        // caches survive the request boundary (measured -35% call-site
+        // re-resolutions on WordPress). PHRUST_WORKER_SYMBOL_EPOCH=0 is the
+        // kill switch; the CLI keeps the library default (off) for
+        // single-shot parity with the reference binary.
+        options.vm_options.worker_symbol_epoch = std::env::var("PHRUST_WORKER_SYMBOL_EPOCH")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(true);
         if self.perf_ablation.disable_dense_includes {
             options.vm_options.dense_include_execution = DenseIncludeMode::Off;
         }
@@ -165,7 +211,7 @@ impl ServerEngineState {
             options.vm_options.tiering.enabled = false;
         }
         if self.perf_ablation.disable_include_o2 {
-            options.vm_options.include_optimization_level = OptimizationLevel::O0;
+            options.include_optimization_level = OptimizationLevel::O0;
         }
         if self.perf_ablation.disable_dense_jump_threading {
             options.vm_options.dense_jump_threading = DenseJumpThreadingMode::Off;
@@ -180,39 +226,25 @@ impl ServerEngineState {
 
     pub(crate) fn executor_options_for_request(
         &self,
-        metrics: &ServerMetrics,
+        _script: &str,
+        _metrics: &ServerMetrics,
     ) -> PhpExecutorOptions {
-        let options = self.executor_options_with_include_cache();
-        let instantiated = options.vm_options.quickening_seed.len() as u64;
-        if instantiated > 0 {
-            metrics
-                .persistent_engine_feedback_template_instantiations
-                .fetch_add(instantiated, Ordering::Relaxed);
-        }
-        options
+        self.executor_options_with_include_cache()
     }
 
     pub(crate) fn request_executor_cache_key(&self) -> RequestExecutorCacheKey {
         RequestExecutorCacheKey {
             engine_profile: self.engine_profile,
             max_vm_steps: self.max_vm_steps,
-            include_cache_addr: Arc::as_ptr(&self.include_cache) as usize,
+            include_cache_id: self.include_cache.instance_id(),
             compile_optimization_level: self.compile_optimization_level,
             dense_includes: self.dense_includes,
             perf_ablation: self.perf_ablation.clone(),
         }
     }
 
-    pub(crate) fn absorb_quickening_feedback(
-        &self,
-        feedback: Vec<QuickeningSiteSnapshot>,
-    ) -> usize {
-        self.persistent_metadata
-            .absorb_quickening_feedback(feedback)
-    }
-
     pub(crate) fn persistent_metadata_stats(&self) -> PersistentMetadataStats {
-        self.persistent_metadata.stats()
+        PersistentMetadataStats::default()
     }
 
     pub(crate) fn compile_script(
@@ -231,9 +263,24 @@ impl ServerEngineState {
     }
 }
 
+fn persistent_feedback_enabled() -> bool {
+    std::env::var("PHRUST_PERSISTENT_FEEDBACK")
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "off" | "false" | "no" | ""
+            )
+        })
+        .unwrap_or(true)
+}
+
 impl AppState {
     pub(crate) fn next_request_id(&self) -> String {
-        let id = self.request_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = self
+            .services
+            .request_counter
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
         format!("req-{id:08}")
     }
 
@@ -241,16 +288,19 @@ impl AppState {
         &self,
         script_path: &Path,
     ) -> Result<CompiledScriptCacheLookup, PhpExecutionError> {
-        let lookup = self.engine.compile_script(script_path)?;
-        self.metrics
+        let lookup = self.services.engine.compile_script(script_path)?;
+        self.services
+            .metrics
             .persistent_engine_policy_reuses
             .fetch_add(1, Ordering::Relaxed);
         if lookup.hit {
-            self.metrics
+            self.services
+                .metrics
                 .persistent_engine_immutable_metadata_reuses
                 .fetch_add(1, Ordering::Relaxed);
         } else {
-            self.metrics
+            self.services
+                .metrics
                 .persistent_engine_misses
                 .fetch_add(1, Ordering::Relaxed);
         }
@@ -275,17 +325,15 @@ pub(crate) fn preload_script_cache(
         Ok(contents) => contents,
         Err(error) => {
             state
+                .services
                 .metrics
                 .script_cache_preload_failures
                 .fetch_add(1, Ordering::Relaxed);
-            let message = format!(
-                "script cache preload file `{}` cannot be read: {error}",
-                preload_file.display()
-            );
+            let error = PreloadError::manifest_read(preload_file, &error);
             if strict {
-                return Err(ServerError::Preload(message));
+                return Err(ServerError::Preload(Box::new(error)));
             }
-            warn!("{message}");
+            warn!(%error);
             return Ok(());
         }
     };
@@ -300,44 +348,55 @@ pub(crate) fn preload_script_cache(
         } else {
             state.route_config.docroot.join(raw_path)
         };
-        match state
+        let line = line_index + 1;
+        let result = state
             .compile_script(&script_path)
-            .and_then(|_| preload_include_cache_entry(state, &script_path))
-        {
+            .map_err(|error| {
+                Box::new(PreloadError::compile_entry(
+                    preload_file,
+                    line,
+                    &script_path,
+                    error,
+                ))
+            })
+            .and_then(|_| {
+                preload_include_cache_entry(state, &script_path).map_err(|error| {
+                    Box::new(PreloadError::include_entry(
+                        preload_file,
+                        line,
+                        &script_path,
+                        error,
+                    ))
+                })
+            });
+        match result {
             Ok(()) => {
                 state
+                    .services
                     .metrics
                     .script_cache_preload_successes
                     .fetch_add(1, Ordering::Relaxed);
             }
             Err(error) => {
                 state
+                    .services
                     .metrics
                     .script_cache_preload_failures
                     .fetch_add(1, Ordering::Relaxed);
-                let message = format!(
-                    "script cache preload entry {} in `{}` failed for `{}`: {error:?}",
-                    line_index + 1,
-                    preload_file.display(),
-                    script_path.display()
-                );
                 if strict {
-                    return Err(ServerError::Preload(message));
+                    return Err(ServerError::Preload(error));
                 }
-                warn!("{message}");
+                warn!(%error);
             }
         }
     }
     Ok(())
 }
 
-fn preload_include_cache_entry(
-    state: &AppState,
-    script_path: &Path,
-) -> Result<(), PhpExecutionError> {
-    let loader = IncludeLoader::for_root(&state.route_config.docroot)
-        .map_err(|error| PhpExecutionError::Engine(format!("{error:?}")))?;
+fn preload_include_cache_entry(state: &AppState, script_path: &Path) -> Result<(), VmError> {
+    let loader = IncludeLoader::for_root(&state.route_config.docroot)?;
     let resolved = state
+        .services
         .engine
         .include_cache
         .resolve_with_include_path(
@@ -346,12 +405,44 @@ fn preload_include_cache_entry(
             &script_path.to_string_lossy(),
             &[],
             Some(&state.route_config.docroot),
-        )
-        .map_err(|error| PhpExecutionError::Engine(format!("{error:?}")))?;
-    state
-        .engine
-        .include_cache
-        .get_or_compile_include(&loader, &resolved, state.engine.compile_optimization_level)
-        .map_err(|error| PhpExecutionError::Engine(format!("{error:?}")))?;
+        )?;
+    state.services.engine.include_cache.get_or_compile_include(
+        &loader,
+        &resolved,
+        &ExecutorIncludeCompiler::new(state.services.engine.compile_optimization_level),
+    )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine(include_cache: Arc<IncludeCache>) -> ServerEngineState {
+        ServerEngineState::new(
+            EngineProfileName::Default,
+            1_000,
+            Arc::new(CompiledScriptCache::new(1)),
+            include_cache,
+            None,
+            ServerPerfAblation::default(),
+        )
+    }
+
+    #[test]
+    fn executor_cache_key_tracks_logical_cache_instance() {
+        let shared_cache = Arc::new(IncludeCache::new(1));
+        let first = engine(Arc::clone(&shared_cache));
+        let same_instance = engine(shared_cache);
+        let replacement = engine(Arc::new(IncludeCache::new(1)));
+
+        assert_eq!(
+            first.request_executor_cache_key(),
+            same_instance.request_executor_cache_key()
+        );
+        assert_ne!(
+            first.request_executor_cache_key(),
+            replacement.request_executor_cache_key()
+        );
+    }
 }

@@ -22,6 +22,41 @@ impl CompilePhaseTimings {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum CompileTimingCollector {
+    Disabled,
+    Enabled(CompilePhaseTimings),
+}
+
+impl CompileTimingCollector {
+    pub(crate) fn disabled() -> Self {
+        Self::Disabled
+    }
+
+    pub(crate) fn enabled() -> Self {
+        Self::Enabled(CompilePhaseTimings::default())
+    }
+
+    fn measure<T>(&mut self, phase: &'static str, operation: impl FnOnce() -> T) -> T {
+        match self {
+            Self::Disabled => operation(),
+            Self::Enabled(timings) => {
+                let started = Instant::now();
+                let result = operation();
+                timings.record(phase, started);
+                result
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> Option<CompilePhaseTimings> {
+        match self {
+            Self::Disabled => None,
+            Self::Enabled(timings) => Some(timings),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Pipeline {
     pub(crate) path: String,
@@ -38,64 +73,47 @@ impl Pipeline {
     }
 }
 
-pub(crate) fn compile_source(source: &str, source_path: &str) -> Result<Pipeline, String> {
-    compile_source_with_timings(source, source_path).map(|(pipeline, _)| pipeline)
-}
-
-pub(crate) fn compile_source_with_timings(
+pub(crate) fn compile_source(
     source: &str,
     source_path: &str,
-) -> Result<(Pipeline, CompilePhaseTimings), String> {
-    let mut timings = CompilePhaseTimings::default();
-    let started = Instant::now();
-    let frontend = analyze_source(source);
-    timings.record("frontend_analyze_ms", started);
-    let started = Instant::now();
-    let lowering = lower_frontend_result(
-        &frontend,
-        LoweringOptions {
-            source_path: source_path.to_string(),
-            source_text: Some(source.to_string()),
-            ..LoweringOptions::default()
-        },
-    );
-    timings.record("ir_lower_ms", started);
-    Ok((
-        Pipeline {
-            path: source_path.to_string(),
-            source: SourceText::new(source),
-            frontend,
-            lowering,
-        },
-        timings,
-    ))
+    timings: &mut CompileTimingCollector,
+) -> Result<Pipeline, String> {
+    let frontend = timings.measure("frontend_analyze_ms", || analyze_source(source));
+    let lowering = timings.measure("ir_lower_ms", || {
+        lower_frontend_result(
+            &frontend,
+            LoweringOptions {
+                source_path: source_path.to_string(),
+                source_text: Some(source.to_string()),
+                ..LoweringOptions::default()
+            },
+        )
+    });
+    Ok(Pipeline {
+        path: source_path.to_string(),
+        source: SourceText::new(source),
+        frontend,
+        lowering,
+    })
 }
 
 pub(crate) fn apply_optimization(
     pipeline: &mut Pipeline,
     optimization_level: OptimizationLevel,
+    timings: &mut CompileTimingCollector,
 ) -> Result<(), String> {
-    apply_optimization_with_timings(pipeline, optimization_level).map(|_| ())
-}
-
-pub(crate) fn apply_optimization_with_timings(
-    pipeline: &mut Pipeline,
-    optimization_level: OptimizationLevel,
-) -> Result<CompilePhaseTimings, String> {
-    let mut timings = CompilePhaseTimings::default();
     if !pipeline.ok() || !optimization_level.runs_pipeline() {
-        return Ok(timings);
+        return Ok(());
     }
-    let started = Instant::now();
-    PassPipeline::performance()
-        .run(
-            &mut pipeline.lowering.unit,
-            &PassContext::new(optimization_level),
-        )
+    timings
+        .measure("optimizer_ms", || {
+            PassPipeline::performance().run(
+                &mut pipeline.lowering.unit,
+                &PassContext::new(optimization_level),
+            )
+        })
         .map_err(|error| format!("{}: optimizer failed: {error}", pipeline.path))?;
-    timings.record("optimizer_ms", started);
-    let started = Instant::now();
-    pipeline.lowering.verification = verify_unit(&pipeline.lowering.unit);
-    timings.record("ir_verify_ms", started);
-    Ok(timings)
+    pipeline.lowering.verification =
+        timings.measure("ir_verify_ms", || verify_unit(&pipeline.lowering.unit));
+    Ok(())
 }

@@ -1,0 +1,259 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Collator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlBreakIterator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlCalendar"
+    },
+    {
+      "kind": "class",
+      "name": "IntlChar"
+    },
+    {
+      "kind": "class",
+      "name": "IntlCodePointBreakIterator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlDateFormatter"
+    },
+    {
+      "kind": "class",
+      "name": "IntlDatePatternGenerator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlException"
+    },
+    {
+      "kind": "class",
+      "name": "IntlGregorianCalendar"
+    },
+    {
+      "kind": "class",
+      "name": "IntlIterator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlListFormatter"
+    },
+    {
+      "kind": "class",
+      "name": "IntlPartsIterator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlRuleBasedBreakIterator"
+    },
+    {
+      "kind": "class",
+      "name": "IntlTimeZone"
+    },
+    {
+      "kind": "class",
+      "name": "Locale"
+    },
+    {
+      "kind": "class",
+      "name": "MessageFormatter"
+    },
+    {
+      "kind": "class",
+      "name": "Normalizer"
+    },
+    {
+      "kind": "class",
+      "name": "NumberFormatter"
+    },
+    {
+      "kind": "class",
+      "name": "ResourceBundle"
+    },
+    {
+      "kind": "class",
+      "name": "Spoofchecker"
+    },
+    {
+      "kind": "class",
+      "name": "Transliterator"
+    },
+    {
+      "kind": "class",
+      "name": "UConverter"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "INTL_ICU_DATA_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "76.1"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INTL_ICU_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "76.1"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": false,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "grapheme_stripos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "grapheme_strlen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "grapheme_strpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "grapheme_substr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "intl_get_error_code",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "intl_get_error_message",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "locale_get_primary_language",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "normalizer_is_normalized",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "normalizer_normalize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "intl",
+        "source": "ext/intl/php_intl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "intl"
+        }
+      ],
+      "name": "transliterator_transliterate",
+      "visibility": "php"
+    }
+  ],
+  "name": "intl",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

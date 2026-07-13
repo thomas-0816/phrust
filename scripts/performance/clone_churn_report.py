@@ -23,6 +23,7 @@ DEFAULT_PROFILE_GLOBS = (
 )
 TOTAL_FIELDS = (
     "value_clones",
+    "string_allocations",
     "array_handle_clones",
     "cow_separations",
     "reference_cell_creations",
@@ -30,7 +31,9 @@ TOTAL_FIELDS = (
     "by_ref_arg_cow_separations_avoided",
 )
 SOURCE_LISTS = (
+    "value_clone_by_kind",
     "value_clone_by_source_family",
+    "string_allocation_by_source_family",
     "array_handle_clone_by_source_family",
     "cow_separation_by_source_family",
     "reference_cell_creation_by_source_family",
@@ -46,16 +49,26 @@ def main() -> int:
     report = run(args, out_dir)
     json_dump(report, out_dir / "wordpress-root.json")
     write_markdown(report, out_dir / "wordpress-root.md")
-    print(f"[{report['status']}] clone churn report wrote {rel(out_dir / 'wordpress-root.md')}")
+    print(
+        f"[{report['status']}] clone churn report wrote {rel(out_dir / 'wordpress-root.md')}"
+    )
     return 0 if report["status"] in {"pass", "skip"} else 1
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default=os.environ.get("PHRUST_REQUEST_PROFILE_JSON", ""))
-    parser.add_argument("--profile-dir", default=os.environ.get("PHRUST_REQUEST_PROFILE_DIR", ""))
-    parser.add_argument("--baseline", default=os.environ.get("PHRUST_CLONE_CHURN_BASELINE", ""))
-    parser.add_argument("--out-dir", default=os.environ.get("PHRUST_CLONE_CHURN_OUT", ""))
+    parser.add_argument(
+        "--profile", default=os.environ.get("PHRUST_REQUEST_PROFILE_JSON", "")
+    )
+    parser.add_argument(
+        "--profile-dir", default=os.environ.get("PHRUST_REQUEST_PROFILE_DIR", "")
+    )
+    parser.add_argument(
+        "--baseline", default=os.environ.get("PHRUST_CLONE_CHURN_BASELINE", "")
+    )
+    parser.add_argument(
+        "--out-dir", default=os.environ.get("PHRUST_CLONE_CHURN_OUT", "")
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -83,8 +96,13 @@ def run(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     limit = max(args.limit, 1)
     summary = summarize_profile(profile, limit)
+    invariant_values = [
+        value
+        for value in as_dict(summary.get("invariants")).values()
+        if isinstance(value, bool)
+    ]
     report: dict[str, Any] = {
-        "status": "pass",
+        "status": "pass" if all(invariant_values) else "fail",
         "profile": rel(profile_path),
         "request": profile.get("request", {}),
         "summary": summary,
@@ -110,7 +128,9 @@ def resolve_profile(profile_arg: str, profile_dir_arg: str) -> Path | None:
         return latest_profile_in_dir(profile_dir)
     candidates: list[Path] = []
     for pattern in DEFAULT_PROFILE_GLOBS:
-        candidates.extend(path for path in REPO_ROOT.glob(pattern) if is_request_profile(path))
+        candidates.extend(
+            path for path in REPO_ROOT.glob(pattern) if is_request_profile(path)
+        )
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
@@ -126,7 +146,9 @@ def resolve_baseline(baseline_arg: str) -> Path | None:
 def latest_profile_in_dir(profile_dir: Path | None) -> Path | None:
     if profile_dir is None or not profile_dir.is_dir():
         return None
-    candidates = [path for path in profile_dir.glob("*.json") if is_request_profile(path)]
+    candidates = [
+        path for path in profile_dir.glob("*.json") if is_request_profile(path)
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
@@ -148,18 +170,36 @@ def summarize_profile(profile: dict[str, Any], limit: int) -> dict[str, Any]:
     calls = as_dict(attribution.get("calls"))
     arrays = as_dict(attribution.get("arrays"))
     totals = {field: int_value(clones.get(field)) for field in TOTAL_FIELDS}
-    sources = {
-        name: list_entries(clones.get(name))[:limit]
-        for name in SOURCE_LISTS
-    }
+    sources = {name: list_entries(clones.get(name))[:limit] for name in SOURCE_LISTS}
+    clone_kind_total = sum(
+        entry_metric(entry) for entry in sources["value_clone_by_kind"]
+    )
+    source_kind_total = nested_entry_total(
+        clones.get("value_clone_by_source_family_and_kind")
+    )
+    source_attribution = bool(attribution.get("source_attribution_collected"))
     return {
         "totals": totals,
         "source_families": sources,
         "hot_clone_sources": ranked_sources(sources, limit),
+        "source_kind_matrix": as_dict(
+            clones.get("value_clone_by_source_family_and_kind")
+        ),
+        "invariants": {
+            "clone_kind_sum_matches_value_clones": clone_kind_total
+            == totals["value_clones"],
+            "source_kind_sum_matches_value_clones": (
+                source_kind_total == totals["value_clones"]
+                if source_attribution
+                else None
+            ),
+        },
         "call_clone_context": {
             "function_calls": int_value(calls.get("function_calls")),
             "method_calls": int_value(calls.get("method_calls")),
-            "internal_function_dispatches": int_value(calls.get("internal_function_dispatches")),
+            "internal_function_dispatches": int_value(
+                calls.get("internal_function_dispatches")
+            ),
             "frame_allocations": int_value(calls.get("frame_allocations")),
             "frame_reuses": int_value(calls.get("frame_reuses")),
             "argument_vector_allocations_avoided": int_value(
@@ -168,8 +208,12 @@ def summarize_profile(profile: dict[str, Any], limit: int) -> dict[str, Any]:
         },
         "array_clone_context": {
             "array_dim_fetches": int_value(arrays.get("array_dim_fetches")),
-            "array_linear_scan_fallbacks": int_value(arrays.get("array_linear_scan_fallbacks")),
-            "array_metadata_recomputes": int_value(arrays.get("array_metadata_recomputes")),
+            "array_linear_scan_fallbacks": int_value(
+                arrays.get("array_linear_scan_fallbacks")
+            ),
+            "array_metadata_recomputes": int_value(
+                arrays.get("array_metadata_recomputes")
+            ),
             "array_fast_path_fallback_by_reason": list_entries(
                 arrays.get("array_fast_path_fallback_by_reason")
             )[:limit],
@@ -180,19 +224,35 @@ def summarize_profile(profile: dict[str, Any], limit: int) -> dict[str, Any]:
     }
 
 
-def ranked_sources(sources: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+def ranked_sources(
+    sources: dict[str, list[dict[str, Any]]], limit: int
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for group, entries in sources.items():
+        if group == "value_clone_by_kind":
+            continue
         for entry in entries:
-            rows.append({
-                "group": group,
-                "name": str(entry.get("name", "")),
-                "value": entry_metric(entry),
-            })
+            rows.append(
+                {
+                    "group": group,
+                    "name": str(entry.get("name", "")),
+                    "value": entry_metric(entry),
+                }
+            )
     return sorted(rows, key=lambda row: row["value"], reverse=True)[:limit]
 
 
-def compare_summaries(baseline: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+def nested_entry_total(value: Any) -> int:
+    return sum(
+        entry_metric(entry)
+        for entries in as_dict(value).values()
+        for entry in list_entries(entries)
+    )
+
+
+def compare_summaries(
+    baseline: dict[str, Any], current: dict[str, Any]
+) -> dict[str, Any]:
     baseline_totals = as_dict(baseline.get("totals"))
     current_totals = as_dict(current.get("totals"))
     totals = {}
@@ -263,42 +323,64 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         f"- status: `{report['status']}`",
     ]
     if report["status"] == "skip":
-        lines.extend([
-            f"- reason: `{report.get('reason', 'unknown')}`",
-            "",
-        ])
+        lines.extend(
+            [
+                f"- reason: `{report.get('reason', 'unknown')}`",
+                "",
+            ]
+        )
         path.write_text("\n".join(lines), encoding="utf-8")
         return
     summary = as_dict(report.get("summary"))
     totals = as_dict(summary.get("totals"))
-    lines.extend([
-        f"- profile: `{report.get('profile', '')}`",
-        f"- value clones: `{totals.get('value_clones', 0)}`",
-        f"- array-handle clones: `{totals.get('array_handle_clones', 0)}`",
-        f"- COW separations: `{totals.get('cow_separations', 0)}`",
-        f"- reference-cell creations: `{totals.get('reference_cell_creations', 0)}`",
-        f"- by-ref COW separations: `{totals.get('by_ref_arg_cow_separations', 0)}`",
-        f"- by-ref COW separations avoided: `{totals.get('by_ref_arg_cow_separations_avoided', 0)}`",
-        "",
-    ])
+    lines.extend(
+        [
+            f"- profile: `{report.get('profile', '')}`",
+            f"- value clones: `{totals.get('value_clones', 0)}`",
+            f"- string allocations: `{totals.get('string_allocations', 0)}`",
+            f"- array-handle clones: `{totals.get('array_handle_clones', 0)}`",
+            f"- COW separations: `{totals.get('cow_separations', 0)}`",
+            f"- reference-cell creations: `{totals.get('reference_cell_creations', 0)}`",
+            f"- by-ref COW separations: `{totals.get('by_ref_arg_cow_separations', 0)}`",
+            f"- by-ref COW separations avoided: `{totals.get('by_ref_arg_cow_separations_avoided', 0)}`",
+            "",
+        ]
+    )
     if "delta" in report:
         lines.extend(delta_table(as_dict(report.get("delta")).get("totals")))
-    lines.extend(table_for_entries(
-        "Top Clone/COW/Reference Sources",
-        list_entries(summary.get("hot_clone_sources")),
-        headers=["group", "name", "value"],
-    ))
+    lines.extend(
+        table_for_entries(
+            "Top Clone/COW/Reference Sources",
+            list_entries(summary.get("hot_clone_sources")),
+            headers=["group", "name", "value"],
+        )
+    )
     sources = as_dict(summary.get("source_families"))
     for title, key in [
+        ("Value Clone Kinds", "value_clone_by_kind"),
         ("Value Clone Sources", "value_clone_by_source_family"),
+        ("String Allocation Sources", "string_allocation_by_source_family"),
         ("Array Handle Clone Sources", "array_handle_clone_by_source_family"),
         ("COW Separation Sources", "cow_separation_by_source_family"),
         ("Reference Cell Creation Sources", "reference_cell_creation_by_source_family"),
         ("By-Ref Argument Fallbacks", "by_ref_arg_fallback_by_reason"),
     ]:
         lines.extend(table_for_entries(title, list_entries(sources.get(key))))
-    lines.extend(context_section("Call Clone Context", as_dict(summary.get("call_clone_context"))))
-    lines.extend(context_section("Array Clone Context", as_dict(summary.get("array_clone_context"))))
+    lines.extend(
+        context_section(
+            "Clone Accounting Invariants", as_dict(summary.get("invariants"))
+        )
+    )
+    lines.extend(
+        context_section(
+            "Call Clone Context", as_dict(summary.get("call_clone_context"))
+        )
+    )
+    lines.extend(
+        context_section(
+            "Array Clone Context", as_dict(summary.get("array_clone_context"))
+        )
+    )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -333,7 +415,9 @@ def table_for_entries(
         return lines
     if headers is None:
         all_keys = set().union(*(entry.keys() for entry in entries))
-        numeric_column = "value" if "value" in all_keys else "count" if "count" in all_keys else ""
+        numeric_column = (
+            "value" if "value" in all_keys else "count" if "count" in all_keys else ""
+        )
         headers = ["name"]
         if numeric_column:
             headers.append(numeric_column)
@@ -368,11 +452,16 @@ def self_test() -> int:
         "attribution": {
             "clones": {
                 "value_clones": 100,
+                "string_allocations": 10,
                 "array_handle_clones": 40,
                 "cow_separations": 8,
                 "reference_cell_creations": 6,
                 "by_ref_arg_cow_separations": 4,
                 "by_ref_arg_cow_separations_avoided": 1,
+                "value_clone_by_kind": [
+                    {"name": "scalar_or_uninitialized", "value": 60},
+                    {"name": "array_handle", "value": 40},
+                ],
                 "value_clone_by_source_family": [
                     {"name": "call_argument_snapshot", "value": 70}
                 ],
@@ -385,9 +474,7 @@ def self_test() -> int:
                 "reference_cell_creation_by_source_family": [
                     {"name": "by_ref_argument_binding", "value": 4}
                 ],
-                "by_ref_arg_fallback_by_reason": [
-                    {"name": "temporary", "value": 2}
-                ],
+                "by_ref_arg_fallback_by_reason": [{"name": "temporary", "value": 2}],
             },
             "calls": {"function_calls": 3, "frame_allocations": 2},
             "arrays": {"array_dim_fetches": 9},
@@ -396,16 +483,31 @@ def self_test() -> int:
     current = {
         "request": {"path": "/"},
         "attribution": {
+            "source_attribution_collected": True,
             "clones": {
                 "value_clones": 50,
+                "string_allocations": 6,
                 "array_handle_clones": 25,
                 "cow_separations": 8,
                 "reference_cell_creations": 3,
                 "by_ref_arg_cow_separations": 2,
                 "by_ref_arg_cow_separations_avoided": 5,
+                "value_clone_by_kind": [
+                    {"name": "scalar_or_uninitialized", "value": 25},
+                    {"name": "array_handle", "value": 25},
+                ],
                 "value_clone_by_source_family": [
                     {"name": "call_argument_snapshot", "count": 25}
                 ],
+                "string_allocation_by_source_family": [
+                    {"name": "call_argument_snapshot", "count": 6}
+                ],
+                "value_clone_by_source_family_and_kind": {
+                    "call_argument_snapshot": [
+                        {"name": "scalar_or_uninitialized", "value": 25},
+                        {"name": "array_handle", "value": 25},
+                    ]
+                },
                 "array_handle_clone_by_source_family": [
                     {"name": "array_element_read", "value": 20}
                 ],
@@ -415,9 +517,7 @@ def self_test() -> int:
                 "reference_cell_creation_by_source_family": [
                     {"name": "by_ref_argument_binding", "value": 3}
                 ],
-                "by_ref_arg_fallback_by_reason": [
-                    {"name": "temporary", "value": 1}
-                ],
+                "by_ref_arg_fallback_by_reason": [{"name": "temporary", "value": 1}],
             },
             "calls": {
                 "function_calls": 3,
@@ -439,6 +539,8 @@ def self_test() -> int:
     after = summarize_profile(current, 10)
     delta = compare_summaries(before, after)
     assert after["totals"]["value_clones"] == 50
+    assert after["invariants"]["clone_kind_sum_matches_value_clones"]
+    assert after["invariants"]["source_kind_sum_matches_value_clones"]
     assert after["hot_clone_sources"][0]["group"] == "value_clone_by_source_family"
     assert after["call_clone_context"]["argument_vector_allocations_avoided"] == 7
     assert after["array_clone_context"]["array_linear_scan_fallbacks"] == 1

@@ -100,6 +100,18 @@ impl CompiledScriptCache {
             });
         }
 
+        // Entries are keyed by canonical path; requested paths are usually
+        // already canonical (the docroot is canonicalized at startup), so a
+        // fresh-window probe by requested path serves warm requests without
+        // any filesystem call. Symlinked or relative paths miss here and take
+        // the canonicalizing path below.
+        if let Some(compiled) = self.lookup_fresh_by_path(&input.path, &input) {
+            return Ok(CompiledScriptCacheLookup {
+                compiled,
+                hit: true,
+            });
+        }
+
         let canonical_path = input.path.canonicalize().map_err(|error| {
             PhpExecutionError::Engine(format!(
                 "{}: canonicalize failed: {error}",
@@ -634,6 +646,32 @@ mod tests {
         assert_eq!(stats.metadata_stats, 1);
         assert_eq!(stats.source_reads, 1);
         assert_eq!(stats.compiles_avoided, 1);
+    }
+
+    #[test]
+    fn fresh_window_hit_by_requested_path_needs_no_filesystem() {
+        let fixture = CacheFixture::new("cache-fresh-no-fs");
+        fixture.write("<?php echo \"fresh\\n\";");
+        let executor = PhpExecutor::new();
+        let cache = CompiledScriptCache::new_with_limits(1, 8, Duration::from_secs(60));
+        // Entries are keyed by canonical path; request with one so the fresh
+        // probe can match before canonicalizing.
+        let canonical = fixture.path.canonicalize().expect("canonicalize fixture");
+        let input = fixture.input_for_path(canonical);
+
+        let first = cache
+            .get_or_compile_script(&executor, input.clone())
+            .expect("first compile");
+        std::fs::remove_file(&fixture.path).expect("remove fixture");
+        let second = cache
+            .get_or_compile_script(&executor, input)
+            .expect("fresh lookup after delete");
+
+        assert!(!first.hit);
+        assert!(second.hit);
+        let stats = cache.cache_stats();
+        assert_eq!(stats.metadata_stats, 1);
+        assert_eq!(stats.source_reads, 1);
     }
 
     #[test]

@@ -8,7 +8,7 @@ Current focused coverage:
 - Full upstream target sweep on this host: 7 PASS / 0 FAIL.
 - `sysvmsg` extension visibility, `SysvMessageQueue` class visibility, and
   function registration.
-- Request-local queue lookup and `msg_queue_exists()` behavior.
+- Host System V queue lookup via `msgget()` and `msg_queue_exists()` behavior.
 - `msg_send()` and `msg_receive()` for serialized PHP values and raw string,
   integer, float, and boolean payloads.
 - Corrupted raw message receive when PHP unserialization is requested.
@@ -21,9 +21,10 @@ Current focused coverage:
 - Removed queue operations preserve the handle while returning `false`, setting
   errno, and emitting the PHP-compatible `msg_send()` warning.
 
-This slice uses deterministic request-local queues for isolated tests. Remaining
-gaps are cross-process System V queues, host kernel queue IDs, permission
-enforcement, platform errno-specific warning text, and blocking wait behavior.
+This slice uses host System V queues through `msgget()`, `msgsnd()`,
+`msgrcv()`, and `msgctl()` for isolated local tests. Remaining gaps are
+platform errno-specific warning text, privileged metadata changes that the host
+kernel rejects, and full blocking-wait stress coverage.
 
 Focused gate:
 

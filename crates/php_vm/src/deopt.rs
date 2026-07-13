@@ -1450,7 +1450,13 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         | DenseOpcode::EmptyProperty
         | DenseOpcode::FetchStaticProperty
         | DenseOpcode::CloneObject
-        | DenseOpcode::AssignPropertyDim => vec![VmDeoptReason::CallFrameBoundary],
+        | DenseOpcode::AssignPropertyDim
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty
+        | DenseOpcode::UnsetProperty => vec![VmDeoptReason::CallFrameBoundary],
         DenseOpcode::IssetDim => vec![VmDeoptReason::HelperStatus],
         DenseOpcode::LoadConstEcho | DenseOpcode::Echo => {
             vec![VmDeoptReason::OutputBufferState]

@@ -1,0 +1,552 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "INPUT_POST",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INPUT_GET",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INPUT_COOKIE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INPUT_ENV",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INPUT_SERVER",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_DEFAULT",
+      "value": {
+        "kind": "int",
+        "value": 516
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_UNSAFE_RAW",
+      "value": {
+        "kind": "int",
+        "value": 516
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_CALLBACK",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_NONE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_REQUIRE_ARRAY",
+      "value": {
+        "kind": "int",
+        "value": 16777216
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_REQUIRE_SCALAR",
+      "value": {
+        "kind": "int",
+        "value": 33554432
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FORCE_ARRAY",
+      "value": {
+        "kind": "int",
+        "value": 67108864
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_BOOL",
+      "value": {
+        "kind": "int",
+        "value": 258
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_BOOLEAN",
+      "value": {
+        "kind": "int",
+        "value": 258
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_INT",
+      "value": {
+        "kind": "int",
+        "value": 257
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_FLOAT",
+      "value": {
+        "kind": "int",
+        "value": 259
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_REGEXP",
+      "value": {
+        "kind": "int",
+        "value": 272
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_URL",
+      "value": {
+        "kind": "int",
+        "value": 273
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_EMAIL",
+      "value": {
+        "kind": "int",
+        "value": 274
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_IP",
+      "value": {
+        "kind": "int",
+        "value": 275
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_MAC",
+      "value": {
+        "kind": "int",
+        "value": 276
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_VALIDATE_DOMAIN",
+      "value": {
+        "kind": "int",
+        "value": 277
+      }
+    },
+    {
+      "deprecation": "Constant FILTER_SANITIZE_STRING is deprecated since 8.1, use htmlspecialchars() instead",
+      "name": "FILTER_SANITIZE_STRING",
+      "value": {
+        "kind": "int",
+        "value": 513
+      }
+    },
+    {
+      "deprecation": "Constant FILTER_SANITIZE_STRIPPED is deprecated since 8.1, use htmlspecialchars() instead",
+      "name": "FILTER_SANITIZE_STRIPPED",
+      "value": {
+        "kind": "int",
+        "value": 513
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_ENCODED",
+      "value": {
+        "kind": "int",
+        "value": 514
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_SPECIAL_CHARS",
+      "value": {
+        "kind": "int",
+        "value": 515
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_EMAIL",
+      "value": {
+        "kind": "int",
+        "value": 517
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_URL",
+      "value": {
+        "kind": "int",
+        "value": 518
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_NUMBER_INT",
+      "value": {
+        "kind": "int",
+        "value": 519
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_NUMBER_FLOAT",
+      "value": {
+        "kind": "int",
+        "value": 520
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_FULL_SPECIAL_CHARS",
+      "value": {
+        "kind": "int",
+        "value": 522
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_SANITIZE_ADD_SLASHES",
+      "value": {
+        "kind": "int",
+        "value": 523
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_NULL_ON_FAILURE",
+      "value": {
+        "kind": "int",
+        "value": 134217728
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ALLOW_OCTAL",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ALLOW_HEX",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_STRIP_LOW",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_STRIP_HIGH",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ENCODE_LOW",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ENCODE_HIGH",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ENCODE_AMP",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_NO_ENCODE_QUOTES",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_EMPTY_STRING_NULL",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_STRIP_BACKTICK",
+      "value": {
+        "kind": "int",
+        "value": 512
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ALLOW_FRACTION",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ALLOW_THOUSAND",
+      "value": {
+        "kind": "int",
+        "value": 8192
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_ALLOW_SCIENTIFIC",
+      "value": {
+        "kind": "int",
+        "value": 16384
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_IPV4",
+      "value": {
+        "kind": "int",
+        "value": 1048576
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_IPV6",
+      "value": {
+        "kind": "int",
+        "value": 2097152
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_NO_RES_RANGE",
+      "value": {
+        "kind": "int",
+        "value": 4194304
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_NO_PRIV_RANGE",
+      "value": {
+        "kind": "int",
+        "value": 8388608
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_GLOBAL_RANGE",
+      "value": {
+        "kind": "int",
+        "value": 536870912
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_HOSTNAME",
+      "value": {
+        "kind": "int",
+        "value": 1048576
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_EMAIL_UNICODE",
+      "value": {
+        "kind": "int",
+        "value": 1048576
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_PATH_REQUIRED",
+      "value": {
+        "kind": "int",
+        "value": 262144
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILTER_FLAG_QUERY_REQUIRED",
+      "value": {
+        "kind": "int",
+        "value": 524288
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_has_var",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_input",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_input_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_list",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_var",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "filter",
+        "source": "ext/filter/filter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filter"
+        }
+      ],
+      "name": "filter_var_array",
+      "visibility": "php"
+    }
+  ],
+  "name": "filter",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

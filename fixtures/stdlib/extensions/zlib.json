@@ -1,0 +1,645 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "DeflateContext"
+    },
+    {
+      "kind": "class",
+      "name": "InflateContext"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "FORCE_DEFLATE",
+      "value": {
+        "kind": "int",
+        "value": 15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FORCE_GZIP",
+      "value": {
+        "kind": "int",
+        "value": 31
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_ENCODING_RAW",
+      "value": {
+        "kind": "int",
+        "value": -15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_ENCODING_GZIP",
+      "value": {
+        "kind": "int",
+        "value": 31
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_ENCODING_DEFLATE",
+      "value": {
+        "kind": "int",
+        "value": 15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_NO_FLUSH",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_PARTIAL_FLUSH",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_SYNC_FLUSH",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_FULL_FLUSH",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_BLOCK",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_FINISH",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_FILTERED",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_HUFFMAN_ONLY",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_RLE",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_FIXED",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_DEFAULT_STRATEGY",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "1.3.1"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_VERNUM",
+      "value": {
+        "kind": "int",
+        "value": 4880
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_STREAM_END",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_NEED_DICT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_ERRNO",
+      "value": {
+        "kind": "int",
+        "value": -1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_STREAM_ERROR",
+      "value": {
+        "kind": "int",
+        "value": -2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_DATA_ERROR",
+      "value": {
+        "kind": "int",
+        "value": -3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_MEM_ERROR",
+      "value": {
+        "kind": "int",
+        "value": -4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_BUF_ERROR",
+      "value": {
+        "kind": "int",
+        "value": -5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZLIB_VERSION_ERROR",
+      "value": {
+        "kind": "int",
+        "value": -6
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "deflate_add",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "deflate_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzclose",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzcompress",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzdecode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzdeflate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzencode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzeof",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzfile",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzgetc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzgets",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzinflate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzopen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzpassthru",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzputs",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzread",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzrewind",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzseek",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gztell",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzuncompress",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "gzwrite",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "inflate_add",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "inflate_get_read_len",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "inflate_get_status",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "inflate_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "readgzfile",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "zlib_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "zlib_encode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zlib",
+        "source": "ext/zlib/zlib.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zlib"
+        }
+      ],
+      "name": "zlib_get_coding_type",
+      "visibility": "php"
+    }
+  ],
+  "name": "zlib",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

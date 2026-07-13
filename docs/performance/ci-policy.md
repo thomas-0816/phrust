@@ -8,12 +8,17 @@ default command is:
 nix develop -c just verify-performance
 ```
 
-`verify-performance` is the source of truth for required default Performance correctness
-and smoke coverage. It runs workspace tests, regression fixtures, the full
-performance-flag A/B matrix, bytecode-cache roundtrip checks, optimizer
-differential checks, quickening smoke, inline-cache smoke, skip-safe Callgrind
-smoke, default-off JIT smoke, safety audit smoke, benchmark smoke, framework
-smoke, release benchmark smoke, hot-path inventory, and perf-report generation.
+`verify-performance` is the source of truth for required default Performance
+correctness and smoke coverage. It runs regression fixtures, the full
+performance-flag A/B matrix (via `performance-regression`), bytecode-cache
+roundtrip checks, optimizer differential checks, quickening smoke,
+inline-cache smoke, default-off JIT smoke, safety audit smoke, benchmark
+smoke, and framework smoke; its sub-gates share one debug engine build
+through the `perf-build` recipe dependency. The heavier release-profile and
+report gates — release benchmark smoke, skip-safe Callgrind smoke, hot-path
+inventory, fastest-hotpath report, and perf-report generation — run as
+`verify-performance-extended`, a separate job in the CI gate matrix, so the
+serial local gate fits pre-push budgets with unchanged CI coverage.
 The workspace test step runs with `RUST_MIN_STACK` defaulting to `8388608`
 bytes, overridable with `PHRUST_RUST_MIN_STACK`, so recursive VM tests use a
 deterministic stack budget in local and CI `just` gates. The repo-local Cargo

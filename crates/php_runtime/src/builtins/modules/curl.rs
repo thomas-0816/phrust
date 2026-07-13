@@ -1,10 +1,13 @@
 //! cURL-compatible HTTP client builtin slice.
 
 use super::core::{
-    argument_type_error, argument_value_error, expect_arity, int_arg, string_arg, string_array_key,
+    argument_type_error, argument_value_error, expect_arity, float_arg, int_arg, string_arg,
+    string_array_key,
 };
+use crate::builtins::context::CurlBuiltinServices;
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    CurlEasyCollector, CurlMultiDone, CurlMultiRuntimeState, CurlMultiTransferState,
     RuntimeSourceSpan,
 };
 use crate::{
@@ -12,12 +15,14 @@ use crate::{
     RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity,
     Value, normalize_class_name,
 };
+use curl::MultiError;
 use curl::Version;
-use openssl::ssl::{HandshakeError, SslConnector, SslMethod, SslStream};
-use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use curl::easy::{
+    Auth, Easy2, HttpVersion, IpResolve, List, PostRedirections, ProxyType, SslVersion,
+};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("curl_close", builtin_curl_close, BuiltinCompatibility::Php),
@@ -76,6 +81,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "curl_multi_select",
+        builtin_curl_multi_select,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "curl_multi_info_read",
         builtin_curl_multi_info_read,
         BuiltinCompatibility::Php,
@@ -128,6 +138,37 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
 ];
 
+macro_rules! curl_builtin_adapter {
+    ($entry:ident => $implementation:ident) => {
+        pub(in crate::builtins::modules) fn $entry(
+            context: &mut BuiltinContext<'_>,
+            args: Vec<Value>,
+            span: RuntimeSourceSpan,
+        ) -> BuiltinResult {
+            let mut services = context.curl_services();
+            $implementation(&mut services, args, span)
+        }
+    };
+}
+
+curl_builtin_adapter!(builtin_curl_multi_init => curl_multi_init);
+curl_builtin_adapter!(builtin_curl_multi_add_handle => curl_multi_add_handle);
+curl_builtin_adapter!(builtin_curl_multi_exec => curl_multi_exec);
+curl_builtin_adapter!(builtin_curl_multi_select => curl_multi_select);
+curl_builtin_adapter!(builtin_curl_multi_info_read => curl_multi_info_read);
+curl_builtin_adapter!(builtin_curl_multi_remove_handle => curl_multi_remove_handle);
+curl_builtin_adapter!(builtin_curl_multi_close => curl_multi_close);
+curl_builtin_adapter!(builtin_curl_share_init => curl_share_init);
+curl_builtin_adapter!(builtin_curl_share_setopt => curl_share_setopt);
+curl_builtin_adapter!(builtin_curl_share_close => curl_share_close);
+curl_builtin_adapter!(builtin_curl_init => curl_init);
+curl_builtin_adapter!(builtin_curl_setopt => curl_setopt);
+curl_builtin_adapter!(builtin_curl_setopt_array => curl_setopt_array);
+curl_builtin_adapter!(builtin_curl_exec => curl_exec);
+curl_builtin_adapter!(builtin_curl_close => curl_close);
+curl_builtin_adapter!(builtin_curl_reset => curl_reset);
+curl_builtin_adapter!(builtin_curl_copy_handle => curl_copy_handle);
+
 pub const PHRUST_NET_TESTS_ENV: &str = "PHRUST_NET_TESTS";
 static NET_TESTS_OVERRIDE: Mutex<Option<bool>> = Mutex::new(None);
 
@@ -163,37 +204,79 @@ const CURLOPT_HEADER: i64 = 42;
 const CURLOPT_NOBODY: i64 = 44;
 const CURLOPT_USERAGENT: i64 = 10018;
 const CURLOPT_REFERER: i64 = 10016;
+const CURLOPT_ACCEPT_ENCODING: i64 = 10102;
 const CURLOPT_ENCODING: i64 = 10102;
 const CURLOPT_HTTP_VERSION: i64 = 84;
 const CURLOPT_CONNECTTIMEOUT: i64 = 78;
 const CURLOPT_CONNECTTIMEOUT_MS: i64 = 156;
 const CURLOPT_MAXREDIRS: i64 = 68;
 const CURLOPT_FAILONERROR: i64 = 45;
+const CURLOPT_AUTOREFERER: i64 = 58;
+const CURLOPT_COOKIE: i64 = 10022;
+const CURLOPT_COOKIEFILE: i64 = 10031;
+const CURLOPT_COOKIEJAR: i64 = 10082;
+const CURLOPT_COOKIESESSION: i64 = 96;
+const CURLOPT_DNS_CACHE_TIMEOUT: i64 = 92;
 const CURLOPT_HTTPHEADER: i64 = 10023;
+const CURLOPT_HTTPGET: i64 = 80;
+const CURLOPT_HTTPPROXYTUNNEL: i64 = 61;
 const CURLOPT_HEADERFUNCTION: i64 = 20079;
 const CURLOPT_WRITEFUNCTION: i64 = 20011;
 const CURLOPT_BUFFERSIZE: i64 = 98;
 const CURLOPT_CAINFO: i64 = 10065;
 const CURLOPT_HTTPAUTH: i64 = 107;
+const CURLOPT_IPRESOLVE: i64 = 113;
+const CURLOPT_NOPROXY: i64 = 10177;
+const CURLOPT_PORT: i64 = 3;
 const CURLOPT_PROTOCOLS: i64 = 181;
 const CURLOPT_PROXY: i64 = 10004;
 const CURLOPT_PROXYAUTH: i64 = 111;
 const CURLOPT_PROXYPORT: i64 = 59;
 const CURLOPT_PROXYTYPE: i64 = 101;
+const CURLOPT_PROXYUSERNAME: i64 = 10175;
+const CURLOPT_PROXYPASSWORD: i64 = 10176;
 const CURLOPT_PROXYUSERPWD: i64 = 10006;
 const CURLOPT_REDIR_PROTOCOLS: i64 = 182;
+const CURLOPT_TCP_NODELAY: i64 = 121;
+const CURLOPT_USERNAME: i64 = 10173;
+const CURLOPT_PASSWORD: i64 = 10174;
 const CURLOPT_USERPWD: i64 = 10005;
 const CURLOPT_POST: i64 = 47;
 const CURLOPT_POSTFIELDS: i64 = 10015;
 const CURLOPT_CUSTOMREQUEST: i64 = 10036;
 const CURLOPT_PRIVATE: i64 = 10103;
+const CURLOPT_SSLCERT: i64 = 10025;
+const CURLOPT_SSLKEY: i64 = 10087;
 const CURLOPT_SSL_VERIFYPEER: i64 = 64;
 const CURLOPT_SSL_VERIFYHOST: i64 = 81;
+const CURLOPT_SSLVERSION: i64 = 32;
+const CURLOPT_VERBOSE: i64 = 41;
 const CURLINFO_EFFECTIVE_URL: i64 = 1048577;
 const CURLINFO_RESPONSE_CODE: i64 = 2097154;
 const CURLINFO_HEADER_SIZE: i64 = 2097163;
+const CURLINFO_HTTP_CONNECTCODE: i64 = 2097174;
 const CURLINFO_TOTAL_TIME: i64 = 3145731;
+const CURLINFO_NAMELOOKUP_TIME: i64 = 3145732;
+const CURLINFO_CONNECT_TIME: i64 = 3145733;
+const CURLINFO_PRETRANSFER_TIME: i64 = 3145734;
+const CURLINFO_CONTENT_TYPE: i64 = 1048594;
+const CURLINFO_STARTTRANSFER_TIME: i64 = 3145745;
+const CURLINFO_REDIRECT_TIME: i64 = 3145747;
+const CURLINFO_REDIRECT_COUNT: i64 = 2097172;
+const CURLINFO_REQUEST_SIZE: i64 = 2097164;
+const CURLINFO_SIZE_DOWNLOAD: i64 = 3145736;
 const CURLINFO_PRIVATE: i64 = 1048597;
+const CURL_IPRESOLVE_WHATEVER: i64 = 0;
+const CURL_IPRESOLVE_V4: i64 = 1;
+const CURL_IPRESOLVE_V6: i64 = 2;
+const CURL_SSLVERSION_DEFAULT: i64 = 0;
+const CURL_SSLVERSION_TLSV1: i64 = 1;
+const CURL_SSLVERSION_SSLV2: i64 = 2;
+const CURL_SSLVERSION_SSLV3: i64 = 3;
+const CURL_SSLVERSION_TLSV1_0: i64 = 4;
+const CURL_SSLVERSION_TLSV1_1: i64 = 5;
+const CURL_SSLVERSION_TLSV1_2: i64 = 6;
+const CURL_SSLVERSION_TLSV1_3: i64 = 7;
 const CURLM_OK: i64 = 0;
 const CURLM_BAD_HANDLE: i64 = 1;
 const CURLMSG_DONE: i64 = 1;
@@ -227,9 +310,10 @@ const CURL_VERSION_GSASL: i64 = 536870912;
 type CurlTransportError = (i64, String);
 type CurlPostBody = (Vec<u8>, Option<&'static str>);
 
-trait CurlStream: Read + Write {}
-
-impl<T: Read + Write> CurlStream for T {}
+struct CurlHandleRuntimeView {
+    options: BTreeMap<i64, Value>,
+    closed: bool,
+}
 
 pub(in crate::builtins::modules) fn builtin_curl_version(
     _context: &mut BuiltinContext<'_>,
@@ -418,38 +502,44 @@ pub(in crate::builtins::modules) fn builtin_curl_strerror(
     Ok(Value::string(message))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_multi_init(
-    _context: &mut BuiltinContext<'_>,
+fn curl_multi_init(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_init", &args, 0)?;
     let object =
         ObjectRef::new_with_display_name(&curl_runtime_class("CurlMultiHandle"), "CurlMultiHandle");
+    context.curl_state().reset_multi(object.id());
     reset_curl_multi_handle(&object);
     Ok(Value::Object(object))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_multi_add_handle(
-    _context: &mut BuiltinContext<'_>,
+fn curl_multi_add_handle(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_add_handle", &args, 2)?;
     let multi = curl_multi_handle_arg("curl_multi_add_handle", args.first())?;
     let handle = curl_handle_arg("curl_multi_add_handle", args.get(1))?;
+    let Some(runtime) = context.curl_state().multi_mut(multi.id()) else {
+        return Ok(Value::Int(CURLM_BAD_HANDLE));
+    };
+    if runtime.closed || multi.get_property("__curl_multi_closed") == Some(Value::Bool(true)) {
+        return Ok(Value::Int(CURLM_BAD_HANDLE));
+    }
     let mut handles = curl_multi_handles(&multi);
     if !handles.iter().any(|existing| existing == &handle) {
         handles.push(handle);
     }
     set_curl_multi_handles(&multi, handles);
     set_curl_multi_pending(&multi, Vec::new());
-    multi.set_property("__curl_multi_executed", Value::Bool(false));
     Ok(Value::Int(CURLM_OK))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_multi_exec(
-    context: &mut BuiltinContext<'_>,
+fn curl_multi_exec(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -458,24 +548,142 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_exec(
     if multi.get_property("__curl_multi_closed") == Some(Value::Bool(true)) {
         return Ok(Value::Int(CURLM_BAD_HANDLE));
     }
-    if multi.get_property("__curl_multi_executed") != Some(Value::Bool(true)) {
-        let handles = curl_multi_handles(&multi);
-        let mut pending = Vec::with_capacity(handles.len());
-        for handle in handles {
-            let _ = builtin_curl_exec(context, vec![Value::Object(handle.clone())], span.clone())?;
-            pending.push(curl_multi_done_entry(handle));
+    let network_requests_enabled = curl_network_requests_enabled(context);
+    let handles = curl_multi_handles(&multi);
+    let runtime_views = handles
+        .iter()
+        .map(|handle| {
+            (
+                handle.id(),
+                CurlHandleRuntimeView {
+                    options: context.curl_state_ref().options_snapshot(handle.id()),
+                    closed: context.curl_state_ref().is_closed(handle.id()),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    {
+        let curl_state = context.curl_state();
+        let Some(runtime) = curl_state.multi_mut(multi.id()) else {
+            return Ok(Value::Int(CURLM_BAD_HANDLE));
+        };
+        if runtime.closed {
+            return Ok(Value::Int(CURLM_BAD_HANDLE));
         }
-        set_curl_multi_pending(&multi, pending);
-        multi.set_property("__curl_multi_executed", Value::Bool(true));
+        for handle in handles {
+            if runtime.transfers.contains_key(&handle.id()) {
+                continue;
+            }
+            let Some(view) = runtime_views.get(&handle.id()) else {
+                continue;
+            };
+            match build_multi_easy_for_handle(&handle, network_requests_enabled, view) {
+                Ok(easy) => match runtime.multi.add2(easy) {
+                    Ok(mut easy) => {
+                        if let Err(error) = easy.set_token(handle.id() as usize) {
+                            let (code, message) = curl_easy_error(error);
+                            set_curl_error(&handle, code, message);
+                            runtime
+                                .pending
+                                .push_back(curl_multi_done_entry(handle, code));
+                            continue;
+                        }
+                        runtime.transfers.insert(
+                            handle.id(),
+                            CurlMultiTransferState {
+                                object: handle,
+                                easy,
+                                completed: false,
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        let (code, message) = curl_multi_error(error);
+                        set_curl_error(&handle, code, message);
+                        runtime
+                            .pending
+                            .push_back(curl_multi_done_entry(handle, code));
+                    }
+                },
+                Err((code, message)) => {
+                    set_curl_error(&handle, code, message.clone());
+                    diagnostics.push((handle.clone(), code, message));
+                    runtime
+                        .pending
+                        .push_back(curl_multi_done_entry(handle, code));
+                }
+            }
+        }
+        let running = match runtime.multi.perform() {
+            Ok(running) => {
+                drain_curl_multi_messages(runtime, &runtime_views);
+                running
+            }
+            Err(error) => {
+                let (code, message) = curl_multi_error(error);
+                for transfer in runtime.transfers.values() {
+                    set_curl_error(&transfer.object, code, message.clone());
+                }
+                0
+            }
+        };
+        if let Some(Value::Reference(cell)) = args.get(1) {
+            cell.set(Value::Int(i64::from(running)));
+        }
+        set_curl_multi_pending(&multi, curl_multi_pending_values(&runtime.pending));
     }
-    if let Some(Value::Reference(cell)) = args.get(1) {
-        cell.set(Value::Int(0));
+    for (handle, code, message) in diagnostics {
+        record_curl_diagnostic(
+            context,
+            &handle,
+            CurlDiagnostic::new(
+                "E_PHP_CURL_REQUEST_FAILED",
+                "curl_multi_exec",
+                "build_request",
+                "enabled",
+                code,
+                message,
+            ),
+            span.clone(),
+        );
     }
     Ok(Value::Int(CURLM_OK))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_multi_info_read(
-    _context: &mut BuiltinContext<'_>,
+fn curl_multi_select(
+    context: &mut CurlBuiltinServices<'_, '_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin curl_multi_select expects one or two argument(s)",
+        ));
+    }
+    let multi = curl_multi_handle_arg("curl_multi_select", args.first())?;
+    let timeout = match args.get(1) {
+        Some(value) => float_arg("curl_multi_select", value)?,
+        None => 1.0,
+    };
+    let timeout = Duration::from_secs_f64(timeout.clamp(0.0, 1.0));
+    let Some(runtime) = context.curl_state().multi_mut(multi.id()) else {
+        return Ok(Value::Int(-1));
+    };
+    if runtime.closed || multi.get_property("__curl_multi_closed") == Some(Value::Bool(true)) {
+        return Ok(Value::Int(-1));
+    }
+    let ready = runtime
+        .multi
+        .wait(&mut [], timeout)
+        .map(i64::from)
+        .unwrap_or(-1);
+    Ok(Value::Int(ready))
+}
+
+fn curl_multi_info_read(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -489,23 +697,31 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_info_read(
     if multi.get_property("__curl_multi_closed") == Some(Value::Bool(true)) {
         return Ok(Value::Bool(false));
     }
-    let mut pending = curl_multi_pending(&multi);
-    if pending.is_empty() {
+    let Some(runtime) = context.curl_state().multi_mut(multi.id()) else {
+        return Ok(Value::Bool(false));
+    };
+    if runtime.pending.is_empty() {
         if let Some(Value::Reference(cell)) = args.get(1) {
             cell.set(Value::Int(0));
         }
         return Ok(Value::Bool(false));
     }
-    let entry = pending.remove(0);
+    let Some(entry) = runtime.pending.pop_front() else {
+        if let Some(Value::Reference(cell)) = args.get(1) {
+            cell.set(Value::Int(0));
+        }
+        set_curl_multi_pending(&multi, curl_multi_pending_values(&runtime.pending));
+        return Ok(Value::Bool(false));
+    };
     if let Some(Value::Reference(cell)) = args.get(1) {
-        cell.set(Value::Int(pending.len() as i64));
+        cell.set(Value::Int(runtime.pending.len() as i64));
     }
-    set_curl_multi_pending(&multi, pending);
-    Ok(entry)
+    set_curl_multi_pending(&multi, curl_multi_pending_values(&runtime.pending));
+    Ok(curl_multi_done_value(&entry))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_multi_remove_handle(
-    _context: &mut BuiltinContext<'_>,
+fn curl_multi_remove_handle(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -517,34 +733,37 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_remove_handle(
         .filter(|existing| existing != &handle)
         .collect::<Vec<_>>();
     set_curl_multi_handles(&multi, handles);
+    context.curl_state().detach_handle_from_multis(handle.id());
     Ok(Value::Int(CURLM_OK))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_multi_close(
-    _context: &mut BuiltinContext<'_>,
+fn curl_multi_close(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_close", &args, 1)?;
     let multi = curl_multi_handle_arg("curl_multi_close", args.first())?;
+    context.curl_state().close_multi(multi.id());
     multi.set_property("__curl_multi_closed", Value::Bool(true));
     Ok(Value::Null)
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_share_init(
-    _context: &mut BuiltinContext<'_>,
+fn curl_share_init(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_init", &args, 0)?;
     let object =
         ObjectRef::new_with_display_name(&curl_runtime_class("CurlShareHandle"), "CurlShareHandle");
+    context.curl_state().reset_share(object.id());
     reset_curl_share_handle(&object);
     Ok(Value::Object(object))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_share_setopt(
-    _context: &mut BuiltinContext<'_>,
+fn curl_share_setopt(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -553,6 +772,14 @@ pub(in crate::builtins::modules) fn builtin_curl_share_setopt(
     let option = int_arg("curl_share_setopt", &args[1])?;
     match option {
         CURLSHOPT_SHARE | CURLSHOPT_UNSHARE => {
+            if let Some(state) = context.curl_state().share_mut(share.id()) {
+                let lock = int_arg("curl_share_setopt", &args[2])?;
+                if option == CURLSHOPT_SHARE {
+                    state.shared_options.insert(lock);
+                } else {
+                    state.shared_options.remove(&lock);
+                }
+            }
             share.set_property("__curl_share_errno", Value::Int(CURLSHE_OK));
             Ok(Value::Bool(true))
         }
@@ -596,19 +823,23 @@ pub(in crate::builtins::modules) fn builtin_curl_share_strerror(
     Ok(Value::string(message))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_share_close(
-    _context: &mut BuiltinContext<'_>,
+fn curl_share_close(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_close", &args, 1)?;
     let share = curl_share_handle_arg("curl_share_close", args.first())?;
+    if let Some(state) = context.curl_state().share_mut(share.id()) {
+        state.closed = true;
+        state.shared_options.clear();
+    }
     share.set_property("__curl_share_closed", Value::Bool(true));
     Ok(Value::Null)
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_init(
-    _context: &mut BuiltinContext<'_>,
+fn curl_init(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -619,15 +850,19 @@ pub(in crate::builtins::modules) fn builtin_curl_init(
         ));
     }
     let handle = curl_handle_object();
+    context.curl_state().reset_handle(handle.id());
     if let Some(url) = args.first() {
         let url = string_arg("curl_init", url)?;
+        context
+            .curl_state()
+            .set_option(handle.id(), CURLOPT_URL, Value::String(url.clone()));
         handle.set_property("__curl_url", Value::String(url));
     }
     Ok(Value::Object(handle))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_setopt(
-    context: &mut BuiltinContext<'_>,
+fn curl_setopt(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -638,6 +873,9 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
     let property = match option {
         CURLOPT_URL => {
             let value = string_arg("curl_setopt", &value)?;
+            context
+                .curl_state()
+                .set_option(handle.id(), CURLOPT_URL, Value::String(value.clone()));
             handle.set_property("__curl_url", Value::String(value));
             return Ok(Value::Bool(true));
         }
@@ -649,32 +887,52 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
         CURLOPT_NOBODY => "__curl_nobody",
         CURLOPT_USERAGENT => "__curl_useragent",
         CURLOPT_REFERER => "__curl_referer",
-        CURLOPT_ENCODING => "__curl_encoding",
+        CURLOPT_ACCEPT_ENCODING => "__curl_encoding",
         CURLOPT_HTTP_VERSION => "__curl_http_version",
         CURLOPT_CONNECTTIMEOUT => "__curl_connecttimeout",
         CURLOPT_CONNECTTIMEOUT_MS => "__curl_connecttimeout_ms",
         CURLOPT_MAXREDIRS => "__curl_maxredirs",
         CURLOPT_FAILONERROR => "__curl_failonerror",
+        CURLOPT_AUTOREFERER => "__curl_autoreferer",
+        CURLOPT_COOKIE => "__curl_cookie",
+        CURLOPT_COOKIEFILE => "__curl_cookiefile",
+        CURLOPT_COOKIEJAR => "__curl_cookiejar",
+        CURLOPT_COOKIESESSION => "__curl_cookiesession",
+        CURLOPT_DNS_CACHE_TIMEOUT => "__curl_dns_cache_timeout",
         CURLOPT_HTTPHEADER => "__curl_httpheader",
+        CURLOPT_HTTPGET => "__curl_httpget",
+        CURLOPT_HTTPPROXYTUNNEL => "__curl_httpproxytunnel",
         CURLOPT_HEADERFUNCTION => "__curl_headerfunction",
         CURLOPT_WRITEFUNCTION => "__curl_writefunction",
         CURLOPT_BUFFERSIZE => "__curl_buffersize",
         CURLOPT_CAINFO => "__curl_cainfo",
         CURLOPT_HTTPAUTH => "__curl_httpauth",
+        CURLOPT_IPRESOLVE => "__curl_ipresolve",
+        CURLOPT_NOPROXY => "__curl_noproxy",
+        CURLOPT_PORT => "__curl_port",
         CURLOPT_PROTOCOLS => "__curl_protocols",
         CURLOPT_PROXY => "__curl_proxy",
         CURLOPT_PROXYAUTH => "__curl_proxyauth",
         CURLOPT_PROXYPORT => "__curl_proxyport",
         CURLOPT_PROXYTYPE => "__curl_proxytype",
+        CURLOPT_PROXYUSERNAME => "__curl_proxyusername",
+        CURLOPT_PROXYPASSWORD => "__curl_proxypassword",
         CURLOPT_PROXYUSERPWD => "__curl_proxyuserpwd",
         CURLOPT_REDIR_PROTOCOLS => "__curl_redir_protocols",
+        CURLOPT_TCP_NODELAY => "__curl_tcp_nodelay",
+        CURLOPT_USERNAME => "__curl_username",
+        CURLOPT_PASSWORD => "__curl_password",
         CURLOPT_USERPWD => "__curl_userpwd",
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
         CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
         CURLOPT_PRIVATE => "__curl_private",
+        CURLOPT_SSLCERT => "__curl_sslcert",
+        CURLOPT_SSLKEY => "__curl_sslkey",
         CURLOPT_SSL_VERIFYPEER => "__curl_ssl_verifypeer",
         CURLOPT_SSL_VERIFYHOST => "__curl_ssl_verifyhost",
+        CURLOPT_SSLVERSION => "__curl_sslversion",
+        CURLOPT_VERBOSE => "__curl_verbose",
         _ => {
             set_curl_error(&handle, 48, "unsupported cURL option");
             record_curl_diagnostic(
@@ -693,12 +951,15 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
             return Ok(Value::Bool(false));
         }
     };
+    context
+        .curl_state()
+        .set_option(handle.id(), option, value.clone());
     handle.set_property(property, value);
     Ok(Value::Bool(true))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_setopt_array(
-    context: &mut BuiltinContext<'_>,
+fn curl_setopt_array(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -717,7 +978,7 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt_array(
             ArrayKey::Int(option) => option,
             ArrayKey::String(option) => option.to_string_lossy().parse().unwrap_or(-1),
         };
-        let ok = set_curl_option(&handle, option, value.clone())?;
+        let ok = set_curl_option(context, &handle, option, value.clone())?;
         if !matches!(ok, Value::Bool(true)) {
             record_curl_diagnostic(
                 context,
@@ -738,14 +999,18 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt_array(
     Ok(Value::Bool(true))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_exec(
-    context: &mut BuiltinContext<'_>,
+fn curl_exec(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_exec", &args, 1)?;
     let handle = curl_handle_arg("curl_exec", args.first())?;
     let network_requests_enabled = curl_network_requests_enabled(context);
+    let runtime = CurlHandleRuntimeView {
+        options: context.curl_state_ref().options_snapshot(handle.id()),
+        closed: context.curl_state_ref().is_closed(handle.id()),
+    };
     if !network_requests_enabled && !curl_handle_targets_loopback(&handle) {
         set_curl_error(
             &handle,
@@ -767,7 +1032,7 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
         );
         return Ok(Value::Bool(false));
     }
-    let request = match build_request(&handle, network_requests_enabled) {
+    let request = match build_request(&handle, network_requests_enabled, Some(&runtime)) {
         Ok(request) => request,
         Err((code, message)) => {
             set_curl_error(&handle, code, message.clone());
@@ -787,8 +1052,7 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
             return Ok(Value::Bool(false));
         }
     };
-    let start = Instant::now();
-    let response = match execute_http_request(&request) {
+    let response = match execute_http_request(&request, &handle, Some(&runtime)) {
         Ok(response) => response,
         Err((code, message)) => {
             set_curl_error(&handle, code, message.clone());
@@ -808,7 +1072,13 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
             return Ok(Value::Bool(false));
         }
     };
-    if curl_bool_property(&handle, "__curl_failonerror") && response.status >= 400 {
+    if curl_bool_option(
+        &handle,
+        Some(&runtime),
+        CURLOPT_FAILONERROR,
+        "__curl_failonerror",
+    ) && response.status >= 400
+    {
         set_curl_error(&handle, 22, "HTTP response code said error");
         record_curl_diagnostic(
             context,
@@ -836,8 +1106,51 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
         Value::Int(response.header_size as i64),
     );
     handle.set_property(
+        "__curl_http_connectcode",
+        Value::Int(i64::from(response.http_connectcode)),
+    );
+    handle.set_property(
         "__curl_total_time",
-        Value::Float(FloatValue::from_f64(start.elapsed().as_secs_f64())),
+        Value::Float(FloatValue::from_f64(response.total_time)),
+    );
+    handle.set_property(
+        "__curl_content_type",
+        response
+            .content_type
+            .map(|value| Value::String(PhpString::from(value.into_bytes())))
+            .unwrap_or(Value::Bool(false)),
+    );
+    handle.set_property(
+        "__curl_namelookup_time",
+        Value::Float(FloatValue::from_f64(response.namelookup_time)),
+    );
+    handle.set_property(
+        "__curl_connect_time",
+        Value::Float(FloatValue::from_f64(response.connect_time)),
+    );
+    handle.set_property(
+        "__curl_pretransfer_time",
+        Value::Float(FloatValue::from_f64(response.pretransfer_time)),
+    );
+    handle.set_property(
+        "__curl_starttransfer_time",
+        Value::Float(FloatValue::from_f64(response.starttransfer_time)),
+    );
+    handle.set_property(
+        "__curl_redirect_time",
+        Value::Float(FloatValue::from_f64(response.redirect_time)),
+    );
+    handle.set_property(
+        "__curl_redirect_count",
+        Value::Int(i64::from(response.redirect_count)),
+    );
+    handle.set_property(
+        "__curl_request_size",
+        Value::Int(response.request_size as i64),
+    );
+    handle.set_property(
+        "__curl_size_download",
+        Value::Float(FloatValue::from_f64(response.download_size)),
     );
     let response_headers = response.headers;
     let response_body = response.body;
@@ -850,14 +1163,19 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
         Value::String(PhpString::from(response_body.clone())),
     );
 
-    let body = if curl_bool_property(&handle, "__curl_header") {
+    let body = if curl_bool_option(&handle, Some(&runtime), CURLOPT_HEADER, "__curl_header") {
         let mut bytes = response_headers;
         bytes.extend_from_slice(&response_body);
         bytes
     } else {
         response_body
     };
-    if curl_bool_property(&handle, "__curl_returntransfer") {
+    if curl_bool_option(
+        &handle,
+        Some(&runtime),
+        CURLOPT_RETURNTRANSFER,
+        "__curl_returntransfer",
+    ) {
         Ok(Value::string(body))
     } else {
         context.output().write_bytes(&body);
@@ -865,7 +1183,7 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
     }
 }
 
-fn curl_network_requests_enabled(context: &BuiltinContext<'_>) -> bool {
+fn curl_network_requests_enabled(context: &CurlBuiltinServices<'_, '_>) -> bool {
     if let Some(enabled) = *NET_TESTS_OVERRIDE
         .lock()
         .expect("network test override lock")
@@ -894,7 +1212,21 @@ pub(in crate::builtins::modules) fn builtin_curl_getinfo(
             CURLINFO_RESPONSE_CODE => curl_int_property(&handle, "__curl_http_code"),
             CURLINFO_EFFECTIVE_URL => curl_string_property(&handle, "__curl_effective_url"),
             CURLINFO_HEADER_SIZE => curl_int_property(&handle, "__curl_header_size"),
+            CURLINFO_HTTP_CONNECTCODE => curl_int_property(&handle, "__curl_http_connectcode"),
             CURLINFO_TOTAL_TIME => curl_float_property(&handle, "__curl_total_time"),
+            CURLINFO_CONTENT_TYPE => handle
+                .get_property("__curl_content_type")
+                .unwrap_or(Value::Bool(false)),
+            CURLINFO_NAMELOOKUP_TIME => curl_float_property(&handle, "__curl_namelookup_time"),
+            CURLINFO_CONNECT_TIME => curl_float_property(&handle, "__curl_connect_time"),
+            CURLINFO_PRETRANSFER_TIME => curl_float_property(&handle, "__curl_pretransfer_time"),
+            CURLINFO_STARTTRANSFER_TIME => {
+                curl_float_property(&handle, "__curl_starttransfer_time")
+            }
+            CURLINFO_REDIRECT_TIME => curl_float_property(&handle, "__curl_redirect_time"),
+            CURLINFO_REDIRECT_COUNT => curl_int_property(&handle, "__curl_redirect_count"),
+            CURLINFO_REQUEST_SIZE => curl_int_property(&handle, "__curl_request_size"),
+            CURLINFO_SIZE_DOWNLOAD => curl_float_property(&handle, "__curl_size_download"),
             CURLINFO_PRIVATE => handle.get_property("__curl_private").unwrap_or(Value::Null),
             _ => Value::Bool(false),
         });
@@ -915,6 +1247,28 @@ pub(in crate::builtins::modules) fn builtin_curl_getinfo(
     out.insert(
         ArrayKey::String(PhpString::from("total_time")),
         curl_float_property(&handle, "__curl_total_time"),
+    );
+    out.insert(
+        ArrayKey::String(PhpString::from("content_type")),
+        handle
+            .get_property("__curl_content_type")
+            .unwrap_or(Value::Bool(false)),
+    );
+    out.insert(
+        ArrayKey::String(PhpString::from("namelookup_time")),
+        curl_float_property(&handle, "__curl_namelookup_time"),
+    );
+    out.insert(
+        ArrayKey::String(PhpString::from("connect_time")),
+        curl_float_property(&handle, "__curl_connect_time"),
+    );
+    out.insert(
+        ArrayKey::String(PhpString::from("pretransfer_time")),
+        curl_float_property(&handle, "__curl_pretransfer_time"),
+    );
+    out.insert(
+        ArrayKey::String(PhpString::from("starttransfer_time")),
+        curl_float_property(&handle, "__curl_starttransfer_time"),
     );
     Ok(Value::Array(out))
 }
@@ -939,36 +1293,39 @@ pub(in crate::builtins::modules) fn builtin_curl_error(
     Ok(curl_string_property(&handle, "__curl_error"))
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_close(
-    _context: &mut BuiltinContext<'_>,
+fn curl_close(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_close", &args, 1)?;
     let handle = curl_handle_arg("curl_close", args.first())?;
+    context.curl_state().close_handle(handle.id());
     handle.set_property("__curl_closed", Value::Bool(true));
     Ok(Value::Null)
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_reset(
-    _context: &mut BuiltinContext<'_>,
+fn curl_reset(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_reset", &args, 1)?;
     let handle = curl_handle_arg("curl_reset", args.first())?;
+    context.curl_state().reset_handle(handle.id());
     reset_curl_handle(&handle);
     Ok(Value::Null)
 }
 
-pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
-    _context: &mut BuiltinContext<'_>,
+fn curl_copy_handle(
+    context: &mut CurlBuiltinServices<'_, '_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_copy_handle", &args, 1)?;
     let handle = curl_handle_arg("curl_copy_handle", args.first())?;
     let copy = curl_handle_object();
+    context.curl_state().copy_handle(handle.id(), copy.id());
     for property in [
         "__curl_url",
         "__curl_returntransfer",
@@ -985,26 +1342,46 @@ pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
         "__curl_connecttimeout_ms",
         "__curl_maxredirs",
         "__curl_failonerror",
+        "__curl_autoreferer",
+        "__curl_cookie",
+        "__curl_cookiefile",
+        "__curl_cookiejar",
+        "__curl_cookiesession",
+        "__curl_dns_cache_timeout",
         "__curl_httpheader",
+        "__curl_httpget",
+        "__curl_httpproxytunnel",
         "__curl_headerfunction",
         "__curl_writefunction",
         "__curl_buffersize",
         "__curl_cainfo",
         "__curl_httpauth",
+        "__curl_ipresolve",
+        "__curl_noproxy",
+        "__curl_port",
         "__curl_protocols",
         "__curl_proxy",
         "__curl_proxyauth",
         "__curl_proxyport",
         "__curl_proxytype",
+        "__curl_proxyusername",
+        "__curl_proxypassword",
         "__curl_proxyuserpwd",
         "__curl_redir_protocols",
+        "__curl_tcp_nodelay",
+        "__curl_username",
+        "__curl_password",
         "__curl_userpwd",
         "__curl_post",
         "__curl_postfields",
         "__curl_customrequest",
         "__curl_private",
+        "__curl_sslcert",
+        "__curl_sslkey",
         "__curl_ssl_verifypeer",
         "__curl_ssl_verifyhost",
+        "__curl_sslversion",
+        "__curl_verbose",
     ] {
         if let Some(value) = handle.get_property(property) {
             copy.set_property(property, value);
@@ -1016,11 +1393,14 @@ pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
 fn build_request(
     handle: &ObjectRef,
     network_requests_enabled: bool,
+    runtime: Option<&CurlHandleRuntimeView>,
 ) -> Result<CurlRequest, (i64, String)> {
-    if handle.get_property("__curl_closed") == Some(Value::Bool(true)) {
+    if runtime.map(|state| state.closed).unwrap_or(false)
+        || handle.get_property("__curl_closed") == Some(Value::Bool(true))
+    {
         return Err((3, "cURL handle is closed".to_owned()));
     }
-    let url = match handle.get_property("__curl_url") {
+    let url = match curl_runtime_option(handle, runtime, CURLOPT_URL, "__curl_url") {
         Some(Value::String(value)) if !value.is_empty() => value.to_string_lossy(),
         _ => return Err((3, "cURL URL is empty".to_owned())),
     };
@@ -1031,30 +1411,25 @@ fn build_request(
             "cURL MVP only permits local loopback hosts when network tests are enabled".to_owned(),
         ));
     }
-    let (body, content_type) = curl_post_body(handle)?;
-    let post = curl_bool_property(handle, "__curl_post") || !body.is_empty();
-    let method = match handle.get_property("__curl_customrequest") {
+    let (body, content_type) = curl_post_body(handle, runtime)?;
+    let http_get = curl_bool_option(handle, runtime, CURLOPT_HTTPGET, "__curl_httpget");
+    let post = !http_get
+        && (curl_bool_option(handle, runtime, CURLOPT_POST, "__curl_post") || !body.is_empty());
+    let method = match curl_runtime_option(
+        handle,
+        runtime,
+        CURLOPT_CUSTOMREQUEST,
+        "__curl_customrequest",
+    ) {
         Some(Value::String(value)) if !value.is_empty() => value.to_string_lossy(),
-        _ if curl_bool_property(handle, "__curl_nobody") => "HEAD".to_owned(),
+        _ if http_get => "GET".to_owned(),
+        _ if curl_bool_option(handle, runtime, CURLOPT_NOBODY, "__curl_nobody") => {
+            "HEAD".to_owned()
+        }
         _ if post => "POST".to_owned(),
         _ => "GET".to_owned(),
     };
-    let mut headers = curl_header_lines(handle);
-    if let Some(Value::String(value)) = handle.get_property("__curl_useragent")
-        && !value.is_empty()
-    {
-        headers.push(format!("User-Agent: {}", value.to_string_lossy()));
-    }
-    if let Some(Value::String(value)) = handle.get_property("__curl_referer")
-        && !value.is_empty()
-    {
-        headers.push(format!("Referer: {}", value.to_string_lossy()));
-    }
-    if let Some(Value::String(value)) = handle.get_property("__curl_encoding")
-        && !value.is_empty()
-    {
-        headers.push(format!("Accept-Encoding: {}", value.to_string_lossy()));
-    }
+    let mut headers = curl_header_lines(handle, runtime);
     if let Some(content_type) = content_type
         && !headers
             .iter()
@@ -1064,17 +1439,19 @@ fn build_request(
     }
     Ok(CurlRequest {
         url,
-        https: parsed.https,
-        host: parsed.host,
-        port: parsed.port,
-        path: parsed.path,
         method,
         headers,
         body,
-        connect_timeout: curl_connect_timeout(handle),
-        timeout: curl_timeout(handle).max(Duration::from_secs(120)),
-        follow_redirects: curl_bool_property(handle, "__curl_followlocation"),
-        max_redirects: curl_int_setting(handle, "__curl_maxredirs", 5).clamp(0, 20) as usize,
+        connect_timeout: curl_connect_timeout(handle, runtime),
+        timeout: curl_timeout(handle, runtime),
+        follow_redirects: curl_bool_option(
+            handle,
+            runtime,
+            CURLOPT_FOLLOWLOCATION,
+            "__curl_followlocation",
+        ),
+        max_redirects: curl_int_setting(handle, runtime, CURLOPT_MAXREDIRS, "__curl_maxredirs", 5)
+            .clamp(0, 20) as usize,
     })
 }
 
@@ -1091,329 +1468,517 @@ fn curl_host_is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
-fn execute_http_request(request: &CurlRequest) -> Result<CurlResponse, (i64, String)> {
-    let mut request = request.clone();
-    for _ in 0..=request.max_redirects {
-        let response = execute_single_http_request(&request)?;
-        if request.follow_redirects
-            && matches!(response.status, 301 | 302 | 303 | 307 | 308)
-            && let Some(location) = &response.location
-        {
-            request = request.redirect(location)?;
-            continue;
-        }
-        return Ok(response);
-    }
-    Err((47, "cURL redirect limit exceeded".to_owned()))
+fn execute_http_request(
+    request: &CurlRequest,
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Result<CurlResponse, (i64, String)> {
+    let mut easy = Easy2::new(CurlEasyCollector::default());
+    apply_curl_easy_options(&mut easy, request, handle, runtime)?;
+    easy.perform().map_err(curl_easy_error)?;
+
+    curl_response_from_easy(&easy, &request.url)
 }
 
-fn execute_single_http_request(request: &CurlRequest) -> Result<CurlResponse, (i64, String)> {
-    let mut addrs = (request.host.as_str(), request.port)
-        .to_socket_addrs()
-        .map_err(|error| (7, format!("failed to resolve cURL host: {error}")))?;
-    let Some(addr) = addrs.next() else {
-        return Err((7, "failed to resolve cURL host".to_owned()));
-    };
-    let tcp_stream = TcpStream::connect_timeout(&addr, request.connect_timeout)
-        .map_err(|error| (7, format!("failed to connect cURL host: {error}")))?;
-    tcp_stream
-        .set_read_timeout(Some(curl_read_poll_timeout(request.timeout)))
-        .map_err(|error| (28, format!("failed to set cURL read timeout: {error}")))?;
-    tcp_stream
-        .set_write_timeout(Some(request.timeout))
-        .map_err(|error| (28, format!("failed to set cURL write timeout: {error}")))?;
-    let mut stream: Box<dyn CurlStream> = if request.https {
-        Box::new(connect_tls(
-            &request.host,
-            tcp_stream,
-            request.connect_timeout,
-        )?)
-    } else {
-        Box::new(tcp_stream)
-    };
-    let mut payload = Vec::new();
-    write!(
-        payload,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-        request.method,
-        request.path,
-        request_host_header(&request.host, request.port, request.https)
-    )
-    .expect("write to vec");
-    for header in &request.headers {
-        payload.extend_from_slice(header.as_bytes());
-        payload.extend_from_slice(b"\r\n");
-    }
-    if !request.body.is_empty() {
-        write!(payload, "Content-Length: {}\r\n", request.body.len()).expect("write to vec");
-    }
-    payload.extend_from_slice(b"\r\n");
-    payload.extend_from_slice(&request.body);
-    stream
-        .write_all(&payload)
-        .map_err(|error| (55, format!("failed to write cURL request: {error}")))?;
-    let bytes = read_http_response(stream.as_mut(), &request.method, request.timeout)?;
-    let mut response = parse_http_response(&bytes)?;
-    response.effective_url = request.url.clone();
-    Ok(response)
+fn build_multi_easy_for_handle(
+    handle: &ObjectRef,
+    network_requests_enabled: bool,
+    runtime: &CurlHandleRuntimeView,
+) -> Result<Easy2<CurlEasyCollector>, CurlTransportError> {
+    let request = build_request(handle, network_requests_enabled, Some(runtime))?;
+    let mut easy = Easy2::new(CurlEasyCollector::default());
+    apply_curl_easy_options(&mut easy, &request, handle, Some(runtime))?;
+    Ok(easy)
 }
 
-fn connect_tls(
-    host: &str,
-    stream: TcpStream,
-    timeout: Duration,
-) -> Result<SslStream<TcpStream>, (i64, String)> {
-    let connector = SslConnector::builder(SslMethod::tls())
-        .map_err(|error| (35, format!("failed to initialize cURL TLS: {error}")))?
-        .build();
-    match connector.connect(host, stream) {
-        Ok(stream) => Ok(stream),
-        Err(HandshakeError::WouldBlock(mut handshake)) => {
-            let start = Instant::now();
-            loop {
-                if start.elapsed() >= timeout {
-                    return Err((28, "cURL TLS handshake timed out".to_owned()));
-                }
-                match handshake.handshake() {
-                    Ok(stream) => return Ok(stream),
-                    Err(HandshakeError::WouldBlock(next)) => {
-                        handshake = next;
-                        std::thread::sleep(Duration::from_millis(10));
+fn drain_curl_multi_messages(
+    runtime: &mut CurlMultiRuntimeState,
+    runtime_views: &BTreeMap<u64, CurlHandleRuntimeView>,
+) {
+    let mut completed = Vec::new();
+    {
+        let transfers = &mut runtime.transfers;
+        runtime.multi.messages(|message| {
+            let Ok(token) = message.token() else {
+                return;
+            };
+            let handle_id = token as u64;
+            let Some(transfer) = transfers.get_mut(&handle_id) else {
+                return;
+            };
+            let Some(result) = message.result_for2(&transfer.easy) else {
+                return;
+            };
+            transfer.completed = true;
+            let runtime_view = runtime_views.get(&handle_id);
+            let result = match result {
+                Ok(()) => match curl_response_from_easy2_handle(&transfer.easy) {
+                    Ok(response) => {
+                        let code = if curl_bool_option(
+                            &transfer.object,
+                            runtime_view,
+                            CURLOPT_FAILONERROR,
+                            "__curl_failonerror",
+                        ) && response.status >= 400
+                        {
+                            set_curl_error(&transfer.object, 22, "HTTP response code said error");
+                            22
+                        } else {
+                            set_curl_error(&transfer.object, 0, "");
+                            0
+                        };
+                        store_curl_response(&transfer.object, response);
+                        code
                     }
-                    Err(error) => {
-                        return Err((35, format!("failed cURL TLS handshake: {error}")));
+                    Err((code, message)) => {
+                        set_curl_error(&transfer.object, code, message);
+                        code
                     }
+                },
+                Err(error) => {
+                    let (code, message) = curl_easy_error(error);
+                    set_curl_error(&transfer.object, code, message);
+                    code
                 }
-            }
-        }
-        Err(error) => Err((35, format!("failed cURL TLS handshake: {error}"))),
+            };
+            completed.push((handle_id, result));
+        });
     }
-}
-
-fn read_http_response(
-    stream: &mut dyn Read,
-    method: &str,
-    timeout: Duration,
-) -> Result<Vec<u8>, (i64, String)> {
-    let start = Instant::now();
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => return Ok(bytes),
-            Ok(read) => {
-                bytes.extend_from_slice(&buffer[..read]);
-                if http_response_complete(&bytes, method)? {
-                    return Ok(bytes);
-                }
-            }
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                if http_response_complete(&bytes, method)? {
-                    return Ok(bytes);
-                }
-                if start.elapsed() >= timeout {
-                    return Err((28, "cURL operation timed out".to_owned()));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => return Err((56, format!("failed to read cURL response: {error}"))),
+    for (handle_id, result) in completed {
+        if let Some(transfer) = runtime.transfers.get(&handle_id) {
+            runtime
+                .pending
+                .push_back(curl_multi_done_entry(transfer.object.clone(), result));
         }
     }
 }
 
-fn http_response_complete(bytes: &[u8], method: &str) -> Result<bool, (i64, String)> {
-    let Some(header_end) = response_header_end(bytes) else {
-        return Ok(false);
-    };
-    let header = String::from_utf8_lossy(&bytes[..header_end]);
-    let status = response_status(&header)?;
-    if method.eq_ignore_ascii_case("HEAD") || matches!(status, 100..=199 | 204 | 304) {
-        return Ok(true);
-    }
-    if header_has_chunked_transfer_encoding(&header) {
-        return Ok(chunked_response_complete(&bytes[header_end + 4..]));
-    }
-    let Some(content_length) = response_content_length(&header) else {
-        return Ok(false);
-    };
-    Ok(bytes.len() >= header_end + 4 + content_length)
-}
-
-fn response_header_end(bytes: &[u8]) -> Option<usize> {
-    php_source::byte_kernel::find_bytes(bytes, b"\r\n\r\n")
-}
-
-fn parse_http_response(bytes: &[u8]) -> Result<CurlResponse, (i64, String)> {
-    let header_end =
-        response_header_end(bytes).ok_or_else(|| (56, "invalid HTTP response".to_owned()))?;
-    let headers = bytes[..header_end + 4].to_vec();
-    let header = String::from_utf8_lossy(&bytes[..header_end]);
-    let status = response_status(&header)?;
-    let body = if header_has_chunked_transfer_encoding(&header) {
-        decode_chunked_body(&bytes[header_end + 4..])?
-    } else {
-        bytes[header_end + 4..].to_vec()
-    };
-    let location = header.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("location")
-            .then(|| value.trim().to_owned())
-    });
+fn curl_response_from_easy(
+    easy: &Easy2<CurlEasyCollector>,
+    fallback_url: &str,
+) -> Result<CurlResponse, CurlTransportError> {
+    let status = easy.response_code().map_err(curl_easy_error)? as u16;
+    let effective_url = easy
+        .effective_url_bytes()
+        .map_err(curl_easy_error)?
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_else(|| fallback_url.to_owned());
+    let header_size = easy.header_size().map_err(curl_easy_error)? as usize;
+    let http_connectcode = easy.http_connectcode().map_err(curl_easy_error)?;
+    let total_time = easy.total_time().map_err(curl_easy_error)?.as_secs_f64();
+    let namelookup_time = easy
+        .namelookup_time()
+        .map_err(curl_easy_error)?
+        .as_secs_f64();
+    let connect_time = easy.connect_time().map_err(curl_easy_error)?.as_secs_f64();
+    let pretransfer_time = easy
+        .pretransfer_time()
+        .map_err(curl_easy_error)?
+        .as_secs_f64();
+    let starttransfer_time = easy
+        .starttransfer_time()
+        .map_err(curl_easy_error)?
+        .as_secs_f64();
+    let redirect_time = easy.redirect_time().map_err(curl_easy_error)?.as_secs_f64();
+    let redirect_count = easy.redirect_count().map_err(curl_easy_error)?;
+    let request_size = easy.request_size().map_err(curl_easy_error)?;
+    let download_size = easy.download_size().map_err(curl_easy_error)?;
+    let content_type = easy
+        .content_type_bytes()
+        .map_err(curl_easy_error)?
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    let collector = easy.get_ref();
     Ok(CurlResponse {
         status,
-        effective_url: String::new(),
-        header_size: headers.len(),
-        headers,
-        body,
-        location,
+        effective_url,
+        header_size: header_size.max(collector.headers.len()),
+        http_connectcode,
+        headers: collector.headers.clone(),
+        body: collector.body.clone(),
+        content_type,
+        total_time,
+        namelookup_time,
+        connect_time,
+        pretransfer_time,
+        starttransfer_time,
+        redirect_time,
+        redirect_count,
+        request_size,
+        download_size,
     })
 }
 
-fn request_host_header(host: &str, port: u16, https: bool) -> String {
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_owned()
-    };
-    if port == 80 || (https && port == 443) {
-        host
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
-fn response_status(header: &str) -> Result<u16, (i64, String)> {
-    header
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| (56, "invalid HTTP status line".to_owned()))
-}
-
-fn response_content_length(header: &str) -> Option<usize> {
-    header.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("content-length")
-            .then(|| value.trim().parse::<usize>().ok())
-            .flatten()
+fn curl_response_from_easy2_handle(
+    easy: &curl::multi::Easy2Handle<CurlEasyCollector>,
+) -> Result<CurlResponse, CurlTransportError> {
+    let status = easy.response_code().map_err(curl_easy_error)? as u16;
+    let effective_url = easy
+        .effective_url_bytes()
+        .map_err(curl_easy_error)?
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default();
+    let header_size = easy.header_size().map_err(curl_easy_error)? as usize;
+    let http_connectcode = easy.http_connectcode().map_err(curl_easy_error)?;
+    let total_time = easy.total_time().map_err(curl_easy_error)?.as_secs_f64();
+    let namelookup_time = easy
+        .namelookup_time()
+        .map_err(curl_easy_error)?
+        .as_secs_f64();
+    let connect_time = easy.connect_time().map_err(curl_easy_error)?.as_secs_f64();
+    let pretransfer_time = easy
+        .pretransfer_time()
+        .map_err(curl_easy_error)?
+        .as_secs_f64();
+    let starttransfer_time = easy
+        .starttransfer_time()
+        .map_err(curl_easy_error)?
+        .as_secs_f64();
+    let redirect_time = easy.redirect_time().map_err(curl_easy_error)?.as_secs_f64();
+    let redirect_count = easy.redirect_count().map_err(curl_easy_error)?;
+    let request_size = easy.request_size().map_err(curl_easy_error)?;
+    let download_size = easy.download_size().map_err(curl_easy_error)?;
+    let content_type = easy
+        .content_type_bytes()
+        .map_err(curl_easy_error)?
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    let collector = easy.get_ref();
+    Ok(CurlResponse {
+        status,
+        effective_url,
+        header_size: header_size.max(collector.headers.len()),
+        http_connectcode,
+        headers: collector.headers.clone(),
+        body: collector.body.clone(),
+        content_type,
+        total_time,
+        namelookup_time,
+        connect_time,
+        pretransfer_time,
+        starttransfer_time,
+        redirect_time,
+        redirect_count,
+        request_size,
+        download_size,
     })
 }
 
-fn header_has_chunked_transfer_encoding(header: &str) -> bool {
-    header.lines().any(|line| {
-        let Some((name, value)) = line.split_once(':') else {
-            return false;
-        };
-        name.eq_ignore_ascii_case("transfer-encoding")
-            && value
-                .split(',')
-                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
-    })
+fn store_curl_response(handle: &ObjectRef, response: CurlResponse) {
+    handle.set_property("__curl_http_code", Value::Int(i64::from(response.status)));
+    handle.set_property(
+        "__curl_effective_url",
+        Value::String(PhpString::from(response.effective_url.into_bytes())),
+    );
+    handle.set_property(
+        "__curl_header_size",
+        Value::Int(response.header_size as i64),
+    );
+    handle.set_property(
+        "__curl_http_connectcode",
+        Value::Int(i64::from(response.http_connectcode)),
+    );
+    handle.set_property(
+        "__curl_total_time",
+        Value::Float(FloatValue::from_f64(response.total_time)),
+    );
+    handle.set_property(
+        "__curl_content_type",
+        response
+            .content_type
+            .map(|value| Value::String(PhpString::from(value.into_bytes())))
+            .unwrap_or(Value::Bool(false)),
+    );
+    handle.set_property(
+        "__curl_namelookup_time",
+        Value::Float(FloatValue::from_f64(response.namelookup_time)),
+    );
+    handle.set_property(
+        "__curl_connect_time",
+        Value::Float(FloatValue::from_f64(response.connect_time)),
+    );
+    handle.set_property(
+        "__curl_pretransfer_time",
+        Value::Float(FloatValue::from_f64(response.pretransfer_time)),
+    );
+    handle.set_property(
+        "__curl_starttransfer_time",
+        Value::Float(FloatValue::from_f64(response.starttransfer_time)),
+    );
+    handle.set_property(
+        "__curl_redirect_time",
+        Value::Float(FloatValue::from_f64(response.redirect_time)),
+    );
+    handle.set_property(
+        "__curl_redirect_count",
+        Value::Int(i64::from(response.redirect_count)),
+    );
+    handle.set_property(
+        "__curl_request_size",
+        Value::Int(response.request_size as i64),
+    );
+    handle.set_property(
+        "__curl_size_download",
+        Value::Float(FloatValue::from_f64(response.download_size)),
+    );
+    handle.set_property(
+        "__curl_last_response_headers",
+        Value::String(PhpString::from(response.headers)),
+    );
+    handle.set_property(
+        "__curl_last_response_body",
+        Value::String(PhpString::from(response.body)),
+    );
 }
 
-fn chunked_response_complete(body: &[u8]) -> bool {
-    let mut offset = 0;
-    loop {
-        let Some(line_end) = find_crlf(&body[offset..]) else {
-            return false;
-        };
-        let size_line = &body[offset..offset + line_end];
-        let size_text = String::from_utf8_lossy(size_line);
-        let Some(size) = size_text
-            .split(';')
-            .next()
-            .and_then(|value| usize::from_str_radix(value.trim(), 16).ok())
-        else {
-            return false;
-        };
-        offset += line_end + 2;
-        if size == 0 {
-            return php_source::byte_kernel::find_bytes(&body[offset..], b"\r\n\r\n").is_some()
-                || body.get(offset..offset + 2) == Some(b"\r\n");
-        }
-        let next_offset = offset.saturating_add(size).saturating_add(2);
-        if body.len() < next_offset || body.get(offset + size..next_offset) != Some(b"\r\n") {
-            return false;
-        }
-        offset = next_offset;
+fn apply_curl_easy_options(
+    easy: &mut Easy2<CurlEasyCollector>,
+    request: &CurlRequest,
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Result<(), CurlTransportError> {
+    easy.url(&request.url).map_err(curl_easy_error)?;
+    easy.connect_timeout(request.connect_timeout)
+        .map_err(curl_easy_error)?;
+    easy.timeout(request.timeout).map_err(curl_easy_error)?;
+    easy.follow_location(request.follow_redirects)
+        .map_err(curl_easy_error)?;
+    easy.max_redirections(request.max_redirects as u32)
+        .map_err(curl_easy_error)?;
+    if request.follow_redirects {
+        let mut post_redirects = PostRedirections::new();
+        post_redirects.redirect_all(true);
+        easy.post_redirections(&post_redirects)
+            .map_err(curl_easy_error)?;
     }
-}
-
-fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>, (i64, String)> {
-    let mut offset = 0;
-    let mut decoded = Vec::new();
-    loop {
-        let Some(line_end) = find_crlf(&body[offset..]) else {
-            return Err((56, "invalid chunked HTTP response".to_owned()));
-        };
-        let size_line = &body[offset..offset + line_end];
-        let size_text = String::from_utf8_lossy(size_line);
-        let Some(size) = size_text
-            .split(';')
-            .next()
-            .and_then(|value| usize::from_str_radix(value.trim(), 16).ok())
-        else {
-            return Err((56, "invalid chunked HTTP response".to_owned()));
-        };
-        offset += line_end + 2;
-        if size == 0 {
-            return Ok(decoded);
-        }
-        let chunk_end = offset
-            .checked_add(size)
-            .ok_or_else(|| (56, "invalid chunked HTTP response".to_owned()))?;
-        let crlf_end = chunk_end
-            .checked_add(2)
-            .ok_or_else(|| (56, "invalid chunked HTTP response".to_owned()))?;
-        if body.len() < crlf_end || body.get(chunk_end..crlf_end) != Some(b"\r\n") {
-            return Err((56, "invalid chunked HTTP response".to_owned()));
-        }
-        decoded.extend_from_slice(&body[offset..chunk_end]);
-        offset = crlf_end;
+    if request.method.eq_ignore_ascii_case("HEAD") {
+        easy.nobody(true).map_err(curl_easy_error)?;
+    } else if !request.body.is_empty() || request.method.eq_ignore_ascii_case("POST") {
+        easy.post(true).map_err(curl_easy_error)?;
+        easy.post_fields_copy(&request.body)
+            .map_err(curl_easy_error)?;
     }
+    if !matches!(request.method.as_str(), "GET" | "POST" | "HEAD") {
+        easy.custom_request(&request.method)
+            .map_err(curl_easy_error)?;
+    }
+    if !request.headers.is_empty() {
+        let mut headers = List::new();
+        for header in &request.headers {
+            headers.append(header).map_err(curl_easy_error)?;
+        }
+        easy.http_headers(headers).map_err(curl_easy_error)?;
+    }
+    if curl_bool_option(handle, runtime, CURLOPT_HTTPGET, "__curl_httpget") {
+        easy.get(true).map_err(curl_easy_error)?;
+    }
+    if curl_bool_option(handle, runtime, CURLOPT_AUTOREFERER, "__curl_autoreferer") {
+        easy.autoreferer(true).map_err(curl_easy_error)?;
+    }
+    if curl_bool_option(
+        handle,
+        runtime,
+        CURLOPT_COOKIESESSION,
+        "__curl_cookiesession",
+    ) {
+        easy.cookie_session(true).map_err(curl_easy_error)?;
+    }
+    if curl_bool_option(
+        handle,
+        runtime,
+        CURLOPT_HTTPPROXYTUNNEL,
+        "__curl_httpproxytunnel",
+    ) {
+        easy.http_proxy_tunnel(true).map_err(curl_easy_error)?;
+    }
+    if curl_bool_option(handle, runtime, CURLOPT_TCP_NODELAY, "__curl_tcp_nodelay") {
+        easy.tcp_nodelay(true).map_err(curl_easy_error)?;
+    }
+    if curl_bool_option(handle, runtime, CURLOPT_VERBOSE, "__curl_verbose") {
+        easy.verbose(true).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_USERAGENT, "__curl_useragent")
+    {
+        easy.useragent(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_REFERER, "__curl_referer")
+    {
+        easy.referer(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_ENCODING, "__curl_encoding")
+    {
+        easy.accept_encoding(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_COOKIE, "__curl_cookie")
+    {
+        easy.cookie(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) = curl_optional_string_setting_allow_empty(
+        handle,
+        runtime,
+        CURLOPT_COOKIEFILE,
+        "__curl_cookiefile",
+    ) {
+        easy.cookie_file(value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_COOKIEJAR, "__curl_cookiejar")
+    {
+        easy.cookie_jar(value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_CAINFO, "__curl_cainfo")
+    {
+        easy.cainfo(value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_SSLCERT, "__curl_sslcert")
+    {
+        easy.ssl_cert(value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_SSLKEY, "__curl_sslkey")
+    {
+        easy.ssl_key(value).map_err(curl_easy_error)?;
+    }
+    if let Some(version) = curl_http_version(handle, runtime) {
+        easy.http_version(version).map_err(curl_easy_error)?;
+    }
+    if let Some(resolve) = curl_ip_resolve(handle, runtime) {
+        easy.ip_resolve(resolve).map_err(curl_easy_error)?;
+    }
+    if let Some(version) = curl_ssl_version(handle, runtime) {
+        easy.ssl_version(version).map_err(curl_easy_error)?;
+    }
+    if let Some(seconds) = curl_optional_u64_setting(
+        handle,
+        runtime,
+        CURLOPT_DNS_CACHE_TIMEOUT,
+        "__curl_dns_cache_timeout",
+    ) {
+        easy.dns_cache_timeout(Duration::from_secs(seconds))
+            .map_err(curl_easy_error)?;
+    }
+    if let Some(port) = curl_optional_u16_setting(handle, runtime, CURLOPT_PORT, "__curl_port") {
+        easy.port(port).map_err(curl_easy_error)?;
+    }
+    easy.ssl_verify_peer(curl_bool_setting(
+        handle,
+        runtime,
+        CURLOPT_SSL_VERIFYPEER,
+        "__curl_ssl_verifypeer",
+        true,
+    ))
+    .map_err(curl_easy_error)?;
+    easy.ssl_verify_host(curl_bool_setting(
+        handle,
+        runtime,
+        CURLOPT_SSL_VERIFYHOST,
+        "__curl_ssl_verifyhost",
+        true,
+    ))
+    .map_err(curl_easy_error)?;
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_PROXY, "__curl_proxy")
+    {
+        easy.proxy(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_NOPROXY, "__curl_noproxy")
+    {
+        easy.noproxy(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(port) =
+        curl_optional_u16_setting(handle, runtime, CURLOPT_PROXYPORT, "__curl_proxyport")
+    {
+        easy.proxy_port(port).map_err(curl_easy_error)?;
+    }
+    if let Some(proxy_type) = curl_proxy_type(handle, runtime) {
+        easy.proxy_type(proxy_type).map_err(curl_easy_error)?;
+    }
+    if let Some((username, password)) =
+        curl_optional_user_password(handle, runtime, CURLOPT_PROXYUSERPWD, "__curl_proxyuserpwd")
+    {
+        easy.proxy_username(&username).map_err(curl_easy_error)?;
+        easy.proxy_password(&password).map_err(curl_easy_error)?;
+    }
+    if let Some(value) = curl_optional_string_setting(
+        handle,
+        runtime,
+        CURLOPT_PROXYUSERNAME,
+        "__curl_proxyusername",
+    ) {
+        easy.proxy_username(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) = curl_optional_string_setting(
+        handle,
+        runtime,
+        CURLOPT_PROXYPASSWORD,
+        "__curl_proxypassword",
+    ) {
+        easy.proxy_password(&value).map_err(curl_easy_error)?;
+    }
+    if let Some((username, password)) =
+        curl_optional_user_password(handle, runtime, CURLOPT_USERPWD, "__curl_userpwd")
+    {
+        easy.username(&username).map_err(curl_easy_error)?;
+        easy.password(&password).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_USERNAME, "__curl_username")
+    {
+        easy.username(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(value) =
+        curl_optional_string_setting(handle, runtime, CURLOPT_PASSWORD, "__curl_password")
+    {
+        easy.password(&value).map_err(curl_easy_error)?;
+    }
+    if let Some(auth) = curl_auth(handle, runtime, CURLOPT_HTTPAUTH, "__curl_httpauth") {
+        easy.http_auth(&auth).map_err(curl_easy_error)?;
+    }
+    if let Some(auth) = curl_auth(handle, runtime, CURLOPT_PROXYAUTH, "__curl_proxyauth") {
+        easy.proxy_auth(&auth).map_err(curl_easy_error)?;
+    }
+    Ok(())
 }
 
-fn find_crlf(bytes: &[u8]) -> Option<usize> {
-    php_source::byte_kernel::find_bytes(bytes, b"\r\n")
+fn curl_easy_error(error: curl::Error) -> CurlTransportError {
+    (i64::from(error.code()), error.description().to_owned())
+}
+
+fn curl_multi_error(error: MultiError) -> CurlTransportError {
+    (error.code() as i64, error.description().to_owned())
 }
 
 fn parse_http_url(url: &str) -> Result<ParsedUrl, (i64, String)> {
-    let (rest, default_port, https) = if let Some(rest) = url.strip_prefix("http://") {
-        (rest, 80, false)
+    let rest = if let Some(rest) = url.strip_prefix("http://") {
+        rest
     } else if let Some(rest) = url.strip_prefix("https://") {
-        (rest, 443, true)
+        rest
     } else {
         return Err((
             3,
             "cURL MVP only supports http:// and https:// URLs".to_owned(),
         ));
     };
-    let (authority, path) = rest.split_once('/').map_or((rest, "/"), |(host, path)| {
-        (host, if path.is_empty() { "/" } else { "" })
-    });
-    let path = if let Some((_, path)) = rest.split_once('/') {
-        format!("/{path}")
-    } else {
-        path.to_owned()
-    };
-    let (host, port) = authority
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let (host, _) = authority
         .rsplit_once(':')
         .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
-        .map_or((authority, default_port), |(host, port)| (host, port));
+        .map_or((authority, 0), |(host, port)| (host, port));
     if host.is_empty() {
         return Err((3, "cURL URL host is empty".to_owned()));
     }
     Ok(ParsedUrl {
         host: host.trim_matches(['[', ']']).to_owned(),
-        port,
-        path,
-        https,
     })
 }
 
-fn curl_header_lines(handle: &ObjectRef) -> Vec<String> {
-    match handle.get_property("__curl_httpheader") {
+fn curl_header_lines(handle: &ObjectRef, runtime: Option<&CurlHandleRuntimeView>) -> Vec<String> {
+    match curl_runtime_option(handle, runtime, CURLOPT_HTTPHEADER, "__curl_httpheader") {
         Some(Value::Array(array)) => array
             .iter()
             .filter_map(|(_, value)| string_arg("curl_exec", value).ok())
@@ -1423,8 +1988,11 @@ fn curl_header_lines(handle: &ObjectRef) -> Vec<String> {
     }
 }
 
-fn curl_post_body(handle: &ObjectRef) -> Result<CurlPostBody, CurlTransportError> {
-    match handle.get_property("__curl_postfields") {
+fn curl_post_body(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Result<CurlPostBody, CurlTransportError> {
+    match curl_runtime_option(handle, runtime, CURLOPT_POSTFIELDS, "__curl_postfields") {
         Some(Value::String(value)) => Ok((value.as_bytes().to_vec(), None)),
         Some(Value::Array(array)) => Ok((
             form_encode_array(&array).into_bytes(),
@@ -1435,6 +2003,17 @@ fn curl_post_body(handle: &ObjectRef) -> Result<CurlPostBody, CurlTransportError
             .map_err(|error| (43, error.message().to_owned())),
         None => Ok((Vec::new(), None)),
     }
+}
+
+fn curl_runtime_option(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<Value> {
+    runtime
+        .and_then(|state| state.options.get(&option).cloned())
+        .or_else(|| handle.get_property(property))
 }
 
 fn form_encode_array(array: &PhpArray) -> String {
@@ -1511,47 +2090,244 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn curl_connect_timeout(handle: &ObjectRef) -> Duration {
-    if let Some(ms) = curl_duration_millis_setting(handle, "__curl_connecttimeout_ms") {
+fn curl_connect_timeout(handle: &ObjectRef, runtime: Option<&CurlHandleRuntimeView>) -> Duration {
+    if let Some(ms) = curl_duration_millis_setting(
+        handle,
+        runtime,
+        CURLOPT_CONNECTTIMEOUT_MS,
+        "__curl_connecttimeout_ms",
+    ) {
         return clamp_duration_millis(ms, 1, 30_000);
     }
-    if let Some(seconds) = curl_duration_seconds_setting(handle, "__curl_connecttimeout") {
+    if let Some(seconds) = curl_duration_seconds_setting(
+        handle,
+        runtime,
+        CURLOPT_CONNECTTIMEOUT,
+        "__curl_connecttimeout",
+    ) {
         return clamp_duration_millis(seconds * 1000.0, 1, 30_000);
     }
     Duration::from_secs(10)
 }
 
-fn curl_timeout(handle: &ObjectRef) -> Duration {
-    if let Some(ms) = curl_duration_millis_setting(handle, "__curl_timeout_ms") {
+fn curl_timeout(handle: &ObjectRef, runtime: Option<&CurlHandleRuntimeView>) -> Duration {
+    if let Some(ms) =
+        curl_duration_millis_setting(handle, runtime, CURLOPT_TIMEOUT_MS, "__curl_timeout_ms")
+    {
         return clamp_duration_millis(ms, 1, 300_000);
     }
-    if let Some(seconds) = curl_duration_seconds_setting(handle, "__curl_timeout") {
+    if let Some(seconds) =
+        curl_duration_seconds_setting(handle, runtime, CURLOPT_TIMEOUT, "__curl_timeout")
+    {
         return clamp_duration_millis(seconds * 1000.0, 1, 300_000);
     }
     Duration::from_secs(60)
 }
 
-fn curl_read_poll_timeout(timeout: Duration) -> Duration {
-    timeout
-        .min(Duration::from_millis(250))
-        .max(Duration::from_millis(1))
+fn curl_duration_seconds_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<f64> {
+    curl_duration_numeric_setting(handle, runtime, option, property)
 }
 
-fn curl_duration_seconds_setting(handle: &ObjectRef, name: &str) -> Option<f64> {
-    curl_duration_numeric_setting(handle, name)
+fn curl_duration_millis_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<f64> {
+    curl_duration_numeric_setting(handle, runtime, option, property)
 }
 
-fn curl_duration_millis_setting(handle: &ObjectRef, name: &str) -> Option<f64> {
-    curl_duration_numeric_setting(handle, name)
-}
-
-fn curl_duration_numeric_setting(handle: &ObjectRef, name: &str) -> Option<f64> {
-    let value = handle.get_property(name)?;
+fn curl_duration_numeric_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<f64> {
+    let value = curl_runtime_option(handle, runtime, option, property)?;
     match value {
         Value::Int(value) => Some(value as f64),
         Value::Float(value) => Some(value.to_f64()),
         value => crate::convert::to_float(&value).ok(),
     }
+}
+
+fn curl_bool_option(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> bool {
+    curl_bool_setting(handle, runtime, option, property, false)
+}
+
+fn curl_bool_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+    default: bool,
+) -> bool {
+    curl_runtime_option(handle, runtime, option, property)
+        .and_then(|value| crate::convert::to_bool(&value).ok())
+        .unwrap_or(default)
+}
+
+fn curl_optional_string_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<String> {
+    match curl_runtime_option(handle, runtime, option, property) {
+        Some(Value::String(value)) if !value.is_empty() => Some(value.to_string_lossy()),
+        Some(value) => string_arg("curl_setopt", &value)
+            .ok()
+            .map(|value| value.to_string_lossy())
+            .filter(|value| !value.is_empty()),
+        None => None,
+    }
+}
+
+fn curl_optional_string_setting_allow_empty(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<String> {
+    match curl_runtime_option(handle, runtime, option, property) {
+        Some(Value::String(value)) => Some(value.to_string_lossy()),
+        Some(value) => string_arg("curl_setopt", &value)
+            .ok()
+            .map(|value| value.to_string_lossy()),
+        None => None,
+    }
+}
+
+fn curl_optional_u16_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<u16> {
+    let value = curl_runtime_option(handle, runtime, option, property)?;
+    let value = crate::convert::to_int(&value).ok()?;
+    u16::try_from(value).ok()
+}
+
+fn curl_optional_u64_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<u64> {
+    let value = curl_runtime_option(handle, runtime, option, property)?;
+    let value = crate::convert::to_int(&value).ok()?;
+    u64::try_from(value).ok()
+}
+
+fn curl_optional_user_password(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<(String, String)> {
+    let value = curl_optional_string_setting(handle, runtime, option, property)?;
+    let (username, password) = value.split_once(':').unwrap_or((value.as_str(), ""));
+    Some((username.to_owned(), password.to_owned()))
+}
+
+fn curl_http_version(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Option<HttpVersion> {
+    let value = curl_runtime_option(handle, runtime, CURLOPT_HTTP_VERSION, "__curl_http_version")
+        .and_then(|value| crate::convert::to_int(&value).ok())?;
+    Some(match value {
+        0 => HttpVersion::Any,
+        1 => HttpVersion::V10,
+        2 => HttpVersion::V11,
+        3 => HttpVersion::V2,
+        4 => HttpVersion::V2TLS,
+        5 => HttpVersion::V2PriorKnowledge,
+        30 => HttpVersion::V3,
+        _ => return None,
+    })
+}
+
+fn curl_ip_resolve(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Option<IpResolve> {
+    let value = curl_runtime_option(handle, runtime, CURLOPT_IPRESOLVE, "__curl_ipresolve")
+        .and_then(|value| crate::convert::to_int(&value).ok())?;
+    Some(match value {
+        CURL_IPRESOLVE_WHATEVER => IpResolve::Any,
+        CURL_IPRESOLVE_V4 => IpResolve::V4,
+        CURL_IPRESOLVE_V6 => IpResolve::V6,
+        _ => return None,
+    })
+}
+
+fn curl_ssl_version(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Option<SslVersion> {
+    let value = curl_runtime_option(handle, runtime, CURLOPT_SSLVERSION, "__curl_sslversion")
+        .and_then(|value| crate::convert::to_int(&value).ok())?;
+    Some(match value {
+        CURL_SSLVERSION_DEFAULT => SslVersion::Default,
+        CURL_SSLVERSION_TLSV1 => SslVersion::Tlsv1,
+        CURL_SSLVERSION_SSLV2 => SslVersion::Sslv2,
+        CURL_SSLVERSION_SSLV3 => SslVersion::Sslv3,
+        CURL_SSLVERSION_TLSV1_0 => SslVersion::Tlsv10,
+        CURL_SSLVERSION_TLSV1_1 => SslVersion::Tlsv11,
+        CURL_SSLVERSION_TLSV1_2 => SslVersion::Tlsv12,
+        CURL_SSLVERSION_TLSV1_3 => SslVersion::Tlsv13,
+        _ => return None,
+    })
+}
+
+fn curl_auth(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+) -> Option<Auth> {
+    let value = curl_runtime_option(handle, runtime, option, property)
+        .and_then(|value| crate::convert::to_int(&value).ok())?;
+    if value == 0 {
+        return None;
+    }
+    let mut auth = Auth::new();
+    auth.basic(value & 1 != 0);
+    auth.digest(value & 2 != 0);
+    auth.ntlm(value & 8 != 0);
+    if value & !0b1011 != 0 {
+        auth.auto(true);
+    }
+    Some(auth)
+}
+
+fn curl_proxy_type(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+) -> Option<ProxyType> {
+    let value = curl_runtime_option(handle, runtime, CURLOPT_PROXYTYPE, "__curl_proxytype")
+        .and_then(|value| crate::convert::to_int(&value).ok())?;
+    Some(match value {
+        0 => ProxyType::Http,
+        1 => ProxyType::Http1,
+        4 => ProxyType::Socks4,
+        5 => ProxyType::Socks5,
+        6 => ProxyType::Socks4a,
+        7 => ProxyType::Socks5Hostname,
+        _ => ProxyType::Http,
+    })
 }
 
 fn clamp_duration_millis(value: f64, min: u64, max: u64) -> Duration {
@@ -1576,7 +2352,35 @@ fn reset_curl_handle(object: &ObjectRef) {
     object.set_property("__curl_http_code", Value::Int(0));
     object.set_property("__curl_effective_url", Value::String(PhpString::from("")));
     object.set_property("__curl_header_size", Value::Int(0));
+    object.set_property("__curl_http_connectcode", Value::Int(0));
     object.set_property("__curl_total_time", Value::Float(FloatValue::from_f64(0.0)));
+    object.set_property("__curl_content_type", Value::Bool(false));
+    object.set_property(
+        "__curl_namelookup_time",
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    object.set_property(
+        "__curl_connect_time",
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    object.set_property(
+        "__curl_pretransfer_time",
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    object.set_property(
+        "__curl_starttransfer_time",
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    object.set_property(
+        "__curl_redirect_time",
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    object.set_property("__curl_redirect_count", Value::Int(0));
+    object.set_property("__curl_request_size", Value::Int(0));
+    object.set_property(
+        "__curl_size_download",
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
     object.set_property(
         "__curl_last_response_headers",
         Value::String(PhpString::from("")),
@@ -1619,31 +2423,32 @@ fn set_curl_multi_handles(multi: &ObjectRef, handles: Vec<ObjectRef>) {
     );
 }
 
-fn curl_multi_pending(multi: &ObjectRef) -> Vec<Value> {
-    let Some(Value::Array(array)) = multi.get_property("__curl_multi_pending") else {
-        return Vec::new();
-    };
-    array.iter().map(|(_, value)| value.clone()).collect()
-}
-
 fn set_curl_multi_pending(multi: &ObjectRef, pending: Vec<Value>) {
     multi.set_property("__curl_multi_pending", Value::packed_array(pending));
 }
 
-fn curl_multi_done_entry(handle: ObjectRef) -> Value {
+fn curl_multi_done_entry(handle: ObjectRef, result: i64) -> CurlMultiDone {
+    CurlMultiDone { handle, result }
+}
+
+fn curl_multi_pending_values(pending: &std::collections::VecDeque<CurlMultiDone>) -> Vec<Value> {
+    pending.iter().map(curl_multi_done_value).collect()
+}
+
+fn curl_multi_done_value(done: &CurlMultiDone) -> Value {
     let mut entry = PhpArray::new();
     entry.insert(string_array_key("msg"), Value::Int(CURLMSG_DONE));
+    entry.insert(string_array_key("result"), Value::Int(done.result));
     entry.insert(
-        string_array_key("result"),
-        curl_int_property(&handle, "__curl_errno"),
+        string_array_key("handle"),
+        Value::Object(done.handle.clone()),
     );
-    entry.insert(string_array_key("handle"), Value::Object(handle));
     Value::Array(entry)
 }
 
 fn curl_runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -1694,10 +2499,18 @@ fn curl_share_handle_arg(name: &str, value: Option<&Value>) -> Result<ObjectRef,
     }
 }
 
-fn set_curl_option(handle: &ObjectRef, option: i64, value: Value) -> BuiltinResult {
+fn set_curl_option(
+    context: &mut CurlBuiltinServices<'_, '_>,
+    handle: &ObjectRef,
+    option: i64,
+    value: Value,
+) -> BuiltinResult {
     let property = match option {
         CURLOPT_URL => {
             let value = string_arg("curl_setopt", &value)?;
+            context
+                .curl_state()
+                .set_option(handle.id(), CURLOPT_URL, Value::String(value.clone()));
             handle.set_property("__curl_url", Value::String(value));
             return Ok(Value::Bool(true));
         }
@@ -1709,37 +2522,60 @@ fn set_curl_option(handle: &ObjectRef, option: i64, value: Value) -> BuiltinResu
         CURLOPT_NOBODY => "__curl_nobody",
         CURLOPT_USERAGENT => "__curl_useragent",
         CURLOPT_REFERER => "__curl_referer",
-        CURLOPT_ENCODING => "__curl_encoding",
+        CURLOPT_ACCEPT_ENCODING => "__curl_encoding",
         CURLOPT_HTTP_VERSION => "__curl_http_version",
         CURLOPT_CONNECTTIMEOUT => "__curl_connecttimeout",
         CURLOPT_CONNECTTIMEOUT_MS => "__curl_connecttimeout_ms",
         CURLOPT_MAXREDIRS => "__curl_maxredirs",
         CURLOPT_FAILONERROR => "__curl_failonerror",
+        CURLOPT_AUTOREFERER => "__curl_autoreferer",
+        CURLOPT_COOKIE => "__curl_cookie",
+        CURLOPT_COOKIEFILE => "__curl_cookiefile",
+        CURLOPT_COOKIEJAR => "__curl_cookiejar",
+        CURLOPT_COOKIESESSION => "__curl_cookiesession",
+        CURLOPT_DNS_CACHE_TIMEOUT => "__curl_dns_cache_timeout",
         CURLOPT_HTTPHEADER => "__curl_httpheader",
+        CURLOPT_HTTPGET => "__curl_httpget",
+        CURLOPT_HTTPPROXYTUNNEL => "__curl_httpproxytunnel",
         CURLOPT_HEADERFUNCTION => "__curl_headerfunction",
         CURLOPT_WRITEFUNCTION => "__curl_writefunction",
         CURLOPT_BUFFERSIZE => "__curl_buffersize",
         CURLOPT_CAINFO => "__curl_cainfo",
         CURLOPT_HTTPAUTH => "__curl_httpauth",
+        CURLOPT_IPRESOLVE => "__curl_ipresolve",
+        CURLOPT_NOPROXY => "__curl_noproxy",
+        CURLOPT_PORT => "__curl_port",
         CURLOPT_PROTOCOLS => "__curl_protocols",
         CURLOPT_PROXY => "__curl_proxy",
         CURLOPT_PROXYAUTH => "__curl_proxyauth",
         CURLOPT_PROXYPORT => "__curl_proxyport",
         CURLOPT_PROXYTYPE => "__curl_proxytype",
+        CURLOPT_PROXYUSERNAME => "__curl_proxyusername",
+        CURLOPT_PROXYPASSWORD => "__curl_proxypassword",
         CURLOPT_PROXYUSERPWD => "__curl_proxyuserpwd",
         CURLOPT_REDIR_PROTOCOLS => "__curl_redir_protocols",
+        CURLOPT_TCP_NODELAY => "__curl_tcp_nodelay",
+        CURLOPT_USERNAME => "__curl_username",
+        CURLOPT_PASSWORD => "__curl_password",
         CURLOPT_USERPWD => "__curl_userpwd",
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
         CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
         CURLOPT_PRIVATE => "__curl_private",
+        CURLOPT_SSLCERT => "__curl_sslcert",
+        CURLOPT_SSLKEY => "__curl_sslkey",
         CURLOPT_SSL_VERIFYPEER => "__curl_ssl_verifypeer",
         CURLOPT_SSL_VERIFYHOST => "__curl_ssl_verifyhost",
+        CURLOPT_SSLVERSION => "__curl_sslversion",
+        CURLOPT_VERBOSE => "__curl_verbose",
         _ => {
             set_curl_error(handle, 48, "unsupported cURL option");
             return Ok(Value::Bool(false));
         }
     };
+    context
+        .curl_state()
+        .set_option(handle.id(), option, value.clone());
     handle.set_property(property, value);
     Ok(Value::Bool(true))
 }
@@ -1782,7 +2618,7 @@ impl CurlDiagnostic {
 }
 
 fn record_curl_diagnostic(
-    context: &mut BuiltinContext<'_>,
+    context: &mut CurlBuiltinServices<'_, '_>,
     handle: &ObjectRef,
     diagnostic: CurlDiagnostic,
     span: RuntimeSourceSpan,
@@ -1839,13 +2675,6 @@ fn curl_diagnostic_endpoint(handle: &ObjectRef) -> (String, Option<u16>) {
     (host.trim_matches(['[', ']']).to_owned(), port)
 }
 
-fn curl_bool_property(handle: &ObjectRef, name: &str) -> bool {
-    handle
-        .get_property(name)
-        .and_then(|value| crate::convert::to_bool(&value).ok())
-        .unwrap_or(false)
-}
-
 fn curl_int_property(handle: &ObjectRef, name: &str) -> Value {
     match handle.get_property(name) {
         Some(Value::Int(value)) => Value::Int(value),
@@ -1853,8 +2682,14 @@ fn curl_int_property(handle: &ObjectRef, name: &str) -> Value {
     }
 }
 
-fn curl_int_setting(handle: &ObjectRef, name: &str, default: i64) -> i64 {
-    match handle.get_property(name) {
+fn curl_int_setting(
+    handle: &ObjectRef,
+    runtime: Option<&CurlHandleRuntimeView>,
+    option: i64,
+    property: &str,
+    default: i64,
+) -> i64 {
+    match curl_runtime_option(handle, runtime, option, property) {
         Some(Value::Int(value)) => value,
         Some(value) => crate::convert::to_int(&value).unwrap_or(default),
         None => default,
@@ -1877,18 +2712,11 @@ fn curl_string_property(handle: &ObjectRef, name: &str) -> Value {
 
 struct ParsedUrl {
     host: String,
-    port: u16,
-    path: String,
-    https: bool,
 }
 
 #[derive(Clone)]
 struct CurlRequest {
     url: String,
-    https: bool,
-    host: String,
-    port: u16,
-    path: String,
     method: String,
     headers: Vec<String>,
     body: Vec<u8>,
@@ -1898,61 +2726,58 @@ struct CurlRequest {
     max_redirects: usize,
 }
 
-impl CurlRequest {
-    fn redirect(&self, location: &str) -> Result<Self, (i64, String)> {
-        let url = if location.starts_with("http://") || location.starts_with("https://") {
-            location.to_owned()
-        } else if location.starts_with('/') {
-            format!(
-                "{}://{}:{}{}",
-                if self.https { "https" } else { "http" },
-                self.host,
-                self.port,
-                location
-            )
-        } else {
-            let base = self
-                .path
-                .rsplit_once('/')
-                .map_or("/", |(base, _)| if base.is_empty() { "/" } else { base });
-            format!(
-                "{}://{}:{}/{}{}",
-                if self.https { "https" } else { "http" },
-                self.host,
-                self.port,
-                base.trim_end_matches('/'),
-                location
-            )
-        };
-        let parsed = parse_http_url(&url)?;
-        let mut next = self.clone();
-        next.url = url;
-        next.https = parsed.https;
-        next.host = parsed.host;
-        next.port = parsed.port;
-        next.path = parsed.path;
-        Ok(next)
-    }
-}
-
 struct CurlResponse {
     status: u16,
     effective_url: String,
     header_size: usize,
+    http_connectcode: u32,
     headers: Vec<u8>,
     body: Vec<u8>,
-    location: Option<String>,
+    content_type: Option<String>,
+    total_time: f64,
+    namelookup_time: f64,
+    connect_time: f64,
+    pretransfer_time: f64,
+    starttransfer_time: f64,
+    redirect_time: f64,
+    redirect_count: u32,
+    request_size: u64,
+    download_size: f64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{OutputBuffer, ReferenceCell};
+    use crate::api::{BuiltinRequestState, OutputBuffer, ReferenceCell};
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
     use std::thread;
 
     static NET_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn curl_state_persists_in_one_request_owner_across_builtin_contexts() {
+        let mut request_state = BuiltinRequestState::new();
+        let handle = {
+            let mut output = OutputBuffer::default();
+            let mut context =
+                BuiltinContext::new_with_request_state(&mut output, &mut request_state);
+            builtin_curl_init(
+                &mut context,
+                vec![Value::string("http://example.com/")],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("init")
+        };
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new_with_request_state(&mut output, &mut request_state);
+        assert_eq!(
+            builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("errno"),
+            Value::Int(0)
+        );
+    }
 
     #[test]
     fn curl_version_advertises_ssl_transport_capability() {
@@ -2053,6 +2878,45 @@ mod tests {
     }
 
     #[test]
+    fn curl_setopt_unsupported_option_fails_with_diagnostic() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string("http://127.0.0.1/")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+
+        assert_eq!(
+            builtin_curl_setopt(
+                &mut context,
+                vec![handle.clone(), Value::Int(99_999_999), Value::Bool(true)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("setopt"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            builtin_curl_errno(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("errno"),
+            Value::Int(48)
+        );
+        assert_eq!(
+            builtin_curl_error(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("error"),
+            Value::string("unsupported cURL option")
+        );
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].id(), "E_PHP_CURL_OPTION_UNSUPPORTED");
+    }
+
+    #[test]
     fn curl_exec_allows_loopback_when_network_is_disabled() {
         let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
         let _override = NetTestsOverride::set(false);
@@ -2110,22 +2974,15 @@ mod tests {
     }
 
     #[test]
-    fn curl_build_request_marks_https_loopback_urls() {
+    fn curl_loopback_gate_accepts_https_loopback_urls() {
         let handle = curl_handle_object();
         handle.set_property(
             "__curl_url",
             Value::String(PhpString::from("https://127.0.0.1/site-health")),
         );
 
-        let request = build_request(&handle, false).expect("loopback https request");
-        assert!(request.https);
-        assert_eq!(request.host, "127.0.0.1");
-        assert_eq!(request.port, 443);
-        assert_eq!(request.path, "/site-health");
-        assert_eq!(
-            request_host_header(&request.host, request.port, true),
-            "127.0.0.1"
-        );
+        assert!(curl_handle_targets_loopback(&handle));
+        build_request(&handle, false, None).expect("loopback https request");
     }
 
     #[test]
@@ -2220,15 +3077,26 @@ mod tests {
         );
 
         let active = ReferenceCell::new(Value::Null);
-        assert_eq!(
-            builtin_curl_multi_exec(
+        for _ in 0..20 {
+            assert_eq!(
+                builtin_curl_multi_exec(
+                    &mut context,
+                    vec![multi.clone(), Value::Reference(active.clone())],
+                    RuntimeSourceSpan::default(),
+                )
+                .expect("exec"),
+                Value::Int(CURLM_OK)
+            );
+            if active.get() == Value::Int(0) {
+                break;
+            }
+            let _ = builtin_curl_multi_select(
                 &mut context,
-                vec![multi.clone(), Value::Reference(active.clone())],
+                vec![multi.clone(), Value::Float(FloatValue::from_f64(0.05))],
                 RuntimeSourceSpan::default(),
             )
-            .expect("exec"),
-            Value::Int(CURLM_OK)
-        );
+            .expect("select");
+        }
         assert_eq!(active.get(), Value::Int(0));
 
         let queue = ReferenceCell::new(Value::Null);
@@ -2320,11 +3188,9 @@ mod tests {
             Value::String(PhpString::from("https://updates.example.test/v1/check")),
         );
 
-        assert!(build_request(&handle, false).is_err());
-        let request = build_request(&handle, true).expect("external request allowed");
-        assert_eq!(request.host, "updates.example.test");
-        assert_eq!(request.port, 443);
-        assert_eq!(request.path, "/v1/check");
+        assert!(build_request(&handle, false, None).is_err());
+        let request = build_request(&handle, true, None).expect("external request allowed");
+        assert_eq!(request.url, "https://updates.example.test/v1/check");
     }
 
     #[test]
@@ -2490,6 +3356,70 @@ mod tests {
                 .expect("errno"),
             Value::Int(0)
         );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_exec_maps_libcurl_timeout_errors() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(false);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /timeout"));
+            thread::sleep(Duration::from_millis(300));
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nLATE");
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("http://127.0.0.1:{port}/timeout"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        for (option, value) in [
+            (CURLOPT_RETURNTRANSFER, Value::Bool(true)),
+            (CURLOPT_CONNECTTIMEOUT_MS, Value::Int(25)),
+            (CURLOPT_TIMEOUT_MS, Value::Int(25)),
+        ] {
+            builtin_curl_setopt(
+                &mut context,
+                vec![handle.clone(), Value::Int(option), value],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("setopt");
+        }
+
+        assert_eq!(
+            builtin_curl_exec(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("exec"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            builtin_curl_errno(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("errno"),
+            Value::Int(28)
+        );
+        let Value::String(error) =
+            builtin_curl_error(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("error")
+        else {
+            panic!("curl_error should return a string");
+        };
+        assert!(!error.is_empty());
         server.join().expect("server");
     }
 

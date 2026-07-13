@@ -151,18 +151,172 @@ pub(crate) fn execution_output_from_vm(
             .collect(),
         status,
         runtime_diagnostics: result.diagnostics,
-        http_response: result.http_response,
-        upload_registry: result.upload_registry,
-        session: result.session,
+        http_response: result
+            .http_response
+            .map(|http_response| *http_response)
+            .unwrap_or_default(),
+        upload_registry: result
+            .upload_registry
+            .map(|upload_registry| *upload_registry)
+            .unwrap_or_default(),
+        session: result.session.map(|session| *session).unwrap_or_default(),
         return_value: result.return_value,
         trace: result.trace,
-        counters: result.counters,
-        tiering_stats: result.tiering_stats,
+        counters: result.counters.map(|counters| *counters),
+        tiering_stats: result.tiering_stats.map(|stats| *stats),
         quickening_feedback: Vec::new(),
         callsite_feedback: Vec::new(),
         persistent_feedback_epochs: None,
     }
 }
+
+/// Builds the reference redeclaration wording from the semantic duplicate
+/// diagnostic (`duplicate function declaration \`f\``): functions and classes
+/// render as `Cannot redeclare <kind> <name>[()] (previously declared in
+/// <file>:<line>)`; other kinds keep the phrust wording.
+fn redeclare_fatal_message(
+    diagnostic: &php_semantics::SemanticDiagnostic,
+    path: &str,
+    source: &SourceText,
+) -> Option<String> {
+    let message = diagnostic.message();
+    let rest = message.strip_prefix("duplicate ")?;
+    let (kind, name_part) = rest.split_once(" declaration `")?;
+    let name = name_part.strip_suffix('`')?;
+    let suffix = match kind {
+        "function" => "()",
+        "class" => "",
+        _ => return None,
+    };
+    let previous_line = diagnostic
+        .labels()
+        .first()
+        .map(|label| line_number_for_span(source, label.range()))?;
+    Some(format!(
+        "Cannot redeclare {kind} {name}{suffix} (previously declared in {path}:{previous_line})"
+    ))
+}
+
+const PHP_RESERVED_WORDS: &[&str] = &[
+    "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone",
+    "const", "continue", "declare", "default", "do", "echo", "else", "elseif", "empty",
+    "enddeclare", "endfor", "endforeach", "endif", "endswitch", "endwhile", "enum", "exit",
+    "extends", "final", "finally", "fn", "for", "foreach", "function", "global", "goto", "if",
+    "implements", "include", "include_once", "instanceof", "insteadof", "interface", "isset",
+    "list", "match", "namespace", "new", "or", "print", "private", "protected", "public",
+    "readonly", "require", "require_once", "return", "static", "switch", "throw", "trait", "try",
+    "unset", "use", "var", "while", "xor", "yield",
+];
+
+/// Synthesizes the reference parser error wording for an unexpected token at
+/// `span`: variables and identifiers get their own noun, reserved words and
+/// punctuation render as tokens, and an empty span reads as end of input.
+fn zend_parse_error_message(source: &SourceText, span: TextRange) -> String {
+    let text = source
+        .as_str()
+        .get(span.start().to_usize()..span.end().to_usize())
+        .unwrap_or("")
+        .trim();
+    if text.is_empty() {
+        return "syntax error, unexpected end of file".to_owned();
+    }
+    if let Some(name) = text.strip_prefix('$')
+        && !name.is_empty()
+    {
+        return format!("syntax error, unexpected variable \"{text}\"");
+    }
+    let identifier_like = text
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        && text.chars().next().is_some_and(|ch| !ch.is_ascii_digit());
+    if identifier_like && !PHP_RESERVED_WORDS.contains(&text.to_ascii_lowercase().as_str()) {
+        return format!("syntax error, unexpected identifier \"{text}\"");
+    }
+    format!("syntax error, unexpected token \"{text}\"")
+}
+
+/// Renders the reference-format compile error to stdout (the channel PHP uses
+/// with display_errors) and reports whether anything was rendered. Structured
+/// diagnostics still go to stderr for tooling.
+pub(crate) fn write_php_compile_error_stdout<W: Write>(
+    stdout: &mut W,
+    pipeline: &Pipeline,
+) -> Result<bool, String> {
+    if let Some(diagnostic) = pipeline.frontend.parser_diagnostics().first() {
+        let message = if diagnostic.message.starts_with("syntax error,") {
+            diagnostic.message.clone()
+        } else {
+            zend_parse_error_message(&pipeline.source, diagnostic.span)
+        };
+        let line = line_number_for_span(&pipeline.source, diagnostic.span);
+        writeln!(
+            stdout,
+            "\nParse error: {message} in {} on line {line}",
+            pipeline.path
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(true);
+    }
+    for diagnostic in pipeline.frontend.semantic_diagnostics() {
+        if diagnostic.severity() != Severity::Error {
+            continue;
+        }
+        let Some(span) = diagnostic.span() else {
+            continue;
+        };
+        let line = line_number_for_span(&pipeline.source, span);
+        if diagnostic.id() == DiagnosticId::DuplicateDeclaration
+            && let Some(message) =
+                redeclare_fatal_message(diagnostic, &pipeline.path, &pipeline.source)
+        {
+            // The reference raises redeclaration as a runtime Error, so the
+            // uncaught rendering includes the trace block.
+            writeln!(
+                stdout,
+                "\nFatal error: {message} in {} on line {line}\nStack trace:\n#0 {{main}}",
+                pipeline.path
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+        if let Some(message) = semantic_diagnostic_php_fatal_message(
+            diagnostic.id(),
+            diagnostic.message(),
+            span,
+            &pipeline.lowering.unit,
+        ) {
+            writeln!(
+                stdout,
+                "\nFatal error: {message} in {} on line {line}",
+                pipeline.path
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+        if semantic_diagnostic_uses_php_parse_error_line(diagnostic.id()) {
+            writeln!(
+                stdout,
+                "\nParse error: {} in {} on line {line}",
+                diagnostic.message(),
+                pipeline.path
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+        if semantic_diagnostic_uses_php_fatal_line(diagnostic.id()) {
+            writeln!(
+                stdout,
+                "\nFatal error: {} in {} on line {line}",
+                diagnostic.message(),
+                pipeline.path
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 
 pub(crate) fn write_frontend_diagnostics<W: Write>(
     stderr: &mut W,
@@ -294,6 +448,7 @@ pub(crate) fn write_vm_compile_fatal_line<W: Write>(
                 RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
                 RuntimeDiagnosticPayload::TokenizerParse(_) => None,
                 RuntimeDiagnosticPayload::Bringup(_) => None,
+                RuntimeDiagnosticPayload::IncludeFailure(_) => None,
             })
     else {
         return Ok(false);
@@ -425,7 +580,8 @@ fn write_parser_diagnostic<W: Write>(
 fn semantic_diagnostic_uses_php_fatal_line(id: DiagnosticId) -> bool {
     matches!(
         id,
-        DiagnosticId::ClosureUseDuplicatesParameter
+        DiagnosticId::InvalidIntersectionMember
+            | DiagnosticId::ClosureUseDuplicatesParameter
             | DiagnosticId::DuplicateClosureUseVariable
             | DiagnosticId::ClosureUseAutoGlobal
             | DiagnosticId::ThisParameter

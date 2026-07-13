@@ -1,12 +1,12 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "ldap",
-  "priority": "Deterministic LDAP facade and security-explicit backend gap",
+  "priority": "ldap3-backed LDAP client with deterministic default-off live coverage",
   "selected_manifest": "tests/phpt/manifests/modules/ldap.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
   "pass_count": 1,
-  "skip_count": 0,
+  "skip_count": 1,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
@@ -14,14 +14,14 @@
     "Registered LDAP functions, classes, and stable constants",
     "Request-local LDAP\\Connection handles without implicit network access",
     "Option set/get behavior for common LDAP and TLS policy options",
+    "ldap3-backed bind and search when PHRUST_NET_TESTS and PHRUST_LDAP_LIVE_URI explicitly match the connection URI",
     "Error state through ldap_errno, ldap_error, and ldap_err2str",
     "ldap_escape, ldap_explode_dn, and ldap_dn2ufn helpers",
-    "Deterministic empty LDAP\\Result handles for read/list/search traversal",
+    "Deterministic empty LDAP\\Result handles for read/list/search traversal when no live backend is configured",
     "Explicit failure for bind, mutation, compare, extended operations, and TLS"
   ],
   "non_scope": [
-    "OpenLDAP/libldap backend integration",
-    "Live LDAP DSN integration tests",
+    "OpenLDAP/libldap FFI backend integration",
     "SASL, referrals, controls parsing, paged results, and TLS handshakes"
   ],
   "target_gates": [

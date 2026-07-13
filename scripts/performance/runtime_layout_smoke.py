@@ -86,8 +86,8 @@ SCENARIO_FLOORS: dict[str, dict[str, int]] = {
         "map_update_slot_fast_hits": 1,
     },
     "middleware_event_pipeline": {
+        "dense_call_ic_hits": 1,
         "superinstructions_executed.load_local_load_const": 1,
-        "superinstructions_executed.call_function_discard": 1,
     },
     "front_controller_routing": {
         "superinstructions_executed.load_const_fetch_dim": 1,

@@ -38,8 +38,7 @@ Class scopes and method variable scopes are separate. A method scope is a child
 of its class-like scope, but local variables belong to the method function-like
 scope, not the class scope.
 
-`$this`, `self`, `parent`, and `static` require later context checks. Work item
-records the relevant enclosing scopes but does not validate those references.
+`$this`, `self`, `parent`, and `static` require later context checks. The semantic frontend records the relevant enclosing scopes but does not validate those references.
 
 The scope model supports compile-time diagnostics such as invalid
 break/continue, invalid return/yield context, invalid `$this`, and invalid

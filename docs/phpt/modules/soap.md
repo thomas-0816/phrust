@@ -7,14 +7,21 @@ Current focused coverage:
 - SOAP constant registration for protocol, encoding, XSD, feature, cache, and SSL constants.
 - Constructor-backed `SoapParam`, `SoapHeader`, `SoapVar`, and `SoapFault` value objects.
 - `is_soap_fault()` and `SoapFault::__toString()` facade behavior.
+- Local WSDL metadata parsing for target namespace, service location, and operation names.
+- Non-WSDL `SoapClient::__soapCall()`/`__doRequest()` build SOAP 1.1 envelopes, post loopback
+  HTTP through libcurl, store `__getLast*()` request/response state, and parse simple return
+  values or `SoapFault` bodies through the libxml-backed XML stack.
+- `SoapServer::fault()` and `SoapServer::handle()` produce XML-backed SOAP fault responses for
+  malformed requests or currently unsupported PHP callback dispatch.
 
 Known gaps:
 
 - Full upstream `ext/soap` PHPT corpus is not green.
-- WSDL parsing, XML serialization/deserialization, SOAP encoding rules, HTTP/curl transport,
-  typemaps, headers, and local server dispatch remain incomplete.
-- `SoapClient` and `SoapServer` only expose bounded state helpers; transport and dispatch methods
-  fail explicitly until the dependent XML/curl/streams layers are complete.
+- WSDL/schema/type binding, SOAP encoding rules, typemaps, headers, and persistence behavior remain
+  incomplete.
+- `SoapClient` remote non-loopback HTTP is disabled unless `PHRUST_NET_TESTS=1`.
+- `SoapServer` cannot invoke registered PHP callbacks yet because the bounded class helper does not
+  receive a VM callback-dispatch context; it fails closed with a SOAP fault response instead.
 - `SoapFault` stores the SOAP-visible fields but does not yet model the full internal `Exception`
   property layout.
 

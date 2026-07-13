@@ -13,11 +13,17 @@ if (basename(PHP_BINARY) !== "phrust-php") {
 <?php
 var_dump(extension_loaded("opcache"));
 $file = __DIR__ . "/opcache-facade-target.php";
+$bad = __DIR__ . "/opcache-facade-bad.php";
 file_put_contents($file, "<?php return 42;\n");
+file_put_contents($bad, "<?php function {\n");
 var_dump(function_exists("opcache_get_status"));
 var_dump(opcache_is_script_cached($file));
 var_dump(opcache_compile_file($file));
 var_dump(opcache_is_script_cached($file));
+error_reporting(0);
+var_dump(opcache_compile_file($bad));
+var_dump(opcache_is_script_cached($bad));
+error_reporting(E_ALL);
 $status = opcache_get_status();
 var_dump(is_array($status));
 var_dump($status["opcache_enabled"]);
@@ -30,6 +36,7 @@ var_dump(opcache_invalidate($file));
 var_dump(opcache_is_script_cached($file));
 var_dump(opcache_reset());
 @unlink($file);
+@unlink($bad);
 ?>
 --EXPECT--
 bool(true)
@@ -37,6 +44,8 @@ bool(true)
 bool(false)
 bool(true)
 bool(true)
+bool(false)
+bool(false)
 bool(true)
 bool(true)
 bool(true)

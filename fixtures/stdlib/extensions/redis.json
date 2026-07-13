@@ -1,0 +1,21 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Redis"
+    },
+    {
+      "kind": "class",
+      "name": "RedisException"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "redis",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

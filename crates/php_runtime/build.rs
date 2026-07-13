@@ -1,4 +1,13 @@
 fn main() {
+    #[cfg(not(feature = "full-runtime"))]
+    return;
+
+    #[cfg(feature = "full-runtime")]
+    configure_libmagic();
+}
+
+#[cfg(feature = "full-runtime")]
+fn configure_libmagic() {
     if let Ok(include_dir) = std::env::var("PHPRUST_LIBMAGIC_INCLUDE_DIR") {
         println!("cargo:include={include_dir}");
     }

@@ -1,5 +1,7 @@
 //! Deterministic standard-library INI/config registry.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 /// One supported INI entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IniEntrySnapshot {
@@ -26,23 +28,37 @@ struct IniEntry {
 
 /// Small, deterministic registry for Composer-typical INI checks.
 #[derive(Clone, Debug, Eq, PartialEq)]
+
 pub struct IniRegistry {
-    entries: Vec<IniEntry>,
+    /// Shared entry table: cloning a registry is a refcount bump, and the
+    /// first mutation after a clone copies the table (ini_set is rare while
+    /// registries are cloned into every builtin invocation context).
+    entries: Arc<Vec<IniEntry>>,
 }
 
 impl Default for IniRegistry {
     fn default() -> Self {
+        // One shared pristine table for the whole process: a default
+        // registry is built per builtin invocation context, and
+        // materializing all 57 owned local values there put ~60 heap
+        // allocations on every builtin dispatch. Mutation already
+        // copies-on-write through `Arc::make_mut`.
+        static DEFAULT_TABLE: std::sync::OnceLock<Arc<Vec<IniEntry>>> = std::sync::OnceLock::new();
         Self {
-            entries: default_entries()
-                .into_iter()
-                .map(|(extension, name, value, access)| IniEntry {
-                    extension,
-                    name,
-                    global_value: value,
-                    local_value: value.to_owned(),
-                    access,
-                })
-                .collect(),
+            entries: Arc::clone(DEFAULT_TABLE.get_or_init(|| {
+                Arc::new(
+                    default_entries()
+                        .into_iter()
+                        .map(|(extension, name, value, access)| IniEntry {
+                            extension,
+                            name,
+                            global_value: value,
+                            local_value: value.to_owned(),
+                            access,
+                        })
+                        .collect(),
+                )
+            })),
         }
     }
 }
@@ -106,16 +122,38 @@ impl IniRegistry {
     }
 
     fn lookup(&self, name: &str) -> Option<&IniEntry> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+        self.entries.get(entry_index(name)?)
     }
 
     fn lookup_mut(&mut self, name: &str) -> Option<&mut IniEntry> {
-        self.entries
-            .iter_mut()
-            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+        let index = entry_index(name)?;
+        Arc::make_mut(&mut self.entries).get_mut(index)
     }
+}
+
+/// Position of a supported option in the (fixed, shared) entry table.
+///
+/// Every registry is built from `default_entries` in the same order and
+/// `set` only mutates values in place, so one process-wide index replaces
+/// the per-lookup case-insensitive linear scan (which ran twice per
+/// builtin dispatch for the diagnostic display options alone).
+fn entry_index(name: &str) -> Option<usize> {
+    static NAME_INDEX: std::sync::OnceLock<HashMap<&'static str, usize>> =
+        std::sync::OnceLock::new();
+    let index = NAME_INDEX.get_or_init(|| {
+        default_entries()
+            .into_iter()
+            .enumerate()
+            .map(|(position, (_, name, _, _))| (name, position))
+            .collect()
+    });
+    if let Some(position) = index.get(name) {
+        return Some(*position);
+    }
+    if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return index.get(name.to_ascii_lowercase().as_str()).copied();
+    }
+    None
 }
 
 fn normalize_ini_value(name: &str, value: String) -> String {

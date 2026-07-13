@@ -1,6 +1,6 @@
 //! Runtime type matching helpers.
 
-use crate::{CallableValue, RuntimeType, Value};
+use crate::{RuntimeType, Value};
 
 /// Returns true when a runtime value satisfies a declared runtime type.
 #[must_use]
@@ -25,8 +25,8 @@ pub fn value_matches_runtime_type(value: &Value, runtime_type: &RuntimeType) -> 
         RuntimeType::Object => {
             matches!(
                 value,
-                Value::Object(_) | Value::Fiber(_) | Value::Generator(_)
-            ) || matches!(value.as_callable(), Some(CallableValue::Closure(_)))
+                Value::Object(_) | Value::Callable(_) | Value::Fiber(_) | Value::Generator(_)
+            )
         }
         RuntimeType::Never => false,
         RuntimeType::False => matches!(value, Value::Bool(false)),
@@ -41,7 +41,7 @@ pub fn value_matches_runtime_type(value: &Value, runtime_type: &RuntimeType) -> 
             ) || matches!(
                 value,
                 Value::Generator(_) if name.eq_ignore_ascii_case("Generator")
-            )
+            ) || (matches!(value, Value::Callable(_)) && name.eq_ignore_ascii_case("Closure"))
         }
         RuntimeType::Nullable { inner } => {
             matches!(value, Value::Null) || value_matches_runtime_type(value, inner)
@@ -117,10 +117,7 @@ pub fn value_type_name(value: &Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Object(_) | Value::Fiber(_) | Value::Generator(_) => "object",
         Value::Resource(_) => "resource",
-        Value::Callable(callable) => match callable.as_ref() {
-            CallableValue::Closure(_) => "object",
-            _ => "callable",
-        },
+        Value::Callable(_) => "object",
         Value::Reference(_) => unreachable!("references are handled before matching"),
     }
 }
@@ -163,7 +160,7 @@ mod tests {
     #[test]
     fn type_matcher_checks_object_class_names_case_insensitively() {
         let class = ClassEntry {
-            name: "Box".to_owned(),
+            name: "Box".to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -199,16 +196,24 @@ mod tests {
     }
 
     #[test]
-    fn type_matcher_treats_closure_callables_as_objects() {
+    fn type_matcher_treats_php_visible_callables_as_closure_objects() {
         let closure = Value::closure(ClosurePayload::new(11, Vec::new()));
         let plain_callable = Value::user_function_callable("strlen");
 
         assert!(value_matches_runtime_type(&closure, &RuntimeType::Object));
         assert_eq!(value_type_name(&closure), "object");
-        assert!(!value_matches_runtime_type(
+        assert!(value_matches_runtime_type(
             &plain_callable,
             &RuntimeType::Object
         ));
+        assert!(value_matches_runtime_type(
+            &plain_callable,
+            &RuntimeType::Class {
+                name: "Closure".to_owned(),
+                display_name: None,
+            }
+        ));
+        assert_eq!(value_type_name(&plain_callable), "object");
     }
 
     #[test]

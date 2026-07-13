@@ -1,0 +1,75 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SimpleXMLElement"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "dom",
+        "source": "ext/dom/php_dom.stub.php"
+      },
+      "arginfo_owner_override": "Phrust reflection ownership differs from php-src stub placement",
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "simplexml"
+        }
+      ],
+      "name": "dom_import_simplexml",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "simplexml",
+        "source": "ext/simplexml/simplexml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "simplexml"
+        }
+      ],
+      "name": "simplexml_import_dom",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "simplexml",
+        "source": "ext/simplexml/simplexml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "simplexml"
+        }
+      ],
+      "name": "simplexml_load_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "simplexml",
+        "source": "ext/simplexml/simplexml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "simplexml"
+        }
+      ],
+      "name": "simplexml_load_string",
+      "visibility": "php"
+    }
+  ],
+  "name": "simplexml",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

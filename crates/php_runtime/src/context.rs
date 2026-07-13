@@ -436,6 +436,7 @@ pub enum ProcessCapability {
 
 /// Callback signature for loading web-session data by session id.
 type SessionLoadFn = dyn Fn(&str) -> Result<PhpArray, String> + Send + Sync + 'static;
+type SessionIdGenerateFn = dyn Fn() -> Result<String, String> + Send + Sync + 'static;
 
 /// Optional transport callback for loading web-session data on `session_start()`.
 #[derive(Clone)]
@@ -468,6 +469,36 @@ impl PartialEq for SessionLoadCallback {
 
 impl Eq for SessionLoadCallback {}
 
+/// Optional transport callback for generating a session id only when PHP
+/// activates a new session.
+#[derive(Clone)]
+pub struct SessionIdGenerateCallback(Arc<SessionIdGenerateFn>);
+
+impl SessionIdGenerateCallback {
+    #[must_use]
+    pub fn new(callback: impl Fn() -> Result<String, String> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    pub fn generate(&self) -> Result<String, String> {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for SessionIdGenerateCallback {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SessionIdGenerateCallback")
+    }
+}
+
+impl PartialEq for SessionIdGenerateCallback {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SessionIdGenerateCallback {}
+
 /// Owned deterministic runtime context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeContext {
@@ -498,6 +529,8 @@ pub struct RuntimeContext {
     pub session: SessionState,
     /// Optional transport session loader used only when PHP starts a session.
     pub session_loader: Option<SessionLoadCallback>,
+    /// Optional transport session-id generator used only when PHP needs a new id.
+    pub session_id_generator: Option<SessionIdGenerateCallback>,
     /// Optional cooperative PHP execution budget for the VM.
     pub execution_time_limit: Option<Duration>,
     /// Runtime SAPI name visible through PHP_SAPI and php_sapi_name().
@@ -522,6 +555,7 @@ impl Default for RuntimeContext {
             request_mode: RuntimeRequestMode::Cli,
             session: SessionState::default(),
             session_loader: None,
+            session_id_generator: None,
             execution_time_limit: None,
             sapi_name: "cli".to_string(),
             php_binary: "phrust-php".to_string(),
@@ -663,6 +697,13 @@ impl RuntimeContext {
     #[must_use]
     pub fn with_session_loader(mut self, loader: SessionLoadCallback) -> Self {
         self.session_loader = Some(loader);
+        self
+    }
+
+    /// Sets a transport callback for generating a new id at session activation.
+    #[must_use]
+    pub fn with_session_id_generator(mut self, generator: SessionIdGenerateCallback) -> Self {
+        self.session_id_generator = Some(generator);
         self
     }
 

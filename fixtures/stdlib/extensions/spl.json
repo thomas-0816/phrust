@@ -1,0 +1,390 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "AppendIterator"
+    },
+    {
+      "kind": "class",
+      "name": "ArrayIterator"
+    },
+    {
+      "kind": "class",
+      "name": "ArrayObject"
+    },
+    {
+      "kind": "class",
+      "name": "BadFunctionCallException"
+    },
+    {
+      "kind": "class",
+      "name": "BadMethodCallException"
+    },
+    {
+      "kind": "class",
+      "name": "CachingIterator"
+    },
+    {
+      "kind": "class",
+      "name": "CallbackFilterIterator"
+    },
+    {
+      "kind": "class",
+      "name": "DirectoryIterator"
+    },
+    {
+      "kind": "class",
+      "name": "DomainException"
+    },
+    {
+      "kind": "class",
+      "name": "EmptyIterator"
+    },
+    {
+      "kind": "class",
+      "name": "FilesystemIterator"
+    },
+    {
+      "kind": "class",
+      "name": "FilterIterator"
+    },
+    {
+      "kind": "class",
+      "name": "GlobIterator"
+    },
+    {
+      "kind": "class",
+      "name": "InfiniteIterator"
+    },
+    {
+      "kind": "class",
+      "name": "InvalidArgumentException"
+    },
+    {
+      "kind": "class",
+      "name": "IteratorIterator"
+    },
+    {
+      "kind": "class",
+      "name": "LengthException"
+    },
+    {
+      "kind": "class",
+      "name": "LimitIterator"
+    },
+    {
+      "kind": "class",
+      "name": "LogicException"
+    },
+    {
+      "kind": "class",
+      "name": "MultipleIterator"
+    },
+    {
+      "kind": "class",
+      "name": "NoRewindIterator"
+    },
+    {
+      "kind": "class",
+      "name": "OutOfBoundsException"
+    },
+    {
+      "kind": "class",
+      "name": "OutOfRangeException"
+    },
+    {
+      "kind": "interface",
+      "name": "OuterIterator"
+    },
+    {
+      "kind": "class",
+      "name": "OverflowException"
+    },
+    {
+      "kind": "class",
+      "name": "ParentIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RangeException"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveArrayIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveCachingIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveCallbackFilterIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveDirectoryIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveFilterIterator"
+    },
+    {
+      "kind": "interface",
+      "name": "RecursiveIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveIteratorIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveRegexIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RecursiveTreeIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RegexIterator"
+    },
+    {
+      "kind": "class",
+      "name": "RuntimeException"
+    },
+    {
+      "kind": "interface",
+      "name": "SeekableIterator"
+    },
+    {
+      "kind": "class",
+      "name": "SplDoublyLinkedList"
+    },
+    {
+      "kind": "class",
+      "name": "SplFileInfo"
+    },
+    {
+      "kind": "class",
+      "name": "SplFileObject"
+    },
+    {
+      "kind": "class",
+      "name": "SplFixedArray"
+    },
+    {
+      "kind": "class",
+      "name": "SplHeap"
+    },
+    {
+      "kind": "class",
+      "name": "SplMaxHeap"
+    },
+    {
+      "kind": "class",
+      "name": "SplMinHeap"
+    },
+    {
+      "kind": "class",
+      "name": "SplObjectStorage"
+    },
+    {
+      "kind": "interface",
+      "name": "SplObserver"
+    },
+    {
+      "kind": "class",
+      "name": "SplPriorityQueue"
+    },
+    {
+      "kind": "class",
+      "name": "SplQueue"
+    },
+    {
+      "kind": "class",
+      "name": "SplStack"
+    },
+    {
+      "kind": "interface",
+      "name": "SplSubject"
+    },
+    {
+      "kind": "class",
+      "name": "SplTempFileObject"
+    },
+    {
+      "kind": "class",
+      "name": "UnderflowException"
+    },
+    {
+      "kind": "class",
+      "name": "UnexpectedValueException"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "class_implements",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "class_parents",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "iterator_apply",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "iterator_count",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "iterator_to_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "spl_autoload_call",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "spl_autoload_functions",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "spl_autoload_register",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "spl_autoload_unregister",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "spl_object_hash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "spl",
+        "source": "ext/spl/php_spl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "spl"
+        }
+      ],
+      "name": "spl_object_id",
+      "visibility": "php"
+    }
+  ],
+  "name": "spl",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

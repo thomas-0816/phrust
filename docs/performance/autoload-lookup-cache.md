@@ -1,6 +1,6 @@
 # Performance Autoload Lookup Cache
 
-Work item adds a request-local inline cache for conservative class-like
+The performance layer provides a request-local inline cache for conservative class-like
 autoload lookups. The cache covers class, interface, trait, and enum lookup
 metadata and is disabled when inline caches are off.
 

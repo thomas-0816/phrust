@@ -378,7 +378,18 @@ fn builtin_posix_kill(
     }
     let pid = int_arg("posix_kill", &args[0])?;
     let signal = int_arg("posix_kill", &args[1])?;
-    let result = unsafe { libc::kill(pid as libc::pid_t, signal as libc::c_int) };
+    let pid = libc::pid_t::try_from(pid).map_err(|_| {
+        argument_value_error(
+            "posix_kill",
+            "#1 ($process_id)",
+            &format!(
+                "must be between {} and {}",
+                libc::pid_t::MIN,
+                libc::pid_t::MAX
+            ),
+        )
+    })?;
+    let result = unsafe { libc::kill(pid, signal as libc::c_int) };
     if result == 0 {
         context.set_posix_last_error(0);
         Ok(Value::Bool(true))
@@ -716,8 +727,7 @@ fn builtin_posix_getgrgid(
     if gid < 0 {
         #[cfg(target_os = "macos")]
         if gid == -1 {
-            let name = CString::new("nogroup").expect("static group name has no nul bytes");
-            let group = unsafe { libc::getgrnam(name.as_ptr()) };
+            let group = unsafe { libc::getgrnam(c"nogroup".as_ptr()) };
             if !group.is_null() {
                 context.set_posix_last_error(0);
                 return Ok(group_value_without_members(unsafe { &*group }));
@@ -1136,6 +1146,28 @@ mod tests {
                 i64::MAX
             )
         );
+    }
+
+    #[test]
+    fn kill_rejects_process_ids_outside_pid_t_range() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let expected = format!(
+            "posix_kill(): Argument #1 ($process_id) must be between {} and {}",
+            libc::pid_t::MIN,
+            libc::pid_t::MAX
+        );
+
+        for pid in [i64::MIN, i64::MAX] {
+            assert_eq!(
+                call_error_with_context(
+                    &mut context,
+                    "posix_kill",
+                    vec![Value::Int(pid), Value::Int(libc::SIGTERM as i64)]
+                ),
+                expected
+            );
+        }
     }
 
     #[test]

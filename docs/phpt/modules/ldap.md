@@ -11,12 +11,16 @@
   `ldap_dn2ufn()`.
 - Deterministic empty results for read, list, search, entry counts, and entry
   traversal.
+- `ldap3` bind and search are wired behind explicit `PHRUST_NET_TESTS` and
+  `PHRUST_LDAP_LIVE_URI` opt-in configuration.
 - Backend-required bind, mutation, compare, extended operation, and TLS calls
-  fail explicitly.
+  fail explicitly when no matching live endpoint is configured.
 
 ## Known gaps
 
-- No OpenLDAP/libldap backend is connected.
-- Live LDAP DSN integration tests are not promoted.
+- OpenLDAP/libldap FFI backend integration is not in scope; the selected live
+  backend is the `ldap3` Rust client.
+- Live LDAP tests require external environment configuration and are skipped by
+  default.
 - SASL, referrals, controls parsing, paged results, and TLS handshakes remain
   outside the selected deterministic facade.

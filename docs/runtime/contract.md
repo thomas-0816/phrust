@@ -61,8 +61,8 @@ The Runtime MVP should execute:
 | Constants | user constants and MVP magic constants | global `const` declarations with folded Semantic frontend const-expression values, `FetchConst`, `PHP_VERSION`, undefined-constant runtime errors, and top-level/function/method magic constants implemented; `define()` and the full predefined constants matrix remain gaps |
 | Includes | local include/require loader without stream-wrapper compatibility | root-constrained local file loader implemented for `include`, `include_once`, `require`, and `require_once` |
 | Runtime context | deterministic CLI argv/env context and controlled superglobals | `RuntimeContext` carries `cwd`, `argv`, controlled `env`, `include_path`, ini-like placeholders, error_reporting placeholder, and strict_types metadata placeholders; `$argc`, `$argv`, `$_SERVER['argc']`, `$_SERVER['argv']`, explicit sorted `$_ENV`, empty request-style arrays, and placeholder `GLOBALS` are seeded for top-level fixtures |
-| Objects | class table, `new`, public properties, constructor `$this`, public instance methods, simple public static methods, shallow clone | implemented for Work item object/method/clone/typecheck MVP; simple public typed-property writes are checked at runtime; Runtime semantics adds visibility dispatch, late static binding, static properties, readonly basics, magic methods, clone magic, public clone-with replacements, and fixture-covered property hooks; private/protected/readonly/static/full-hook clone-with matrices remain known gaps |
-| Exceptions | throw, try, catch, finally, uncaught exception exit behavior | Work item implements VM-internal `Exception` objects, `throw`, `catch (Exception $e)`/`Throwable`, uncaught exception diagnostics, rethrow, and `finally` on normal return or thrown control-flow; full Throwable hierarchy, typed catch matching beyond the MVP, stacktrace wording, and catch-throw-through-finally compatibility remain known gaps |
+| Objects | class table, `new`, public properties, constructor `$this`, public instance methods, simple public static methods, shallow clone | implemented for the object/method/clone/typecheck MVP; simple public typed-property writes are checked at runtime; Runtime semantics adds visibility dispatch, late static binding, static properties, readonly basics, magic methods, clone magic, public clone-with replacements, and fixture-covered property hooks; private/protected/readonly/static/full-hook clone-with matrices remain known gaps |
+| Exceptions | throw, try, catch, finally, uncaught exception exit behavior | The runtime implements VM-internal `Exception` objects, `throw`, `catch (Exception $e)`/`Throwable`, uncaught exception diagnostics, rethrow, and `finally` on normal return or thrown control-flow; full Throwable hierarchy, typed catch matching beyond the MVP, stacktrace wording, and catch-throw-through-finally compatibility remain known gaps |
 | PHP 8.5 | pipe operator, `(void)` discard, clone-with MVP | pipe MVP implemented; clone-with executes for public untyped object properties; `(void)` IR discard modeled while executable `(void)` programs remain a frontend/runtime gap |
 
 ## Known-Gap Policy
@@ -139,7 +139,7 @@ classifications are stable:
 
 ## Runtime Diagnostics MVP
 
-Work item introduces `php_runtime::RuntimeDiagnostic` as the stable diagnostic
+The runtime provides `php_runtime::RuntimeDiagnostic` as the stable diagnostic
 payload shared by the VM and CLI. Each diagnostic has a stable ID, severity,
 message, source span, deterministic stack-frame list, and optional
 PHP-reference classification. `RuntimeSeverity` covers warnings, notices,
@@ -170,7 +170,7 @@ user functions, closures, selected
 internal builtins, method placeholders, and unresolved dynamic gaps. Closure
 values carry a runtime-local raw target function ID plus captured names and
 cloned values so `php_runtime` does not depend on `php_ir`. `ReferenceCell` and
-`ValueSlot` provide the Work item local-alias scaffold without exposing
+`ValueSlot` provide the local-alias scaffold without exposing
 `Rc<RefCell<Value>>` through public VM APIs. `Object` and explicit
 `Value::Reference` values remain placeholders for later layout, refcount, and
 copy-on-write work. Object method calls execute by looking up public method
@@ -253,7 +253,7 @@ reference state is preserved across requests.
 
 Local slots are indexed by `LocalId` in the IR function table. The VM stores
 `ValueSlot`s in the slot array so ordinary assignments stay by-value while the
-Work item `BindReference` instruction can bind two local slots to one
+The `BindReference` instruction can bind two local slots to one
 `ReferenceCell`. Writes through either alias update the shared cell for simple
 `$b =& $a` fixtures only. Undefined local reads evaluate as `Null`, emit a
 PHP-formatted warning with the variable name on the output channel, and
@@ -265,14 +265,14 @@ Object-property references and by-reference foreach over temporary sources are
 distinct known gaps. IR lowering emits stable IDs for those cases rather than
 executing copied values with PHP-incompatible aliasing.
 
-`Echo` writes to `php_runtime::OutputBuffer`. Work item string conversion is
+`Echo` writes to `php_runtime::OutputBuffer`. String conversion is
 limited to scalars: null and false emit no bytes, true emits `1`, integers and
 floats use developer-facing scalar formatting, and `PhpString` writes its exact
 bytes.
 
-Work item control flow uses explicit basic blocks. `JumpIfTrue` targets the
+Control flow uses explicit basic blocks. `JumpIfTrue` targets the
 truthy branch and uses the next physical block as the false fallthrough;
-`JumpIfFalse` remains available for hand-authored IR. Work item adds `JumpIf`
+`JumpIfFalse` remains available for hand-authored IR. The runtime provides `JumpIf`
 with explicit true and false targets for `switch`/`match` lowering, where
 fallthrough block ordering must not decide failed comparisons. The VM converts
 scalar conditions through `php_runtime::convert::to_bool`.
@@ -289,7 +289,7 @@ exact stack text remain known gaps.
 
 ## User Function MVP
 
-Work item executes named user functions from top-level scripts. HIR function
+The runtime executes named user functions from top-level scripts. HIR function
 declarations lower to dedicated `IrFunction`s, and `CompiledUnit` builds a
 normalized function-name table for deterministic lookup. Direct named calls use
 `CallFunction`; dynamic calls are an explicit known gap. Arguments are evaluated
@@ -303,7 +303,7 @@ the scalar subset. Runtime errors raised while more than one frame is active
 append a `call_stack:` section listing the active functions from current frame
 back to `main`; top-level-only errors keep their previous message text.
 
-Work item adds required/optional parameter metadata, folded const-expression
+The runtime provides required/optional parameter metadata, folded const-expression
 defaults, simple variadics, named/unpacked argument binding, argument-count
 runtime diagnostics, and return-type MVP checks. Omitted optional parameters are
 filled from Semantic frontend constant-expression candidates that folded without
@@ -315,7 +315,7 @@ tails into ordinary PHP array values.
 Too few and too many positional arguments produce stable runtime diagnostic IDs:
 `E_PHP_VM_TOO_FEW_ARGS` and `E_PHP_VM_TOO_MANY_ARGS`. Return declarations for
 `int`, `float`, `string`, `bool`, `null`, `void`, `mixed`, simple class names,
-and nullable wrappers are lowered into the runtime type adapter. Work item uses
+and nullable wrappers are lowered into the runtime type adapter. The runtime uses
 that Semantic frontend type information for scalar/nullable parameter checks,
 scalar/nullable/void return checks, and simple public property write checks.
 Checks are exact except `int` values satisfy `float`; the full PHP
@@ -333,7 +333,7 @@ wording.
 
 ## Closure MVP
 
-Work item executes simple closure values through the existing call-frame
+The runtime executes simple closure values through the existing call-frame
 infrastructure. `MakeClosure` evaluates capture operands left-to-right, stores
 stable capture names with cloned by-value values, and produces a
 `Value::Callable` closure. `CallClosure` requires that callable value and then
@@ -355,7 +355,7 @@ known gaps.
 
 ## Callable And Pipe MVP
 
-Work item introduces a runtime callable model. Simple first-class callable names
+The runtime provides a runtime callable model. Simple first-class callable names
 resolve to `CallableValue::UserFunction` when the compiled unit contains a
 matching user function, or to `CallableValue::InternalBuiltin` for registered
 entries in `php_runtime::BuiltinRegistry`. Closure values, dynamic string
@@ -376,7 +376,7 @@ remain known gaps.
 
 ## Builtins I MVP
 
-Work item moves internal functions into `php_runtime::BuiltinRegistry`. The
+The runtime moves internal functions into `php_runtime::BuiltinRegistry`. The
 registry is deterministic, sorted by normalized name, and exposes
 `InternalFunction` entries that receive `RuntimeContext`, argument values, and a
 `RuntimeSourceSpan`. Direct named calls and callable execution both use this
@@ -401,7 +401,7 @@ objects, references, recursion, string escaping, or floating-point edge cases.
 
 ## Include/Require MVP
 
-Work item implements a root-constrained local `IncludeLoader` in `php_vm`.
+The runtime implements a root-constrained local `IncludeLoader` in `php_vm`.
 `php_vm_cli run <path.php>` configures the loader to the executed file's
 directory. The VM resolves relative include paths against the currently
 executing file, canonicalizes the target path, rejects files outside the
@@ -418,7 +418,7 @@ includes, and realpath-cache compatibility remains documented as known gaps.
 
 ## Object MVP
 
-Work item introduces runtime `ObjectRef` values backed by encapsulated object
+The runtime provides runtime `ObjectRef` values backed by encapsulated object
 storage. Each object carries a stable identity, class name, and instance
 property map initialized from the compiled class table. Object storage is safe
 Rust state behind the `ObjectRef` API so later heap/GC work can replace the
@@ -439,7 +439,7 @@ as private/protected/static/typed/readonly properties are rejected during IR
 lowering with object-specific diagnostic IDs. General method calls,
 visibility dispatch, traits, interfaces, magic methods, reflection, dynamic
 properties, nullsafe property access, and class type checks remain outside this
-Work item slice.
+subset.
 
 `include` and `include_once` missing-file failures emit structured warning
 diagnostics and continue with `false`. `require` and `require_once` missing-file
@@ -448,7 +448,7 @@ the VM execution state so a file is executed at most once per VM execution.
 
 ## Scalar Conversion MVP
 
-`php_runtime::convert` centralizes Work item conversion behavior for the VM:
+`php_runtime::convert` centralizes conversion behavior for the VM:
 
 - truthiness for null, bool, int, float, string, arrays, and objects;
 - scalar-to-string for echo, casts, and concatenation;

@@ -47,6 +47,8 @@ $fromString = getimagesizefromstring($jpeg);
 echo $fromString[0], "x", $fromString[1], "|", $fromString[2], "|", $fromString["mime"], "\n";
 $data = exif_read_data($path);
 echo $data["ImageWidth"], "x", $data["ImageLength"], "|", $data["Orientation"], "|", $data["Make"], "|", $data["Model"], "|", $data["DateTime"], "\n";
+$alias = read_exif_data($path);
+echo $alias["Orientation"], "|", $alias["Make"], "|", $alias["Model"], "\n";
 ?>
 --CLEAN--
 <?php
@@ -59,3 +61,4 @@ int(2)
 2x3|2|image/jpeg
 2x3|2|image/jpeg
 2x3|6|PHP|MVP|2026:06:28 12:00:00
+6|PHP|MVP

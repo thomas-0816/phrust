@@ -420,7 +420,7 @@ fn session_encode_php_binary(
 const SESSION_SERIALIZE_MAX_DEPTH: usize = 64;
 
 struct SessionReferenceSerializer {
-    references: Vec<(usize, usize)>,
+    references: Vec<(u64, usize)>,
     next_reference_index: usize,
     serialize_precision: i32,
 }
@@ -1513,6 +1513,9 @@ pub(in crate::builtins::modules) fn builtin_session_create_id(
         return Ok(Value::Bool(false));
     }
     let id_length = session_sid_length(context);
+    context
+        .prepare_new_session_id()
+        .map_err(|message| session_store_error("session_create_id", message))?;
     let Some(state) = context.session_state() else {
         return Err(session_context_error("session_create_id"));
     };
@@ -1543,6 +1546,14 @@ pub(in crate::builtins::modules) fn builtin_session_regenerate_id(
             .map_err(|message| conversion_error("session_regenerate_id", message))?;
     }
     let id_length = session_sid_length(context);
+    let session_is_active = context
+        .session_state()
+        .is_some_and(|state| state.status() == PHP_SESSION_ACTIVE);
+    if session_is_active {
+        context
+            .prepare_new_session_id()
+            .map_err(|message| session_store_error("session_regenerate_id", message))?;
+    }
     let Some(state) = context.session_state() else {
         return Err(session_context_error("session_regenerate_id"));
     };
@@ -1623,6 +1634,14 @@ pub(in crate::builtins::modules) fn builtin_session_start(
     }
     let id_length = session_sid_length(context);
     let strict_mode = session_ini_bool(context, "session.use_strict_mode");
+    let needs_new_id = context
+        .session_state()
+        .is_some_and(|state| state.id().is_empty() || strict_mode);
+    if needs_new_id {
+        context
+            .prepare_new_session_id()
+            .map_err(|message| session_store_error("session_start", message))?;
+    }
     {
         let Some(state) = context.session_state() else {
             return Err(session_context_error("session_start"));
@@ -1822,7 +1841,11 @@ mod tests {
     use super::*;
     use crate::{
         ArrayKey, IniRegistry, OutputBuffer, PHP_SESSION_ACTIVE, PhpArray, PhpString,
-        ReferenceCell, SessionLoadCallback, SessionState,
+        ReferenceCell, SessionIdGenerateCallback, SessionLoadCallback, SessionState,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     fn context_with_session<'a>(
@@ -2632,5 +2655,58 @@ mod tests {
             })
         );
         assert!(!state.newly_created());
+    }
+
+    #[test]
+    fn web_session_id_generation_is_deferred_until_session_start() {
+        let generated = Arc::new(AtomicUsize::new(0));
+        let generated_for_callback = Arc::clone(&generated);
+        let generator = SessionIdGenerateCallback::new(move || {
+            let sequence = generated_for_callback.fetch_add(1, Ordering::Relaxed) + 1;
+            Ok(format!("secure-generated-id-{sequence}"))
+        });
+        let mut output = OutputBuffer::new();
+        let mut state = SessionState::seeded_lazy("APPSESSID", "", None);
+        let global = ReferenceCell::new(Value::Array(PhpArray::new()));
+        let mut context = context_with_session(&mut output, &mut state, global);
+        context.set_session_id_generator(Some(&generator));
+
+        assert_eq!(generated.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            builtin_session_status(&mut context, Vec::new(), RuntimeSourceSpan::default())
+                .expect("status"),
+            Value::Int(PHP_SESSION_NONE)
+        );
+        assert_eq!(generated.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            builtin_session_start(&mut context, Vec::new(), RuntimeSourceSpan::default())
+                .expect("start"),
+            Value::Bool(true)
+        );
+        assert_eq!(generated.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            builtin_session_id(&mut context, Vec::new(), RuntimeSourceSpan::default()).expect("id"),
+            Value::string("secure-generated-id-1")
+        );
+        assert_eq!(
+            builtin_session_create_id(
+                &mut context,
+                vec![Value::string("prefix-")],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("create id"),
+            Value::string("prefix-secure-generated-id-2")
+        );
+        assert_eq!(generated.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            builtin_session_regenerate_id(&mut context, Vec::new(), RuntimeSourceSpan::default(),)
+                .expect("regenerate id"),
+            Value::Bool(true)
+        );
+        assert_eq!(generated.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            builtin_session_id(&mut context, Vec::new(), RuntimeSourceSpan::default()).expect("id"),
+            Value::string("secure-generated-id-3")
+        );
     }
 }

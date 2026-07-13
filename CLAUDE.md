@@ -81,6 +81,7 @@ nix develop -c just verify-frontend      # lexer, parser, CST, AST, semantics, f
 nix develop -c just verify-runtime       # bytecode, VM, runtime + runtime-semantics fixtures/diff
 nix develop -c just verify-stdlib        # stdlib docs/coverage + arginfo/extension diffs
 nix develop -c just verify-performance   # optimizer/cache/JIT smoke + perf regression
+nix develop -c just verify-performance-extended  # release-profile + hotpath-report gates
 nix develop -c just verify-phpt          # PHPT foundation, baseline, source integrity
 ```
 

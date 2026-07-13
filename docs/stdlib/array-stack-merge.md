@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements mutation-safe array helpers:
+The standard library implements mutation-safe array helpers:
 
 - Mutating stack helpers: `array_push`, `array_pop`, `array_shift`,
   `array_unshift`, and `array_splice`.

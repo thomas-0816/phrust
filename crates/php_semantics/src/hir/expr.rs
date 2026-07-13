@@ -36,7 +36,14 @@ pub enum HirExprKind {
     /// Literal token or string-like source.
     Literal { text: String },
     /// Variable fetch.
-    Variable { name: String },
+    Variable {
+        /// Exact non-trivia variable spelling retained for diagnostics and maps.
+        name: String,
+        /// Number of direct `$` sigils on this variable node.
+        sigil_count: usize,
+        /// Nested expression for variable variables such as `${$name}`.
+        dynamic: Option<ExprId>,
+    },
     /// Statically visible source name.
     Name { resolution: HirNameResolution },
     /// Array expression.
@@ -284,6 +291,7 @@ pub struct HirNameResolution {
     context: String,
     classification: String,
     resolved: Option<String>,
+    resolved_display: Option<String>,
     fallback: Option<String>,
 }
 
@@ -297,11 +305,25 @@ impl HirNameResolution {
         resolved: Option<String>,
         fallback: Option<String>,
     ) -> Self {
+        Self::new_with_display(source, context, classification, resolved, None, fallback)
+    }
+
+    /// Creates a resolution with separate canonical and source-case FQNs.
+    #[must_use]
+    pub fn new_with_display(
+        source: impl Into<String>,
+        context: impl Into<String>,
+        classification: impl Into<String>,
+        resolved: Option<String>,
+        resolved_display: Option<String>,
+        fallback: Option<String>,
+    ) -> Self {
         Self {
             source: source.into(),
             context: context.into(),
             classification: classification.into(),
             resolved,
+            resolved_display,
             fallback,
         }
     }
@@ -328,6 +350,12 @@ impl HirNameResolution {
     #[must_use]
     pub fn resolved(&self) -> Option<&str> {
         self.resolved.as_deref()
+    }
+
+    /// Returns the resolved FQN preserving source segment casing.
+    #[must_use]
+    pub fn resolved_display(&self) -> Option<&str> {
+        self.resolved_display.as_deref()
     }
 
     /// Returns the runtime fallback canonical name, when PHP may fall back.

@@ -1,1 +1,2 @@
 {"path":"tests/phpt/generated/ssh2/basic.phpt","reason":"Covers deterministic SSH2 facade discovery, session/SFTP handles, credential-safe auth failure, methods/fingerprint shapes, and explicit backend-required false returns without a live SSH server."}
+{"path":"tests/phpt/generated/ssh2/live-endpoint.phpt","reason":"Default-off live libssh2 coverage for endpoint-gated connect, password or pubkey auth, command stream output, SFTP handle creation, disconnect, and optional SCP transfers."}

@@ -5,9 +5,9 @@ Runtime object MVP. The runtime still consumes the single frontend pipeline:
 `php_lexer` -> `php_syntax` -> `php_ast` -> `php_semantics` -> `php_ir` ->
 `php_runtime` -> `php_vm`.
 
-## Work item Scope
+## Scope
 
-Work item adds the first executable class hierarchy layer:
+The runtime provides the first executable class hierarchy layer:
 
 - IR `ClassEntry` stores the normalized parent class name from HIR `extends`.
 - Runtime `ClassEntry` carries parent metadata for object construction and
@@ -19,7 +19,7 @@ Work item adds the first executable class hierarchy layer:
 - `$obj->method()`, `Class::method()`, `self::method()` and `parent::method()`
   use the same hierarchy lookup helper.
 
-Work item extends call frames with explicit `scope_class`, `called_class`, and
+The runtime extends call frames with explicit `scope_class`, `called_class`, and
 `declaring_class` metadata. `static::` resolves from the called class, while
 `self::` and `parent::` use class scope. Explicit `Class::method()` calls are
 non-forwarding; `self::`, `parent::`, and `static::` preserve the called class
@@ -46,7 +46,7 @@ Missing parent classes and inheritance cycles produce deterministic VM errors:
 
 ## Visibility
 
-Implemented Work item visibility checks:
+Implemented baseline visibility checks:
 
 - `public`: callable from any scope.
 - `private`: callable only from the declaring class scope.
@@ -62,8 +62,8 @@ Abstract methods remain outside the concrete VM dispatch MVP and produce
 
 ## Properties
 
-Work item finalizes inherited instance property slots at object construction so
-parent-declared properties are present on child instances. Work item extends
+The runtime finalizes inherited instance property slots at object construction so
+parent-declared properties are present on child instances. The runtime extends
 that model with declared defaults, typed uninitialized slots, public/protected/
 private read-write checks, initialize-once readonly property and readonly-class
 writes, per-class static property storage, dynamic-property creation
@@ -77,7 +77,7 @@ class and property name, not on object instances.
 
 ## Late Static Binding and Class Metadata
 
-Work item adds executable late static binding for static and instance method
+The runtime provides executable late static binding for static and instance method
 frames. Method call frames preserve:
 
 - `scope_class` for `self::`, `parent::`, visibility, and private storage;
@@ -97,7 +97,7 @@ visible from the declaring scope.
 
 ## Interfaces, Abstract, and Final
 
-Work item adds runtime-visible interface metadata to IR and VM class entries.
+The runtime provides runtime-visible interface metadata to IR and VM class entries.
 Interface declarations are preserved in the class table, class `implements`
 clauses and interface `extends` clauses are normalized into `interfaces`, and
 the VM registers minimal internal interface metadata for `Iterator`,
@@ -114,7 +114,7 @@ Before entry execution, the VM validates:
   parameters optional and add optional trailing parameters in the covered MVP.
 
 `instanceof` uses the same class/interface hierarchy helper as declared
-class-like parameter, return, and property type checks. Work item extends the
+class-like parameter, return, and property type checks. The runtime extends the
 internal Throwable metadata layer so VM-created `Exception`, `Error`,
 `TypeError`, `ValueError`, `ArgumentCountError`, and `FiberError` objects
 participate in `Throwable`/`Error`/exact-class checks and typed `catch`
@@ -125,7 +125,7 @@ implementation rules, and exact engine diagnostic text remain later work.
 
 ## Exceptions and Runtime Errors
 
-Work item keeps exceptions as VM metadata objects instead of full userland
+The runtime keeps exceptions as VM metadata objects instead of full userland
 class instances, but the visible hierarchy is now stable for the covered
 runtime subset:
 
@@ -147,7 +147,7 @@ destructor/generator/fiber interactions with pending exception control flow.
 
 ## Enums
 
-Work item adds executable enum metadata and runtime singleton cases for the
+The runtime provides executable enum metadata and runtime singleton cases for the
 fixture-covered language subset:
 
 - enum declarations are lowered into the class table with `is_enum` metadata;
@@ -165,7 +165,7 @@ fixture-covered language subset:
   methods reuse the normal class method/constant/trait lowering paths;
 - direct `new EnumName()` fails with `E_PHP_VM_ENUM_INSTANTIATION`.
 
-Work item exposes enum-case attribute metadata through the Reflection metadata
+The runtime exposes enum-case attribute metadata through the Reflection metadata
 MVP described below. Full `ReflectionEnum` public APIs remain outside this
 subset. Serialization behavior is also an explicit
 `E_PHP_RUNTIME_UNSUPPORTED_ENUM_SERIALIZATION` gap rather than an
@@ -173,7 +173,7 @@ approximation.
 
 ## Attributes and Reflection Metadata
 
-Work item carries Semantic frontend attribute metadata into IR and runtime class tables
+The runtime carries Semantic frontend attribute metadata into IR and runtime class tables
 for classes, functions, methods, parameters, properties, class constants, and
 enum cases. Each runtime attribute entry preserves:
 
@@ -184,8 +184,8 @@ enum cases. Each runtime attribute entry preserves:
   used by runtime constants;
 - a repeated-on-target marker for future validation.
 
-Work item broadens the VM Reflection metadata MVP for framework-style smoke
-queries, and Work item adds enum, closure, and structured callable reflection:
+The runtime broadens the VM Reflection metadata MVP for framework-style smoke
+queries, and the runtime provides enum, closure, and structured callable reflection:
 
 - `ReflectionClass::__construct`, `getName`, `getAttributes`, `getMethod`,
   `getMethods`, `getProperty`, `getProperties`, `getConstant`,
@@ -218,7 +218,7 @@ spelling where the class table preserves it. Source file/start/end line
 metadata is best-effort from IR spans. Doc comments currently return `false`
 because comment retention is not yet wired into IR metadata.
 Callables are reflected from structured runtime `CallableValue` metadata. The
-Work item MVP supports closures and user-function callables; method, internal
+The MVP supports closures and user-function callables; method, internal
 builtin, and unresolved dynamic callable reflection report
 `E_PHP_VM_REFLECTION_UNSUPPORTED_CALLABLE` instead of stringifying unstable
 callable placeholders.
@@ -234,7 +234,7 @@ internal attributes, and exact diagnostic text remain explicit
 
 ## Property Magic
 
-Work item adds property overloading for instance property operations:
+The runtime provides property overloading for instance property operations:
 
 - missing or inaccessible property reads dispatch public non-static
   `__get(string $name)` before falling back to undefined-property warnings or
@@ -261,7 +261,7 @@ overflow. By-reference property lvalues through `__get` remain an explicit
 reference-model gap covered by
 `E_PHP_IR_UNSUPPORTED_PROPERTY_REFERENCE`.
 
-Work item adds executable PHP 8.4+ property hooks for the fixture-covered
+The runtime provides executable PHP 8.4+ property hooks for the fixture-covered
 runtime paths. The parser emits `PROPERTY_HOOK_DECL` nodes, Semantic frontend HIR records
 hook kind/body/span metadata, and IR lowering creates synthetic method-like hook
 functions with source-map entries such as
@@ -306,7 +306,7 @@ The object-model architecture decision is recorded in
 
 ## Method and Object Magic
 
-Work item adds method and object magic for the fixture-covered runtime paths:
+The runtime provides method and object magic for the fixture-covered runtime paths:
 
 - missing or inaccessible instance method calls dispatch public non-static
   `__call(string $name, array $args)`;
@@ -332,7 +332,7 @@ under the broader magic-method gap.
 
 ## Clone and Clone-With
 
-Work item completes the fixture-covered clone path:
+The runtime completes the fixture-covered clone path:
 
 - `clone $object` creates a new object identity with a shallow copy of the
   runtime property map;
@@ -356,7 +356,7 @@ writes through reference cells remain tracked under
 Clone-with replacement of private, protected, readonly, static, or wider
 hook-backed properties remains intentionally specific rather than approximated:
 
-- private/protected replacement attempts outside the Work item asymmetric setter
+- private/protected replacement attempts outside the asymmetric setter
   subset route through the regular property visibility `Error` path;
 - readonly replacement attempts route through the readonly write `Error` path;
 - static replacement attempts still produce
@@ -368,7 +368,7 @@ hook-backed properties remains intentionally specific rather than approximated:
 
 ## Destructors and Lifetime
 
-Work item introduces a VM-owned shutdown `DestructorQueue` rather than running
+The runtime provides a VM-owned shutdown `DestructorQueue` rather than running
 PHP code from Rust `Drop`. Objects with a public non-static `__destruct()` are
 registered after successful construction and after successful clone creation.
 At successful request shutdown, the queue drains in reverse registration order.

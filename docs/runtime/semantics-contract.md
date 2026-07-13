@@ -103,7 +103,7 @@ commit or docs update.
 
 ## GC Root Tracking And Debug Metadata
 
-Work item adds detection-only GC metadata under the `php_runtime::debug` facade
+The runtime provides detection-only GC metadata under the `php_runtime::debug` facade
 backed by the internal `php_runtime::gc` module. Runtime values
 can be scanned from explicit `GcRoot` entries into deterministic `GcSnapshot`
 nodes for arrays, objects, references, closures, and reserved generator/fiber
@@ -118,7 +118,7 @@ collect, free, run destructors, or expose PHP-visible handles. Full cycle
 collection and exact refcount-triggered lifetime remain later Runtime semantics
 work and known gaps.
 
-Work item extends this with internal weak handles plus `GcTrackedHeap`, a test
+The runtime extends this with internal weak handles plus `GcTrackedHeap`, a test
 hook that can clear unrooted object properties and reference cells to break
 simple cycles. This hook is deterministic, does not execute PHP code, and does
 not own destructor scheduling. Public `gc_collect_cycles()`, `gc_status()`,
@@ -127,14 +127,14 @@ destructor timing remain known gaps unless a later work item implements them.
 
 ## Generator MVP
 
-Work item replaces the blanket generator lowering gap for free functions with
+The runtime replaces the blanket generator lowering gap for free functions with
 an internal generator architecture. Functions whose Semantic frontend signature contains
 `yield` are marked in IR, and a normal call returns a `Generator` runtime value
 without executing the body. By-value `foreach` over that value runs the body
 until the first `yield`, exposes the yielded key/value to the loop, and records
 Created, Running, Suspended, Closed, and Errored state transitions.
 
-Work item exposes the visible `Generator` method surface for the language MVP.
+The runtime exposes the visible `Generator` method surface for the language MVP.
 `current()`, `key()`, `valid()`, `rewind()`, `next()`, `send()`, `throw()`,
 and `getReturn()` operate on the same `GeneratorRef` state as `foreach`. The VM
 stores suspended generator continuations with the saved frame, block,
@@ -144,7 +144,7 @@ expression. `throw()` injects an internal throwable object through the saved
 handler stack. `getReturn()` is available after normal completion and reports a
 deterministic runtime error before completion.
 
-Work item extends generator continuations with `yield from` delegation for
+The runtime extends generator continuations with `yield from` delegation for
 arrays and generator MVP objects. Array delegation preserves insertion-order
 keys and values. Generator delegation forwards yielded keys/values, resumes the
 delegate until completion, and makes the delegate return value available as the
@@ -161,7 +161,7 @@ exception/finally/destructor interaction matrix.
 
 ## Object Iteration and Iterator MVP
 
-Work item extends `foreach` beyond arrays for the language-level object cases
+The runtime extends `foreach` beyond arrays for the language-level object cases
 needed before a full SPL implementation. Plain objects iterate their visible
 public instance properties without array conversion; the VM rereads the
 property list/value on each step so fixture-covered mutations to not-yet-read
@@ -182,7 +182,7 @@ out of Runtime semantics.
 
 ## Serialization Magic Boundary
 
-Work item keeps serialization out of Runtime semantics execution while making the gap
+The runtime keeps serialization out of Runtime semantics execution while making the gap
 deterministic. The builtin registry recognizes `serialize`, `unserialize`, and
 `var_export`, but each returns `E_PHP_RUNTIME_SERIALIZATION_STDLIB_GAP` instead
 of producing partial output or skipping magic hooks. Runtime method metadata
@@ -198,7 +198,7 @@ fixtures are known gaps and must not produce plausible but incorrect results.
 
 ## PHP 8.5 Runtime Status
 
-Work item keeps the PHP 8.5 runtime surface explicit:
+The runtime keeps the PHP 8.5 runtime surface explicit:
 
 - Pipe operator execution is covered for user functions, builtins, closures,
   dynamic string callables, invokable objects, and chains through the unified
@@ -206,7 +206,7 @@ Work item keeps the PHP 8.5 runtime surface explicit:
 - `(void)` cast is accepted syntactically by the parser fixtures but rejected by
   the pinned semantic/reference boundary as `E_PHP_INVALID_VOID_CAST`; Runtime semantics
   does not expose a fake expression value for it.
-- Clone-with remains the Work item/24 public-property MVP. Private/protected,
+- Clone-with remains the public-property MVP. Private/protected,
   readonly, static, property-hook-complete, and reference-property replacement
   rules stay specific known gaps.
 - PHP 8.5 scalar cast parameter defaults are folded into IR constants for
@@ -217,7 +217,7 @@ Work item keeps the PHP 8.5 runtime surface explicit:
 
 ## Fiber MVP
 
-Work item introduces real internal `Fiber` runtime objects. `new Fiber(...)`
+The runtime provides real internal `Fiber` runtime objects. `new Fiber(...)`
 stores a callable in `php_runtime::FiberRef` with explicit NotStarted, Running,
 Suspended, Terminated, and Errored lifecycle states. The VM recognizes
 `Value::Fiber` as object-like for type checks, `instanceof Fiber`, `gettype`,
@@ -229,7 +229,7 @@ Errored. `isStarted()`, `isSuspended()`, `isRunning()`, and `isTerminated()`
 report the stored state. Invalid construction and invalid start ordering
 produce deterministic FiberError-class runtime diagnostics.
 
-Work item adds cooperative fiber stack switching for the fixture-covered VM
+The runtime provides cooperative fiber stack switching for the fixture-covered VM
 subset. Static `Fiber::suspend()` saves the active frame plus any caller frames
 waiting on nested function/static/method/closure calls. `start()` and
 `resume()` return the suspended value, or `null` when the fiber terminates
@@ -246,7 +246,7 @@ around suspended stacks, and destructor/generator/fiber interaction matrices.
 
 ## Include/Require MVP
 
-Work item makes `include`, `require`, `include_once`, and `require_once`
+The runtime makes `include`, `require`, `include_once`, and `require_once`
 executable for local root-constrained files. Included source is loaded through
 the existing `php_semantics`/`php_ir`/`php_vm` pipeline with per-file source
 paths and source text; it does not add a second lexer, parser, or frontend path.
@@ -279,7 +279,7 @@ placement remain covered by `E_PHP_RUNTIME_WARNING_CHANNEL_COMPAT`.
 
 ## Eval MVP
 
-Work item lowers `eval($code)` to a runtime VM instruction whose evaluated
+The runtime lowers `eval($code)` to a runtime VM instruction whose evaluated
 string is compiled through the same `php_lexer` -> `php_syntax` ->
 `php_semantics` -> `php_ir` -> `php_vm` pipeline as normal source and includes.
 The VM wraps the evaluated code in a synthetic PHP source file with `eval://N`
@@ -307,7 +307,7 @@ warnings, preserve the first value, and continue for the covered fixtures. Exact
 
 ## Autoload MVP
 
-Work item adds a request-local `AutoloadRegistry` and VM-owned handlers for
+The runtime provides a request-local `AutoloadRegistry` and VM-owned handlers for
 `spl_autoload_register`, `spl_autoload_unregister`,
 `spl_autoload_functions`, `spl_autoload_call`, `class_exists`, and
 `interface_exists` in the Runtime semantics MVP scope. The registry accepts Runtime semantics
@@ -332,7 +332,7 @@ path rules, and complete SPL error/object parity.
 
 ## Globals and Superglobals MVP
 
-Work item adds a VM-owned global symbol table for request execution. Top-level
+The runtime provides a VM-owned global symbol table for request execution. Top-level
 locals are bound to global slots with `ReferenceCell` storage, and `global $x`
 inside functions or closures binds the function-local slot to the same global
 cell instead of copying the value. Plain function-local assignments without a
@@ -369,7 +369,7 @@ Runtime established:
 - Runtime fixture comparison and PHPT smoke infrastructure in `php_testkit`.
 - A Runtime known-gap catalog in `docs/runtime/known-gaps.md`.
 
-Work item baseline validation was run before Runtime semantics docs edits:
+Baseline validation was run before Runtime semantics docs edits:
 
 ```bash
 nix develop -c just verify-runtime
@@ -409,7 +409,7 @@ needs a stable ID, fixture, and entry in `docs/runtime/semantics-known-gaps.md`.
 
 ## Runtime semantics Commands
 
-Work item adds the central Runtime semantics gate and initial fixture categories:
+The runtime provides the central Runtime semantics gate and initial fixture categories:
 
 ```bash
 nix develop -c just verify-runtime
@@ -476,7 +476,7 @@ for regression spotting only and are not PHP/Zend benchmark claims.
 
 ## Failure Minimization and Regressions
 
-Work item adds a documented path from a Runtime semantics diff failure to a permanent,
+The runtime provides a documented path from a Runtime semantics diff failure to a permanent,
 small regression fixture:
 
 1. Reproduce the mismatch with a focused diff command, for example
@@ -494,8 +494,9 @@ small regression fixture:
 
 Regression fixtures must stay small, handwritten PHP files. They must not be
 large framework snapshots, vendored Composer trees, or generated reports.
-`regression-fixtures` is included by `runtime-semantics-fixtures`, so `verify-runtime`
-includes the regression corpus through the central Runtime semantics gate.
+`regression-fixtures` is a focused per-category gate; `verify-runtime` covers
+the regression corpus through its full-corpus differential run, which is a
+strict superset of every category gate.
 
 ## Core Documentation and ADRs
 
@@ -538,7 +539,7 @@ Architecture decisions are recorded in:
 
 ## Runtime Tracing
 
-Work item adds opt-in runtime tracing for minimizing Runtime semantics failures without
+The runtime provides opt-in runtime tracing for minimizing Runtime semantics failures without
 changing PHP-visible output. Instruction tracing remains available with
 `php-vm run --trace`. Runtime-state tracing is enabled separately:
 
@@ -637,11 +638,15 @@ known-gap behavior, it needs a fixture and an updated ADR or topic document.
 ## Hardening and Unsafe Audit
 
 Runtime-semantics hardening is tracked in `docs/runtime/semantics-hardening.md`.
-`verify-runtime` includes:
+Unsafe enforcement lives in the crate roots (`#![deny(unsafe_code)]`, with the
+audited exceptions from ADR 0020 and ADR 0021), so it holds in every build and
+lint of these crates:
 
-- `just runtime-hardening-lints`, which runs Clippy for `php_runtime` and
-  `php_vm` with `-D warnings -D unsafe-code`;
-- `just runtime-toolchain-audit`, which checks that the Nix devshell exposes the
+- `just runtime-hardening-lints` remains as a focused Clippy run over
+  `php_runtime` and `php_vm`; it is a strict subset of the workspace
+  `just lint`, which combined runs and CI's workspace job execute anyway,
+  so `verify-runtime` no longer repeats it.
+- `just runtime-toolchain-audit` checks that the Nix devshell exposes the
   required local tools and pinned PHP reference metadata.
 
 Additional opt-in hardening targets are documented but are not part of the

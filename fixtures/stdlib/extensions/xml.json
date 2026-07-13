@@ -1,0 +1,277 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "XMLParser"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "XML_OPTION_CASE_FOLDING",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XML_OPTION_TARGET_ENCODING",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XML_OPTION_SKIP_TAGSTART",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XML_OPTION_SKIP_WHITE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XML_OPTION_PARSE_HUGE",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XML_SAX_IMPL",
+      "value": {
+        "kind": "string",
+        "value": "libxml"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_error_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_get_current_byte_index",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_get_current_column_number",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_get_current_line_number",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_get_error_code",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parse",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parse_into_struct",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parser_create",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parser_create_ns",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parser_free",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parser_get_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_parser_set_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_set_character_data_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_set_default_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xml",
+        "source": "ext/xml/xml.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xml_set_element_handler",
+      "visibility": "php"
+    }
+  ],
+  "name": "xml",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

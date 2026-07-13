@@ -3,15 +3,14 @@
   "module":"standard.math",
   "priority":14,
   "selected_manifest":"tests/phpt/manifests/modules/standard.math.selected.jsonl",
-  "corpus_count":172,
-  "selected_count":172,
-  "pass_count":161,
+  "corpus_count":171,
+  "pass_count":160,
   "skip_count":11,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":62,
+  "known_failure_count":0,
   "scope":["math and numeric standard builtins"],
   "non_scope":["operator conversion semantics"],
-  "target_gates":["nix develop -c cargo test -p php_runtime","nix develop -c just phpt-dev-module MODULE=standard.math","nix develop -c just verify-stdlib"],
-  "next_step":"selected math contracts are closed with 161 PASS and 11 reference-style SKIP outcomes; continue reducing broader numeric edge cases outside the focused gate."
+  "target_gates":["nix develop -c just phpt-module MODULE=standard.math"],
+  "next_step":"Use php-src arginfo and Reference PHP for edge-case numeric behavior."
 }

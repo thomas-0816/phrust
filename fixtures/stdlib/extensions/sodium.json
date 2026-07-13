@@ -1,0 +1,1047 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SodiumException"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "SODIUM_LIBRARY_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "1.0.22"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_LIBRARY_MAJOR_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 26
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_LIBRARY_MINOR_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_BASE64_VARIANT_ORIGINAL",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_BASE64_VARIANT_ORIGINAL_NO_PADDING",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_BASE64_VARIANT_URLSAFE",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_BASE64_VARIANT_URLSAFE_NO_PADDING",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_GENERICHASH_BYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_GENERICHASH_BYTES_MIN",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_GENERICHASH_BYTES_MAX",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_GENERICHASH_KEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_GENERICHASH_KEYBYTES_MIN",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_GENERICHASH_KEYBYTES_MAX",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SECRETBOX_KEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SECRETBOX_MACBYTES",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SECRETBOX_NONCEBYTES",
+      "value": {
+        "kind": "int",
+        "value": 24
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_AUTH_KEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SHORTHASH_KEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_SEEDBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_PUBLICKEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_SECRETKEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_KEYPAIRBYTES",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_NONCEBYTES",
+      "value": {
+        "kind": "int",
+        "value": 24
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_MACBYTES",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_BOX_SEALBYTES",
+      "value": {
+        "kind": "int",
+        "value": 48
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_KDF_KEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_KDF_BYTES_MIN",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_KDF_BYTES_MAX",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_KDF_CONTEXTBYTES",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES",
+      "value": {
+        "kind": "int",
+        "value": 24
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NSECBYTES",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_ABYTES",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_ALG_ARGON2I13",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_ALG_ARGON2ID13",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_ALG_DEFAULT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_BYTES_MIN",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_BYTES_MAX",
+      "value": {
+        "kind": "int",
+        "value": 4294967295
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SALTBYTES",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_STRPREFIX",
+      "value": {
+        "kind": "string",
+        "value": "$argon2id$"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_OPSLIMIT_INTERACTIVE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_MEMLIMIT_INTERACTIVE",
+      "value": {
+        "kind": "int",
+        "value": 67108864
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_OPSLIMIT_MODERATE",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_MEMLIMIT_MODERATE",
+      "value": {
+        "kind": "int",
+        "value": 268435456
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_OPSLIMIT_SENSITIVE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_MEMLIMIT_SENSITIVE",
+      "value": {
+        "kind": "int",
+        "value": 1073741824
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SCRYPTSALSA208SHA256_SALTBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SCRYPTSALSA208SHA256_STRPREFIX",
+      "value": {
+        "kind": "string",
+        "value": "$7$"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SCRYPTSALSA208SHA256_OPSLIMIT_INTERACTIVE",
+      "value": {
+        "kind": "int",
+        "value": 524288
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SCRYPTSALSA208SHA256_MEMLIMIT_INTERACTIVE",
+      "value": {
+        "kind": "int",
+        "value": 16777216
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SCRYPTSALSA208SHA256_OPSLIMIT_SENSITIVE",
+      "value": {
+        "kind": "int",
+        "value": 33554432
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_PWHASH_SCRYPTSALSA208SHA256_MEMLIMIT_SENSITIVE",
+      "value": {
+        "kind": "int",
+        "value": 1073741824
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SIGN_BYTES",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SODIUM_CRYPTO_SIGN_SECRETKEYBYTES",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_add",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_base642bin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_bin2base64",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_bin2hex",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_compare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_aead_xchacha20poly1305_ietf_decrypt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_aead_xchacha20poly1305_ietf_encrypt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_aead_xchacha20poly1305_ietf_keygen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_auth_keygen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_keypair",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_keypair_from_secretkey_and_publickey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_publickey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_publickey_from_secretkey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_seal",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_seal_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_secretkey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_box_seed_keypair",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_generichash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_generichash_keygen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_kdf_derive_from_key",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_kdf_keygen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash_scryptsalsa208sha256",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash_scryptsalsa208sha256_str",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash_scryptsalsa208sha256_str_verify",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash_str",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash_str_needs_rehash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_pwhash_str_verify",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_secretbox",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_secretbox_keygen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_secretbox_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_shorthash_keygen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_sign_detached",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_crypto_sign_verify_detached",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_hex2bin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_increment",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_memcmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_memzero",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_pad",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sodium",
+        "source": "ext/sodium/libsodium.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sodium"
+        }
+      ],
+      "name": "sodium_unpad",
+      "visibility": "php"
+    }
+  ],
+  "name": "sodium",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

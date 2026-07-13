@@ -1,12 +1,12 @@
 # Performance Optimized-Path Regression Fixtures
 
-Work item adds `tests/fixtures/performance/regressions/` to stress optimized
+The performance layer provides `tests/fixtures/performance/regressions/` to stress optimized
 paths under control-flow conditions that can expose duplicated side effects,
 lost exceptions, stale caches, or invalid by-reference assumptions. The
 `performance-regression` gate runs each fixture through `--opt-level=0`, `1`, and
 `2`, with quickening off/on and inline caches off/on.
 
-Work item extends `performance-regression` with `perf-flag-matrix`, which
+The performance layer extends `performance-regression` with `perf-flag-matrix`, which
 compares the explicit baseline (`--opt-level=0`, quickening off, inline caches
 off, bytecode cache off, JIT off) against opt 1, opt 2, quickening, inline
 caches, bytecode-cache read/write, and all-non-JIT-on variants. The matrix also

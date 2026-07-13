@@ -65,7 +65,12 @@ def strip_cfg_test_modules(text: str) -> list[str]:
     lines = text.splitlines()
     result: list[str] = []
     pending_cfg_test = False
+    skip_depth = 0
     for line in lines:
+        if skip_depth:
+            skip_depth += line.count("{") - line.count("}")
+            result.append("")
+            continue
         stripped = line.strip()
         if stripped.startswith("#[cfg(test)]"):
             pending_cfg_test = True
@@ -80,10 +85,14 @@ def strip_cfg_test_modules(text: str) -> list[str]:
             result.append("")
             continue
         if pending_cfg_test and re.match(r"(?:pub\s+)?mod\s+tests\s*\{", stripped):
+            result.append("")
+            result.extend("" for _ in lines[len(result) :])
+            break
+        if pending_cfg_test and re.match(r"(?:pub\s+)?mod\s+\w+\s*\{", stripped):
             pending_cfg_test = False
             result.append("")
-            result.extend([""] * (len(lines) - len(result)))
-            break
+            skip_depth = stripped.count("{") - stripped.count("}")
+            continue
         pending_cfg_test = False
         result.append(line)
     return result

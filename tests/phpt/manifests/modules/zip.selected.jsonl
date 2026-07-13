@@ -1,5 +1,6 @@
 {"path":"tests/phpt/generated/zip/archive-basic.phpt"}
 {"path":"tests/phpt/generated/zip/legacy-resource-api.phpt"}
+{"path":"tests/phpt/generated/zip/unchange-and-compression-store.phpt"}
 {"path":"ext/zip/tests/zip_open.phpt"}
 {"path":"ext/zip/tests/zip_open_error.phpt"}
 {"path":"ext/zip/tests/zip_close.phpt"}

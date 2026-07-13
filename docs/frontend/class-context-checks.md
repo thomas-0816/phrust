@@ -1,6 +1,6 @@
 # Class Context Checks
 
-Work item adds semantic checks that are decidable from the current source file
+The semantic frontend provides semantic checks that are decidable from the current source file
 and class-like nesting. The pass does not autoload, execute code, or resolve
 parent classes across files.
 
@@ -52,7 +52,7 @@ PHP lint rejects mismatches.
 
 ## Fixtures
 
-Work item fixtures live under `fixtures/semantic/classes/`:
+The fixtures live under `fixtures/semantic/classes/`:
 
 - `self-parent-static-valid.php`
 - `self-outside-class-invalid.php`

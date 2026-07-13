@@ -1,5 +1,5 @@
 --TEST--
-sysvmsg deterministic message queue compatibility slice
+sysvmsg host System V message queue compatibility slice
 --EXTENSIONS--
 sysvmsg
 --FILE--
@@ -9,7 +9,8 @@ echo function_exists('msg_get_queue') ? "function\n" : "no function\n";
 echo class_exists('SysvMessageQueue') ? "class\n" : "no class\n";
 var_dump(defined('MSG_ENOMSG'));
 
-$key = 0x53565131;
+$keyFile = tempnam(sys_get_temp_dir(), "phrust-msg-");
+$key = ftok($keyFile, "M");
 var_dump(msg_queue_exists($key));
 $queue = msg_get_queue($key, 0600);
 var_dump($queue instanceof SysvMessageQueue);
@@ -39,6 +40,7 @@ var_dump(isset($stats['msg_qnum']));
 var_dump(msg_set_queue($queue, ['msg_qbytes' => 64, 'msg_perm.mode' => 0600]));
 var_dump(msg_remove_queue($queue));
 var_dump(msg_queue_exists($key));
+@unlink($keyFile);
 ?>
 --EXPECT--
 loaded

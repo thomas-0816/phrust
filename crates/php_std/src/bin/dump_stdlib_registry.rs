@@ -1,5 +1,5 @@
-use php_runtime::api::BuiltinRegistry;
-use php_std::{ClassKind, ExtensionRegistry, SymbolVisibility};
+use php_extensions::BuiltinRegistry;
+use php_std::{ClassKind, ConstantValue, ExtensionRegistry, SymbolVisibility};
 
 fn main() {
     let registry = ExtensionRegistry::standard_library();
@@ -17,16 +17,16 @@ fn main() {
         );
 
         println!("      \"functions\": [");
-        let functions = extension
-            .functions()
-            .iter()
-            .filter(|function| function.visibility() == SymbolVisibility::PhpVisible)
-            .collect::<Vec<_>>();
+        let functions = extension.functions();
         for (index, function) in functions.iter().enumerate() {
             let arginfo = function.arginfo();
             print!(
-                "        {{\"name\": \"{}\", \"runtime_builtin\": {}, \"arginfo_source\": {}, \"required_parameters\": {}, \"total_parameters\": {}, \"variadic\": {}}}",
+                "        {{\"name\": \"{}\", \"visibility\": \"{}\", \"runtime_builtin\": {}, \"arginfo_source\": {}, \"required_parameters\": {}, \"total_parameters\": {}, \"variadic\": {}}}",
                 json_escape(function.name()),
+                match function.visibility() {
+                    SymbolVisibility::PhpVisible => "php",
+                    SymbolVisibility::InternalTestFixture => "internal_test",
+                },
                 builtins.get(function.name()).is_some() || is_vm_builtin(function.name()),
                 arginfo
                     .map(|metadata| format!("\"{}\"", json_escape(metadata.source)))
@@ -61,9 +61,13 @@ fn main() {
         let constants = extension.constants();
         for (index, constant) in constants.iter().enumerate() {
             print!(
-                "        {{\"name\": \"{}\", \"has_value\": {}}}",
+                "        {{\"name\": \"{}\", \"value\": {}, \"deprecation\": {}}}",
                 json_escape(constant.name()),
-                constant.value().is_some()
+                constant_value_json(constant.value()),
+                constant
+                    .deprecation()
+                    .map(|deprecation| format!("\"{}\"", json_escape(deprecation.message())))
+                    .unwrap_or_else(|| "null".to_owned())
             );
             println!("{}", comma(index, constants.len()));
         }
@@ -73,6 +77,32 @@ fn main() {
     }
     println!("  ]");
     println!("}}");
+}
+
+fn constant_value_json(value: Option<ConstantValue>) -> String {
+    match value {
+        None => "null".to_owned(),
+        Some(ConstantValue::Null) => "{\"kind\":\"null\"}".to_owned(),
+        Some(ConstantValue::Bool(value)) => format!("{{\"kind\":\"bool\",\"value\":{value}}}"),
+        Some(ConstantValue::Int(value)) => format!("{{\"kind\":\"int\",\"value\":{value}}}"),
+        Some(ConstantValue::Float(value)) => format!(
+            "{{\"kind\":\"float\",\"bits\":{}}}",
+            value.to_f64().to_bits()
+        ),
+        Some(ConstantValue::String(value)) => format!(
+            "{{\"kind\":\"string\",\"value\":\"{}\"}}",
+            json_escape(value)
+        ),
+        Some(ConstantValue::Array(values)) => {
+            let values = values
+                .iter()
+                .copied()
+                .map(|value| constant_value_json(Some(value)))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{\"kind\":\"array\",\"values\":[{values}]}}")
+        }
+    }
 }
 
 const fn class_kind_name(kind: ClassKind) -> &'static str {

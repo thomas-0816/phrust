@@ -1,4 +1,8 @@
 //! Request-local OPcache API facade.
+//!
+//! `opcache_compile_file()` needs the VM compiler to validate and cache PHP
+//! source. The standalone runtime entry fails closed; the VM dispatch hook
+//! records successful compiles in this request-local state.
 
 use super::core::{arity_error, conversion_error, string_arg};
 use crate::builtins::{
@@ -73,8 +77,12 @@ fn builtin_opcache_compile_file(
         );
         return Ok(Value::Bool(false));
     }
-    context.opcache_state().compile_script(canonical_key(&path));
-    Ok(Value::Bool(true))
+    context.php_warning(
+        "opcache_compile_file.compiler_unavailable",
+        "opcache_compile_file(): compiler is not available in the runtime-only facade",
+        span,
+    );
+    Ok(Value::Bool(false))
 }
 
 fn builtin_opcache_get_configuration(

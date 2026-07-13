@@ -1,0 +1,1279 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "PhpToken"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "TOKEN_PARSE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INLINE_HTML",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_OPEN_TAG",
+      "value": {
+        "kind": "int",
+        "value": 257
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_OPEN_TAG_WITH_ECHO",
+      "value": {
+        "kind": "int",
+        "value": 258
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CLOSE_TAG",
+      "value": {
+        "kind": "int",
+        "value": 259
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_WHITESPACE",
+      "value": {
+        "kind": "int",
+        "value": 260
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_COMMENT",
+      "value": {
+        "kind": "int",
+        "value": 261
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DOC_COMMENT",
+      "value": {
+        "kind": "int",
+        "value": 262
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_BAD_CHARACTER",
+      "value": {
+        "kind": "int",
+        "value": 263
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_STRING",
+      "value": {
+        "kind": "int",
+        "value": 264
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IF",
+      "value": {
+        "kind": "int",
+        "value": 265
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ELSE",
+      "value": {
+        "kind": "int",
+        "value": 266
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ELSEIF",
+      "value": {
+        "kind": "int",
+        "value": 267
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENDIF",
+      "value": {
+        "kind": "int",
+        "value": 268
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FUNCTION",
+      "value": {
+        "kind": "int",
+        "value": 269
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CLASS",
+      "value": {
+        "kind": "int",
+        "value": 270
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ABSTRACT",
+      "value": {
+        "kind": "int",
+        "value": 271
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FINAL",
+      "value": {
+        "kind": "int",
+        "value": 272
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INTERFACE",
+      "value": {
+        "kind": "int",
+        "value": 273
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_TRAIT",
+      "value": {
+        "kind": "int",
+        "value": 274
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENUM",
+      "value": {
+        "kind": "int",
+        "value": 275
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NAMESPACE",
+      "value": {
+        "kind": "int",
+        "value": 276
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_USE",
+      "value": {
+        "kind": "int",
+        "value": 277
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_AS",
+      "value": {
+        "kind": "int",
+        "value": 278
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INSTEADOF",
+      "value": {
+        "kind": "int",
+        "value": 279
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_MATCH",
+      "value": {
+        "kind": "int",
+        "value": 280
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_READONLY",
+      "value": {
+        "kind": "int",
+        "value": 281
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FN",
+      "value": {
+        "kind": "int",
+        "value": 282
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_YIELD",
+      "value": {
+        "kind": "int",
+        "value": 283
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_YIELD_FROM",
+      "value": {
+        "kind": "int",
+        "value": 284
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CASE",
+      "value": {
+        "kind": "int",
+        "value": 285
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DEFAULT",
+      "value": {
+        "kind": "int",
+        "value": 286
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ECHO",
+      "value": {
+        "kind": "int",
+        "value": 287
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PRINT",
+      "value": {
+        "kind": "int",
+        "value": 288
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_RETURN",
+      "value": {
+        "kind": "int",
+        "value": 289
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_BREAK",
+      "value": {
+        "kind": "int",
+        "value": 290
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CONTINUE",
+      "value": {
+        "kind": "int",
+        "value": 291
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_EXTENDS",
+      "value": {
+        "kind": "int",
+        "value": 292
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IMPLEMENTS",
+      "value": {
+        "kind": "int",
+        "value": 293
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PUBLIC",
+      "value": {
+        "kind": "int",
+        "value": 294
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PROTECTED",
+      "value": {
+        "kind": "int",
+        "value": 295
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PRIVATE",
+      "value": {
+        "kind": "int",
+        "value": 296
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_STATIC",
+      "value": {
+        "kind": "int",
+        "value": 297
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CONST",
+      "value": {
+        "kind": "int",
+        "value": 298
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_VAR",
+      "value": {
+        "kind": "int",
+        "value": 299
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DECLARE",
+      "value": {
+        "kind": "int",
+        "value": 300
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENDDECLARE",
+      "value": {
+        "kind": "int",
+        "value": 301
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_GLOBAL",
+      "value": {
+        "kind": "int",
+        "value": 302
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CALLABLE",
+      "value": {
+        "kind": "int",
+        "value": 303
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CLONE",
+      "value": {
+        "kind": "int",
+        "value": 304
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NEW",
+      "value": {
+        "kind": "int",
+        "value": 305
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_WHILE",
+      "value": {
+        "kind": "int",
+        "value": 306
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENDWHILE",
+      "value": {
+        "kind": "int",
+        "value": 307
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DO",
+      "value": {
+        "kind": "int",
+        "value": 308
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FOR",
+      "value": {
+        "kind": "int",
+        "value": 309
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENDFOR",
+      "value": {
+        "kind": "int",
+        "value": 310
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FOREACH",
+      "value": {
+        "kind": "int",
+        "value": 311
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENDFOREACH",
+      "value": {
+        "kind": "int",
+        "value": 312
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_SWITCH",
+      "value": {
+        "kind": "int",
+        "value": 313
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENDSWITCH",
+      "value": {
+        "kind": "int",
+        "value": 314
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_TRY",
+      "value": {
+        "kind": "int",
+        "value": 315
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_THROW",
+      "value": {
+        "kind": "int",
+        "value": 316
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CATCH",
+      "value": {
+        "kind": "int",
+        "value": 317
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FINALLY",
+      "value": {
+        "kind": "int",
+        "value": 318
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INCLUDE",
+      "value": {
+        "kind": "int",
+        "value": 319
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INCLUDE_ONCE",
+      "value": {
+        "kind": "int",
+        "value": 320
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_REQUIRE",
+      "value": {
+        "kind": "int",
+        "value": 321
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_REQUIRE_ONCE",
+      "value": {
+        "kind": "int",
+        "value": 322
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_EVAL",
+      "value": {
+        "kind": "int",
+        "value": 323
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ISSET",
+      "value": {
+        "kind": "int",
+        "value": 324
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_EMPTY",
+      "value": {
+        "kind": "int",
+        "value": 325
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_UNSET",
+      "value": {
+        "kind": "int",
+        "value": 326
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_LIST",
+      "value": {
+        "kind": "int",
+        "value": 327
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ARRAY",
+      "value": {
+        "kind": "int",
+        "value": 328
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INSTANCEOF",
+      "value": {
+        "kind": "int",
+        "value": 329
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_GOTO",
+      "value": {
+        "kind": "int",
+        "value": 330
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_EXIT",
+      "value": {
+        "kind": "int",
+        "value": 331
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_HALT_COMPILER",
+      "value": {
+        "kind": "int",
+        "value": 332
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_VARIABLE",
+      "value": {
+        "kind": "int",
+        "value": 333
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NS_SEPARATOR",
+      "value": {
+        "kind": "int",
+        "value": 334
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NAME_FULLY_QUALIFIED",
+      "value": {
+        "kind": "int",
+        "value": 335
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NAME_QUALIFIED",
+      "value": {
+        "kind": "int",
+        "value": 336
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NAME_RELATIVE",
+      "value": {
+        "kind": "int",
+        "value": 337
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_LNUMBER",
+      "value": {
+        "kind": "int",
+        "value": 338
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DNUMBER",
+      "value": {
+        "kind": "int",
+        "value": 339
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IS_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 340
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IS_NOT_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 341
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IS_IDENTICAL",
+      "value": {
+        "kind": "int",
+        "value": 342
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IS_NOT_IDENTICAL",
+      "value": {
+        "kind": "int",
+        "value": 343
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IS_SMALLER_OR_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 344
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_IS_GREATER_OR_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 345
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_SPACESHIP",
+      "value": {
+        "kind": "int",
+        "value": 346
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_BOOLEAN_AND",
+      "value": {
+        "kind": "int",
+        "value": 347
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_BOOLEAN_OR",
+      "value": {
+        "kind": "int",
+        "value": 348
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_LOGICAL_AND",
+      "value": {
+        "kind": "int",
+        "value": 349
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_LOGICAL_OR",
+      "value": {
+        "kind": "int",
+        "value": 350
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_LOGICAL_XOR",
+      "value": {
+        "kind": "int",
+        "value": 351
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_SL",
+      "value": {
+        "kind": "int",
+        "value": 352
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_SR",
+      "value": {
+        "kind": "int",
+        "value": 353
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_SL_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 354
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_SR_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 355
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PLUS_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 356
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_MINUS_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 357
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_MUL_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 358
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DIV_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 359
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_MOD_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 360
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CONCAT_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 361
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_AND_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 362
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_OR_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 363
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_XOR_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 364
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_COALESCE",
+      "value": {
+        "kind": "int",
+        "value": 365
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_COALESCE_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 366
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_OBJECT_OPERATOR",
+      "value": {
+        "kind": "int",
+        "value": 367
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NULLSAFE_OBJECT_OPERATOR",
+      "value": {
+        "kind": "int",
+        "value": 368
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DOUBLE_COLON",
+      "value": {
+        "kind": "int",
+        "value": 369
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DOUBLE_ARROW",
+      "value": {
+        "kind": "int",
+        "value": 370
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INC",
+      "value": {
+        "kind": "int",
+        "value": 371
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DEC",
+      "value": {
+        "kind": "int",
+        "value": 372
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ELLIPSIS",
+      "value": {
+        "kind": "int",
+        "value": 373
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_POW",
+      "value": {
+        "kind": "int",
+        "value": 374
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_POW_EQUAL",
+      "value": {
+        "kind": "int",
+        "value": 375
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ATTRIBUTE",
+      "value": {
+        "kind": "int",
+        "value": 376
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_INT_CAST",
+      "value": {
+        "kind": "int",
+        "value": 377
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DOUBLE_CAST",
+      "value": {
+        "kind": "int",
+        "value": 378
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_STRING_CAST",
+      "value": {
+        "kind": "int",
+        "value": 379
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ARRAY_CAST",
+      "value": {
+        "kind": "int",
+        "value": 380
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_OBJECT_CAST",
+      "value": {
+        "kind": "int",
+        "value": 381
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_BOOL_CAST",
+      "value": {
+        "kind": "int",
+        "value": 382
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_UNSET_CAST",
+      "value": {
+        "kind": "int",
+        "value": 383
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG",
+      "value": {
+        "kind": "int",
+        "value": 384
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG",
+      "value": {
+        "kind": "int",
+        "value": 385
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PUBLIC_SET",
+      "value": {
+        "kind": "int",
+        "value": 386
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PROTECTED_SET",
+      "value": {
+        "kind": "int",
+        "value": 387
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PRIVATE_SET",
+      "value": {
+        "kind": "int",
+        "value": 388
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CONSTANT_ENCAPSED_STRING",
+      "value": {
+        "kind": "int",
+        "value": 389
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_ENCAPSED_AND_WHITESPACE",
+      "value": {
+        "kind": "int",
+        "value": 390
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NUM_STRING",
+      "value": {
+        "kind": "int",
+        "value": 391
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_STRING_VARNAME",
+      "value": {
+        "kind": "int",
+        "value": 392
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CURLY_OPEN",
+      "value": {
+        "kind": "int",
+        "value": 393
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DOLLAR_OPEN_CURLY_BRACES",
+      "value": {
+        "kind": "int",
+        "value": 394
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_START_HEREDOC",
+      "value": {
+        "kind": "int",
+        "value": 395
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_END_HEREDOC",
+      "value": {
+        "kind": "int",
+        "value": 396
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_LINE",
+      "value": {
+        "kind": "int",
+        "value": 397
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FILE",
+      "value": {
+        "kind": "int",
+        "value": 398
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_DIR",
+      "value": {
+        "kind": "int",
+        "value": 399
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_CLASS_C",
+      "value": {
+        "kind": "int",
+        "value": 400
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_TRAIT_C",
+      "value": {
+        "kind": "int",
+        "value": 401
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_METHOD_C",
+      "value": {
+        "kind": "int",
+        "value": 402
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_FUNC_C",
+      "value": {
+        "kind": "int",
+        "value": 403
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_NS_C",
+      "value": {
+        "kind": "int",
+        "value": 404
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PROPERTY_C",
+      "value": {
+        "kind": "int",
+        "value": 405
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PIPE",
+      "value": {
+        "kind": "int",
+        "value": 406
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_VOID_CAST",
+      "value": {
+        "kind": "int",
+        "value": 407
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "T_PAAMAYIM_NEKUDOTAYIM",
+      "value": {
+        "kind": "int",
+        "value": 369
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "tokenizer",
+        "source": "ext/tokenizer/tokenizer.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "token_get_all",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "tokenizer",
+        "source": "ext/tokenizer/tokenizer.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "token_name",
+      "visibility": "php"
+    }
+  ],
+  "name": "tokenizer",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -1,6 +1,6 @@
 # Performance Array Fast Paths
 
-Work item keeps the Runtime semantics ordered-vector array representation and adds
+The performance layer keeps the Runtime semantics ordered-vector array representation and adds
 conservative packed-shape metadata around it. The VM still observes PHP array
 semantics through `PhpArray` APIs; no caller sees a second representation.
 

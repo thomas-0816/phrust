@@ -1,0 +1,1804 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "AllowDynamicProperties"
+    },
+    {
+      "kind": "class",
+      "name": "ArgumentCountError"
+    },
+    {
+      "kind": "class",
+      "name": "ArithmeticError"
+    },
+    {
+      "kind": "interface",
+      "name": "ArrayAccess"
+    },
+    {
+      "kind": "class",
+      "name": "Attribute"
+    },
+    {
+      "kind": "interface",
+      "name": "BackedEnum"
+    },
+    {
+      "kind": "class",
+      "name": "ClosedGeneratorException"
+    },
+    {
+      "kind": "class",
+      "name": "Closure"
+    },
+    {
+      "kind": "class",
+      "name": "CompileError"
+    },
+    {
+      "kind": "interface",
+      "name": "Countable"
+    },
+    {
+      "kind": "class",
+      "name": "DelayedTargetValidation"
+    },
+    {
+      "kind": "class",
+      "name": "Deprecated"
+    },
+    {
+      "kind": "class",
+      "name": "DivisionByZeroError"
+    },
+    {
+      "kind": "class",
+      "name": "Error"
+    },
+    {
+      "kind": "class",
+      "name": "ErrorException"
+    },
+    {
+      "kind": "class",
+      "name": "Exception"
+    },
+    {
+      "kind": "class",
+      "name": "Fiber"
+    },
+    {
+      "kind": "class",
+      "name": "FiberError"
+    },
+    {
+      "kind": "class",
+      "name": "Generator"
+    },
+    {
+      "kind": "class",
+      "name": "InternalIterator"
+    },
+    {
+      "kind": "interface",
+      "name": "Iterator"
+    },
+    {
+      "kind": "interface",
+      "name": "IteratorAggregate"
+    },
+    {
+      "kind": "class",
+      "name": "NoDiscard"
+    },
+    {
+      "kind": "class",
+      "name": "Override"
+    },
+    {
+      "kind": "class",
+      "name": "ParseError"
+    },
+    {
+      "kind": "class",
+      "name": "RequestParseBodyException"
+    },
+    {
+      "kind": "class",
+      "name": "ReturnTypeWillChange"
+    },
+    {
+      "kind": "class",
+      "name": "SensitiveParameter"
+    },
+    {
+      "kind": "class",
+      "name": "SensitiveParameterValue"
+    },
+    {
+      "kind": "interface",
+      "name": "Serializable"
+    },
+    {
+      "kind": "interface",
+      "name": "Stringable"
+    },
+    {
+      "kind": "interface",
+      "name": "Throwable"
+    },
+    {
+      "kind": "interface",
+      "name": "Traversable"
+    },
+    {
+      "kind": "class",
+      "name": "TypeError"
+    },
+    {
+      "kind": "class",
+      "name": "UnhandledMatchError"
+    },
+    {
+      "kind": "interface",
+      "name": "UnitEnum"
+    },
+    {
+      "kind": "class",
+      "name": "ValueError"
+    },
+    {
+      "kind": "class",
+      "name": "WeakMap"
+    },
+    {
+      "kind": "class",
+      "name": "WeakReference"
+    },
+    {
+      "kind": "class",
+      "name": "stdClass"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "TRUE",
+      "value": {
+        "kind": "bool",
+        "value": true
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FALSE",
+      "value": {
+        "kind": "bool",
+        "value": false
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "NULL",
+      "value": {
+        "kind": "null"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "8.5.7"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_VERSION_ID",
+      "value": {
+        "kind": "int",
+        "value": 80507
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_MAJOR_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_MINOR_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_RELEASE_VERSION",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_INT_MAX",
+      "value": {
+        "kind": "int",
+        "value": 9223372036854775807
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_INT_MIN",
+      "value": {
+        "kind": "int",
+        "value": -9223372036854775808
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_INT_SIZE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_FLOAT_DIG",
+      "value": {
+        "kind": "int",
+        "value": 15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_FLOAT_EPSILON",
+      "value": {
+        "bits": 4372995238176751616,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_FLOAT_MAX",
+      "value": {
+        "bits": 9218868437227405311,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_FLOAT_MIN",
+      "value": {
+        "bits": 4503599627370496,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OS",
+      "value": {
+        "kind": "string",
+        "value": "Darwin"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OS_FAMILY",
+      "value": {
+        "kind": "string",
+        "value": "Darwin"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_EOL",
+      "value": {
+        "kind": "string",
+        "value": "\n"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_SAPI",
+      "value": {
+        "kind": "string",
+        "value": "cli"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_BINARY",
+      "value": {
+        "kind": "string",
+        "value": "phrust-php"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_EXTENSION_DIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/lib/php/extensions/debug-non-zts-20250925"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PEAR_EXTENSION_DIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/lib/php/extensions/debug-non-zts-20250925"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PEAR_INSTALL_DIR",
+      "value": {
+        "kind": "string",
+        "value": ""
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_BINDIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/bin"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_BUILD_DATE",
+      "value": {
+        "kind": "string",
+        "value": "Jan  1 1980 00:00:00"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_CLI_PROCESS_TITLE",
+      "value": {
+        "kind": "bool",
+        "value": true
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_CONFIG_FILE_PATH",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/lib"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_CONFIG_FILE_SCAN_DIR",
+      "value": {
+        "kind": "string",
+        "value": ""
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_DATADIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/share/php"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_DEBUG",
+      "value": {
+        "kind": "bool",
+        "value": true
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_EXTRA_VERSION",
+      "value": {
+        "kind": "string",
+        "value": ""
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_FD_SETSIZE",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_LIBDIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/lib/php"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_LOCALSTATEDIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/var"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_MANDIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/php/man"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_PREFIX",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_SBINDIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/sbin"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_SHLIB_SUFFIX",
+      "value": {
+        "kind": "string",
+        "value": "so"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_SYSCONFDIR",
+      "value": {
+        "kind": "string",
+        "value": "/usr/local/etc"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_ZTS",
+      "value": {
+        "kind": "bool",
+        "value": false
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZEND_DEBUG_BUILD",
+      "value": {
+        "kind": "bool",
+        "value": true
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZEND_THREAD_SAFE",
+      "value": {
+        "kind": "bool",
+        "value": false
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ZEND_VM_KIND",
+      "value": {
+        "kind": "string",
+        "value": "ZEND_VM_KIND_TAILCALL"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DEFAULT_INCLUDE_PATH",
+      "value": {
+        "kind": "string",
+        "value": "."
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_MAXPATHLEN",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_CONT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_WRITE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_START",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_CLEAN",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_FLUSH",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_FINAL",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_END",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_CLEANABLE",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_FLUSHABLE",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_REMOVABLE",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_STDFLAGS",
+      "value": {
+        "kind": "int",
+        "value": 112
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_STARTED",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_DISABLED",
+      "value": {
+        "kind": "int",
+        "value": 8192
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_OUTPUT_HANDLER_PROCESSED",
+      "value": {
+        "kind": "int",
+        "value": 16384
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DEBUG_BACKTRACE_PROVIDE_OBJECT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DEBUG_BACKTRACE_IGNORE_ARGS",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_WARNING",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_PARSE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_NOTICE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_CORE_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_CORE_WARNING",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_COMPILE_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_COMPILE_WARNING",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_USER_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_USER_WARNING",
+      "value": {
+        "kind": "int",
+        "value": 512
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_USER_NOTICE",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_STRICT",
+      "value": {
+        "kind": "int",
+        "value": 2048
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_RECOVERABLE_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_DEPRECATED",
+      "value": {
+        "kind": "int",
+        "value": 8192
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_USER_DEPRECATED",
+      "value": {
+        "kind": "int",
+        "value": 16384
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "E_ALL",
+      "value": {
+        "kind": "int",
+        "value": 30719
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_INI_SIZE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_FORM_SIZE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_PARTIAL",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_NO_FILE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_NO_TMP_DIR",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_CANT_WRITE",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UPLOAD_ERR_EXTENSION",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STDIN",
+      "value": null
+    },
+    {
+      "deprecation": null,
+      "name": "STDOUT",
+      "value": null
+    },
+    {
+      "deprecation": null,
+      "name": "STDERR",
+      "value": null
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "class_alias",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "class_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "clone",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "debug_backtrace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "debug_print_backtrace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "define",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "defined",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "die",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "enum_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "error_reporting",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "exit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "extension_loaded",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "func_get_arg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "func_get_args",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "func_num_args",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "function_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gc_collect_cycles",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gc_disable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gc_enable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gc_enabled",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gc_mem_caches",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gc_status",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_called_class",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_class",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_class_methods",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_class_vars",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_declared_classes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_declared_interfaces",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_declared_traits",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_defined_constants",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_defined_functions",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_defined_vars",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_error_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_exception_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_extension_funcs",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_included_files",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_loaded_extensions",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_mangled_object_vars",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_object_vars",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_parent_class",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "get_required_files",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "get_resource_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "get_resource_type",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "get_resources",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "interface_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "is_a",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "is_subclass_of",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "method_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "property_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "restore_error_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "restore_exception_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "set_error_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "set_exception_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strcasecmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strcmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strlen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strncasecmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strncmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "trait_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "trigger_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "user_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "core",
+        "source": "Zend/zend_builtin_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "zend_version",
+      "visibility": "php"
+    }
+  ],
+  "name": "core",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

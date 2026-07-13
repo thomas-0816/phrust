@@ -1,6 +1,6 @@
 # Performance Optional Profiling Workflow
 
-Work item adds maintainer-only profiling recipes. They are not part of
+The performance layer provides maintainer-only profiling recipes. They are not part of
 `verify-performance` and they skip by default so normal development stays fast.
 
 ## Recipes

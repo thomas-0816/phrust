@@ -1,12 +1,12 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "ssh2",
-  "priority": "Deterministic SSH2 facade and libssh2 backend gap",
+  "priority": "Opt-in libssh2 backend with deterministic SSH2 facade",
   "selected_manifest": "tests/phpt/manifests/modules/ssh2.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
   "pass_count": 1,
-  "skip_count": 0,
+  "skip_count": 1,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
@@ -16,16 +16,21 @@
     "Request-local SFTP handle modeling attached to sessions",
     "Credential-safe auth failures without logging usernames, passwords, or key passphrases",
     "Deterministic methods/fingerprint shapes for app control flow",
-    "Explicit failure for exec, shell, tunnel, SCP, and backend-required SFTP operations"
+    "Explicit failure for shell, tunnel, forwarding, publickey admin, and backend-required SFTP operations",
+    "libssh2-backed ssh2_connect when PHRUST_NET_TESTS and PHRUST_SSH2_LIVE_ENDPOINT exactly match the requested endpoint",
+    "libssh2-backed password and public-key file authentication",
+    "libssh2-backed ssh2_exec returning a readable stream resource",
+    "libssh2-backed ssh2_sftp handle creation, ssh2_scp_recv, ssh2_scp_send, and ssh2_disconnect"
   ],
   "non_scope": [
-    "libssh2 backend integration",
-    "Live SSH server integration tests",
-    "Real authentication, command execution, channels, forwarding, SCP, SFTP filesystem mutation, and host key validation"
+    "Host-key known_hosts validation and trust policy management",
+    "Interactive shell, tunnels, port forwarding, and publickey admin functions",
+    "Full SFTP filesystem mutation/stat/readlink operations beyond backend handle creation",
+    "SSH agent and keyboard-interactive authentication"
   ],
   "target_gates": [
     "cargo test -p php_runtime ssh2 --no-fail-fast",
     "just phpt-dev-module MODULE=ssh2"
   ],
-  "next_step": "Add a libssh2-backed opt-in fixture before promoting live SSH2 integration tests."
+  "next_step": "Promote additional SFTP filesystem operations once the stream wrapper layer can expose ssh2.sftp:// handles."
 }

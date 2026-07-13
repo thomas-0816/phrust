@@ -40,14 +40,19 @@ $row = $select->fetch(PDO::FETCH_OBJ);
 var_dump($row instanceof stdClass);
 var_dump($row->name);
 
+var_dump($db->inTransaction());
 var_dump($db->beginTransaction());
+var_dump($db->inTransaction());
 var_dump($db->exec("INSERT INTO demo (name, qty) VALUES ('rollback', 99)"));
 var_dump($db->rollBack());
+var_dump($db->inTransaction());
 var_dump($db->query("SELECT COUNT(*) FROM demo WHERE name = 'rollback'")->fetchColumn());
 
 var_dump($db->beginTransaction());
+var_dump($db->inTransaction());
 var_dump($db->exec("INSERT INTO demo (name, qty) VALUES ('commit', 7)"));
 var_dump($db->commit());
+var_dump($db->inTransaction());
 var_dump($db->query("SELECT COUNT(*) FROM demo WHERE name = 'commit'")->fetchColumn());
 ?>
 --EXPECT--
@@ -72,11 +77,16 @@ array(1) {
 bool(true)
 bool(true)
 string(4) "beta"
+bool(false)
+bool(true)
 bool(true)
 int(1)
 bool(true)
+bool(false)
 int(0)
 bool(true)
+bool(true)
 int(1)
 bool(true)
+bool(false)
 int(1)

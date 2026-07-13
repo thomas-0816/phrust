@@ -6,49 +6,116 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-base64 = "0.22"
-blake2b_simd = "1"
-bcrypt = "0.17"
-crc32fast = "1.4"
-ed25519-dalek = "2"
-encoding_rs = "0.8"
+base64 = { version = "0.22", optional = true }
+blake2b_simd = { version = "1", optional = true }
+bcrypt = { version = "0.17", optional = true }
+crc32fast = { version = "1.4", optional = true }
+ed25519-dalek = { version = "2", optional = true }
+encoding_rs = { version = "0.8", optional = true }
 flate2 = "1"
-getrandom = "0.3"
-gost94 = "0.11.0"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-libc = "0.2"
-md2 = "0.10.2"
-md4 = "0.10.2"
-md-5 = "0.10"
-murmurs = "1.0.5"
-mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
-num-bigint = "0.4"
-num-traits = "0.2"
-openssl = "0.10"
-pcre2 = "0.2"
+getrandom = { version = "0.3", optional = true }
+gost94 = { version = "0.11.0", optional = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
+exif = { package = "kamadak-exif", version = "0.6.1", optional = true }
+imap = { version = "3.0.0-alpha.15", default-features = false, features = ["native-tls"], optional = true }
+ldap3 = { version = "0.12.1", default-features = false, features = ["sync"], optional = true }
+libsodium-sys-stable = { version = "1.24.0", optional = true }
+libxml = { version = "0.3.15", optional = true }
+libc = { version = "0.2", optional = true }
+md2 = { version = "0.10.2", optional = true }
+md4 = { version = "0.10.2", optional = true }
+md-5 = { version = "0.10", optional = true }
+murmurs = { version = "1.0.5", optional = true }
+mysql = { version = "28", default-features = false, features = ["minimal-rust"], optional = true }
+num-bigint = { version = "0.4", optional = true }
+num-traits = { version = "0.2", optional = true }
+openssl = { version = "0.10", optional = true }
+pcre2 = { version = "0.2", optional = true }
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
-php_lexer = { path = "../php_lexer", version = "0.1.0" }
+php_lexer = { path = "../php_lexer", version = "0.1.0", optional = true }
 php_source = { path = "../php_source", version = "0.0.0" }
-php_syntax = { path = "../php_syntax", version = "0.1.0" }
-postgres = "0.19"
-ripemd = "0.1.3"
-rusqlite = "0.32"
+php_syntax = { path = "../php_syntax", version = "0.1.0", optional = true }
+postgres = { version = "0.19", optional = true }
+ripemd = { version = "0.1.3", optional = true }
+rmp = { version = "0.8", optional = true }
+rusqlite = { version = "0.32", optional = true }
+rustyline = { version = "18.0.1", default-features = false, optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
-sha1 = "0.10"
-sha2 = "0.10"
-sha3 = "0.10"
-whirlpool = "0.10.4"
-xxhash-rust = { version = "0.8.16", features = ["xxh3", "xxh32", "xxh64"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
-tiger = "0.3.0"
-nix = { version = "0.31.3", features = ["fs", "user"] }
-curl = "0.4"
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+sha3 = { version = "0.10", optional = true }
+ssh2 = { version = "0.9.6", optional = true }
+suppaftp = { version = "10.0.0", default-features = false, optional = true }
+whirlpool = { version = "0.10.4", optional = true }
+xxhash-rust = { version = "0.8.16", features = ["xxh3", "xxh32", "xxh64"], optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+tiger = { version = "0.3.0", optional = true }
+nix = { version = "0.31.3", features = ["fs", "user"], optional = true }
+curl = { version = "0.4", optional = true }
+unicode-normalization = { version = "0.1", optional = true }
+unicode-segmentation = { version = "1.12", optional = true }
+unicode-width = { version = "0.2", optional = true }
 
 [build-dependencies]
-pkg-config = "0.3"
+pkg-config = { version = "0.3", optional = true }
 
 [dev-dependencies]
 php_testkit = { path = "../php_testkit", version = "0.0.0" }
 
 [package.metadata.cargo-machete]
-ignored = ["md-5"]
+ignored = ["libsodium-sys-stable", "md-5", "php_lexer"]
+
+[features]
+default = ["full-runtime", "runtime-telemetry"]
+full-runtime = [
+    "dep:base64",
+    "dep:bcrypt",
+    "dep:blake2b_simd",
+    "dep:crc32fast",
+    "dep:curl",
+    "dep:ed25519-dalek",
+    "dep:encoding_rs",
+    "dep:exif",
+    "dep:getrandom",
+    "dep:gost94",
+    "dep:image",
+    "dep:imap",
+    "dep:ldap3",
+    "dep:libc",
+    "dep:libsodium-sys-stable",
+    "dep:libxml",
+    "dep:md-5",
+    "dep:md2",
+    "dep:md4",
+    "dep:murmurs",
+    "dep:mysql",
+    "dep:nix",
+    "dep:num-bigint",
+    "dep:num-traits",
+    "dep:openssl",
+    "dep:pcre2",
+    "dep:pkg-config",
+    "dep:php_lexer",
+    "dep:php_syntax",
+    "dep:postgres",
+    "dep:ripemd",
+    "dep:rmp",
+    "dep:rusqlite",
+    "dep:rustyline",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:sha3",
+    "dep:ssh2",
+    "dep:suppaftp",
+    "dep:tiger",
+    "dep:unicode-normalization",
+    "dep:unicode-segmentation",
+    "dep:unicode-width",
+    "dep:whirlpool",
+    "dep:xxhash-rust",
+    "dep:zip",
+]
+# Per-event layout/clone/allocation recorders. Compiling them out removes a
+# thread-local enabled check from every value clone and container operation;
+# request profiling and layout attribution then report zeros.
+runtime-telemetry = []

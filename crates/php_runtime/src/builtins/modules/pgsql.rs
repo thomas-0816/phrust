@@ -89,8 +89,23 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_pg_num_rows,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new(
+        "pg_pconnect",
+        builtin_pg_pconnect,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("pg_prepare", builtin_pg_prepare, BuiltinCompatibility::Php),
     BuiltinEntry::new("pg_query", builtin_pg_query, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "pg_query_params",
+        builtin_pg_query_params,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "pg_result_error",
+        builtin_pg_result_error,
+        BuiltinCompatibility::Php,
+    ),
 ];
 
 fn builtin_pg_connect(
@@ -98,8 +113,24 @@ fn builtin_pg_connect(
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    expect_pgsql_arity("pg_connect", args.len(), 1, 2)?;
-    let dsn = string_arg("pg_connect", &args[0])?.to_string_lossy();
+    pg_connect_impl(context, "pg_connect", args)
+}
+
+fn builtin_pg_pconnect(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    pg_connect_impl(context, "pg_pconnect", args)
+}
+
+fn pg_connect_impl(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    args: Vec<Value>,
+) -> BuiltinResult {
+    expect_pgsql_arity(name, args.len(), 1, 2)?;
+    let dsn = string_arg(name, &args[0])?.to_string_lossy();
     let options = match PostgresConnectOptions::from_dsn(dsn) {
         Ok(options) => options,
         Err(_) => return Ok(Value::Bool(false)),
@@ -149,6 +180,33 @@ fn builtin_pg_query(
     };
     let sql = string_arg("pg_query", sql_arg)?.to_string_lossy();
     let result = state.query(connection_id, &sql);
+    pgsql_query_result(state, connection_id, result)
+}
+
+fn builtin_pg_query_params(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_pgsql_arity("pg_query_params", args.len(), 2, 3)?;
+    let Some(state) = context.postgres_state() else {
+        return Ok(Value::Bool(false));
+    };
+    let (connection_id, sql_arg, params_arg) = if args.len() == 2 {
+        let Some(connection_id) = state.default_connection() else {
+            return Ok(Value::Bool(false));
+        };
+        (connection_id, &args[0], &args[1])
+    } else {
+        (
+            pgsql_connection_id_arg("pg_query_params", &args[0])?,
+            &args[1],
+            &args[2],
+        )
+    };
+    let sql = string_arg("pg_query_params", sql_arg)?.to_string_lossy();
+    let params = array_values("pg_query_params", params_arg)?;
+    let result = state.query_params(connection_id, &sql, &params);
     pgsql_query_result(state, connection_id, result)
 }
 
@@ -363,6 +421,19 @@ fn builtin_pg_last_error(
     Ok(Value::string(state.error(id)))
 }
 
+fn builtin_pg_result_error(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("pg_result_error", &args, 1)?;
+    let result_id = pgsql_result_id_arg("pg_result_error", &args[0])?;
+    Ok(context
+        .postgres_state()
+        .and_then(|state| state.result_error(result_id))
+        .map_or(Value::Bool(false), Value::string))
+}
+
 fn builtin_pg_escape_string(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -552,7 +623,7 @@ fn pgsql_result_object(result_id: i64) -> ObjectRef {
 
 fn runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

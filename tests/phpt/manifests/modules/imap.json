@@ -1,31 +1,32 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "imap",
-  "priority": "Deterministic IMAP facade and live-server backend gap",
+  "priority": "Rust IMAP backend with deterministic default-off live coverage",
   "selected_manifest": "tests/phpt/manifests/modules/imap.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
   "pass_count": 1,
-  "skip_count": 0,
+  "skip_count": 1,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
   "scope": [
     "Registered IMAP functions, IMAP\\Connection, and common constants",
     "Request-local IMAP\\Connection handles without implicit network access",
-    "Deterministic empty mailbox behavior for headers, search, fetch, status, counts, and mailbox info",
+    "Deterministic empty mailbox behavior for headers, search, fetch, status, counts, and mailbox info when no live backend is configured",
+    "Rust IMAP backend for open, close, check, headers, fetch body/header, mailbox info, search, and error queues when PHRUST_NET_TESTS and PHRUST_IMAP_LIVE_* are explicitly configured",
+    "PHP mailbox connection string parsing for host, port, ssl, and novalidate-cert",
     "Request-local delete and expunge state for app control-flow compatibility",
     "Error and alert queue behavior through imap_last_error, imap_errors, and imap_alerts",
     "Explicit backend failure for append and mail copy/move"
   ],
   "non_scope": [
-    "c-client or IMAP crate backend integration",
-    "Live IMAP/IMAPS server integration tests",
-    "TLS, authentication, MIME body parsing, server-side search, and mailbox mutation persistence"
+    "c-client backend integration",
+    "MIME body parsing, message structure compatibility, server-side mutation persistence, and mailbox administration"
   ],
   "target_gates": [
     "cargo test -p php_runtime imap --no-fail-fast",
     "just phpt-dev-module MODULE=imap"
   ],
-  "next_step": "Add an opt-in IMAP backend and live server fixture before promoting any external IMAP integration tests."
+  "next_step": "Add MIME/message structure compatibility and broader php-src IMAP PHPT promotion after body structure APIs are implemented."
 }

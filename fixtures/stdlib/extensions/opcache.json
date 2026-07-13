@@ -1,0 +1,125 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_compile_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_get_configuration",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_get_status",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_invalidate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_is_script_cached",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_is_script_cached_in_file_cache",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_jit_blacklist",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "opcache",
+        "source": "ext/opcache/opcache.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "opcache"
+        }
+      ],
+      "name": "opcache_reset",
+      "visibility": "php"
+    }
+  ],
+  "name": "opcache",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

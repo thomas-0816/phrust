@@ -1,0 +1,460 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "PRIO_PROCESS",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PRIO_PGRP",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PRIO_USER",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PCNTL_ECHILD",
+      "value": {
+        "kind": "int",
+        "value": 10
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PCNTL_EINVAL",
+      "value": {
+        "kind": "int",
+        "value": 22
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PCNTL_EINTR",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIG_DFL",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIG_IGN",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIG_ERR",
+      "value": {
+        "kind": "int",
+        "value": -1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGALRM",
+      "value": {
+        "kind": "int",
+        "value": 14
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGCHLD",
+      "value": {
+        "kind": "int",
+        "value": 20
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGINT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGTERM",
+      "value": {
+        "kind": "int",
+        "value": 15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGUSR1",
+      "value": {
+        "kind": "int",
+        "value": 30
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGUSR2",
+      "value": {
+        "kind": "int",
+        "value": 31
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "WNOHANG",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "WUNTRACED",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PRIO_DARWIN_BG",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PRIO_DARWIN_THREAD",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_alarm",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_async_signals",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_exec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_fork",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_get_last_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_getpriority",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_setpriority",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_signal",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_signal_dispatch",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_signal_get_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_strerror",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wait",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_waitpid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wexitstatus",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wifcontinued",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wifexited",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wifsignaled",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wifstopped",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wstopsig",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcntl",
+        "source": "ext/pcntl/pcntl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcntl"
+        }
+      ],
+      "name": "pcntl_wtermsig",
+      "visibility": "php"
+    }
+  ],
+  "name": "pcntl",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

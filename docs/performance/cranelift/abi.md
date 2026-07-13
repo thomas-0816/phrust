@@ -1,10 +1,8 @@
 # Performance Cranelift Array ABI
 
-Date: 2026-06-23.
-
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item.20 defines the read-only packed-array ABI surface used by later
+A later stage defines the read-only packed-array ABI surface used by later
 Cranelift packed-array fast paths. It documents the current runtime layout and
 keeps the JIT behind helper/accessor functions until safety work explicitly
 allows lower-level access.
@@ -75,7 +73,7 @@ future diagnostics: `not_array`, `not_packed`, `aliased_or_referenced`,
 - `php_jit_array_len`
 - `php_jit_array_fetch_int_slow`
 
-Work item.20 does not lower array access to Cranelift. Work item.21 adds
+that stage does not lower array access to Cranelift. a later stage adds
 the first helper-assisted native fast path for `$xs[$i]` when `$xs` is a typed
 array parameter and `$i` is a typed integer parameter. The generated code keeps
 the read-only helper boundary, checks negative indexes before the helper call,
@@ -83,7 +81,7 @@ maps out-of-bounds to `PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT`, maps layout misses to
 `PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT`, and falls back to the interpreter on every
 non-OK status.
 
-Work item.22 reuses the same read-only helper boundary for packed foreach
+that stage reuses the same read-only helper boundary for packed foreach
 integer reductions. The native loop calls the VM-owned packed length shim once,
 then fetches each element through `php_jit_array_fetch_int_slow`; generated code
 does not read `ArrayStorage.entries`, mutate array storage, or perform COW
@@ -92,7 +90,7 @@ the interpreter recomputes the result from the function entry.
 
 ## Property Load Helper ABI
 
-Work item.26 introduces the first object property fast path through a
+that stage introduces the first object property fast path through a
 helper boundary rather than direct object-layout access. The helper symbol is
 `php_jit_property_load_monomorphic_fast` and its native entry shape is:
 
@@ -133,9 +131,9 @@ The Cranelift diff corpus includes packed and mixed examples:
 - `tests/fixtures/performance/cranelift/arrays/packed-array-ints.php`
 - `tests/fixtures/performance/cranelift/arrays/mixed-array-fallback.php`
 
-At Work item.20 both fixtures are expected to preserve output parity through
+At that stage both fixtures are expected to preserve output parity through
 the existing fallback path. Native packed-array fetch counters are introduced
-by Work item.21, which adds:
+by that stage, which adds:
 
 - `tests/fixtures/performance/cranelift/arrays/packed-fetch-valid.php`
 - `tests/fixtures/performance/cranelift/arrays/packed-fetch-out-of-bounds.php`
@@ -143,7 +141,7 @@ by Work item.21, which adds:
 - `tests/fixtures/performance/cranelift/arrays/packed-fetch-string-key.php`
 - `tests/fixtures/performance/cranelift/arrays/packed-fetch-negative-index.php`
 
-Work item.22 adds packed-foreach reduction fixtures:
+A later stage adds packed-foreach reduction fixtures:
 
 - `tests/fixtures/performance/cranelift/arrays/packed-foreach-sum-all-int.php`
 - `tests/fixtures/performance/cranelift/arrays/packed-foreach-sum-mixed-element.php`

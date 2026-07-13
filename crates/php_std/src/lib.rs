@@ -10,9 +10,6 @@ pub mod constants;
 pub mod generated;
 pub mod introspection;
 
-mod extensions;
-
-use extensions::*;
 use php_runtime::api::FloatValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
@@ -21,10 +18,14 @@ use std::sync::OnceLock;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtensionDescriptor {
     name: &'static str,
+    version: &'static str,
     enabled_by_default: bool,
     functions: Vec<FunctionDescriptor>,
     constants: Vec<ConstantDescriptor>,
     classes: Vec<ClassDescriptor>,
+    dependencies: &'static [&'static str],
+    capabilities: &'static [&'static str],
+    request_state_slot: Option<&'static str>,
 }
 
 impl ExtensionDescriptor {
@@ -33,10 +34,42 @@ impl ExtensionDescriptor {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
+            version: constants::PHP_VERSION,
             enabled_by_default: true,
             functions: Vec::new(),
             constants: Vec::new(),
             classes: Vec::new(),
+            dependencies: &[],
+            capabilities: &[],
+            request_state_slot: None,
+        }
+    }
+
+    // One parameter per descriptor field: the generated extension surfaces
+    // call this positionally, and collapsing fields into groups would only
+    // obscure the generator's output.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_generated(
+        name: &'static str,
+        version: &'static str,
+        enabled_by_default: bool,
+        functions: &'static [FunctionDescriptor],
+        constants: &'static [ConstantDescriptor],
+        classes: &'static [ClassDescriptor],
+        dependencies: &'static [&'static str],
+        capabilities: &'static [&'static str],
+        request_state_slot: Option<&'static str>,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            enabled_by_default,
+            functions: functions.to_vec(),
+            constants: constants.to_vec(),
+            classes: classes.to_vec(),
+            dependencies,
+            capabilities,
+            request_state_slot,
         }
     }
 
@@ -74,6 +107,12 @@ impl ExtensionDescriptor {
         self.name
     }
 
+    /// Upstream or external extension version represented by this descriptor.
+    #[must_use]
+    pub const fn version(&self) -> &'static str {
+        self.version
+    }
+
     /// Whether the extension is enabled by default.
     #[must_use]
     pub const fn is_enabled_by_default(&self) -> bool {
@@ -98,6 +137,24 @@ impl ExtensionDescriptor {
         &self.classes
     }
 
+    /// Extension dependencies in deterministic order.
+    #[must_use]
+    pub const fn dependencies(&self) -> &'static [&'static str] {
+        self.dependencies
+    }
+
+    /// Declared runtime capability names in deterministic order.
+    #[must_use]
+    pub const fn capabilities(&self) -> &'static [&'static str] {
+        self.capabilities
+    }
+
+    /// Typed request-state slot name, when the extension owns one.
+    #[must_use]
+    pub const fn request_state_slot(&self) -> Option<&'static str> {
+        self.request_state_slot
+    }
+
     fn sort_symbols(&mut self) {
         self.functions.sort_by_key(FunctionDescriptor::name);
         self.classes.sort_by_key(ClassDescriptor::name);
@@ -105,11 +162,14 @@ impl ExtensionDescriptor {
 }
 
 /// Descriptor for an internal function symbol.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FunctionDescriptor {
     name: &'static str,
     extension: &'static str,
     visibility: SymbolVisibility,
+    runtime_module: Option<&'static str>,
+    extension_module: Option<&'static str>,
+    vm_mediated: bool,
 }
 
 impl FunctionDescriptor {
@@ -120,6 +180,9 @@ impl FunctionDescriptor {
             name,
             extension,
             visibility: SymbolVisibility::PhpVisible,
+            runtime_module: None,
+            extension_module: None,
+            vm_mediated: false,
         }
     }
 
@@ -130,6 +193,27 @@ impl FunctionDescriptor {
             name,
             extension,
             visibility: SymbolVisibility::InternalTestFixture,
+            runtime_module: None,
+            extension_module: None,
+            vm_mediated: false,
+        }
+    }
+
+    pub(crate) const fn generated(
+        name: &'static str,
+        extension: &'static str,
+        visibility: SymbolVisibility,
+        runtime_module: Option<&'static str>,
+        extension_module: Option<&'static str>,
+        vm_mediated: bool,
+    ) -> Self {
+        Self {
+            name,
+            extension,
+            visibility,
+            runtime_module,
+            extension_module,
+            vm_mediated,
         }
     }
 
@@ -149,6 +233,24 @@ impl FunctionDescriptor {
     #[must_use]
     pub const fn visibility(&self) -> SymbolVisibility {
         self.visibility
+    }
+
+    /// Owning built-in module for an in-crate runtime implementation.
+    #[must_use]
+    pub const fn runtime_module(&self) -> Option<&'static str> {
+        self.runtime_module
+    }
+
+    /// Owning statically linked external extension module.
+    #[must_use]
+    pub const fn extension_module(&self) -> Option<&'static str> {
+        self.extension_module
+    }
+
+    /// Whether the VM mediates this function beyond ordinary builtin dispatch.
+    #[must_use]
+    pub const fn is_vm_mediated(&self) -> bool {
+        self.vm_mediated
     }
 
     /// Generated php-src stub metadata for this function, when available.
@@ -378,72 +480,23 @@ impl ExtensionRegistry {
     }
 
     fn build_standard_library() -> Self {
-        Self::from_extensions([
-            standard_library_core_extension(),
-            standard_library_standard_extension(),
-            standard_library_json_extension(),
-            standard_library_pcre_extension(),
-            standard_library_session_extension(),
-            standard_library_pdo_extension(),
-            standard_library_pdo_mysql_extension(),
-            standard_library_pdo_pgsql_extension(),
-            standard_library_pdo_sqlite_extension(),
-            standard_library_pgsql_extension(),
-            standard_library_pcntl_extension(),
-            standard_library_posix_extension(),
-            standard_library_readline_extension(),
-            standard_library_shmop_extension(),
-            standard_library_sysvmsg_extension(),
-            standard_library_sysvsem_extension(),
-            standard_library_sysvshm_extension(),
-            standard_library_mysqli_extension(),
-            standard_library_curl_extension(),
-            standard_library_openssl_extension(),
-            standard_library_phar_extension(),
-            standard_library_sqlite3_extension(),
-            standard_library_mbstring_extension(),
-            standard_library_intl_extension(),
-            standard_library_xml_extension(),
-            standard_library_dom_extension(),
-            standard_library_simplexml_extension(),
-            standard_library_xmlreader_extension(),
-            standard_library_xmlwriter_extension(),
-            standard_library_xsl_extension(),
-            standard_library_hash_extension(),
-            standard_library_gettext_extension(),
-            standard_library_ctype_extension(),
-            standard_library_calendar_extension(),
-            standard_library_filter_extension(),
-            standard_library_iconv_extension(),
-            standard_library_sodium_extension(),
-            standard_library_bcmath_extension(),
-            standard_library_gmp_extension(),
-            standard_library_apcu_extension(),
-            standard_library_redis_extension(),
-            standard_library_memcached_extension(),
-            standard_library_imagick_extension(),
-            standard_library_igbinary_extension(),
-            standard_library_msgpack_extension(),
-            standard_library_opcache_extension(),
-            standard_library_soap_extension(),
-            standard_library_ftp_extension(),
-            standard_library_imap_extension(),
-            standard_library_ldap_extension(),
-            standard_library_ssh2_extension(),
-            standard_library_sockets_extension(),
-            standard_library_zlib_extension(),
-            standard_library_zip_extension(),
-            standard_library_fileinfo_extension(),
-            standard_library_ffi_extension(),
-            standard_library_exif_extension(),
-            standard_library_gd_extension(),
-            standard_library_random_extension(),
-            standard_library_date_extension(),
-            standard_library_spl_extension(),
-            reflection_extension(),
-            tokenizer_extension(),
-            standard_library_test_extension(),
-        ])
+        let mut extensions = generated::extensions::descriptors();
+        if let Some(sysvmsg) = extensions
+            .iter_mut()
+            .find(|extension| extension.name() == "sysvmsg")
+        {
+            for constant in &mut sysvmsg.constants {
+                let value = match constant.name() {
+                    "MSG_EAGAIN" => Some(libc::EAGAIN),
+                    "MSG_ENOMSG" => Some(libc::ENOMSG),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    constant.value = Some(ConstantValue::Int(i64::from(value)));
+                }
+            }
+        }
+        Self::from_extensions(extensions)
     }
 
     /// Returns extension descriptors in stable name order.
@@ -585,7 +638,8 @@ pub enum RegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_runtime::api::{BuiltinCompatibility, BuiltinEntry, BuiltinRegistry};
+    use php_extensions::BuiltinRegistry;
+    use php_runtime::api::{BuiltinCompatibility, BuiltinEntry};
 
     const FUNCTIONS_WITH_EXTERNAL_ARGINFO: &[&str] = &[
         "apcu_add",
@@ -594,6 +648,7 @@ mod tests {
         "apcu_dec",
         "apcu_delete",
         "apcu_enabled",
+        "apcu_entry",
         "apcu_exists",
         "apcu_fetch",
         "apcu_inc",
@@ -683,6 +738,7 @@ mod tests {
         "FT_PEEK",
         "FT_PREFETCHTEXT",
         "FT_UID",
+        "IMAGETYPE_SVG",
         "MESSAGEPACK_OPT_ASSOC",
         "MESSAGEPACK_OPT_FORCE_F32",
         "MESSAGEPACK_OPT_PHPONLY",
@@ -739,6 +795,8 @@ mod tests {
         "SA_UIDVALIDITY",
         "SA_UNSEEN",
         "SE_UID",
+        "SODIUM_CRYPTO_PWHASH_BYTES_MAX",
+        "SODIUM_CRYPTO_PWHASH_BYTES_MIN",
         "SORTARRIVAL",
         "SORTCC",
         "SORTDATE",
@@ -807,11 +865,15 @@ mod tests {
     }
 
     #[test]
-    fn bounded_mbstring_and_intl_are_enabled() {
+    fn bounded_mbstring_is_enabled_and_intl_is_disabled_by_default() {
         let registry = ExtensionRegistry::standard_library();
 
         assert!(registry.is_extension_enabled("mbstring"));
-        assert!(registry.is_extension_enabled("intl"));
+        // intl ships descriptors but reports as not loaded by default: the
+        // class surface (Collator, formatters) is still missing, and claiming
+        // the extension breaks skipif parity with a reference build that
+        // lacks intl.
+        assert!(!registry.is_extension_enabled("intl"));
 
         for name in [
             "mb_check_encoding",
@@ -838,8 +900,8 @@ mod tests {
             "normalizer_normalize",
         ] {
             assert!(
-                registry.enabled_php_function(name).is_some(),
-                "{name} should be visible in the bounded intl MVP"
+                registry.enabled_php_function(name).is_none(),
+                "{name} must not be introspectable while intl reports as not loaded"
             );
         }
 
@@ -851,10 +913,16 @@ mod tests {
             "NumberFormatter",
         ] {
             assert!(
-                registry.enabled_class(name).is_some(),
-                "{name} should be visible in the bounded intl MVP"
+                registry.enabled_class(name).is_none(),
+                "{name} must not be introspectable while intl reports as not loaded"
             );
         }
+
+        let mut enabled = registry.clone();
+        enabled.enable_extension("intl").expect("enable intl");
+        assert!(enabled.is_extension_enabled("intl"));
+        assert!(enabled.enabled_php_function("grapheme_strlen").is_some());
+        assert!(enabled.enabled_class("Collator").is_some());
     }
 
     #[test]
@@ -1208,6 +1276,12 @@ mod tests {
                 .and_then(ConstantDescriptor::value),
             Some(ConstantValue::Int(libc::ENOMSG as i64))
         );
+        assert_eq!(
+            registry
+                .enabled_constant("MSG_EAGAIN")
+                .and_then(ConstantDescriptor::value),
+            Some(ConstantValue::Int(libc::EAGAIN as i64))
+        );
     }
 
     #[test]
@@ -1216,15 +1290,30 @@ mod tests {
 
         for name in [
             "gd_info",
+            "imagealphablending",
+            "imagecolorallocate",
+            "imagecolorallocatealpha",
+            "imagecolortransparent",
+            "imagecopy",
+            "imagecopymerge",
             "imagecopyresampled",
+            "imagecopyresized",
             "imagecreatefromjpeg",
             "imagecreatefrompng",
             "imagecreatefromstring",
             "imagecreatetruecolor",
             "imagetypes",
             "imagedestroy",
+            "imagefill",
+            "imagefilledrectangle",
+            "imageflip",
             "imagejpeg",
+            "imageline",
             "imagepng",
+            "imagerectangle",
+            "imagerotate",
+            "imagesavealpha",
+            "imagescale",
             "imagesx",
             "imagesy",
         ] {
@@ -2126,6 +2215,71 @@ mod tests {
     }
 
     #[test]
+    fn curl_extension_tracks_common_app_constants() {
+        let registry = ExtensionRegistry::standard_library();
+
+        for name in [
+            "CURLOPT_ACCEPT_ENCODING",
+            "CURLOPT_AUTOREFERER",
+            "CURLOPT_COOKIE",
+            "CURLOPT_COOKIEFILE",
+            "CURLOPT_COOKIEJAR",
+            "CURLOPT_COOKIESESSION",
+            "CURLOPT_DNS_CACHE_TIMEOUT",
+            "CURLOPT_HTTPGET",
+            "CURLOPT_HTTPPROXYTUNNEL",
+            "CURLOPT_IPRESOLVE",
+            "CURLOPT_NOPROXY",
+            "CURLOPT_PORT",
+            "CURLOPT_PROXYUSERNAME",
+            "CURLOPT_PROXYPASSWORD",
+            "CURLOPT_TCP_NODELAY",
+            "CURLOPT_USERNAME",
+            "CURLOPT_PASSWORD",
+            "CURLOPT_SSLCERT",
+            "CURLOPT_SSLKEY",
+            "CURLOPT_SSLVERSION",
+            "CURLOPT_VERBOSE",
+            "CURLINFO_CONTENT_TYPE",
+            "CURLINFO_NAMELOOKUP_TIME",
+            "CURLINFO_CONNECT_TIME",
+            "CURLINFO_PRETRANSFER_TIME",
+            "CURLINFO_STARTTRANSFER_TIME",
+            "CURLINFO_HTTP_CONNECTCODE",
+            "CURLINFO_REDIRECT_TIME",
+            "CURLINFO_REDIRECT_COUNT",
+            "CURLINFO_REQUEST_SIZE",
+            "CURLINFO_SIZE_DOWNLOAD",
+            "CURL_VERSION_LIBZ",
+            "CURL_VERSION_HTTP2",
+            "CURL_VERSION_HTTP3",
+            "CURLPROTO_ALL",
+            "CURLPROTO_FTP",
+            "CURL_IPRESOLVE_V4",
+            "CURL_SSLVERSION_TLSv1_2",
+            "CURL_HTTP_VERSION_2_0",
+        ] {
+            assert!(
+                registry.enabled_constant(name).is_some(),
+                "{name} should be registered as a curl constant"
+            );
+        }
+
+        assert_eq!(
+            registry
+                .enabled_constant("CURLOPT_ACCEPT_ENCODING")
+                .and_then(ConstantDescriptor::value),
+            Some(ConstantValue::Int(10102))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("CURL_VERSION_HTTP2")
+                .and_then(ConstantDescriptor::value),
+            Some(ConstantValue::Int(65536))
+        );
+    }
+
+    #[test]
     fn date_extension_tracks_stdlib_timezone_symbols() {
         let registry = ExtensionRegistry::standard_library();
 
@@ -2407,7 +2561,7 @@ mod tests {
             ("RecursiveRegexIterator", ClassKind::Class),
             ("SplPriorityQueue", ClassKind::Class),
             ("SplSubject", ClassKind::Interface),
-            ("Transliterator", ClassKind::Class),
+            ("XMLReader", ClassKind::Class),
             ("Random\\Engine\\Mt19937", ClassKind::Class),
         ] {
             let class = registry
@@ -2423,6 +2577,10 @@ mod tests {
         assert!(
             registry.enabled_class("_ZendTestClass").is_none(),
             "php-src test fixtures must not be enabled by default"
+        );
+        assert!(
+            registry.enabled_class("Transliterator").is_none(),
+            "intl classlikes must stay hidden while intl reports as not loaded"
         );
     }
 
@@ -2441,6 +2599,48 @@ mod tests {
         assert_eq!(
             missing, FUNCTIONS_WITH_EXTERNAL_ARGINFO,
             "`print` is a PHP language construct; external extension slices without pinned php-src stubs must be explicitly audited here; visible function descriptors should otherwise have generated php-src arginfo"
+        );
+    }
+
+    #[test]
+    fn canonical_descriptors_drive_reflection_and_implementation_bindings() {
+        let registry = ExtensionRegistry::standard_library();
+
+        let array_alias = registry
+            .enabled_php_function("array_change_key_case")
+            .expect("runtime aliases with pinned arginfo are reflected");
+        assert_eq!(array_alias.extension(), "standard");
+        assert_eq!(array_alias.runtime_module(), Some("arrays"));
+        assert!(array_alias.arginfo().is_some());
+
+        let mediated = registry
+            .enabled_php_function("extension_loaded")
+            .expect("VM-mediated reflection function is registered");
+        assert_eq!(mediated.runtime_module(), Some("reflection"));
+        assert!(mediated.is_vm_mediated());
+
+        let apcu = registry.extension("apcu").expect("APCu descriptor exists");
+        assert_eq!(apcu.version(), "5.1");
+        assert_eq!(apcu.capabilities(), ["clock", "process_shared_state"]);
+        assert_eq!(apcu.request_state_slot(), Some("ApcuState"));
+
+        let array_access_owners = registry
+            .extensions()
+            .filter(|extension| {
+                extension
+                    .classes()
+                    .iter()
+                    .any(|class| class.name() == "ArrayAccess")
+            })
+            .map(ExtensionDescriptor::name)
+            .collect::<Vec<_>>();
+        assert_eq!(array_access_owners, ["core"]);
+
+        assert_eq!(
+            registry
+                .enabled_constant("JSON_THROW_ON_ERROR")
+                .and_then(ConstantDescriptor::value),
+            Some(ConstantValue::Int(4_194_304))
         );
     }
 

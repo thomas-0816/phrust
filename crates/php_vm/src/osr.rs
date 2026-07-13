@@ -623,6 +623,30 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
             slots.insert(OsrVmSlot::Register(*dst));
             collect_operand_slot(*object, slots);
         }
+        DenseOperands::UnsetProperty { object, .. } => {
+            collect_operand_slot(*object, slots);
+        }
+        DenseOperands::UnsetPropertyDim { object, dims, .. } => {
+            collect_operand_slot(*object, slots);
+            for dim in dims {
+                collect_operand_slot(*dim, slots);
+            }
+        }
+        DenseOperands::AssignStaticProperty { dst, value, .. } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            collect_operand_slot(*value, slots);
+        }
+        DenseOperands::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            collect_operand_slot(*object, slots);
+            collect_operand_slot(*property, slots);
+            collect_operand_slot(*value, slots);
+        }
         DenseOperands::PropertyDimProbe {
             dst, object, dims, ..
         } => {

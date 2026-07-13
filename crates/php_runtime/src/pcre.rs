@@ -225,6 +225,99 @@ impl PcreCache {
     }
 }
 
+/// A delimited PCRE pattern that can be matched as a byte literal without
+/// invoking PCRE2.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SimpleLiteralPattern {
+    bytes: Vec<u8>,
+}
+
+impl SimpleLiteralPattern {
+    /// Literal bytes matched by this pattern.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Returns a simple literal pattern when a PHP PCRE pattern has no active
+/// modifiers and an ASCII alphanumeric body.
+///
+/// This intentionally stays narrow: broader quoting, UTF-8, case folding,
+/// anchoring, or extended-mode semantics stay on the PCRE2 path.
+pub fn simple_literal_pattern(
+    pattern: &PhpString,
+) -> Result<Option<SimpleLiteralPattern>, PcreFailure> {
+    if let Some(literal) = simple_literal_pattern_fast(pattern.as_bytes())? {
+        return Ok(Some(literal));
+    }
+    let parsed = parse_delimited_pattern(pattern.as_bytes())?;
+    for modifier in parsed.modifiers.chars() {
+        match modifier {
+            modifier if modifier.is_ascii_whitespace() => {}
+            '\0' => {
+                return Err(PcreFailure::new(
+                    PREG_INTERNAL_ERROR,
+                    "NUL byte is not a valid modifier",
+                ));
+            }
+            'S' | 'X' => {}
+            'i' | 'm' | 's' | 'x' | 'u' | 'A' | 'D' | 'J' | 'n' | 'r' | 'U' => {
+                return Ok(None);
+            }
+            _ => {
+                return Err(PcreFailure::new(
+                    PREG_INTERNAL_ERROR,
+                    format!("Unknown modifier '{modifier}'"),
+                ));
+            }
+        }
+    }
+    let bytes = parsed.body.into_bytes();
+    if bytes.is_empty()
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Ok(None);
+    }
+    Ok(Some(SimpleLiteralPattern { bytes }))
+}
+
+fn simple_literal_pattern_fast(
+    pattern: &[u8],
+) -> Result<Option<SimpleLiteralPattern>, PcreFailure> {
+    if pattern.len() < 3 {
+        return Ok(None);
+    }
+    let delimiter = pattern[0];
+    if delimiter.is_ascii_alphanumeric()
+        || delimiter.is_ascii_whitespace()
+        || delimiter == b'\\'
+        || delimiter == b'\0'
+    {
+        return Err(PcreFailure::new(
+            PREG_INTERNAL_ERROR,
+            "Delimiter must not be alphanumeric, backslash, or NUL byte",
+        ));
+    }
+    let closing_delimiter = closing_delimiter(delimiter);
+    if pattern.last().copied() != Some(closing_delimiter) {
+        return Ok(None);
+    }
+    let body = &pattern[1..pattern.len() - 1];
+    if body.is_empty()
+        || !body
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Ok(None);
+    }
+    Ok(Some(SimpleLiteralPattern {
+        bytes: body.to_vec(),
+    }))
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PcreUtf8SubjectKey {
     storage_id: usize,

@@ -5,6 +5,10 @@
 //! fallback metadata for operations that must execute through the rich
 //! interpreter.
 
+mod render;
+
+use render::render_operands;
+
 use std::collections::BTreeMap;
 
 use php_ir::ids::{LocalId, RegId};
@@ -15,7 +19,9 @@ use php_ir::instruction::{IrCallArg, IrCallArgValueKind, Terminator, TerminatorK
 use php_ir::rule_selection::{RuleKind, RuleSelection, RuleSelectionReport};
 use php_ir::source_map::{IrSourceMapTarget, IrSpan};
 use php_ir::{BinaryOp, CompareOp, Instruction, InstructionKind, IrFunction, IrUnit, Operand};
-use php_runtime::PhpString;
+use php_runtime::api::PhpString;
+
+use crate::inline_cache::{InlineCacheKind, inline_cache_kind_for_instruction};
 
 /// Dense bytecode format version.
 pub const DENSE_BYTECODE_VERSION: u32 = 1;
@@ -204,6 +210,12 @@ pub enum DenseOpcode {
     CloneObject = 88,
     /// `object->property[dims...] = value` (or `[] =` append).
     AssignPropertyDim = 89,
+    UnsetPropertyDim = 90,
+    AssignDynamicProperty = 91,
+    AssignStaticProperty = 92,
+    IssetStaticProperty = 93,
+    EmptyStaticProperty = 94,
+    UnsetProperty = 95,
 }
 
 impl DenseOpcode {
@@ -314,6 +326,12 @@ impl DenseOpcode {
             Self::FetchStaticProperty => "fetch_static_property",
             Self::CloneObject => "clone_object",
             Self::AssignPropertyDim => "assign_property_dim",
+            Self::UnsetPropertyDim => "unset_property_dim",
+            Self::AssignDynamicProperty => "assign_dynamic_property",
+            Self::AssignStaticProperty => "assign_static_property",
+            Self::IssetStaticProperty => "isset_static_property",
+            Self::EmptyStaticProperty => "empty_static_property",
+            Self::UnsetProperty => "unset_property",
         }
     }
 
@@ -386,6 +404,15 @@ impl DenseCacheSlotId {
     pub const fn index(self) -> usize {
         self.0 as usize
     }
+}
+
+/// Compile-time binding metadata for one dense inline-cache site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DenseCacheSlot {
+    pub kind: InlineCacheKind,
+    pub function: u32,
+    pub block: u32,
+    pub instruction: u32,
 }
 
 /// Predecoded operand kind.
@@ -563,6 +590,28 @@ pub enum DenseOperands {
         dims: Vec<DenseOperand>,
         append: bool,
         value: DenseOperand,
+    },
+    /// Static property assignment operands.
+    AssignStaticProperty {
+        dst: u32,
+        class_name: u32,
+        property: u32,
+        value: DenseOperand,
+    },
+    /// Runtime-named instance property assignment operands.
+    AssignDynamicProperty {
+        dst: u32,
+        object: DenseOperand,
+        property: DenseOperand,
+        value: DenseOperand,
+    },
+    /// Instance property unset operands.
+    UnsetProperty { object: DenseOperand, property: u32 },
+    /// Instance property array-dimension unset operands.
+    UnsetPropertyDim {
+        object: DenseOperand,
+        property: u32,
+        dims: Vec<DenseOperand>,
     },
     /// Property dimension isset/empty probe operands.
     PropertyDimProbe {
@@ -804,7 +853,7 @@ pub struct DenseBytecodeUnit {
     /// allocations disappear.
     pub normalized_interned_names: Vec<PhpString>,
     /// Cache slot side table reserved for future IC/quickening sites.
-    pub cache_slots: Vec<String>,
+    pub cache_slots: Vec<DenseCacheSlot>,
     /// Dense source map.
     pub source_map: Vec<DenseSourceMapEntry>,
 }
@@ -819,12 +868,39 @@ pub enum DenseFunctionPlan {
 }
 
 /// Mixed dense/rich execution plan for one IR unit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct DenseExecutionPlan {
     /// Dense unit with function indexes aligned to the original IR unit.
     pub unit: DenseBytecodeUnit,
     /// Per-function execution decision.
     pub functions: Vec<DenseFunctionPlan>,
+    /// Function-invariant call-shape facts, index-aligned with the IR unit's
+    /// functions. Computed once when the plan is built so per-call dispatch
+    /// does no hashed memo lookups or body re-scans. Empty when a plan is
+    /// constructed outside the VM's plan builder; callers fall back to the
+    /// per-(unit, function) memo caches.
+    pub call_shape_meta: Vec<DenseCallShapeMeta>,
+    /// Lazily-built last-use move plans, index-aligned with `functions`.
+    /// Each plan is a pure function of the dense bytecode, so it lives and
+    /// dies with this (thread-cached) execution plan instead of being
+    /// re-analyzed per request. Empty when a plan is constructed outside
+    /// the VM's plan builder; callers fall back to the per-request memo.
+    pub last_use_plans: Vec<std::cell::OnceCell<std::rc::Rc<crate::last_use::LastUseMovePlan>>>,
+}
+
+/// Function-invariant facts the dense call path consults on every call.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DenseCallShapeMeta {
+    /// Body contains try/catch/finally regions.
+    pub has_try_or_finally: bool,
+    /// Body may hold a destructor-sensitive value across an instruction.
+    pub may_hold_destructor_sensitive_value: bool,
+    /// Method body contains an inline-blocking construct.
+    pub has_inline_blocker: bool,
+    /// Body never observes its argument vector (func_get_args and friends).
+    pub elide_frame_args: bool,
+    /// Every parameter binds directly (no by-ref/variadic/typed-default mix).
+    pub params_bind_direct: bool,
 }
 
 impl DenseExecutionPlan {
@@ -1130,7 +1206,7 @@ fn lower_mixed_plan(unit: &IrUnit) -> DenseExecutionPlan {
         source_map: Vec::new(),
     };
     let mut functions = Vec::with_capacity(unit.functions.len());
-    for function in &unit.functions {
+    for (function_index, function) in unit.functions.iter().enumerate() {
         if function.returns_by_ref {
             let span = push_span(&mut dense.spans, IrSpan::default());
             dense
@@ -1151,7 +1227,13 @@ fn lower_mixed_plan(unit: &IrUnit) -> DenseExecutionPlan {
             });
             continue;
         }
-        match lower_function(function, &mut dense.spans, &mut dense.names) {
+        match lower_function(
+            function_index as u32,
+            function,
+            &mut dense.spans,
+            &mut dense.names,
+            &mut dense.cache_slots,
+        ) {
             Ok(function) => {
                 dense.functions.push(function);
                 functions.push(DenseFunctionPlan::Dense);
@@ -1179,6 +1261,8 @@ fn lower_mixed_plan(unit: &IrUnit) -> DenseExecutionPlan {
     DenseExecutionPlan {
         unit: dense,
         functions,
+        call_shape_meta: Vec::new(),
+        last_use_plans: Vec::new(),
     }
 }
 
@@ -1989,7 +2073,13 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::EmptyProperty
         | DenseOpcode::FetchStaticProperty
         | DenseOpcode::CloneObject
-        | DenseOpcode::AssignPropertyDim => None,
+        | DenseOpcode::AssignPropertyDim
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty
+        | DenseOpcode::UnsetProperty => None,
     }
 }
 
@@ -2066,6 +2156,7 @@ pub struct DenseLowerError {
 }
 
 /// Stable dense verifier error code.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DenseVerifyErrorCode {
     /// Format version is not supported.
@@ -2116,11 +2207,13 @@ fn lower_unit(unit: &IrUnit) -> Result<DenseBytecodeUnit, DenseLowerError> {
         cache_slots: Vec::new(),
         source_map: Vec::new(),
     };
-    for function in &unit.functions {
+    for (function_index, function) in unit.functions.iter().enumerate() {
         dense.functions.push(lower_function(
+            function_index as u32,
             function,
             &mut dense.spans,
             &mut dense.names,
+            &mut dense.cache_slots,
         )?);
     }
     for entry in unit.source_map.entries() {
@@ -2140,9 +2233,11 @@ fn lower_unit(unit: &IrUnit) -> Result<DenseBytecodeUnit, DenseLowerError> {
 }
 
 fn lower_function(
+    function_index: u32,
     function: &IrFunction,
     spans: &mut Vec<IrSpan>,
     names: &mut Vec<String>,
+    cache_slots: &mut Vec<DenseCacheSlot>,
 ) -> Result<DenseFunction, DenseLowerError> {
     if function.returns_by_ref {
         return Err(DenseLowerError {
@@ -2160,13 +2255,27 @@ fn lower_function(
     for block in &function.blocks {
         let first_instruction = dense.instructions.len() as u32;
         for instruction in &block.instructions {
-            if should_lower_as_dense_nop(function, instruction) {
-                dense.instructions.push(lower_dense_nop(instruction, spans));
+            let mut lowered = if should_lower_as_dense_nop(function, instruction) {
+                lower_dense_nop(instruction, spans)
             } else {
-                dense
-                    .instructions
-                    .push(lower_instruction(instruction, spans, names)?);
+                lower_instruction(instruction, spans, names)?
+            };
+            if let Some(kind) = inline_cache_kind_for_instruction(&instruction.kind) {
+                let slot = DenseCacheSlotId::new(cache_slots.len().try_into().map_err(|_| {
+                    DenseLowerError {
+                        code: DenseLowerErrorCode::UnsupportedInstruction,
+                        message: "dense inline-cache slot count exceeds u32".to_owned(),
+                    }
+                })?);
+                cache_slots.push(DenseCacheSlot {
+                    kind,
+                    function: function_index,
+                    block: block.id.raw(),
+                    instruction: instruction.id.raw(),
+                });
+                lowered.cache_slot = Some(slot);
             }
+            dense.instructions.push(lowered);
         }
         let terminator = block.terminator.as_ref().ok_or_else(|| DenseLowerError {
             code: DenseLowerErrorCode::UnsupportedTerminator,
@@ -2689,9 +2798,39 @@ fn lower_instruction(
                 value: lower_operand(*value),
             },
         ),
-        InstructionKind::UnsetPropertyDim { .. } => {
-            return unsupported_instruction(instruction, "property dimension unset".to_owned());
-        }
+        InstructionKind::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => (
+            DenseOpcode::AssignDynamicProperty,
+            DenseOperands::AssignDynamicProperty {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: lower_operand(*property),
+                value: lower_operand(*value),
+            },
+        ),
+        InstructionKind::UnsetProperty { object, property } => (
+            DenseOpcode::UnsetProperty,
+            DenseOperands::UnsetProperty {
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::UnsetPropertyDim {
+            object,
+            property,
+            dims,
+        } => (
+            DenseOpcode::UnsetPropertyDim,
+            DenseOperands::UnsetPropertyDim {
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+                dims: dims.iter().copied().map(lower_operand).collect(),
+            },
+        ),
         InstructionKind::Echo { src } => (
             DenseOpcode::Echo,
             DenseOperands::Operand {
@@ -2743,6 +2882,44 @@ fn lower_instruction(
             property,
         } => (
             DenseOpcode::FetchStaticProperty,
+            DenseOperands::FetchClassConstant {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                constant: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::AssignStaticProperty {
+            dst,
+            class_name,
+            property,
+            value,
+        } => (
+            DenseOpcode::AssignStaticProperty,
+            DenseOperands::AssignStaticProperty {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                property: push_name(names, property).index() as u32,
+                value: lower_operand(*value),
+            },
+        ),
+        InstructionKind::IssetStaticProperty {
+            dst,
+            class_name,
+            property,
+        } => (
+            DenseOpcode::IssetStaticProperty,
+            DenseOperands::FetchClassConstant {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                constant: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::EmptyStaticProperty {
+            dst,
+            class_name,
+            property,
+        } => (
+            DenseOpcode::EmptyStaticProperty,
             DenseOperands::FetchClassConstant {
                 dst: dst.raw(),
                 class_name: push_name(names, class_name).index() as u32,
@@ -3441,6 +3618,38 @@ fn verify_instruction(
             verify_operand(*value, unit, function, errors);
         }
         (
+            DenseOpcode::AssignDynamicProperty,
+            DenseOperands::AssignDynamicProperty {
+                dst,
+                object,
+                property,
+                value,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*object, unit, function, errors);
+            verify_operand(*property, unit, function, errors);
+            verify_operand(*value, unit, function, errors);
+        }
+        (DenseOpcode::UnsetProperty, DenseOperands::UnsetProperty { object, property }) => {
+            verify_operand(*object, unit, function, errors);
+            verify_name(*property, unit, errors);
+        }
+        (
+            DenseOpcode::UnsetPropertyDim,
+            DenseOperands::UnsetPropertyDim {
+                object,
+                property,
+                dims,
+            },
+        ) => {
+            verify_operand(*object, unit, function, errors);
+            verify_name(*property, unit, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+        }
+        (
             DenseOpcode::BindReferenceDim,
             DenseOperands::BindReferenceDim {
                 local,
@@ -3601,7 +3810,24 @@ fn verify_instruction(
             verify_name(*name, unit, errors);
         }
         (
-            DenseOpcode::FetchClassConstant | DenseOpcode::FetchStaticProperty,
+            DenseOpcode::AssignStaticProperty,
+            DenseOperands::AssignStaticProperty {
+                dst,
+                class_name,
+                property,
+                value,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_name(*class_name, unit, errors);
+            verify_name(*property, unit, errors);
+            verify_operand(*value, unit, function, errors);
+        }
+        (
+            DenseOpcode::FetchClassConstant
+            | DenseOpcode::FetchStaticProperty
+            | DenseOpcode::IssetStaticProperty
+            | DenseOpcode::EmptyStaticProperty,
             DenseOperands::FetchClassConstant {
                 dst,
                 class_name,
@@ -3864,309 +4090,6 @@ fn render_snapshot(unit: &DenseBytecodeUnit) -> String {
     out
 }
 
-fn render_operands(operands: &DenseOperands) -> String {
-    match operands {
-        DenseOperands::None => "-".to_string(),
-        DenseOperands::RegConst { dst, constant } => format!("r{dst} c{constant}"),
-        DenseOperands::RegOperand { dst, src } => format!("r{dst} {}", render_operand(*src)),
-        DenseOperands::LocalOperand { local, src } => format!("l{local} {}", render_operand(*src)),
-        DenseOperands::Local { local } => format!("l{local}"),
-        DenseOperands::StaticLocal {
-            local,
-            name,
-            default,
-        } => format!("l{local} n{name} default={}", render_operand(*default)),
-        DenseOperands::LocalName { local, name } => format!("l{local} n{name}"),
-        DenseOperands::RegName { dst, name } => format!("r{dst} n{name}"),
-        DenseOperands::Cast { dst, kind, src } => {
-            format!("r{dst} {kind:?} {}", render_operand(*src))
-        }
-        DenseOperands::Binary { dst, lhs, rhs } => {
-            format!("r{dst} {} {}", render_operand(*lhs), render_operand(*rhs))
-        }
-        DenseOperands::Call { dst, name, args } => {
-            let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
-            format!("r{dst} n{name} ({})", rendered_args.join(", "))
-        }
-        DenseOperands::NewObject {
-            dst,
-            class_name,
-            display_class_name,
-            args,
-        } => {
-            let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
-            format!(
-                "r{dst} new n{class_name} (display n{display_class_name}) ({})",
-                rendered_args.join(", ")
-            )
-        }
-        DenseOperands::LoadConstFetchDim {
-            key_dst,
-            key_constant,
-            dst,
-            array,
-            quiet,
-        } => {
-            format!(
-                "r{key_dst} c{key_constant}; r{dst} {}[r{key_dst}]{}",
-                render_operand(*array),
-                if *quiet { " quiet" } else { "" }
-            )
-        }
-        DenseOperands::LoadLocalLoadConst {
-            first_dst,
-            local,
-            second_dst,
-            constant,
-        } => {
-            format!(
-                "r{first_dst} {}; r{second_dst} c{constant}",
-                render_operand(*local)
-            )
-        }
-        DenseOperands::CallableCall { dst, callee, args } => {
-            let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
-            format!(
-                "r{dst} callable {} ({})",
-                render_operand(*callee),
-                rendered_args.join(", ")
-            )
-        }
-        DenseOperands::ResolveCallable { dst, kind, target } => {
-            let kind = match kind {
-                DenseCallableKind::FunctionName => "function",
-                DenseCallableKind::MethodPlaceholder => "method_placeholder",
-                DenseCallableKind::UnresolvedDynamic => "unresolved_dynamic",
-            };
-            format!("r{dst} {kind} n{target}")
-        }
-        DenseOperands::LoadConstPair {
-            first_dst,
-            first_constant,
-            second_dst,
-            second_constant,
-        } => {
-            format!("r{first_dst} c{first_constant}; r{second_dst} c{second_constant}")
-        }
-        DenseOperands::LoadConstArrayInsert {
-            value_dst,
-            value_constant,
-            array,
-            key,
-        } => {
-            let key = key.map_or("-".to_string(), render_operand);
-            format!("r{value_dst} c{value_constant}; r{array} key={key}")
-        }
-        DenseOperands::Pipe {
-            dst,
-            input,
-            callable,
-        } => {
-            format!(
-                "r{dst} {} |> {}",
-                render_operand(*input),
-                render_operand(*callable)
-            )
-        }
-        DenseOperands::MakeClosure {
-            dst,
-            function,
-            captures,
-        } => {
-            let rendered: Vec<_> = captures
-                .iter()
-                .map(|capture| {
-                    format!(
-                        "n{}{}={}",
-                        capture.name,
-                        if capture.by_ref { " by_ref" } else { "" },
-                        render_operand(capture.src)
-                    )
-                })
-                .collect();
-            format!(
-                "r{dst} closure function:{function} [{}]",
-                rendered.join(", ")
-            )
-        }
-        DenseOperands::MethodCall {
-            dst,
-            object,
-            method,
-            args,
-        } => {
-            let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
-            format!(
-                "r{dst} {}->n{method} ({})",
-                render_operand(*object),
-                rendered_args.join(", ")
-            )
-        }
-        DenseOperands::StaticCall {
-            dst,
-            class_name,
-            method,
-            args,
-        } => {
-            let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
-            format!(
-                "r{dst} n{class_name}::n{method} ({})",
-                rendered_args.join(", ")
-            )
-        }
-        DenseOperands::Dst { dst } => format!("r{dst}"),
-        DenseOperands::ArrayInsert {
-            array,
-            key,
-            value,
-            by_ref_local,
-        } => {
-            let key = key.map_or_else(|| "[]".to_string(), render_operand);
-            let suffix = by_ref_local.map_or_else(String::new, |local| format!(" by_ref=l{local}"));
-            format!("r{array} {key} {}{suffix}", render_operand(*value))
-        }
-        DenseOperands::FetchDim {
-            dst,
-            array,
-            key,
-            quiet,
-        } => format!(
-            "r{dst} {} {} quiet={quiet}",
-            render_operand(*array),
-            render_operand(*key)
-        ),
-        DenseOperands::AssignDim {
-            dst,
-            local,
-            dims,
-            value,
-        } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!(
-                "r{dst} l{local} [{}] {}",
-                dims.join(", "),
-                render_operand(*value)
-            )
-        }
-        DenseOperands::AssignPropertyDim {
-            dst,
-            object,
-            property,
-            dims,
-            append,
-            value,
-        } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!(
-                "r{dst} {} n{property} [{}]{} {}",
-                render_operand(*object),
-                dims.join(", "),
-                if *append { " append" } else { "" },
-                render_operand(*value)
-            )
-        }
-        DenseOperands::InstanceOf {
-            dst,
-            object,
-            class_name,
-        } => {
-            format!(
-                "r{dst} = {} instanceof n{class_name}",
-                render_operand(*object)
-            )
-        }
-        DenseOperands::PropertyDimProbe {
-            dst,
-            object,
-            property,
-            dims,
-        } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!(
-                "r{dst} = probe {}->n{property}[{}]",
-                render_operand(*object),
-                dims.join(", ")
-            )
-        }
-        DenseOperands::BindReferenceDim {
-            local,
-            dims,
-            append,
-            source,
-        } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!(
-                "l{local} [{}] append={append} =& l{source}",
-                dims.join(", ")
-            )
-        }
-        DenseOperands::IssetDim { dst, local, dims } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!("r{dst} l{local} [{}]", dims.join(", "))
-        }
-        DenseOperands::EmptyDim { dst, local, dims } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!("r{dst} l{local} [{}]", dims.join(", "))
-        }
-        DenseOperands::UnsetDim { local, dims } => {
-            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
-            format!("l{local} [{}]", dims.join(", "))
-        }
-        DenseOperands::ForeachInit { iterator, source } => {
-            format!("r{iterator} {}", render_operand(*source))
-        }
-        DenseOperands::ForeachNext {
-            has_value,
-            iterator,
-            key,
-            value,
-        } => {
-            let key = key.map_or_else(|| "-".to_string(), |key| format!("r{key}"));
-            format!("r{has_value} r{iterator} key={key} value=r{value}")
-        }
-        DenseOperands::ForeachCleanup { iterator } => format!("r{iterator}"),
-        DenseOperands::FetchProperty {
-            dst,
-            object,
-            property,
-        } => format!("r{dst} {} n{property}", render_operand(*object)),
-        DenseOperands::AssignProperty {
-            dst,
-            object,
-            property,
-            value,
-        } => format!(
-            "r{dst} {} n{property} {}",
-            render_operand(*object),
-            render_operand(*value)
-        ),
-        DenseOperands::Operand { src } => render_operand(*src),
-        DenseOperands::Jump { target } => format!("b{target}"),
-        DenseOperands::JumpIf { condition, target } => {
-            format!("{} b{target}", render_operand(*condition))
-        }
-        DenseOperands::JumpIfElse {
-            condition,
-            if_true,
-            if_false,
-        } => format!("{} b{if_true} b{if_false}", render_operand(*condition)),
-        DenseOperands::Return { value } => value.map_or_else(|| "-".to_string(), render_operand),
-        DenseOperands::Exit { value } => value.map_or_else(|| "-".to_string(), render_operand),
-        DenseOperands::Include { dst, kind, path } => {
-            format!("r{dst} {kind:?} {}", render_operand(*path))
-        }
-        DenseOperands::DeclareFunction { name, function } => {
-            format!("n{name} fn{function}")
-        }
-        DenseOperands::DeclareClass { name } => format!("n{name}"),
-        DenseOperands::FetchClassConstant {
-            dst,
-            class_name,
-            constant,
-        } => format!("r{dst} n{class_name} n{constant}"),
-    }
-}
-
 fn render_operand(operand: DenseOperand) -> String {
     match operand.kind {
         DenseOperandKind::Register => format!("r{}", operand.index),
@@ -4322,6 +4245,19 @@ echo add(2, 3), "\n";
                 .instructions
                 .iter()
                 .any(|item| item.opcode == DenseOpcode::CallFunction)
+        );
+        assert_eq!(dense.cache_slots.len(), 1);
+        assert_eq!(
+            dense.cache_slots[0].kind,
+            crate::inline_cache::InlineCacheKind::FunctionCall
+        );
+        assert!(
+            dense.functions[0]
+                .instructions
+                .iter()
+                .find(|item| item.opcode == DenseOpcode::CallFunction)
+                .and_then(|item| item.cache_slot)
+                .is_some()
         );
     }
 

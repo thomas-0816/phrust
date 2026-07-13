@@ -1,6 +1,6 @@
 # Performance Cranelift CLIF Dump
 
-Work item.08 adds a standalone Cranelift IR smoke that does not consume PHP
+A later stage adds a standalone Cranelift IR smoke that does not consume PHP
 IR and does not execute native code. The smoke builds one deterministic
 function:
 

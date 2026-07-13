@@ -409,6 +409,26 @@ pub enum CastKind {
     Void,
 }
 
+/// One entry in a comma-separated expression list.
+#[derive(Clone, Debug)]
+pub enum ExprListItem<'tree> {
+    /// A parsed expression entry.
+    Expression(ExprNode<'tree>),
+    /// A parser recovery node occupying an entry position.
+    Error(&'tree SyntaxNode),
+}
+
+impl ExprListItem<'_> {
+    /// Returns the exact byte range occupied by this list entry.
+    #[must_use]
+    pub fn text_range(&self) -> TextRange {
+        match self {
+            Self::Expression(expression) => expression.syntax().text_range(),
+            Self::Error(node) => node.text_range(),
+        }
+    }
+}
+
 /// Built-in construct expression family represented by `CONSTRUCT_EXPR`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConstructKind {
@@ -542,6 +562,105 @@ impl<'tree> TraitAdaptation<'tree> {
     #[must_use]
     pub fn new(syntax: &'tree SyntaxNode) -> Option<Self> {
         Self::cast(syntax)
+    }
+}
+
+impl<'tree> EchoStmt<'tree> {
+    /// Returns echoed expressions in source order.
+    pub fn expressions(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
+    /// Returns parsed and recovered list entries in source order.
+    pub fn expression_items(&self) -> impl Iterator<Item = ExprListItem<'tree>> + 'tree {
+        direct_expr_list_items(self.syntax).into_iter()
+    }
+
+    /// Returns the byte ranges of direct comma separators.
+    pub fn comma_ranges(&self) -> impl Iterator<Item = TextRange> + 'tree {
+        direct_comma_ranges(self.syntax).into_iter()
+    }
+}
+
+impl<'tree> DeclareStmt<'tree> {
+    /// Returns directive assignments in source order.
+    pub fn directives(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
+    /// Returns parsed and recovered directive entries in source order.
+    pub fn expression_items(&self) -> impl Iterator<Item = ExprListItem<'tree>> + 'tree {
+        direct_expr_list_items(self.syntax).into_iter()
+    }
+
+    /// Returns the byte ranges of direct comma separators.
+    pub fn comma_ranges(&self) -> impl Iterator<Item = TextRange> + 'tree {
+        direct_comma_ranges(self.syntax).into_iter()
+    }
+}
+
+impl<'tree> GlobalStmt<'tree> {
+    /// Returns global variable expressions in source order.
+    pub fn variables(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
+    /// Returns parsed and recovered global entries in source order.
+    pub fn expression_items(&self) -> impl Iterator<Item = ExprListItem<'tree>> + 'tree {
+        direct_expr_list_items(self.syntax).into_iter()
+    }
+
+    /// Returns the byte ranges of direct comma separators.
+    pub fn comma_ranges(&self) -> impl Iterator<Item = TextRange> + 'tree {
+        direct_comma_ranges(self.syntax).into_iter()
+    }
+}
+
+impl<'tree> StaticStmt<'tree> {
+    /// Returns static-local declarations in source order.
+    pub fn locals(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
+    /// Returns parsed and recovered static-local entries in source order.
+    pub fn expression_items(&self) -> impl Iterator<Item = ExprListItem<'tree>> + 'tree {
+        direct_expr_list_items(self.syntax).into_iter()
+    }
+
+    /// Returns the byte ranges of direct comma separators.
+    pub fn comma_ranges(&self) -> impl Iterator<Item = TextRange> + 'tree {
+        direct_comma_ranges(self.syntax).into_iter()
+    }
+}
+
+impl<'tree> AssignExpr<'tree> {
+    /// Returns the assignment target expression.
+    #[must_use]
+    pub fn left(&self) -> Option<ExprNode<'tree>> {
+        direct_expr_nodes(self.syntax).into_iter().next()
+    }
+
+    /// Returns the assigned value expression.
+    #[must_use]
+    pub fn right(&self) -> Option<ExprNode<'tree>> {
+        direct_expr_nodes(self.syntax).into_iter().nth(1)
+    }
+}
+
+impl<'tree> UnsetStmt<'tree> {
+    /// Returns unset targets in source order.
+    pub fn expressions(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
+    /// Returns parsed and recovered unset entries in source order.
+    pub fn expression_items(&self) -> impl Iterator<Item = ExprListItem<'tree>> + 'tree {
+        direct_expr_list_items(self.syntax).into_iter()
+    }
+
+    /// Returns the byte ranges of direct comma separators.
+    pub fn comma_ranges(&self) -> impl Iterator<Item = TextRange> + 'tree {
+        direct_comma_ranges(self.syntax).into_iter()
     }
 }
 
@@ -1136,6 +1255,42 @@ pub fn syntax_child_nodes(node: &SyntaxNode) -> impl Iterator<Item = &SyntaxNode
         SyntaxElement::Node(node) => Some(node),
         SyntaxElement::Token(_) => None,
     })
+}
+
+fn direct_expr_nodes<'tree>(node: &'tree SyntaxNode) -> Vec<ExprNode<'tree>> {
+    syntax_child_nodes(node)
+        .filter_map(ExprNode::cast)
+        .collect()
+}
+
+fn direct_expr_list_items<'tree>(node: &'tree SyntaxNode) -> Vec<ExprListItem<'tree>> {
+    syntax_child_nodes(node)
+        .filter_map(|child| {
+            ExprNode::cast(child)
+                .map(ExprListItem::Expression)
+                .or_else(|| (child.kind().name() == "ERROR").then_some(ExprListItem::Error(child)))
+        })
+        .collect()
+}
+
+fn direct_comma_ranges(node: &SyntaxNode) -> Vec<TextRange> {
+    let mut ranges = Vec::new();
+    for child in node.children() {
+        match child {
+            SyntaxElement::Token(token) if token.text() == "," => {
+                ranges.push(token.text_range());
+            }
+            SyntaxElement::Node(child) if child.kind().name() == "ERROR" => {
+                ranges.extend(
+                    syntax_child_tokens(child)
+                        .filter(|token| token.text() == ",")
+                        .map(SyntaxToken::text_range),
+                );
+            }
+            _ => {}
+        }
+    }
+    ranges
 }
 
 /// Returns all direct CST child tokens without requiring a typed view.
@@ -1795,6 +1950,11 @@ impl<'tree> ArrayExpr<'tree> {
 }
 
 impl<'tree> CallExpr<'tree> {
+    /// Returns call argument expressions in source order.
+    pub fn arguments(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
     /// Returns true for first-class callable syntax such as `strlen(...)`.
     #[must_use]
     pub fn is_first_class_callable(&self) -> bool {
@@ -1803,12 +1963,48 @@ impl<'tree> CallExpr<'tree> {
     }
 }
 
+impl<'tree> Variable<'tree> {
+    /// Returns the number of direct variable-variable sigils.
+    #[must_use]
+    pub fn sigil_count(&self) -> usize {
+        syntax_child_tokens(self.syntax)
+            .filter(|token| !token.kind().is_trivia())
+            .map(|token| token.text().chars().take_while(|ch| *ch == '$').count())
+            .sum()
+    }
+
+    /// Returns the nested expression for a dynamic variable, when present.
+    #[must_use]
+    pub fn dynamic_expression(&self) -> Option<ExprNode<'tree>> {
+        direct_expr_nodes(self.syntax).into_iter().next()
+    }
+}
+
+impl<'tree> ArrayDimFetchExpr<'tree> {
+    /// Returns the receiver expression followed by the optional dimension.
+    pub fn expressions(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+}
+
 impl<'tree> PropertyFetchExpr<'tree> {
+    /// Returns the receiver and property expressions in source order.
+    pub fn expressions(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
     /// Returns true when this fetch uses the nullsafe `?->` operator.
     #[must_use]
     pub fn is_nullsafe(&self) -> bool {
         descendant_tokens::<TokenView<'tree>>(self.syntax)
             .any(|token| token.kind().name() == "T_NULLSAFE_OBJECT_OPERATOR")
+    }
+}
+
+impl<'tree> StaticAccessExpr<'tree> {
+    /// Returns the target and member expressions in source order.
+    pub fn expressions(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
     }
 }
 
@@ -1829,6 +2025,21 @@ impl<'tree> ConstructExpr<'tree> {
             "T_EXIT" => Some(ConstructKind::Exit),
             _ => None,
         }
+    }
+
+    /// Returns construct operand expressions in source order.
+    pub fn operands(&self) -> impl Iterator<Item = ExprNode<'tree>> + 'tree {
+        direct_expr_nodes(self.syntax).into_iter()
+    }
+
+    /// Returns parsed and recovered operand entries in source order.
+    pub fn expression_items(&self) -> impl Iterator<Item = ExprListItem<'tree>> + 'tree {
+        direct_expr_list_items(self.syntax).into_iter()
+    }
+
+    /// Returns the byte ranges of direct comma separators.
+    pub fn comma_ranges(&self) -> impl Iterator<Item = TextRange> + 'tree {
+        direct_comma_ranges(self.syntax).into_iter()
     }
 }
 
@@ -1907,11 +2118,12 @@ mod tests {
     use super::{
         AnonymousClassDecl, ArrayExpr, AstChildren, AstNode, AstToken, BinaryExpr, CallExpr,
         CastKind, ClassDecl, ClassLikeDecl::Class, ClassLikeDecl::Trait, CloneExpr, CloneWithExpr,
-        ConstructExpr, ConstructKind, Decl, DnfType, EnumCase, EnumDecl, ExprNode, FunctionDecl,
-        InlineHtmlStmt, InterfaceDecl, IntersectionType, MatchExpr, MemberDecl, Name, Parameter,
-        PipeExpr, PropertyFetchExpr, SourceAstId, SourceFile, StatementList, Stmt, SyntaxNodeExt,
-        TokenView, TraitUseDecl, TypeKeyword, TypeNode, TypeView, UseDecl, UseGroup, VoidCastExpr,
-        descendant_nodes, descendant_tokens, source_file, syntax_child_nodes, token_text_by_name,
+        ConstructExpr, ConstructKind, Decl, DnfType, EnumCase, EnumDecl, ExprListItem, ExprNode,
+        FunctionDecl, InlineHtmlStmt, InterfaceDecl, IntersectionType, MatchExpr, MemberDecl, Name,
+        Parameter, PipeExpr, PropertyFetchExpr, SourceAstId, SourceFile, StatementList, Stmt,
+        SyntaxNodeExt, TokenView, TraitUseDecl, TypeKeyword, TypeNode, TypeView, UseDecl, UseGroup,
+        VoidCastExpr, descendant_nodes, descendant_tokens, source_file, syntax_child_nodes,
+        token_text_by_name,
     };
     use php_syntax::{SyntaxNodeKind, parse_source_file};
 
@@ -2305,6 +2517,112 @@ mod tests {
             stmt_views(inline_root.syntax())
                 .iter()
                 .any(|stmt| matches!(stmt, Stmt::InlineHtml(_)))
+        );
+    }
+
+    #[test]
+    fn statement_and_construct_lists_expose_typed_expressions() {
+        let parse = parse_source_file(
+            "<?php global $first, $$dynamic; static $cached = 1, $empty; declare(ticks = 1); echo $first, $cached; unset($first, $cached); isset($first, $cached + load());",
+        );
+        assert!(!parse.has_errors());
+        let root = source_file(parse.root()).expect("source file");
+        let statements = stmt_views(root.syntax());
+
+        let global = statements
+            .iter()
+            .find_map(|stmt| match stmt {
+                Stmt::Global(stmt) => Some(stmt),
+                _ => None,
+            })
+            .expect("global statement");
+        assert_eq!(global.variables().count(), 2);
+        assert_eq!(global.expression_items().count(), 2);
+        assert_eq!(global.comma_ranges().count(), 1);
+
+        let static_locals = statements
+            .iter()
+            .find_map(|stmt| match stmt {
+                Stmt::Static(stmt) => Some(stmt),
+                _ => None,
+            })
+            .expect("static statement");
+        assert_eq!(static_locals.locals().count(), 2);
+        assert_eq!(static_locals.comma_ranges().count(), 1);
+        assert!(matches!(
+            static_locals.locals().next(),
+            Some(ExprNode::Assign(_))
+        ));
+
+        let declare = statements
+            .iter()
+            .find_map(|stmt| match stmt {
+                Stmt::Declare(stmt) => Some(stmt),
+                _ => None,
+            })
+            .expect("declare statement");
+        assert!(matches!(
+            declare.directives().next(),
+            Some(ExprNode::Assign(_))
+        ));
+
+        let echo = statements
+            .iter()
+            .find_map(|stmt| match stmt {
+                Stmt::Echo(stmt) => Some(stmt),
+                _ => None,
+            })
+            .expect("echo statement");
+        assert_eq!(echo.expressions().count(), 2);
+
+        let unset = statements
+            .iter()
+            .find_map(|stmt| match stmt {
+                Stmt::Unset(stmt) => Some(stmt),
+                _ => None,
+            })
+            .expect("unset statement");
+        assert_eq!(unset.expressions().count(), 2);
+
+        let isset = descendant_nodes::<ConstructExpr<'_>>(root.syntax())
+            .find(|construct| construct.construct_kind() == Some(ConstructKind::Isset))
+            .expect("isset construct");
+        let operands = isset.operands().collect::<Vec<_>>();
+        assert_eq!(operands.len(), 2);
+        assert_eq!(isset.comma_ranges().count(), 1);
+        assert!(matches!(operands[1], ExprNode::Binary(_)));
+    }
+
+    #[test]
+    fn expression_lists_preserve_recovery_items_and_separator_spans() {
+        let source = "<?php function f() { global /* one */ $first,  $$dynamic, , $last; }";
+        let parse = parse_source_file(source);
+        assert!(parse.has_errors());
+        let root = source_file(parse.root()).expect("source file");
+        let global = stmt_views(root.syntax())
+            .into_iter()
+            .find_map(|statement| match statement {
+                Stmt::Global(global) => Some(global),
+                _ => None,
+            })
+            .expect("global statement");
+        let items = global.expression_items().collect::<Vec<_>>();
+
+        assert_eq!(items.len(), 4);
+        assert!(matches!(items[0], ExprListItem::Expression(_)));
+        assert!(matches!(items[1], ExprListItem::Expression(_)));
+        assert!(matches!(items[2], ExprListItem::Error(_)));
+        assert!(matches!(items[3], ExprListItem::Expression(_)));
+        assert_eq!(global.comma_ranges().count(), 3);
+        let first_span = items[0].text_range();
+        let error_span = items[2].text_range();
+        assert_eq!(
+            &source[first_span.start().to_usize()..first_span.end().to_usize()],
+            "$first"
+        );
+        assert_eq!(
+            &source[error_span.start().to_usize()..error_span.end().to_usize()],
+            ","
         );
     }
 

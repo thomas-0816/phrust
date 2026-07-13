@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements deterministic CLI environment and superglobal behavior
+The standard library implements deterministic CLI environment and superglobal behavior
 for offline Composer and framework fixture execution.
 
 ## Implemented

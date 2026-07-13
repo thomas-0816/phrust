@@ -1,0 +1,91 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "MessagePack"
+    },
+    {
+      "kind": "class",
+      "name": "MessagePackUnpacker"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "MESSAGEPACK_OPT_PHPONLY",
+      "value": {
+        "kind": "int",
+        "value": -1001
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MESSAGEPACK_OPT_ASSOC",
+      "value": {
+        "kind": "int",
+        "value": -1002
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MESSAGEPACK_OPT_FORCE_F32",
+      "value": {
+        "kind": "int",
+        "value": -1003
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "msgpack"
+        }
+      ],
+      "name": "msgpack_pack",
+      "signature_gap": "msgpack is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "msgpack"
+        }
+      ],
+      "name": "msgpack_serialize",
+      "signature_gap": "msgpack is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "msgpack"
+        }
+      ],
+      "name": "msgpack_unpack",
+      "signature_gap": "msgpack is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "msgpack"
+        }
+      ],
+      "name": "msgpack_unserialize",
+      "signature_gap": "msgpack is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    }
+  ],
+  "name": "msgpack",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

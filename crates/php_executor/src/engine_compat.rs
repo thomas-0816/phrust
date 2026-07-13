@@ -1,8 +1,10 @@
 use crate::PhpExecutorOptions;
 use crate::diagnostics::{
-    write_frontend_diagnostics, write_runtime_diagnostics, write_vm_compile_fatal_line,
+    write_frontend_diagnostics, write_php_compile_error_stdout, write_runtime_diagnostics,
+    write_vm_compile_fatal_line,
 };
-use crate::pipeline::compile_source;
+use crate::include_compiler::ExecutorIncludeCompiler;
+use crate::pipeline::{CompileTimingCollector, compile_source};
 use crate::request::{include_loader_for, runtime_context_for};
 use php_diagnostics::{DebugEvent, DiagnosticLayer, DiagnosticOutputFormat, DiagnosticPhase};
 use php_runtime::api::ExitStatus;
@@ -62,9 +64,18 @@ where
         "frontend analysis started",
         BTreeMap::from([("path".to_string(), input.source_path.clone())]),
     )?;
-    let pipeline = compile_source(&input.source, &input.source_path)?;
+    let pipeline = compile_source(
+        &input.source,
+        &input.source_path,
+        &mut CompileTimingCollector::disabled(),
+    )?;
     if !pipeline.ok() {
-        write_frontend_diagnostics(stderr, &pipeline)?;
+        // Mirrors the runtime-fatal contract: once the error is rendered in
+        // the reference format on stdout, stderr stays clean so the 2>&1
+        // harness comparison sees exactly what the reference prints.
+        if !write_php_compile_error_stdout(stdout, &pipeline)? {
+            write_frontend_diagnostics(stderr, &pipeline)?;
+        }
         return Ok(EXIT_PHP_ERROR);
     }
     emit_debug_event(
@@ -105,8 +116,12 @@ where
     )?;
     let include_loader = include_loader_for(&input)?;
     let runtime_context = runtime_context_for(&input, include_loader.as_ref());
-    let mut vm_options = PhpExecutorOptions::managed_fast_runtime().vm_options;
+    let executor_options = PhpExecutorOptions::managed_fast_runtime();
+    let mut vm_options = executor_options.vm_options;
     vm_options.include_loader = include_loader;
+    vm_options.include_compiler = Some(std::sync::Arc::new(ExecutorIncludeCompiler::new(
+        executor_options.include_optimization_level,
+    )));
     vm_options.runtime_context = runtime_context;
     vm_options.trace = input.debug;
     vm_options.trace_runtime = input.debug;
@@ -198,7 +213,7 @@ where
     W: Write,
     E: Write,
 {
-    let pipeline = compile_source(source, source_path)?;
+    let pipeline = compile_source(source, source_path, &mut CompileTimingCollector::disabled())?;
     if pipeline.ok() {
         writeln!(stdout, "No syntax errors detected in {source_path}")
             .map_err(|error| error.to_string())?;
@@ -305,8 +320,48 @@ mod tests {
     }
 
     #[test]
+    fn compile_error_renders_intersection_member_fatal_on_stdout() {
+        let input = test_input("<?php function f(): int&Countable {}");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_PHP_ERROR);
+        let stdout = String::from_utf8(stdout).expect("stdout utf8");
+        assert!(
+            stdout.starts_with(
+                "\nFatal error: Type int cannot be part of an intersection type in"
+            ),
+            "{stdout}"
+        );
+        // Rendered errors keep stderr clean so 2>&1 comparisons match the
+        // reference byte-for-byte.
+        assert!(stderr.is_empty(), "{:?}", String::from_utf8_lossy(&stderr));
+    }
+
+    #[test]
+    fn compile_error_renders_php_parse_error_on_stdout() {
+        let input = test_input("<?php $x = ;");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_PHP_ERROR);
+        let stdout = String::from_utf8(stdout).expect("stdout utf8");
+        assert!(
+            stdout.starts_with("\nParse error: syntax error, unexpected token \";\" in"),
+            "{stdout}"
+        );
+        assert!(stdout.trim_end().ends_with("on line 1"), "{stdout}");
+    }
+
+    #[test]
     fn unrendered_runtime_error_keeps_structured_stderr() {
-        let input = test_input("<?php missing_runtime_function();");
+        // Undefined function calls render as uncaught Errors now, so an
+        // unresolved callable is the unrendered runtime-error example.
+        let input = test_input("<?php call_user_func('missing_runtime_function');");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 

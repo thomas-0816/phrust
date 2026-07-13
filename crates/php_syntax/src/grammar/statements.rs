@@ -73,7 +73,7 @@ fn parse_statement(parser: &mut Parser<'_>) {
     } else if parser.at(named(TokenName::Declare)) {
         parse_declare_statement(parser);
     } else if parser.at(named(TokenName::Global)) {
-        parse_misc_until_semicolon_statement(parser, SyntaxNodeKind::GlobalStmt);
+        parse_expression_list_statement(parser, SyntaxNodeKind::GlobalStmt, "global variable");
     } else if parser.at(named(TokenName::Static)) && static_statement_follows(parser) {
         parse_static_statement(parser);
     } else if parser.at(named(TokenName::Unset)) {
@@ -306,7 +306,7 @@ fn parse_catch_clause(parser: &mut Parser<'_>) {
 fn parse_declare_statement(parser: &mut Parser<'_>) {
     let statement = parser.start();
     parser.bump();
-    parse_parenthesized_header(parser, "declare directive list");
+    parse_parenthesized_expression_list(parser, "declare directive list", false);
 
     bump_trivia(parser);
     if parser.at(symbol(b';')) {
@@ -340,38 +340,18 @@ fn parse_misc_until_semicolon_statement(parser: &mut Parser<'_>, kind: SyntaxNod
     let _completed = statement.complete(parser, SyntaxKind::Node(kind));
 }
 
+fn parse_expression_list_statement(parser: &mut Parser<'_>, kind: SyntaxNodeKind, context: &str) {
+    let statement = parser.start();
+    parser.bump();
+    parse_expression_list(parser, context, symbol(b';'));
+    consume_statement_terminator(parser);
+    let _completed = statement.complete(parser, SyntaxKind::Node(kind));
+}
+
 fn parse_static_statement(parser: &mut Parser<'_>) {
     let statement = parser.start();
     parser.bump();
-
-    loop {
-        bump_trivia(parser);
-        if parser.at(named(TokenName::Variable)) {
-            parser.bump();
-        } else if parser.at(symbol(b';')) || parser.at(symbol(b'}')) {
-            break;
-        } else {
-            parser.error_expected("expected static local variable", &["T_VARIABLE"]);
-            recover_to_static_boundary(parser);
-        }
-
-        bump_trivia(parser);
-        if parser.at(symbol(b'=')) {
-            parser.bump();
-            if !expressions::parse_expression(parser) {
-                parser.error_expected("expected static local initializer", &["expression"]);
-                recover_to_static_boundary(parser);
-            }
-        }
-
-        bump_trivia(parser);
-        if parser.at(symbol(b',')) {
-            parser.bump();
-            continue;
-        }
-        break;
-    }
-
+    parse_expression_list(parser, "static local", symbol(b';'));
     consume_statement_terminator(parser);
     let _completed = statement.complete(parser, SyntaxKind::Node(SyntaxNodeKind::StaticStmt));
 }
@@ -379,7 +359,7 @@ fn parse_static_statement(parser: &mut Parser<'_>) {
 fn parse_parenthesized_construct_statement(parser: &mut Parser<'_>, kind: SyntaxNodeKind) {
     let statement = parser.start();
     parser.bump();
-    parse_parenthesized_header(parser, "statement argument list");
+    parse_parenthesized_expression_list(parser, "statement argument list", false);
     consume_statement_terminator(parser);
     let _completed = statement.complete(parser, SyntaxKind::Node(kind));
 }
@@ -535,6 +515,55 @@ fn parse_parenthesized_header(parser: &mut Parser<'_>, context: &str) {
     }
     if depth > 0 {
         parser.error_expected(format!("expected `)` to close {context}"), &[")"]);
+    }
+}
+
+fn parse_parenthesized_expression_list(parser: &mut Parser<'_>, context: &str, allow_empty: bool) {
+    bump_trivia(parser);
+    if !parser.at(symbol(b'(')) {
+        parser.error_expected(format!("expected `(` to start {context}"), &["("]);
+        return;
+    }
+
+    parser.bump();
+    bump_trivia(parser);
+    if parser.at(symbol(b')')) {
+        if !allow_empty {
+            parser.error_expected(format!("expected expression in {context}"), &["expression"]);
+        }
+        parser.bump();
+        return;
+    }
+
+    parse_expression_list(parser, context, symbol(b')'));
+    bump_trivia(parser);
+    if parser.at(symbol(b')')) {
+        parser.bump();
+    } else {
+        parser.error_expected(format!("expected `)` to close {context}"), &[")"]);
+        recover_parenthesized_header(parser);
+    }
+}
+
+fn parse_expression_list(parser: &mut Parser<'_>, context: &str, end: SyntaxKind) {
+    loop {
+        bump_trivia(parser);
+        if parser.at(end) {
+            parser.error_expected(format!("expected expression in {context}"), &["expression"]);
+            return;
+        }
+        if !expressions::parse_expression(parser) {
+            parser.error_expected(format!("expected expression in {context}"), &["expression"]);
+            while !parser.is_eof() && !parser.at(symbol(b',')) && !parser.at(end) {
+                parser.bump();
+            }
+        }
+
+        bump_trivia(parser);
+        if !parser.at(symbol(b',')) {
+            return;
+        }
+        parser.bump();
     }
 }
 
@@ -784,17 +813,6 @@ fn at_simple_statement_end(parser: &Parser<'_>) -> bool {
 
 fn at_label_statement(parser: &Parser<'_>) -> bool {
     parser.at(named(TokenName::String)) && parser.nth(1) == symbol(b':')
-}
-
-fn recover_to_static_boundary(parser: &mut Parser<'_>) {
-    while !parser.is_eof()
-        && !parser.at(symbol(b','))
-        && !parser.at(symbol(b';'))
-        && !parser.at(symbol(b'}'))
-        && !parser.at(named(TokenName::CloseTag))
-    {
-        parser.bump();
-    }
 }
 
 fn bump_trivia(parser: &mut Parser<'_>) {

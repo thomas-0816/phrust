@@ -1,0 +1,126 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SQLite3"
+    },
+    {
+      "kind": "class",
+      "name": "SQLite3Exception"
+    },
+    {
+      "kind": "class",
+      "name": "SQLite3Result"
+    },
+    {
+      "kind": "class",
+      "name": "SQLite3Stmt"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "SQLITE3_ASSOC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_NUM",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_BOTH",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_INTEGER",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_FLOAT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_TEXT",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_BLOB",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_NULL",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_OPEN_READONLY",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_OPEN_READWRITE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_OPEN_CREATE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SQLITE3_DETERMINISTIC",
+      "value": {
+        "kind": "int",
+        "value": 2048
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "sqlite3",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

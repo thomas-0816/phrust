@@ -1,0 +1,611 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "FTP\\Connection"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "FTP_ASCII",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_TEXT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_BINARY",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_IMAGE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_AUTORESUME",
+      "value": {
+        "kind": "int",
+        "value": -1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_TIMEOUT_SEC",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_AUTOSEEK",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_USEPASVADDRESS",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_FAILED",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_FINISHED",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FTP_MOREDATA",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_alloc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_append",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_cdup",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_chdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_chmod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_delete",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_exec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_fget",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_fput",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_get",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_get_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_login",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_mdtm",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_mkdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_mlsd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_nb_continue",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_nb_fget",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_nb_fput",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_nb_get",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_nb_put",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_nlist",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_pasv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_put",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_pwd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_quit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_raw",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_rawlist",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_rename",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_rmdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_set_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_site",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_size",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_ssl_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ftp",
+        "source": "ext/ftp/ftp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ftp"
+        }
+      ],
+      "name": "ftp_systype",
+      "visibility": "php"
+    }
+  ],
+  "name": "ftp",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -125,6 +125,7 @@ pub(crate) fn rerun_manifest<W: Write>(args: &[String], stdout: &mut W) -> Resul
 pub(crate) struct PhptManifestEntry {
     path: String,
     allow_xpass: bool,
+    timeout: Option<Duration>,
 }
 
 impl PhptManifestEntry {
@@ -132,6 +133,7 @@ impl PhptManifestEntry {
         Self {
             path: path.into(),
             allow_xpass: false,
+            timeout: None,
         }
     }
 }
@@ -221,11 +223,13 @@ fn read_manifest_entries(path: &Path) -> Result<Vec<PhptManifestEntry>, String> 
             entries.push(PhptManifestEntry {
                 path,
                 allow_xpass: manifest_bool(trimmed, "allow_xpass"),
+                timeout: manifest_timeout(trimmed, "timeout_seconds")?,
             });
         } else {
             entries.push(PhptManifestEntry {
                 path: trimmed.to_string(),
                 allow_xpass: false,
+                timeout: None,
             });
         }
     }
@@ -236,19 +240,44 @@ fn manifest_bool(line: &str, key: &str) -> bool {
     line.contains(&format!("\"{key}\"")) && extract_json_bool(line, key).unwrap_or(false)
 }
 
+fn manifest_timeout(line: &str, key: &str) -> Result<Option<Duration>, String> {
+    if !line.contains(&format!("\"{key}\"")) {
+        return Ok(None);
+    }
+    let seconds = extract_json_u64(line, key)?;
+    if seconds == 0 {
+        return Err(format!("{key} must be greater than zero"));
+    }
+    Ok(Some(Duration::from_secs(seconds)))
+}
+
 pub(super) fn run_one_phpt(
     context: &RunContext,
     manifest_entry: &PhptManifestEntry,
     index: usize,
 ) -> Result<PhptRunResult, String> {
-    let options = &context.options;
+    let base_options = &context.options;
     let manifest_path = &manifest_entry.path;
-    let phpt_path = resolve_phpt_path(&options.php_src, manifest_path);
+    let phpt_path = resolve_phpt_path(&base_options.php_src, manifest_path);
     let (source, source_has_invalid_utf8) = read_phpt_source_lossy_with_invalid_utf8(&phpt_path)?;
     let document = parse_phpt(&source);
-    let cache_key = phpt_result_cache_key(context, manifest_path, &source, &document, &phpt_path)?;
-    let input_cache_key =
-        phpt_result_input_cache_key(context, manifest_path, &source, &document, &phpt_path)?;
+    let effective_timeout = manifest_entry.timeout.unwrap_or(base_options.timeout);
+    let cache_key = phpt_result_cache_key(
+        context,
+        manifest_path,
+        &source,
+        &document,
+        &phpt_path,
+        effective_timeout,
+    )?;
+    let input_cache_key = phpt_result_input_cache_key(
+        context,
+        manifest_path,
+        &source,
+        &document,
+        &phpt_path,
+        effective_timeout,
+    )?;
     if let Some(cached) = context.cached_results.get(manifest_path)
         && cached.cache_key.as_deref() == Some(cache_key.as_str())
     {
@@ -279,6 +308,16 @@ pub(super) fn run_one_phpt(
         )
         .with_cache_keys(cache_key, input_cache_key));
     }
+    let case_options;
+    let options = if let Some(timeout) = manifest_entry.timeout {
+        case_options = RunOptions {
+            timeout,
+            ..base_options.clone()
+        };
+        &case_options
+    } else {
+        base_options
+    };
     if let Some(reason) = target_cli_skip_reason(
         manifest_path,
         options.target_mode,
@@ -404,4 +443,32 @@ pub(crate) fn read_phpt_source_lossy_with_invalid_utf8(
         String::from_utf8_lossy(&bytes).into_owned(),
         has_invalid_utf8,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_entry_parses_optional_timeout_seconds() {
+        let dir = env::temp_dir().join(format!(
+            "phrust-phpt-manifest-timeout-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("manifest.jsonl");
+        fs::write(
+            &manifest,
+            "{\"path\":\"ext/pcre/tests/slow.phpt\",\"timeout_seconds\":30}\n",
+        )
+        .unwrap();
+
+        let entries = read_manifest_entries(&manifest).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "ext/pcre/tests/slow.phpt");
+        assert_eq!(entries[0].timeout, Some(Duration::from_secs(30)));
+    }
 }

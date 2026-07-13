@@ -6,7 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["jit-copy-patch"]
+default = ["jit-copy-patch", "runtime-telemetry"]
+runtime-telemetry = [
+    "php_runtime/runtime-telemetry",
+    "php_std/runtime-telemetry",
+    "php_extensions/runtime-telemetry",
+]
 jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift"]
 # Copy-and-patch native tier bridge, on by default. Pulls php_jit (whose
 # copy_patch/code_memory/aarch64 modules are always compiled); no Cranelift.
@@ -19,13 +24,16 @@ jit-copy-patch = ["dep:php_jit"]
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_ir = { path = "../php_ir", version = "0.0.0" }
 php_jit = { path = "../php_jit", version = "0.0.0", optional = true }
-php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
-php_runtime = { path = "../php_runtime", version = "0.0.0" }
-php_semantics = { path = "../php_semantics", version = "0.1.0" }
+php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }
+php_extensions = { path = "../php_extensions", version = "0.0.0", default-features = false }
 php_source = { path = "../php_source", version = "0.0.0" }
-php_std = { path = "../php_std", version = "0.0.0" }
+php_std = { path = "../php_std", version = "0.0.0", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+redis = { version = "1.3.0", default-features = false }
+smallvec = "1"
 
 [dev-dependencies]
+php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
+php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_testkit = { path = "../php_testkit", version = "0.0.0" }
 serde_json = "1"

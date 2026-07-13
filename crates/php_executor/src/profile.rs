@@ -85,6 +85,7 @@ impl std::error::Error for ParseEngineProfileError {}
 pub struct EngineProfile {
     pub name: EngineProfileName,
     pub optimization_level: OptimizationLevel,
+    pub include_optimization_level: OptimizationLevel,
     pub vm_options: php_vm::api::VmOptions,
 }
 
@@ -122,6 +123,7 @@ impl EngineProfile {
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
+                vm_options.persistent_adaptive_state = true;
                 vm_options.jit = JitMode::Off;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
@@ -143,6 +145,7 @@ impl EngineProfile {
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
+                vm_options.persistent_adaptive_state = true;
                 vm_options.jit = JitMode::Cranelift;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
@@ -154,13 +157,14 @@ impl EngineProfile {
                 OptimizationLevel::O2
             }
         };
-        vm_options.include_optimization_level = match name {
+        let include_optimization_level = match name {
             EngineProfileName::Default => OptimizationLevel::O0,
             EngineProfileName::Baseline | EngineProfileName::ExperimentalJit => optimization_level,
         };
         Self {
             name,
             optimization_level,
+            include_optimization_level,
             vm_options,
         }
     }
@@ -189,6 +193,7 @@ impl PhpExecutorOptions {
         let profile = EngineProfile::new(name);
         Self {
             optimization_level: profile.optimization_level,
+            include_optimization_level: profile.include_optimization_level,
             vm_options: profile.vm_options,
             collect_quickening_feedback: false,
         }
@@ -228,10 +233,7 @@ mod tests {
         let options = PhpExecutorOptions::managed_fast_runtime();
 
         assert_eq!(options.optimization_level, OptimizationLevel::O2);
-        assert_eq!(
-            options.vm_options.include_optimization_level,
-            OptimizationLevel::O0
-        );
+        assert_eq!(options.include_optimization_level, OptimizationLevel::O0);
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
         assert_eq!(
             options.vm_options.dense_include_execution,
@@ -262,10 +264,7 @@ mod tests {
         let options = PhpExecutorOptions::baseline_oracle();
 
         assert_eq!(options.optimization_level, OptimizationLevel::O0);
-        assert_eq!(
-            options.vm_options.include_optimization_level,
-            OptimizationLevel::O0
-        );
+        assert_eq!(options.include_optimization_level, OptimizationLevel::O0);
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Ir);
         assert_eq!(
             options.vm_options.dense_include_execution,
@@ -289,10 +288,7 @@ mod tests {
         let options = PhpExecutorOptions::for_profile(EngineProfileName::ExperimentalJit);
 
         assert_eq!(options.optimization_level, OptimizationLevel::O2);
-        assert_eq!(
-            options.vm_options.include_optimization_level,
-            OptimizationLevel::O2
-        );
+        assert_eq!(options.include_optimization_level, OptimizationLevel::O2);
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
         assert_eq!(
             options.vm_options.dense_include_execution,

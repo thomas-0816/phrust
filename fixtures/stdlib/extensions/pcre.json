@@ -1,0 +1,320 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "PCRE_JIT_SUPPORT",
+      "value": {
+        "kind": "bool",
+        "value": true
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PCRE_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "10.44 2024-06-07"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PCRE_VERSION_MAJOR",
+      "value": {
+        "kind": "int",
+        "value": 10
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PCRE_VERSION_MINOR",
+      "value": {
+        "kind": "int",
+        "value": 44
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_BAD_UTF8_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_BAD_UTF8_OFFSET_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_BACKTRACK_LIMIT_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_GREP_INVERT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_INTERNAL_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_JIT_STACKLIMIT_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_NO_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_OFFSET_CAPTURE",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_PATTERN_ORDER",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_RECURSION_LIMIT_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_SET_ORDER",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_SPLIT_DELIM_CAPTURE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_SPLIT_NO_EMPTY",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_SPLIT_OFFSET_CAPTURE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PREG_UNMATCHED_AS_NULL",
+      "value": {
+        "kind": "int",
+        "value": 512
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_filter",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_grep",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_last_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_last_error_msg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_match",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_match_all",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_quote",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_replace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_replace_callback",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_replace_callback_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pcre",
+        "source": "ext/pcre/php_pcre.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pcre"
+        }
+      ],
+      "name": "preg_split",
+      "visibility": "php"
+    }
+  ],
+  "name": "pcre",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

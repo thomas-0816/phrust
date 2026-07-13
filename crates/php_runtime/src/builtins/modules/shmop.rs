@@ -51,7 +51,7 @@ fn builtin_shmop_open(
         ));
     }
     let size = size.max(0) as usize;
-    let Some(segment_id) = context.shmop_state().open(key, mode, size) else {
+    let Some(segment_id) = context.shmop_state().open(key, mode, permissions, size) else {
         context.php_warning(
             "E_PHP_RUNTIME_SHMOP_OPEN",
             format!(
@@ -239,7 +239,7 @@ fn shmop_object(segment_id: i64, read_only: bool) -> ObjectRef {
 
 fn shmop_runtime_class() -> ClassEntry {
     ClassEntry {
-        name: "shmop".to_owned(),
+        name: "shmop".to_owned().into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -259,9 +259,24 @@ mod tests {
     use crate::OutputBuffer;
 
     #[test]
-    fn in_memory_segments_share_by_key_and_private_key_zero_is_isolated() {
+    fn sysv_segments_share_by_key_and_private_key_zero_is_isolated() {
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
+        // Remove any key-42 segment a crashed previous run left behind;
+        // the end-of-test delete cannot run when the process is killed
+        // mid-test.
+        if let Ok(stale) = builtin_shmop_open(
+            &mut context,
+            vec![
+                Value::Int(42),
+                Value::string("c"),
+                Value::Int(0o600),
+                Value::Int(16),
+            ],
+            RuntimeSourceSpan::default(),
+        ) {
+            let _ = builtin_shmop_delete(&mut context, vec![stale], RuntimeSourceSpan::default());
+        }
         let created = builtin_shmop_open(
             &mut context,
             vec![
@@ -337,5 +352,15 @@ mod tests {
             shmop_segment_id("shmop_size", &private_a).expect("id a"),
             shmop_segment_id("shmop_size", &private_b).expect("id b")
         );
+        // Delete every created segment: SysV shared memory outlives the
+        // process, and the keyed segment otherwise makes the exclusive
+        // create above fail on every subsequent run.
+        for segment in [created, private_a, private_b] {
+            assert_eq!(
+                builtin_shmop_delete(&mut context, vec![segment], RuntimeSourceSpan::default())
+                    .expect("delete segment"),
+                Value::Bool(true)
+            );
+        }
     }
 }

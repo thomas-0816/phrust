@@ -1,6 +1,8 @@
 {"path":"tests/phpt/generated/wp.db-network/openssl-platform-mvp.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-wp-db-network-v3","reason":"exposes selected OpenSSL helper functions and constants"}
 {"path":"tests/phpt/generated/wp.db-network/openssl-helpers-mvp.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-wp-db-network-v3","reason":"covers digest, random bytes, method listing, and explicit verify-gap behavior"}
 {"path":"tests/phpt/generated/wp.db-network/openssl-encrypt-decrypt-mvp.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers deterministic AES-CBC encrypt/decrypt behavior and selected option constants"}
+{"path":"tests/phpt/generated/openssl/key-sign-details.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260710T000000Z","generator_version":"manual-extension-continuation","reason":"covers generated RSA key export, public/private key parsing, key details, signing, and verification"}
+{"path":"tests/phpt/generated/openssl/aes-gcm.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260710T000000Z","generator_version":"manual-extension-continuation","reason":"covers AES-GCM encrypt/decrypt tag handling, AAD, and cipher metadata"}
 {"path":"ext/openssl/tests/openssl_get_cipher_methods.phpt"}
 {"path":"ext/openssl/tests/gh19994.phpt"}
 {"path":"ext/openssl/tests/openssl_digest_basic.phpt"}

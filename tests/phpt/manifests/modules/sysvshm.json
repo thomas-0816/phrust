@@ -10,8 +10,8 @@
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":0,
-  "scope":["extension visibility","SysvSharedMemory class visibility","request-local shared variable storage","variable key has/put/get/remove","attach argument validation","PHPT sibling path mirroring","storage capacity warnings","serialization callback side effects","serialization exception propagation","detach","segment removal","destroyed handle Error mapping"],
-  "non_scope":["cross-process System V shared memory","host segment IDs","permission enforcement","platform errno-specific warning text"],
+  "scope":["extension visibility","SysvSharedMemory class visibility","host System V shared memory allocation","serialized shared variable table","variable key has/put/get/remove","attach argument validation","PHPT sibling path mirroring","storage capacity warnings","serialization callback side effects","serialization exception propagation","detach","segment removal","destroyed handle Error mapping"],
+  "non_scope":["PHP native cross-runtime shared-memory wire format","permission enforcement","platform errno-specific warning text"],
   "target_gates":["nix develop -c cargo test -p php_runtime sysvshm","nix develop -c cargo test -p php_vm sysvshm","nix develop -c just phpt-dev-module MODULE=sysvshm"],
   "next_step":"Keep host-local skip coverage documented for bug72858.phpt and shm_get_var_leak.phpt."
 }

@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds the JSON extension surface required by Composer-style
+The standard library provides the JSON extension surface required by Composer-style
 configuration files and common framework metadata.
 
 ## Implemented Functions

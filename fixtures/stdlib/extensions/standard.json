@@ -1,0 +1,6327 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "enum",
+      "name": "RoundingMode"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "INF",
+      "value": {
+        "bits": 9218868437227405312,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "NAN",
+      "value": {
+        "bits": 9221120237041090560,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DIRECTORY_SEPARATOR",
+      "value": {
+        "kind": "string",
+        "value": "/"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PATH_SEPARATOR",
+      "value": {
+        "kind": "string",
+        "value": ":"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_ASC",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_DESC",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_REGULAR",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_NUMERIC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_STRING",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_LOCALE_STRING",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_NATURAL",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORT_FLAG_CASE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_ALL",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_CTYPE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_NUMERIC",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_TIME",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_COLLATE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_MONETARY",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LC_MESSAGES",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CASE_LOWER",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CASE_UPPER",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "COUNT_NORMAL",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "COUNT_RECURSIVE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ARRAY_FILTER_USE_BOTH",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ARRAY_FILTER_USE_KEY",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STR_PAD_LEFT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STR_PAD_RIGHT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STR_PAD_BOTH",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_E",
+      "value": {
+        "bits": 4613303445314885481,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_LOG2E",
+      "value": {
+        "bits": 4609176140021203710,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_LOG10E",
+      "value": {
+        "bits": 4601495173785380110,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_LN2",
+      "value": {
+        "bits": 4604418534313441775,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_LN10",
+      "value": {
+        "bits": 4612367379483415830,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_PI",
+      "value": {
+        "bits": 4614256656552045848,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_PI_2",
+      "value": {
+        "bits": 4609753056924675352,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_PI_4",
+      "value": {
+        "bits": 4605249457297304856,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_1_PI",
+      "value": {
+        "bits": 4599405781057128579,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_2_PI",
+      "value": {
+        "bits": 4603909380684499075,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_SQRTPI",
+      "value": {
+        "bits": 4610661241675116395,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_2_SQRTPI",
+      "value": {
+        "bits": 4607760587169110893,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_LNPI",
+      "value": {
+        "bits": 4607834224259998141,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_EULER",
+      "value": {
+        "bits": 4603374316052002329,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_SQRT2",
+      "value": {
+        "bits": 4609047870845172685,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_SQRT1_2",
+      "value": {
+        "bits": 4604544271217802189,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "M_SQRT3",
+      "value": {
+        "bits": 4610479282544200874,
+        "kind": "float"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_ROUND_HALF_UP",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_ROUND_HALF_DOWN",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_ROUND_HALF_EVEN",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_ROUND_HALF_ODD",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILE_APPEND",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILE_USE_INCLUDE_PATH",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILE_IGNORE_NEW_LINES",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILE_SKIP_EMPTY_LINES",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILE_NO_DEFAULT_CONTEXT",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LOCK_SH",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LOCK_EX",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LOCK_UN",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "LOCK_NB",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SEEK_SET",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SEEK_CUR",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SEEK_END",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_BRACE",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_MARK",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_NOSORT",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_NOCHECK",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_NOESCAPE",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_ERR",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GLOB_ONLYDIR",
+      "value": {
+        "kind": "int",
+        "value": 1073741824
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PATHINFO_DIRNAME",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PATHINFO_BASENAME",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PATHINFO_EXTENSION",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PATHINFO_FILENAME",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_USER",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_PERDIR",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_SYSTEM",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_ALL",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_SCANNER_NORMAL",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_SCANNER_RAW",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "INI_SCANNER_TYPED",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FNM_NOESCAPE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FNM_PATHNAME",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FNM_PERIOD",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FNM_CASEFOLD",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "HTML_ENTITIES",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_COMPAT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_QUOTES",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_NOQUOTES",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_IGNORE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_SUBSTITUTE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_DISALLOWED",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_HTML401",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_XML1",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_XHTML",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ENT_HTML5",
+      "value": {
+        "kind": "int",
+        "value": 48
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CHAR_MAX",
+      "value": {
+        "kind": "int",
+        "value": 127
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "HTML_SPECIALCHARS",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STREAM_FILTER_READ",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STREAM_FILTER_WRITE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "STREAM_FILTER_ALL",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_QUERY_RFC1738",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_QUERY_RFC3986",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_SCHEME",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_HOST",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_PORT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_USER",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_PASS",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_PATH",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_QUERY",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_URL_FRAGMENT",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PASSWORD_DEFAULT",
+      "value": {
+        "kind": "string",
+        "value": "2y"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PASSWORD_BCRYPT",
+      "value": {
+        "kind": "string",
+        "value": "2y"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PASSWORD_BCRYPT_DEFAULT_COST",
+      "value": {
+        "kind": "int",
+        "value": 12
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_GIF",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_JPEG",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_PNG",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_SWF",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_PSD",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_BMP",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_TIFF_II",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_TIFF_MM",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_JPC",
+      "value": {
+        "kind": "int",
+        "value": 9
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_JP2",
+      "value": {
+        "kind": "int",
+        "value": 10
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_JPX",
+      "value": {
+        "kind": "int",
+        "value": 11
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_JB2",
+      "value": {
+        "kind": "int",
+        "value": 12
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_SWC",
+      "value": {
+        "kind": "int",
+        "value": 13
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_IFF",
+      "value": {
+        "kind": "int",
+        "value": 14
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_WBMP",
+      "value": {
+        "kind": "int",
+        "value": 15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_JPEG2000",
+      "value": {
+        "kind": "int",
+        "value": 9
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_XBM",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_ICO",
+      "value": {
+        "kind": "int",
+        "value": 17
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_WEBP",
+      "value": {
+        "kind": "int",
+        "value": 18
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_AVIF",
+      "value": {
+        "kind": "int",
+        "value": 19
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_HEIF",
+      "value": {
+        "kind": "int",
+        "value": 20
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_SVG",
+      "value": {
+        "kind": "int",
+        "value": 21
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_UNKNOWN",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMAGETYPE_COUNT",
+      "value": {
+        "kind": "int",
+        "value": 22
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "abs",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "acos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "acosh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "addcslashes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "addslashes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_all",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_any",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_change_key_case",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_chunk",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_column",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_combine",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_diff",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_diff_assoc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_diff_key",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_fill",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_fill_keys",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_filter",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_find",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_find_key",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_flip",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_intersect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_intersect_assoc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_intersect_key",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_intersect_uassoc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_intersect_ukey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_is_list",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_key_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_key_first",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_key_last",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_keys",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_map",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_merge",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_merge_recursive",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_multisort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_pad",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_pop",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_push",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_rand",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_reduce",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_replace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_replace_recursive",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_reverse",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_search",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_shift",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_slice",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_splice",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_sum",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_uintersect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_uintersect_uassoc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_unique",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_unshift",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_values",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_walk",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "array_walk_recursive",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "arsort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "asin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "asinh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "asort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "assert",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "atan",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "atan2",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "atanh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "base64_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "base64_encode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "base_convert",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "basename",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "bin2hex",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "bindec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "boolval",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "call_user_func",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "call_user_func_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "ceil",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "chdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "chgrp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "chmod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "chown",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "chr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "clearstatcache",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "closedir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "compact",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "constant",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "convert_uudecode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "convert_uuencode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "copy",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "cos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "cosh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "count",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "crc32",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "current",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "debug_zval_dump",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "decbin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "dechex",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "decoct",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "deg2rad",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "dir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "dirname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "disk_free_space",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "disk_total_space",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "end",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "error_log",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "exec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "exp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "explode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "expm1",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fclose",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "fdiv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "feof",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fflush",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fgetc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fgets",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "file_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "file_get_contents",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "file_put_contents",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "filegroup",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "filemtime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "fileowner",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "fileperms",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "filesize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "filetype",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "floatval",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "floor",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "flush",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "fmod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fopen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "forward_static_call",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "fpow",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fprintf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fread",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fseek",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "ftell",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "ftok",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "ftruncate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "fwrite",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "get_cfg_var",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "get_current_user",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "get_debug_type",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "get_html_translation_table",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "getcwd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "getenv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gethostbyname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "getimagesize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "getimagesizefromstring",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "getmygid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "getmyuid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "random",
+        "source": "ext/random/random.stub.php"
+      },
+      "arginfo_owner_override": "Phrust reflection ownership differs from php-src stub placement",
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "getrandmax",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "gettype",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "glob",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "header",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "header_remove",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "headers_list",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "headers_sent",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "hex2bin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "hexdec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "highlight_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "hrtime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "html_entity_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "htmlentities",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "htmlspecialchars",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "htmlspecialchars_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "http_build_query",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "http_response_code",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "hypot",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ignore_user_abort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "image_type_to_extension",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "image_type_to_mime_type",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "implode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "in_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ini_get",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ini_get_all",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ini_set",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "intdiv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "intval",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_bool",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "is_callable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_countable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "is_dir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_double",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "is_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "is_finite",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_float",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "is_infinite",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_int",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_integer",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_iterable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "is_link",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_long",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "is_nan",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_null",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_numeric",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_object",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "is_readable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_resource",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_scalar",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "is_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "is_uploaded_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "is_writable",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "join",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "key",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "key_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "krsort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "ksort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "lcfirst",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "log",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "log10",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "log1p",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "lstat",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "ltrim",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "mail",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "max",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "md5",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "memory_get_peak_usage",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "memory_get_usage",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "microtime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "fileinfo",
+        "source": "ext/fileinfo/fileinfo.stub.php"
+      },
+      "arginfo_owner_override": "Phrust reflection ownership differs from php-src stub placement",
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "mime_content_type",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "min",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "mkdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "move_uploaded_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "natcasesort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "natsort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "next",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "number_format",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_end_clean",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_end_flush",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_get_clean",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_get_contents",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_get_flush",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_get_length",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_get_level",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "ob_start",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "octdec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "opendir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "ord",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "pack",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "parse_str",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "parse_url",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "passthru",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "password_hash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "password_needs_rehash",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "password_verify",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "pathinfo",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "pclose",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "php_sapi_name",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "php_uname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "phpinfo",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "reflection"
+        },
+        {
+          "kind": "vm"
+        }
+      ],
+      "name": "phpversion",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "pi",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "popen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "pow",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "prev",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "print",
+      "signature_gap": "print is a PHP language construct rather than a normal internal function arginfo symbol.",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "print_r",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "printf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "proc_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "proc_get_status",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "proc_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "putenv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "quoted_printable_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "quotemeta",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "rad2deg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "range",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "rawurldecode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "rawurlencode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "readdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "readfile",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "realpath",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "rename",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "reset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "rewind",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "rewinddir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "rmdir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "round",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "rsort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "rtrim",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "scandir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "serialize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "set_time_limit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "setcookie",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "setlocale",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "setrawcookie",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "settype",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "sha1",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "shell_exec",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "shuffle",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "sin",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "sinh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "sizeof",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "sleep",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "sort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "sprintf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "sqrt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "stat",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_contains",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_ends_with",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_pad",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_repeat",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_replace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_split",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "str_starts_with",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strcspn",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_context_create",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_context_get_default",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_context_get_options",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_context_set_default",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_context_set_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_context_set_options",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_copy_to_stream",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_filter_append",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_filter_prepend",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_filter_register",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_filter_remove",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_get_contents",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_get_meta_data",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_get_wrappers",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_is_local",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_isatty",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_resolve_include_path",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_set_timeout",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_wrapper_register",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strip_tags",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "stripcslashes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "stripos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "stripslashes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "stristr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strnatcasecmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strnatcmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strpbrk",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strrchr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strrev",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strripos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strrpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strspn",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strstr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strtok",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strtolower",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strtoupper",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strtr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "strval",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "substr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "substr_compare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "substr_count",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "substr_replace",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "symlink",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "sys_get_temp_dir",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "system",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "tan",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "math"
+        }
+      ],
+      "name": "tanh",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "tempnam",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "tmpfile",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "touch",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "trim",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "uasort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "ucfirst",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "ucwords",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "uksort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "umask",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "uniqid",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "unlink",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "unpack",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "unserialize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "urldecode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "urlencode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "usleep",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "arrays"
+        }
+      ],
+      "name": "usort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "var_dump",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "var_export",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "version_compare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "vfprintf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "vprintf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "vsprintf",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "strings"
+        }
+      ],
+      "name": "wordwrap",
+      "visibility": "php"
+    }
+  ],
+  "name": "standard",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

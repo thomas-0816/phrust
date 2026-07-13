@@ -5,46 +5,80 @@
 //! model. Downstream crates should import stable runtime types from [`api`].
 //! Instrumentation and debug-only surfaces live under [`experimental`].
 //!
-//! The root re-exports remain as compatibility aliases while internal crates are
-//! migrated. New downstream imports should use the explicit facades instead of
-//! relying on the full crate root.
-//!
 //! Module ownership is grouped in `docs/runtime/module-boundaries.md`. New
 //! top-level modules must be categorized there before they are exposed here.
+//!
+//! ```
+//! use php_runtime::api::{RuntimeContext, Value};
+//! use php_runtime::experimental::layout_stats;
+//!
+//! let _ = RuntimeContext::default();
+//! let _ = Value::Null;
+//! let _ = layout_stats::RuntimeLayoutStats::default();
+//! ```
+//!
+//! Internal implementation modules are not public API:
+//!
+//! ```compile_fail
+//! use php_runtime::value::Value;
+//! ```
+//!
+//! ```compile_fail
+//! use php_runtime::xml_backend::BackendDocument;
+//! ```
 
-pub mod array;
-pub mod autoload;
-pub mod builtins;
-pub mod callable;
-pub mod context;
-pub mod convert;
-pub mod datetime;
-pub mod db;
-pub mod diagnostic;
-pub mod error_output;
-pub mod fiber;
-pub mod gc;
-pub mod generator;
-pub mod globals;
-pub mod ini;
-pub mod jit_array;
-pub mod layout_stats;
-pub mod numeric_string;
-pub mod object;
-pub mod output;
-pub mod pcre;
-pub mod phar;
-pub mod reference;
-pub mod resource;
-pub mod serialization;
-pub mod session;
-pub mod sqlite;
-pub mod status;
-pub mod string;
-pub mod tokenizer;
-pub mod types;
-pub mod value;
-pub mod xml;
+// Unsafe stays confined to the audited `runtime_memory` module (see
+// docs/adr/0020 and docs/performance/runtime-memory-safety-audit.md);
+// every other module in this crate remains forbidden from using it.
+#![deny(unsafe_code)]
+
+mod array;
+mod autoload;
+#[cfg(feature = "full-runtime")]
+mod builtins;
+mod callable;
+mod context;
+mod convert;
+mod datetime;
+#[cfg(feature = "full-runtime")]
+mod db;
+mod diagnostic;
+mod error_output;
+#[cfg(feature = "full-runtime")]
+mod extension;
+mod fiber;
+mod gc;
+mod generator;
+mod globals;
+mod ini;
+mod jit_array;
+mod layout_stats;
+mod numeric_string;
+mod object;
+mod output;
+#[cfg(feature = "full-runtime")]
+mod pcre;
+#[cfg(feature = "full-runtime")]
+mod phar;
+mod reference;
+mod request_state;
+mod resource;
+pub(crate) mod runtime_memory;
+mod serialization;
+mod session;
+mod source_span;
+#[cfg(feature = "full-runtime")]
+mod sqlite;
+mod status;
+mod string;
+#[cfg(feature = "full-runtime")]
+mod tokenizer;
+mod types;
+mod value;
+#[cfg(feature = "full-runtime")]
+mod xml;
+#[cfg(feature = "full-runtime")]
+mod xml_backend;
 
 /// Stable runtime surface for VM, executor, server, and standard-library code.
 ///
@@ -53,6 +87,35 @@ pub mod xml;
 /// PHP-visible status/output types. It intentionally excludes debug GC handles,
 /// JIT ABI helpers, and measurement-only counters.
 pub mod api {
+    /// Stable date/time runtime operations consumed by the VM.
+    pub mod datetime {
+        pub use crate::datetime::*;
+    }
+
+    /// Stable Phar URI and archive operations consumed by the VM.
+    #[cfg(feature = "full-runtime")]
+    pub mod phar {
+        pub use crate::phar::*;
+    }
+
+    /// Stable SQLite operations consumed by the VM.
+    #[cfg(feature = "full-runtime")]
+    pub mod sqlite {
+        pub use crate::sqlite::*;
+    }
+
+    /// Stable tokenizer operations consumed by the VM and standard library.
+    #[cfg(feature = "full-runtime")]
+    pub mod tokenizer {
+        pub use crate::tokenizer::*;
+    }
+
+    /// Stable XML/DOM/SimpleXML operations. Backend implementation types stay private.
+    #[cfg(feature = "full-runtime")]
+    pub mod xml {
+        pub use crate::xml::*;
+    }
+
     pub use crate::array::{
         ArrayEntry, ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary,
         PhpArrayKeyKindSummary, PhpArrayKind, PhpArrayPackedIntReductionError,
@@ -60,14 +123,22 @@ pub mod api {
         PhpArrayShapeLookupFallback, PhpArrayShapeMetadata, PhpArrayValueMut, PhpArrayWriteIntent,
     };
     pub use crate::autoload::AutoloadRegistry;
+    #[cfg(feature = "full-runtime")]
     pub use crate::builtins::{
         ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
-        BuiltinErrorContext, BuiltinRegistry, BuiltinResult, FilesystemRuntimeState,
-        FtpOptionValue, FtpState, GettextState, IconvEncodingState, ImapState, InternalFunction,
-        LdapState, MbSubstituteCharacter, OpcacheState, OpenSslErrorState, PcntlState,
-        ReadlineState, RuntimeSourceSpan, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, ShmopState, SoapState,
-        SocketState, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
-        SysvSemaphoreState, SysvSharedMemoryState,
+        BuiltinErrorContext, BuiltinRegistry, BuiltinRequestState, BuiltinResult, CurlState,
+        FilesystemRuntimeState, FtpOptionValue, FtpState, GettextState, IconvEncodingState,
+        ImapConnectionConfig, ImapMailboxSnapshot, ImapState, InternalFunction,
+        JSON_ERROR_RECURSION, JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, JsonRequestState,
+        LdapSearchScope, LdapState, MbSubstituteCharacter, NORMALIZER_FORM_C, NORMALIZER_FORM_D,
+        NORMALIZER_FORM_KC, NORMALIZER_FORM_KD, OpcacheState, OpenSslErrorState, PcntlState,
+        PcreRequestState, ReadlineState, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT,
+        ShmopState, SoapParsedBody, SoapState, SocketState, Ssh2FingerprintHash, Ssh2State,
+        StreamContextState, StrtokState, SysvMessageQueueState, SysvSemaphoreError,
+        SysvSemaphoreState, SysvSharedMemoryState, build_soap_envelope, hash_algorithm_exists,
+        igbinary_serialize_value, igbinary_unserialize_value, is_normalized_string, load_wsdl,
+        msgpack_pack_value, msgpack_unpack_value, normalize_string, parse_soap_response,
+        parse_wsdl, soap_http_post, validate_fileinfo_options,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -76,42 +147,51 @@ pub mod api {
     pub use crate::context::{
         ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
         RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeInputFilter,
-        RuntimeRequestMode, RuntimeUploadedFile, SessionLoadCallback, StrictTypesInfo,
-        UploadRegistry, UploadRegistryEntry, parse_cookie_header, parse_form_urlencoded_body,
-        parse_query_string, parse_query_string_with_separators,
+        RuntimeRequestMode, RuntimeUploadedFile, SessionIdGenerateCallback, SessionLoadCallback,
+        StrictTypesInfo, UploadRegistry, UploadRegistryEntry, parse_cookie_header,
+        parse_form_urlencoded_body, parse_query_string, parse_query_string_with_separators,
     };
     pub use crate::convert::{
-        ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, identical,
-        identical_php, reset_float_string_precision, set_float_string_precision,
-        to_arithmetic_number, to_arithmetic_number_php, to_array_php, to_bool, to_bool_php,
-        to_float, to_float_php, to_int, to_int_php, to_number, to_number_php, to_object_php,
-        to_string, to_string_php,
+        ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, float_fits_int,
+        identical, identical_php, php_float_to_int, reset_float_string_precision,
+        set_float_string_precision, to_arithmetic_number, to_arithmetic_number_php, to_array_php,
+        to_bool, to_bool_php, to_float, to_float_php, to_int, to_int_php, to_number, to_number_php,
+        to_object_php, to_string, to_string_php,
     };
+    #[cfg(feature = "full-runtime")]
     pub use crate::db::mysql::{
         MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
         MYSQLI_REPORT_INDEX, MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV,
-        MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION, MysqlCell, MysqlConnectOptions,
-        MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow, MysqlState,
+        MYSQLI_STORE_RESULT, MYSQLI_USE_RESULT, MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION,
+        MysqlCell, MysqlConnectOptions, MysqlConnection, MysqlError, MysqlErrorKind,
+        MysqlQueryResult, MysqlRow, MysqlState,
     };
+    #[cfg(feature = "full-runtime")]
     pub use crate::db::postgres::{
         PGSQL_ASSOC, PGSQL_BOTH, PGSQL_NUM, POSTGRES_TEST_DSN_ENV, PostgresConnectOptions,
         PostgresConnection, PostgresError, PostgresErrorKind, PostgresField, PostgresQueryResult,
         PostgresRow, PostgresState,
     };
     pub use crate::diagnostic::{
-        JsonDiagnosticContext, PhpReferenceClassification, RuntimeBringupDiagnosticContext,
-        RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError, RuntimeEventKind,
-        RuntimeSeverity, RuntimeStackFrame, TokenizerParseDiagnosticContext, VmCompileDiagnostic,
-        argument_count_error_mvp, array_to_string_warning, division_by_zero_mvp,
-        leading_numeric_string_warning, non_numeric_string_type_error, type_error_mvp,
-        undefined_function, undefined_global_variable_warning, undefined_variable_warning,
-        unhandled_match_error_mvp, unsupported_feature, value_error_mvp,
+        IncludeFailureDiagnosticContext, JsonDiagnosticContext, PhpReferenceClassification,
+        RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,
+        RuntimeEventKind, RuntimeSeverity, RuntimeStackFrame, TokenizerParseDiagnosticContext,
+        VmCompileDiagnostic, argument_count_error_mvp, array_to_string_warning,
+        division_by_zero_mvp, leading_numeric_string_warning, non_numeric_string_type_error,
+        type_error_mvp, undefined_function, undefined_global_variable_warning,
+        undefined_variable_warning, unhandled_match_error_mvp, unsupported_feature,
+        value_error_mvp,
     };
     pub use crate::error_output::{
         PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
         PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING, PhpDiagnosticChannel,
         PhpDiagnosticDisplayOptions, PhpDiagnosticLocation, emit_php_diagnostic,
         error_reporting_allows_level, format_php_diagnostic_line,
+    };
+    #[cfg(feature = "full-runtime")]
+    pub use crate::extension::{
+        ExtensionCapability, ExtensionConstant, ExtensionDescriptor, ExtensionModule,
+        ExtensionStateFactory, ExtensionType,
     };
     pub use crate::fiber::{FiberRef, FiberState};
     pub use crate::generator::{GeneratorCallContext, GeneratorRef, GeneratorState};
@@ -124,22 +204,20 @@ pub mod api {
         normalize_class_name,
     };
     pub use crate::output::{OutputBuffer, OutputStats};
+    #[cfg(feature = "full-runtime")]
     pub use crate::pcre::{
         PREG_BACKTRACK_LIMIT_ERROR, PREG_BAD_UTF8_ERROR, PREG_BAD_UTF8_OFFSET_ERROR,
         PREG_GREP_INVERT, PREG_INTERNAL_ERROR, PREG_JIT_STACKLIMIT_ERROR, PREG_NO_ERROR,
         PREG_OFFSET_CAPTURE, PREG_PATTERN_ORDER, PREG_RECURSION_LIMIT_ERROR, PREG_SET_ORDER,
         PREG_SPLIT_DELIM_CAPTURE, PREG_SPLIT_NO_EMPTY, PREG_SPLIT_OFFSET_CAPTURE,
-        PREG_UNMATCHED_AS_NULL, PcreCache,
+        PREG_UNMATCHED_AS_NULL,
     };
+    #[cfg(feature = "full-runtime")]
     pub use crate::phar::{PharArchive, PharEntry, PharError, PharUri};
-    pub use crate::reference::{
-        Lvalue, LvalueError, LvalueKind, ReferenceCell, ReferencePlaceholder, Slot, TempValue,
-        ValueSlot,
-    };
     pub use crate::resource::{
         FilesystemCapabilities, ResourceId, ResourceKind, ResourceRef, ResourceTable, Stream,
-        StreamFlags, StreamMetadata, StreamOpenError, StreamOpenMode, StreamSeekWhence,
-        StreamWrapperRegistry,
+        StreamFilterMode, StreamFlags, StreamMetadata, StreamOpenError, StreamOpenMode,
+        StreamSeekWhence, StreamWrapperRegistry,
     };
     pub use crate::serialization::{
         SerializationError, UnserializeOptions, serialize, unserialize, unserialize_prefix,
@@ -147,6 +225,8 @@ pub mod api {
     pub use crate::session::{
         PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState,
     };
+    pub use crate::source_span::RuntimeSourceSpan;
+    #[cfg(feature = "full-runtime")]
     pub use crate::sqlite::{
         SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
         SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,
@@ -154,9 +234,18 @@ pub mod api {
     };
     pub use crate::status::{ExecutionStatus, ExitStatus};
     pub use crate::string::{PhpString, SymbolId};
-    pub use crate::tokenizer;
     pub use crate::types::{runtime_type_name, value_matches_runtime_type, value_type_name};
     pub use crate::value::{FloatValue, Value};
+    pub use crate::{
+        reference::{
+            Lvalue, LvalueError, LvalueKind, ReferenceCell, ReferencePlaceholder, Slot, TempValue,
+            ValueSlot,
+        },
+        request_state::{
+            ErasedExtensionStateSlot, ExtensionStateLayout, ExtensionStateLayoutBuilder,
+            ExtensionStateLayoutError, ExtensionStateSlot, RequestState,
+        },
+    };
 }
 
 /// Debug and test runtime surface.
@@ -168,8 +257,10 @@ pub mod debug {
     #[doc(hidden)]
     pub use crate::array::WeakArrayHandle;
     #[doc(hidden)]
+    #[cfg(feature = "full-runtime")]
     pub use crate::builtins::CurlNetworkTestOverride;
     #[doc(hidden)]
+    #[cfg(feature = "full-runtime")]
     pub use crate::builtins::set_curl_network_tests_override_for_tests;
     #[doc(hidden)]
     pub use crate::gc::{
@@ -188,135 +279,110 @@ pub mod debug {
 /// experiments consume them. They are not a compatibility promise for
 /// downstream crates.
 pub mod experimental {
+    /// Runtime builtin fast paths coupled to VM optimization strategies.
+    #[cfg(feature = "full-runtime")]
+    pub mod builtin_intrinsics {
+        pub use crate::builtins::{array_intrinsics, json_fast, string_intrinsics};
+    }
+
+    /// PCRE compiler/cache backend coupled to the current VM integration.
+    #[cfg(feature = "full-runtime")]
+    pub mod pcre {
+        pub use crate::pcre::*;
+    }
+
+    /// Runtime string interner instrumentation.
+    pub mod string {
+        pub use crate::string::symbol_interner_footprint;
+    }
+
     #[doc(hidden)]
     pub use crate::debug::*;
     #[doc(hidden)]
     pub use crate::jit_array::{
         PHP_JIT_ARRAY_LAYOUT_VERSION, PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT,
-        PHP_JIT_ARRAY_STATUS_FALLBACK, PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK,
-        PhpJitArrayAbiError, php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints,
-        php_jit_array_layout_guard, php_jit_array_len,
+        PHP_JIT_ARRAY_STATUS_FALLBACK, PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT,
+        PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK, PhpJitArrayAbiError,
+        php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints, php_jit_array_layout_guard,
+        php_jit_array_len, php_jit_record_array_lookup,
     };
     #[doc(hidden)]
-    pub use crate::layout_stats;
+    pub mod layout_stats {
+        pub use crate::layout_stats::*;
+    }
     #[doc(hidden)]
-    pub use crate::numeric_string;
+    pub mod numeric_string {
+        pub use crate::numeric_string::*;
+    }
 }
 
-pub use array::{
-    ArrayEntry, ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary,
-    PhpArrayKeyKindSummary, PhpArrayKind, PhpArrayPackedIntReductionError, PhpArrayPackedMetadata,
-    PhpArrayShapeKind, PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpArrayShapeMetadata,
-    PhpArrayValueMut, PhpArrayWriteIntent, WeakArrayHandle,
+pub(crate) use crate::{
+    reference::{Lvalue, LvalueKind, ReferenceCell, Slot, WeakReferenceHandle},
+    request_state::{
+        ExtensionStateLayout, ExtensionStateLayoutBuilder, ExtensionStateSlot, RequestState,
+    },
 };
-pub use autoload::AutoloadRegistry;
-pub use builtins::{
-    ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
-    BuiltinErrorContext, BuiltinRegistry, BuiltinResult, FilesystemRuntimeState, FtpOptionValue,
-    FtpState, GettextState, IconvEncodingState, ImapState, InternalFunction, JSON_ERROR_RECURSION,
-    JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, LdapState, MbSubstituteCharacter,
-    OpcacheState, OpenSslErrorState, PcntlState, ReadlineState, RuntimeSourceSpan, ShmopState,
-    SoapState, SocketState, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
-    SysvSemaphoreState, SysvSharedMemoryState,
+pub(crate) use array::{
+    ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary, PhpArrayKind, WeakArrayHandle,
 };
-pub use callable::{
-    CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
-    ClosureDebugParameter, ClosurePayload,
+#[cfg(feature = "full-runtime")]
+pub(crate) use builtins::{BuiltinError, FtpOptionValue};
+pub(crate) use callable::{
+    CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureDebugParameter, ClosurePayload,
 };
-pub use context::{
-    ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
-    RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeInputFilter,
-    RuntimeRequestMode, RuntimeUploadedFile, SessionLoadCallback, StrictTypesInfo, UploadRegistry,
-    UploadRegistryEntry, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
-    parse_query_string_with_separators,
+pub(crate) use context::{
+    RuntimeHttpResponseState, RuntimeIniOptions, RuntimeInputFilter, SessionIdGenerateCallback,
+    SessionLoadCallback, UploadRegistry, parse_query_string_with_separators,
 };
-pub use convert::{
-    ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, identical,
-    identical_php, reset_float_string_precision, set_float_string_precision, to_arithmetic_number,
-    to_arithmetic_number_php, to_array_php, to_bool, to_bool_php, to_float, to_float_php, to_int,
-    to_int_php, to_number, to_number_php, to_object_php, to_string, to_string_php,
+pub(crate) use convert::{
+    NumericValue, compare, equal, identical, to_bool, to_float, to_int, to_number, to_string,
 };
-pub use db::mysql::{
+#[cfg(feature = "full-runtime")]
+pub(crate) use db::mysql::{
     MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
-    MYSQLI_REPORT_INDEX, MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV,
-    MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION, MysqlCell, MysqlConnectOptions, MysqlConnection,
-    MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow, MysqlState,
+    MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MYSQLI_STORE_RESULT,
+    MYSQLI_USE_RESULT, MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION, MysqlConnectOptions,
+    MysqlError, MysqlState,
 };
-pub use db::postgres::{
-    PGSQL_ASSOC, PGSQL_BOTH, PGSQL_NUM, POSTGRES_TEST_DSN_ENV, PostgresConnectOptions,
-    PostgresConnection, PostgresError, PostgresErrorKind, PostgresField, PostgresQueryResult,
-    PostgresRow, PostgresState,
+#[cfg(feature = "full-runtime")]
+pub(crate) use db::postgres::{
+    PGSQL_ASSOC, PGSQL_BOTH, PGSQL_NUM, PostgresConnectOptions, PostgresError, PostgresField,
+    PostgresState,
 };
-pub use diagnostic::{
-    JsonDiagnosticContext, PhpReferenceClassification, RuntimeBringupDiagnosticContext,
-    RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError, RuntimeEventKind, RuntimeSeverity,
-    RuntimeStackFrame, TokenizerParseDiagnosticContext, VmCompileDiagnostic,
-    argument_count_error_mvp, array_to_string_warning, division_by_zero_mvp,
-    leading_numeric_string_warning, non_numeric_string_type_error, type_error_mvp,
-    undefined_function, undefined_global_variable_warning, undefined_variable_warning,
-    unhandled_match_error_mvp, unsupported_feature, value_error_mvp,
+pub(crate) use diagnostic::{
+    PhpReferenceClassification, RuntimeBringupDiagnosticContext, RuntimeDiagnostic,
+    RuntimeDiagnosticPayload, RuntimeSeverity,
 };
-pub use error_output::{
-    PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
-    PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING, PhpDiagnosticChannel,
+pub(crate) use error_output::{
+    PHP_E_DEPRECATED, PHP_E_NOTICE, PHP_E_WARNING, PhpDiagnosticChannel,
     PhpDiagnosticDisplayOptions, PhpDiagnosticLocation, emit_php_diagnostic,
-    error_reporting_allows_level, format_php_diagnostic_line,
 };
-pub use fiber::{FiberRef, FiberState};
-pub use gc::{
-    GcCollectResult, GcCollectedEntity, GcCycleCandidate, GcEntityId, GcEntityKind, GcNode, GcRoot,
-    GcRootKind, GcSnapshot, GcTrackedHeap, scan_roots,
+pub(crate) use fiber::FiberRef;
+pub(crate) use generator::GeneratorRef;
+pub(crate) use ini::IniRegistry;
+pub(crate) use object::{
+    ClassEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ObjectRef, RuntimeType,
+    WeakObjectHandle, display_class_name, normalize_class_name,
 };
-pub use generator::{GeneratorCallContext, GeneratorRef, GeneratorState};
-pub use globals::GlobalSymbolTable;
-pub use ini::{IniEntrySnapshot, IniRegistry};
-pub use jit_array::{
-    PHP_JIT_ARRAY_LAYOUT_VERSION, PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT, PHP_JIT_ARRAY_STATUS_FALLBACK,
-    PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT, PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK,
-    PhpJitArrayAbiError, php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints,
-    php_jit_array_layout_guard, php_jit_array_len, php_jit_record_array_lookup,
+pub(crate) use output::OutputBuffer;
+#[cfg(feature = "full-runtime")]
+pub(crate) use pcre::PcreCache;
+pub(crate) use resource::{
+    FilesystemCapabilities, ResourceKind, ResourceRef, ResourceTable, StreamFilterMode,
+    StreamFlags, StreamMetadata, StreamSeekWhence, StreamWrapperRegistry,
 };
-pub use object::{
-    AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
-    ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
-    ClassPropertyFlags, ClassPropertyHooks, ObjectRef, RuntimeType, WeakObjectHandle,
-    display_class_name, normalize_class_name,
+pub(crate) use serialization::{
+    UnserializeOptions, serialize, serialize_with_precision, unserialize, unserialize_prefix,
 };
-pub use output::{OutputBuffer, OutputStats};
-pub use pcre::{
-    PREG_BACKTRACK_LIMIT_ERROR, PREG_BAD_UTF8_ERROR, PREG_BAD_UTF8_OFFSET_ERROR, PREG_GREP_INVERT,
-    PREG_INTERNAL_ERROR, PREG_JIT_STACKLIMIT_ERROR, PREG_NO_ERROR, PREG_OFFSET_CAPTURE,
-    PREG_PATTERN_ORDER, PREG_RECURSION_LIMIT_ERROR, PREG_SET_ORDER, PREG_SPLIT_DELIM_CAPTURE,
-    PREG_SPLIT_NO_EMPTY, PREG_SPLIT_OFFSET_CAPTURE, PREG_UNMATCHED_AS_NULL, PcreCache,
-};
-pub use phar::{PharArchive, PharEntry, PharError, PharUri};
-pub use reference::{
-    Lvalue, LvalueError, LvalueKind, ReferenceCell, ReferencePlaceholder, Slot, TempValue,
-    ValueSlot, WeakReferenceHandle,
-};
-pub use resource::{
-    FilesystemCapabilities, ResourceId, ResourceKind, ResourceRef, ResourceTable, Stream,
-    StreamFlags, StreamMetadata, StreamOpenError, StreamOpenMode, StreamSeekWhence,
-    StreamWrapperRegistry,
-};
-pub use serialization::{
-    SerializationError, UnserializeOptions, serialize, serialize_object_properties,
-    serialize_with_precision, unserialize, unserialize_prefix,
-};
-pub use session::{PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState};
-pub use sqlite::{
-    SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
-    SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,
-    SQLITE3_OPEN_READWRITE, SQLITE3_TEXT, SqliteState,
-};
-pub use status::{ExecutionStatus, ExitStatus};
-pub use string::{PhpString, SymbolId};
-pub use types::{runtime_type_name, value_matches_runtime_type, value_type_name};
-pub use value::{FloatValue, Value};
+pub(crate) use session::{PHP_SESSION_ACTIVE, PHP_SESSION_NONE, SessionState};
+pub(crate) use source_span::RuntimeSourceSpan;
+pub(crate) use string::PhpString;
+pub(crate) use types::value_type_name;
+pub(crate) use value::{FloatValue, Value};
 
 #[cfg(test)]
 mod tests {
-    use super::{CallableValue, ExecutionStatus, ExitStatus, OutputBuffer, PhpString, Value};
+    use crate::api::{CallableValue, ExecutionStatus, ExitStatus, OutputBuffer, PhpString, Value};
 
     #[test]
     fn value_clone_preserves_scalar_payloads() {

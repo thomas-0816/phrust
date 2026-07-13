@@ -1,1 +1,2 @@
 {"path":"tests/phpt/generated/imap/basic.phpt","reason":"Covers deterministic IMAP facade discovery, empty mailbox behavior, status/count shapes, error queues, and explicit backend failure without requiring a live IMAP server."}
+{"path":"tests/phpt/generated/imap/live-endpoint.phpt","reason":"Covers opt-in Rust IMAP backend open, check, headers, search, fetch header/body, errors, and close against an explicitly configured live server."}

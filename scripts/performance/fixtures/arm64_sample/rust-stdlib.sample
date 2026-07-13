@@ -1,0 +1,6 @@
+Call graph:
+    4 Thread_12: php-worker-0
+    + 4 thread_start  (in libsystem_pthread.dylib) + 8  [0x3000]
+    +   4 php_vm::vm::class_operations::lookup_class  (in phrust-server) + 4  [0x3004]  class_operations.rs:20
+    +     4 hashbrown::map::HashMap::get  (in phrust-server) + 4  [0x3008]  map.rs:30
+Total number in stack (recursive counted multiple, when >=5):

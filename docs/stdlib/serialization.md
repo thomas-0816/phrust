@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements bounded `serialize` and `unserialize` support for:
+The standard library implements bounded `serialize` and `unserialize` support for:
 
 - `null`, `bool`, `int`, `float`, and binary strings
 - arrays with integer and string keys

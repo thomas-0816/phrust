@@ -36,12 +36,18 @@ accepted with archive, wrapper, stub, and diagnostic boundaries.
 
 ## Registry Drift
 
-`nix develop -c just stdlib-registry-drift` compares
-`crates/php_runtime/src/builtins/registry.rs` with `php_std` function metadata.
-The generated report is written to `target/stdlib/registry-drift/`; only the
-policy allowlist in `scripts/stdlib/registry_drift_allowlist.jsonl` is
-committed. New runtime-only or metadata-only symbols must either be closed or
-documented there with a reason.
+Extension ownership, reflection metadata, and runtime mappings are declared in
+`fixtures/stdlib/extensions/`. The checked generated Rust surfaces are rebuilt
+with `nix develop -c just generate-extension-surfaces` and verified with
+`nix develop -c just verify-generated-extension-surfaces`. See
+[`canonical-extension-surfaces.md`](canonical-extension-surfaces.md) for the
+schema and review workflow.
+
+`nix develop -c just stdlib-registry-drift` validates the canonical schema
+against pinned arginfo and handwritten runtime registrations. Its report is
+written to `target/stdlib/registry-drift/`. New runtime-only or metadata-only
+symbols must be added to the canonical schema with an explicit mapping or a
+reviewed signature gap.
 
 ## References
 

@@ -3,7 +3,8 @@
 ## Verified scope
 
 - `readline` extension visibility and the `READLINE_LIB` constant.
-- Noninteractive `readline()` calls return `false` without blocking CI.
+- `readline()` has a small backend boundary: non-TTY runs return `false`
+  without blocking CI, while TTY runs use the maintained `rustyline` backend.
 - Request-local history mutation through `readline_add_history()`,
   `readline_list_history()`, and `readline_clear_history()`.
 - History file round trips through `readline_write_history()` and
@@ -23,11 +24,11 @@
 
 ## Known gaps
 
-- No terminal-backed readline, libedit, or rustyline adapter is connected yet.
-- Interactive line editing, prompt display, key handling, and terminal redisplay
-  are intentionally out of scope for the selected noninteractive PHPT set.
+- The terminal backend is not a system readline/libedit binding and is not yet
+  promoted against the interactive php-src PHPT.
+- PHP/libedit-identical key handling and terminal redisplay are intentionally
+  out of scope for the selected noninteractive PHPT set.
 - Completion callbacks are registered but are not invoked from terminal input.
-- Callback line delivery is not implemented because no nonblocking terminal
-  input loop exists yet.
+- Callback line delivery from nonblocking terminal input is not implemented yet.
 - Host readline state and libedit-specific behavior remain future PHPT
   promotion work.

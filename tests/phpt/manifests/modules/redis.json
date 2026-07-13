@@ -1,29 +1,35 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "redis",
-  "priority": "Deterministic fake Redis backend for CI-safe core command coverage",
+  "priority": "Endpoint-backed Redis client with CI-safe offline failure coverage",
   "selected_manifest": "tests/phpt/manifests/modules/redis.selected.jsonl",
-  "corpus_count": 2,
-  "selected_count": 2,
+  "corpus_count": 3,
+  "selected_count": 3,
   "pass_count": 2,
-  "skip_count": 0,
+  "skip_count": 1,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
   "scope": [
     "Extension and class introspection",
     "Redis object construction and method_exists probes",
-    "Deterministic in-process connect/auth/select/close/ping behavior",
+    "Endpoint-backed connect/pconnect/auth/select/close/ping behavior",
     "Core key/value, mget/mset, counters, ttl/expire/persist/delete/exists",
-    "Basic hash, list, set, sorted-set, scan, option, and transaction placeholders",
+    "Basic hash and list behavior through the Redis protocol",
+    "CI-safe connection-failure behavior without fake cache success",
+    "Opt-in live endpoint coverage gated by PHRUST_REDIS_LIVE_ENDPOINT",
     "phpredis option, serializer, compression, scan, and mode constants"
   ],
   "non_scope": [
-    "External Redis TCP protocol and persistent sockets",
     "Cluster, sentinel, pub/sub, Lua eval, streams, blocking commands",
+    "Persistent socket pooling beyond pconnect-compatible connect behavior",
     "Serializer and compression compatibility",
     "Real time-based expiration"
   ],
-  "target_gates": ["just phpt-dev-module MODULE=redis"],
-  "next_step": "Expand REDIS-2 coverage with opt-in live Redis tests for protocol, cluster, sentinel, pub/sub, eval, streams, serializer, and compression behavior."
+  "target_gates": [
+    "cargo test -p php_runtime redis",
+    "cargo test -p php_vm redis",
+    "just phpt-dev-module MODULE=redis"
+  ],
+  "next_step": "Expand REDIS-2 coverage for cluster, sentinel, pub/sub, eval, streams, serializer, and compression behavior."
 }

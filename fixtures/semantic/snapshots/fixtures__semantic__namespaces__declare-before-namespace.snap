@@ -7,7 +7,7 @@ symbols:
   - function run
 hir_summary:
   statements: 2
-  expressions: 1
+  expressions: 4
   types: 1
   const_exprs: 0
   class_likes: 0

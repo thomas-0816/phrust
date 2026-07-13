@@ -6,6 +6,7 @@ use crate::builtins::{
     RuntimeSourceSpan,
 };
 use crate::{ArrayKey, PhpArray, PhpString, Value};
+use std::io::Write;
 
 const MAX_DEPTH: usize = 128;
 
@@ -32,6 +33,22 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
 ];
 
+pub fn pack_value(value: &Value) -> Result<PhpString, String> {
+    let mut output = Vec::new();
+    encode_value("msgpack_pack", value, &mut output, 0)
+        .map_err(|error| error.message().to_owned())?;
+    Ok(PhpString::from_bytes(output))
+}
+
+pub fn unpack_value(input: &PhpString) -> Result<Value, String> {
+    let mut decoder = Decoder::new(input.as_bytes());
+    match decoder.decode_value(0) {
+        Ok(value) if decoder.is_finished() => Ok(value),
+        Ok(_) => Err("extra bytes after MessagePack value".to_owned()),
+        Err(message) => Err(message),
+    }
+}
+
 fn builtin_msgpack_pack(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -40,9 +57,9 @@ fn builtin_msgpack_pack(
     if args.len() != 1 {
         return Err(arity_error("msgpack_pack", "exactly one argument"));
     }
-    let mut output = Vec::new();
-    encode_value("msgpack_pack", &args[0], &mut output, 0)?;
-    Ok(Value::string(output))
+    Ok(Value::String(pack_value(&args[0]).map_err(|message| {
+        BuiltinError::new("E_PHP_RUNTIME_MSGPACK_ENCODE", message)
+    })?))
 }
 
 fn builtin_msgpack_unpack(
@@ -54,10 +71,9 @@ fn builtin_msgpack_unpack(
         return Err(arity_error("msgpack_unpack", "exactly one argument"));
     }
     let input = string_arg("msgpack_unpack", &args[0])?;
-    let mut decoder = Decoder::new(input.as_bytes());
-    match decoder.decode_value(0) {
-        Ok(value) if decoder.is_finished() => Ok(value),
-        Ok(_) => {
+    match unpack_value(&input) {
+        Ok(value) => Ok(value),
+        Err(message) if message == "extra bytes after MessagePack value" => {
             context.php_warning(
                 "E_PHP_RUNTIME_MSGPACK_TRAILING_BYTES",
                 "msgpack_unpack(): Extra bytes after MessagePack value",
@@ -90,14 +106,14 @@ fn encode_value(
     }
     match value {
         Value::Null | Value::Uninitialized => output.push(0xc0),
-        Value::Bool(false) => output.push(0xc2),
-        Value::Bool(true) => output.push(0xc3),
-        Value::Int(value) => encode_int(*value, output),
-        Value::Float(value) => {
-            output.push(0xcb);
-            output.extend_from_slice(&value.to_f64().to_be_bytes());
+        Value::Bool(value) => {
+            msgpack_write(rmp::encode::write_bool(output, *value), function)?;
         }
-        Value::String(value) => encode_bytes(value.as_bytes(), output),
+        Value::Int(value) => encode_int(function, *value, output)?,
+        Value::Float(value) => {
+            msgpack_write(rmp::encode::write_f64(output, value.to_f64()), function)?;
+        }
+        Value::String(value) => encode_bytes(function, value.as_bytes(), output)?,
         Value::Array(array) => encode_array(function, array, output, depth)?,
         Value::Reference(cell) => encode_value(function, &cell.get(), output, depth + 1)?,
         Value::Object(_)
@@ -116,42 +132,36 @@ fn encode_value(
     Ok(())
 }
 
-fn encode_int(value: i64, output: &mut Vec<u8>) {
-    if (0..=0x7f).contains(&value) {
-        output.push(value as u8);
-    } else if (-32..=-1).contains(&value) {
-        output.push(value as i8 as u8);
-    } else if let Ok(value) = i8::try_from(value) {
-        output.push(0xd0);
-        output.push(value as u8);
-    } else if let Ok(value) = i16::try_from(value) {
-        output.push(0xd1);
-        output.extend_from_slice(&value.to_be_bytes());
-    } else if let Ok(value) = i32::try_from(value) {
-        output.push(0xd2);
-        output.extend_from_slice(&value.to_be_bytes());
-    } else {
-        output.push(0xd3);
-        output.extend_from_slice(&value.to_be_bytes());
-    }
+fn msgpack_write<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    function: &str,
+) -> Result<T, BuiltinError> {
+    result.map_err(|error| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_MSGPACK_ENCODE",
+            format!("{function}(): failed to encode MessagePack value: {error}"),
+        )
+    })
 }
 
-fn encode_bytes(bytes: &[u8], output: &mut Vec<u8>) {
-    let len = bytes.len();
-    if len <= 31 {
-        output.push(0xa0 | len as u8);
-    } else if let Ok(len) = u8::try_from(len) {
-        output.push(0xd9);
-        output.push(len);
-    } else if let Ok(len) = u16::try_from(len) {
-        output.push(0xda);
-        output.extend_from_slice(&len.to_be_bytes());
-    } else {
-        let len = u32::try_from(len).expect("MessagePack string length exceeds u32");
-        output.push(0xdb);
-        output.extend_from_slice(&len.to_be_bytes());
-    }
-    output.extend_from_slice(bytes);
+fn encode_int(function: &str, value: i64, output: &mut Vec<u8>) -> Result<(), BuiltinError> {
+    msgpack_write(rmp::encode::write_sint(output, value).map(|_| ()), function)
+}
+
+fn encode_bytes(function: &str, bytes: &[u8], output: &mut Vec<u8>) -> Result<(), BuiltinError> {
+    let len = u32::try_from(bytes.len()).map_err(|_| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_MSGPACK_SIZE",
+            format!("{function}(): MessagePack string length exceeds u32"),
+        )
+    })?;
+    msgpack_write(rmp::encode::write_str_len(output, len), function)?;
+    output.write_all(bytes).map_err(|error| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_MSGPACK_ENCODE",
+            format!("{function}(): failed to encode MessagePack string bytes: {error}"),
+        )
+    })
 }
 
 fn encode_array(
@@ -161,47 +171,51 @@ fn encode_array(
     depth: usize,
 ) -> Result<(), BuiltinError> {
     if let Some(values) = array.packed_elements() {
-        encode_array_header(values.len(), output);
+        encode_array_header(function, values.len(), output)?;
         for value in values {
             encode_value(function, value, output, depth + 1)?;
         }
         return Ok(());
     }
-    encode_map_header(array.len(), output);
+    encode_map_header(function, array.len(), output)?;
     for (key, value) in array.iter() {
         match key {
-            ArrayKey::Int(key) => encode_int(key, output),
-            ArrayKey::String(key) => encode_bytes(key.as_bytes(), output),
+            ArrayKey::Int(key) => encode_int(function, key, output)?,
+            ArrayKey::String(key) => encode_bytes(function, key.as_bytes(), output)?,
         }
         encode_value(function, value, output, depth + 1)?;
     }
     Ok(())
 }
 
-fn encode_array_header(len: usize, output: &mut Vec<u8>) {
-    if len <= 15 {
-        output.push(0x90 | len as u8);
-    } else if let Ok(len) = u16::try_from(len) {
-        output.push(0xdc);
-        output.extend_from_slice(&len.to_be_bytes());
-    } else {
-        let len = u32::try_from(len).expect("MessagePack array length exceeds u32");
-        output.push(0xdd);
-        output.extend_from_slice(&len.to_be_bytes());
-    }
+fn encode_array_header(
+    function: &str,
+    len: usize,
+    output: &mut Vec<u8>,
+) -> Result<(), BuiltinError> {
+    let len = u32::try_from(len).map_err(|_| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_MSGPACK_SIZE",
+            format!("{function}(): MessagePack array length exceeds u32"),
+        )
+    })?;
+    msgpack_write(
+        rmp::encode::write_array_len(output, len).map(|_| ()),
+        function,
+    )
 }
 
-fn encode_map_header(len: usize, output: &mut Vec<u8>) {
-    if len <= 15 {
-        output.push(0x80 | len as u8);
-    } else if let Ok(len) = u16::try_from(len) {
-        output.push(0xde);
-        output.extend_from_slice(&len.to_be_bytes());
-    } else {
-        let len = u32::try_from(len).expect("MessagePack map length exceeds u32");
-        output.push(0xdf);
-        output.extend_from_slice(&len.to_be_bytes());
-    }
+fn encode_map_header(function: &str, len: usize, output: &mut Vec<u8>) -> Result<(), BuiltinError> {
+    let len = u32::try_from(len).map_err(|_| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_MSGPACK_SIZE",
+            format!("{function}(): MessagePack map length exceeds u32"),
+        )
+    })?;
+    msgpack_write(
+        rmp::encode::write_map_len(output, len).map(|_| ()),
+        function,
+    )
 }
 
 struct Decoder<'a> {

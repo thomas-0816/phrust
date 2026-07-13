@@ -31,7 +31,7 @@ represented as deferred effects, not as additional loaded declarations.
 Duplicate and invalid declarations produce semantic diagnostics with stable
 IDs. Parser acceptance must remain comparable with the PHP lint oracle.
 
-## Work item Namespace Collection
+## Namespace Collection
 
 The first declaration-collection pass lives in
 `php_semantics::lower::declarations`:
@@ -64,7 +64,7 @@ declaration collection:
 
 This pass does not execute top-level code.
 
-## Work item Declaration Registration
+## Declaration Registration
 
 `php_semantics::symbols::declarations` defines the per-source-file declaration
 table:

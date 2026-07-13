@@ -1,6 +1,6 @@
 # Class-Like HIR
 
-Work item adds structural HIR for classes, interfaces, traits, enums, and
+The semantic frontend provides structural HIR for classes, interfaces, traits, enums, and
 anonymous classes.
 
 `HirClassLike` records:

@@ -71,19 +71,6 @@ pub fn serialize_with_precision(
     Ok(PhpString::from_bytes(writer.output))
 }
 
-/// Serializes an object with an explicit PHP-visible property subset.
-///
-/// This is used by VM-owned magic serialization paths such as `__sleep`, where
-/// userland code selects which stored properties participate in the wire form.
-pub fn serialize_object_properties(
-    object: &ObjectRef,
-    properties: Vec<(String, Value)>,
-) -> Result<PhpString, SerializationError> {
-    let mut writer = Serializer::default();
-    writer.write_object_properties(object, properties, 0)?;
-    Ok(PhpString::from_bytes(writer.output))
-}
-
 /// Parses one PHP serialized value with bounded recursion and allocation.
 pub fn unserialize(
     input: &PhpString,
@@ -131,7 +118,7 @@ pub fn unserialize_prefix(
 
 struct Serializer {
     output: Vec<u8>,
-    active_references: Vec<usize>,
+    active_references: Vec<u64>,
     serialize_precision: i32,
 }
 
@@ -563,7 +550,7 @@ impl Parser<'_> {
 
 fn empty_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -580,7 +567,7 @@ fn empty_class(name: &str) -> ClassEntry {
 #[cfg(test)]
 mod tests {
     use super::{UnserializeOptions, serialize, serialize_with_precision, unserialize};
-    use crate::{
+    use crate::api::{
         ClassEntry, ClassFlags, ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks,
         ObjectRef, PhpArray, ReferenceCell, ResourceTable, StreamFlags, StreamMetadata, Value,
     };
@@ -661,7 +648,7 @@ mod tests {
     #[test]
     fn serializes_object_visibility_property_names() {
         let class = ClassEntry {
-            name: "bar".to_owned(),
+            name: "bar".to_owned().into(),
             parent: Some("foo".to_owned()),
             interfaces: Vec::new(),
             methods: Vec::new(),

@@ -1,2 +1,3 @@
 {"path":"tests/phpt/generated/redis/basic.phpt"}
 {"path":"tests/phpt/generated/redis/options-scan-transactions.phpt"}
+{"path":"tests/phpt/generated/redis/live-endpoint.phpt"}

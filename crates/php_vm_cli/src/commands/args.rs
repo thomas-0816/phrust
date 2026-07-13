@@ -546,7 +546,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
     let mut region_profile_json = None;
     let mut bytecode_cache = BytecodeCacheOptions::default();
     let mut opt_level = default_options.optimization_level;
-    let mut include_opt_level = default_options.vm_options.include_optimization_level;
+    let mut include_opt_level = default_options.include_optimization_level;
     let mut execution_format = default_options.vm_options.execution_format;
     let mut superinstructions = default_options.vm_options.superinstructions;
     let mut last_use_moves = default_options.vm_options.last_use_moves;
@@ -612,7 +612,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     bytecode_cache.mode = BytecodeCacheMode::Off;
                 }
                 opt_level = profile_options.optimization_level;
-                include_opt_level = profile_options.vm_options.include_optimization_level;
+                include_opt_level = profile_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
                 superinstructions = profile_options.vm_options.superinstructions;
                 dense_jump_threading = profile_options.vm_options.dense_jump_threading;
@@ -635,7 +635,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     bytecode_cache.mode = BytecodeCacheMode::Off;
                 }
                 opt_level = profile_options.optimization_level;
-                include_opt_level = profile_options.vm_options.include_optimization_level;
+                include_opt_level = profile_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
                 superinstructions = profile_options.vm_options.superinstructions;
                 dense_jump_threading = profile_options.vm_options.dense_jump_threading;

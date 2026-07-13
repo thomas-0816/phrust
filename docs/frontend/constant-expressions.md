@@ -82,7 +82,7 @@ arguments, which emit `E_PHP_ATTRIBUTE_ARGUMENT_NOT_CONST_EXPR`.
 
 ## Fixtures
 
-Work item adds:
+The semantic frontend provides:
 
 - `fixtures/semantic/const_expr/scalars.php`
 - `fixtures/semantic/const_expr/arrays.php`
@@ -100,7 +100,7 @@ fixtures are analyzed only; no runtime work is performed.
 
 ## Conservative Folding
 
-Work item adds optional pure folding to `ConstExpr` candidates. Folded values
+The semantic frontend provides optional pure folding to `ConstExpr` candidates. Folded values
 are exposed as `folded_value` in frontend JSON when the expression is proven
 without runtime semantics. This value is not a PHP zval and is not used for
 execution.
@@ -116,7 +116,7 @@ The folder intentionally does not fold floats, magic constants, class constant
 fetches, arrays, calls, `new`, closures, first-class callables, or anything
 that would require runtime lookup or object/value semantics.
 
-Work item adds:
+The semantic frontend provides:
 
 - `fixtures/semantic/const_expr/fold_literals.php`
 - `fixtures/semantic/const_expr/fold_concat.php`

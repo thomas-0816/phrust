@@ -4,14 +4,14 @@
   "priority":"application HTTP client MVP",
   "selected_manifest":"tests/phpt/manifests/modules/curl.selected.jsonl",
   "corpus_count":175,
-  "selected_count":12,
-  "pass_count":10,
-  "skip_count":2,
+  "selected_count":16,
+  "pass_count":13,
+  "skip_count":3,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":163,
-  "scope":["curl extension visibility","CurlHandle and CurlShareHandle class visibility","curl_init","curl_setopt","curl_setopt_array","curl_exec","curl_getinfo","curl_errno","curl_error","curl_close","curl_version","curl_strerror","curl_multi_* basic handle queue and strerror coverage","curl_share_init","curl_share_setopt","curl_share_errno","curl_share_strerror","default-off network policy","explicit local HTTP test gate","POST string/array bodies","outgoing headers","bounded local redirects","response-header inclusion and header-size info","CURLOPT_PRIVATE and CURLINFO_PRIVATE handle metadata"],
-  "non_scope":["public internet tests","full libcurl backend replacement","complete file:// protocol support","complete HTTPS/TLS option parity","full callback dispatch","file upload matrix","full curl_multi_* async/select behavior","real share-handle data sharing","complete libcurl option matrix","SAPI transport behavior"],
-  "target_gates":["nix develop -c cargo test -p php_runtime curl","PHRUST_NET_TESTS=1 nix develop -c cargo test -p php_runtime curl","nix develop -c just phpt-dev-module MODULE=curl","nix develop -c just phpt-dev-module MODULE=closure.extensions"],
-  "next_step":"Replace the hand-rolled transport with libcurl before broadening protocol, callback, upload, multi/select, and share-handler parity beyond deterministic selected fixtures."
+  "scope":["curl extension visibility","CurlHandle and CurlShareHandle class visibility","curl_init","curl_setopt","curl_setopt_array","curl_exec","curl_getinfo","curl_errno","curl_error","curl_close","curl_version","curl_strerror","curl_multi_* basic handle queue and strerror coverage","curl_share_init","curl_share_setopt","curl_share_errno","curl_share_strerror","default-off network policy","explicit local HTTP test gate","POST string/array bodies","outgoing headers","bounded local redirects","response-header inclusion and header-size info","CURLOPT_PRIVATE and CURLINFO_PRIVATE handle metadata","libcurl Easy2 execution","libcurl-backed curl_setopt options for common application HTTP clients","curl_version feature and protocol metadata","common application-visible cURL constants","unsupported cURL option manifest with deterministic failure behavior"],
+  "non_scope":["public internet tests","complete file:// protocol support","complete HTTPS/TLS option parity","full callback dispatch","file upload matrix","full curl_multi_* async/select behavior","real share-handle data sharing","complete libcurl option matrix","SAPI transport behavior"],
+  "target_gates":["nix develop -c cargo fmt --all --check","nix develop -c cargo test -p php_runtime curl -- --nocapture","PHRUST_NET_TESTS=1 nix develop -c cargo test -p php_runtime curl","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=curl","nix develop -c just composer-smoke"],
+  "next_step":"Continue the extension continuation pack with PDO core and PDO SQLite; broaden remaining cURL callback, upload, share, and option-matrix parity in a later dedicated slice."
 }

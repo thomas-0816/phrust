@@ -611,6 +611,7 @@ pub struct HirPropertyHook {
     kind: String,
     span: php_source::TextRange,
     body: HirPropertyHookBody,
+    uses_backing_storage: bool,
 }
 
 impl HirPropertyHook {
@@ -620,11 +621,13 @@ impl HirPropertyHook {
         kind: impl Into<String>,
         span: php_source::TextRange,
         body: HirPropertyHookBody,
+        uses_backing_storage: bool,
     ) -> Self {
         Self {
             kind: kind.into(),
             span,
             body,
+            uses_backing_storage,
         }
     }
 
@@ -644,6 +647,12 @@ impl HirPropertyHook {
     #[must_use]
     pub const fn body(&self) -> HirPropertyHookBody {
         self.body
+    }
+
+    /// Returns whether the hook accesses its property's backing storage.
+    #[must_use]
+    pub const fn uses_backing_storage(&self) -> bool {
+        self.uses_backing_storage
     }
 }
 

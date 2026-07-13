@@ -1,0 +1,1015 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "mysqli"
+    },
+    {
+      "kind": "class",
+      "name": "mysqli_driver"
+    },
+    {
+      "kind": "class",
+      "name": "mysqli_result"
+    },
+    {
+      "kind": "class",
+      "name": "mysqli_stmt"
+    },
+    {
+      "kind": "class",
+      "name": "mysqli_warning"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "MYSQLI_ASSOC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_NUM",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_BOTH",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_REPORT_OFF",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_REPORT_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_REPORT_STRICT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_REPORT_INDEX",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_OPT_CONNECT_TIMEOUT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_INIT_COMMAND",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_READ_DEFAULT_FILE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_READ_DEFAULT_GROUP",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_SET_CHARSET_NAME",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_STORE_RESULT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MYSQLI_USE_RESULT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_affected_rows",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_autocommit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_begin_transaction",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_character_set_name",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_commit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_connect_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_connect_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_data_seek",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_escape_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_fetch_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_fetch_assoc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_fetch_fields",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_fetch_object",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_fetch_row",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_field_count",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_free_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_charset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_client_info",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_client_stats",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_client_version",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_connection_stats",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_host_info",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_get_server_info",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_insert_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_more_results",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_multi_query",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_next_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_num_fields",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_num_rows",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_options",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_ping",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_prepare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_query",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_real_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_real_escape_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_report",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_rollback",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_select_db",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_set_charset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_affected_rows",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_bind_param",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_bind_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_errno",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_execute",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_fetch",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_free_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_get_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_insert_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_num_rows",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_prepare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_result_metadata",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_stmt_sqlstate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_store_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "mysqli",
+        "source": "ext/mysqli/mysqli.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "mysqli"
+        }
+      ],
+      "name": "mysqli_use_result",
+      "visibility": "php"
+    }
+  ],
+  "name": "mysqli",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

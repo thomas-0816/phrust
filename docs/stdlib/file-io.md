@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds PHP-visible file and stream-handle operations on top of the
+The standard library provides PHP-visible file and stream-handle operations on top of the
 Standard library resource model and capability-gated local file wrapper.
 
 ## Implemented Functions

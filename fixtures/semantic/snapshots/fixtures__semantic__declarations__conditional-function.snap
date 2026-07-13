@@ -8,7 +8,7 @@ symbols:
   - conditional_class_like ConditionalService
 hir_summary:
   statements: 4
-  expressions: 1
+  expressions: 2
   types: 1
   const_exprs: 0
   class_likes: 1

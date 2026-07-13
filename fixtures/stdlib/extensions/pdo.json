@@ -1,0 +1,44 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "PDO"
+    },
+    {
+      "kind": "class",
+      "name": "PDOException"
+    },
+    {
+      "kind": "class",
+      "name": "PDORow"
+    },
+    {
+      "kind": "class",
+      "name": "PDOStatement"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "pdo",
+        "source": "ext/pdo/pdo.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pdo"
+        }
+      ],
+      "name": "pdo_drivers",
+      "visibility": "php"
+    }
+  ],
+  "name": "pdo",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

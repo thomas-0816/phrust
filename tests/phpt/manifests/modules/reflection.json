@@ -3,14 +3,14 @@
   "module":"reflection",
   "priority":21,
   "selected_manifest":"tests/phpt/manifests/modules/reflection.selected.jsonl",
-  "corpus_count":22,
-  "pass_count":22,
-  "skip_count":0,
-  "fail_count":0,
+  "corpus_count":304,
+  "pass_count":24,
+  "skip_count":8,
+  "fail_count":272,
   "bork_count":0,
-  "known_failure_count":0,
-  "scope":["Reflection metadata for functions, parameters, classes, methods, properties, attributes, enums, and extensions"],
-  "non_scope":["fake metadata not backed by frontend/runtime/arginfo","complete upstream Reflection API parity"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=reflection"],
-  "next_step":"Promote additional upstream ext/reflection PHPTs as stringification, invocation, object construction, and exact internal class-surface gaps close."
+  "known_failure_count":272,
+  "scope":["Reflection metadata for functions, classes, methods, properties, attributes"],
+  "non_scope":["fake metadata not backed by frontend/runtime/arginfo"],
+  "target_gates":["nix develop -c just phpt-module MODULE=reflection"],
+  "next_step":"Expose generated arginfo and semantic metadata through Reflection APIs."
 }

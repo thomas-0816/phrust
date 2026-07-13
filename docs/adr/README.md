@@ -37,3 +37,8 @@ under the owning topic directories such as `docs/frontend/`, `docs/runtime/`,
 Add a new ADR only when the decision changes a durable contract. If a topic
 needs more implementation detail, add or update the topic document instead and
 link to the relevant ADR.
+
+## Additional References
+
+- [0020: Audited unsafe exception for the runtime-memory module](0020-runtime-memory-unsafe-exception.md)
+- [ADR 0021: Audited unchecked frame-slot access in `php_vm`](0021-vm-frame-unchecked-access-exception.md)

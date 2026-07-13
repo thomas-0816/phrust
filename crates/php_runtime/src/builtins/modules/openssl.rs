@@ -1,7 +1,8 @@
 //! OpenSSL-compatible helper builtin slice.
 
 use super::core::{
-    deref_value, expect_arity, hex_encode, int_arg, read_file_value, string_arg, value_error,
+    assign_reference_arg, deref_value, expect_arity, hex_encode, int_arg, read_file_value,
+    string_arg, value_error,
 };
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
@@ -9,10 +10,12 @@ use crate::builtins::{
 };
 use crate::{ArrayKey, PhpArray, PhpString, Value};
 use ::openssl::hash::{MessageDigest, hash};
-use ::openssl::pkey::{PKey, Public};
-use ::openssl::sign::Verifier;
+use ::openssl::pkey::{PKey, Private, Public};
+use ::openssl::rsa::Rsa;
+use ::openssl::sign::{Signer, Verifier};
 use ::openssl::symm::{Cipher, Crypter, Mode};
 use ::openssl::x509::X509;
+use ::openssl::x509::X509NameRef;
 use base64::{Engine, engine::general_purpose};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
@@ -67,6 +70,56 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "openssl_pkey_get_private",
+        builtin_openssl_pkey_get_private,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_get_privatekey",
+        builtin_openssl_pkey_get_private,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_pkey_new",
+        builtin_openssl_pkey_new,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_pkey_export",
+        builtin_openssl_pkey_export,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_pkey_get_details",
+        builtin_openssl_pkey_get_details,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_sign",
+        builtin_openssl_sign,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_x509_read",
+        builtin_openssl_x509_read,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_x509_parse",
+        builtin_openssl_x509_parse,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_x509_check_private_key",
+        builtin_openssl_x509_check_private_key,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_x509_verify",
+        builtin_openssl_x509_verify,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "openssl_error_string",
         builtin_openssl_error_string,
         BuiltinCompatibility::Php,
@@ -78,8 +131,30 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
 ];
 
-const OPENSSL_MD_METHODS: &[&str] = &["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
-const OPENSSL_CIPHER_METHODS: &[&str] = &["aes-128-cbc", "aes-256-cbc"];
+const OPENSSL_MD_METHODS: &[&str] = &[
+    "md5",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha512",
+    "ripemd160",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
+];
+const OPENSSL_CIPHER_METHODS: &[&str] = &[
+    "aes-128-cbc",
+    "aes-192-cbc",
+    "aes-256-cbc",
+    "aes-128-ctr",
+    "aes-192-ctr",
+    "aes-256-ctr",
+    "aes-128-gcm",
+    "aes-192-gcm",
+    "aes-256-gcm",
+];
 const OPENSSL_ALGO_MD5: i64 = 2;
 const OPENSSL_ALGO_SHA1: i64 = 1;
 const OPENSSL_ALGO_SHA224: i64 = 6;
@@ -89,6 +164,7 @@ const OPENSSL_ALGO_SHA512: i64 = 9;
 const OPENSSL_RAW_DATA: i64 = 1;
 const OPENSSL_ZERO_PADDING: i64 = 2;
 const OPENSSL_DONT_ZERO_PAD_KEY: i64 = 4;
+const OPENSSL_KEYTYPE_RSA: i64 = 0;
 
 pub(in crate::builtins::modules) fn builtin_openssl_random_pseudo_bytes(
     _context: &mut BuiltinContext<'_>,
@@ -115,6 +191,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_random_pseudo_bytes(
             format!("openssl_random_pseudo_bytes(): failed to read random bytes: {error}"),
         )
     })?;
+    assign_reference_arg(args.get(1), Value::Bool(true));
     Ok(Value::string(bytes))
 }
 
@@ -168,11 +245,12 @@ pub(in crate::builtins::modules) fn builtin_openssl_cipher_iv_length(
 ) -> BuiltinResult {
     expect_arity("openssl_cipher_iv_length", &args, 1)?;
     let method = string_arg("openssl_cipher_iv_length", &args[0])?.to_string_lossy();
-    let length = match method.to_ascii_lowercase().as_str() {
-        "aes-128-cbc" | "aes-256-cbc" => 16,
-        _ => return Ok(Value::Bool(false)),
-    };
-    Ok(Value::Int(length))
+    Ok(
+        match cipher_for_method(&method).and_then(|cipher| cipher.cipher.iv_len()) {
+            Some(length) => Value::Int(length as i64),
+            None => Value::Bool(false),
+        },
+    )
 }
 
 pub(in crate::builtins::modules) fn builtin_openssl_get_md_methods(
@@ -214,6 +292,16 @@ pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
         .get(4)
         .map(|value| string_arg("openssl_encrypt", value))
         .transpose()?;
+    let tag_argument = args.get(5);
+    let aad = args
+        .get(6)
+        .map(|value| string_arg("openssl_encrypt", value))
+        .transpose()?;
+    let tag_length = args
+        .get(7)
+        .map(|value| int_arg("openssl_encrypt", value))
+        .transpose()?
+        .unwrap_or(16);
     let Some(cipher) = cipher_for_method(&method) else {
         queue_openssl_warning_and_error(
             context,
@@ -223,11 +311,20 @@ pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
         );
         return Ok(Value::Bool(false));
     };
-    if options & OPENSSL_DONT_ZERO_PAD_KEY != 0 {
+    if options & OPENSSL_DONT_ZERO_PAD_KEY != 0 && !cipher.aead {
         queue_openssl_warning_and_error(
             context,
             "openssl_encrypt",
             "Key length cannot be set for the cipher algorithm",
+            _span,
+        );
+        return Ok(Value::Bool(false));
+    }
+    if cipher.aead && !(1..=16).contains(&tag_length) {
+        queue_openssl_warning_and_error(
+            context,
+            "openssl_encrypt",
+            "Tag length cannot be less than 1 or greater than 16",
             _span,
         );
         return Ok(Value::Bool(false));
@@ -240,6 +337,9 @@ pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
         passphrase.as_bytes(),
         iv.as_ref().map(|value| value.as_bytes()).unwrap_or(&[]),
         options & OPENSSL_ZERO_PADDING == 0,
+        aad.as_ref().map(|value| value.as_bytes()).unwrap_or(&[]),
+        None,
+        tag_length as usize,
     ) {
         Ok(Some(encrypted)) => encrypted,
         Ok(None) => {
@@ -251,10 +351,15 @@ pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
             return Ok(Value::Bool(false));
         }
     };
+    if let Some(tag) = encrypted.tag {
+        assign_reference_arg(tag_argument, Value::string(tag));
+    } else if tag_argument.is_some() && !cipher.aead {
+        assign_reference_arg(tag_argument, Value::Null);
+    }
     Ok(if options & OPENSSL_RAW_DATA != 0 {
-        Value::string(encrypted)
+        Value::string(encrypted.output)
     } else {
-        Value::string(general_purpose::STANDARD.encode(encrypted))
+        Value::string(general_purpose::STANDARD.encode(encrypted.output))
     })
 }
 
@@ -281,6 +386,14 @@ pub(in crate::builtins::modules) fn builtin_openssl_decrypt(
         .get(4)
         .map(|value| string_arg("openssl_decrypt", value))
         .transpose()?;
+    let tag = args
+        .get(5)
+        .map(|value| string_arg("openssl_decrypt", value))
+        .transpose()?;
+    let aad = args
+        .get(6)
+        .map(|value| string_arg("openssl_decrypt", value))
+        .transpose()?;
     let Some(cipher) = cipher_for_method(&method) else {
         queue_openssl_warning_and_error(
             context,
@@ -290,11 +403,25 @@ pub(in crate::builtins::modules) fn builtin_openssl_decrypt(
         );
         return Ok(Value::Bool(false));
     };
-    if options & OPENSSL_DONT_ZERO_PAD_KEY != 0 {
+    if options & OPENSSL_DONT_ZERO_PAD_KEY != 0 && !cipher.aead {
         queue_openssl_warning_and_error(
             context,
             "openssl_decrypt",
             "Key length cannot be set for the cipher algorithm",
+            _span,
+        );
+        return Ok(Value::Bool(false));
+    }
+    if cipher.aead
+        && tag
+            .as_ref()
+            .map(|value| value.as_bytes().is_empty())
+            .unwrap_or(true)
+    {
+        queue_openssl_warning_and_error(
+            context,
+            "openssl_decrypt",
+            "A tag is required when using AEAD cipher mode",
             _span,
         );
         return Ok(Value::Bool(false));
@@ -318,6 +445,9 @@ pub(in crate::builtins::modules) fn builtin_openssl_decrypt(
         passphrase.as_bytes(),
         iv.as_ref().map(|value| value.as_bytes()).unwrap_or(&[]),
         options & OPENSSL_ZERO_PADDING == 0,
+        aad.as_ref().map(|value| value.as_bytes()).unwrap_or(&[]),
+        tag.as_ref().map(|value| value.as_bytes()),
+        16,
     ) {
         Ok(Some(decrypted)) => decrypted,
         Ok(None) => {
@@ -329,7 +459,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_decrypt(
             return Ok(Value::Bool(false));
         }
     };
-    Ok(Value::string(decrypted))
+    Ok(Value::string(decrypted.output))
 }
 
 fn queue_openssl_error(context: &mut BuiltinContext<'_>, function: &str, message: impl AsRef<str>) {
@@ -362,12 +492,26 @@ fn string_list(values: &[&str]) -> Value {
     Value::Array(array)
 }
 
-fn cipher_for_method(method: &str) -> Option<Cipher> {
-    match method.to_ascii_lowercase().as_str() {
-        "aes-128-cbc" | "aes128" => Some(Cipher::aes_128_cbc()),
-        "aes-256-cbc" => Some(Cipher::aes_256_cbc()),
-        _ => None,
-    }
+#[derive(Clone, Copy)]
+struct CipherInfo {
+    cipher: Cipher,
+    aead: bool,
+}
+
+fn cipher_for_method(method: &str) -> Option<CipherInfo> {
+    let (cipher, aead) = match method.to_ascii_lowercase().as_str() {
+        "aes-128-cbc" | "aes128" => (Cipher::aes_128_cbc(), false),
+        "aes-192-cbc" => (Cipher::aes_192_cbc(), false),
+        "aes-256-cbc" => (Cipher::aes_256_cbc(), false),
+        "aes-128-ctr" => (Cipher::aes_128_ctr(), false),
+        "aes-192-ctr" => (Cipher::aes_192_ctr(), false),
+        "aes-256-ctr" => (Cipher::aes_256_ctr(), false),
+        "aes-128-gcm" => (Cipher::aes_128_gcm(), true),
+        "aes-192-gcm" => (Cipher::aes_192_gcm(), true),
+        "aes-256-gcm" => (Cipher::aes_256_gcm(), true),
+        _ => return None,
+    };
+    Some(CipherInfo { cipher, aead })
 }
 
 pub(in crate::builtins::modules) fn builtin_openssl_cipher_key_length(
@@ -378,33 +522,60 @@ pub(in crate::builtins::modules) fn builtin_openssl_cipher_key_length(
     expect_arity("openssl_cipher_key_length", &args, 1)?;
     let method = string_arg("openssl_cipher_key_length", &args[0])?.to_string_lossy();
     Ok(match cipher_for_method(&method) {
-        Some(cipher) => Value::Int(cipher.key_len() as i64),
+        Some(cipher) => Value::Int(cipher.cipher.key_len() as i64),
         None => Value::Bool(false),
     })
 }
 
+struct CryptResult {
+    output: Vec<u8>,
+    tag: Option<Vec<u8>>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn openssl_crypt(
     name: &str,
-    cipher: Cipher,
+    cipher: CipherInfo,
     mode: Mode,
     input: &[u8],
     passphrase: &[u8],
     iv: &[u8],
     pkcs_padding: bool,
-) -> Result<Option<Vec<u8>>, BuiltinError> {
-    let key = normalized_cipher_input(passphrase, cipher.key_len());
-    let Some(iv_len) = cipher.iv_len() else {
+    aad: &[u8],
+    tag: Option<&[u8]>,
+    tag_length: usize,
+) -> Result<Option<CryptResult>, BuiltinError> {
+    let key = normalized_cipher_input(passphrase, cipher.cipher.key_len());
+    let Some(iv_len) = cipher.cipher.iv_len() else {
         return Err(value_error(name, "cipher requires an IV length"));
     };
     let iv = normalized_cipher_input(iv, iv_len);
-    let mut crypter = Crypter::new(cipher, mode, &key, Some(&iv)).map_err(|error| {
+    let mut crypter = Crypter::new(cipher.cipher, mode, &key, Some(&iv)).map_err(|error| {
         BuiltinError::new(
             "E_PHP_RUNTIME_OPENSSL_CIPHER",
             format!("{name}(): failed to initialize cipher: {error}"),
         )
     })?;
     crypter.pad(pkcs_padding);
-    let mut output = vec![0_u8; input.len() + cipher.block_size()];
+    if cipher.aead {
+        if let Some(tag) = tag {
+            crypter.set_tag(tag).map_err(|error| {
+                BuiltinError::new(
+                    "E_PHP_RUNTIME_OPENSSL_CIPHER",
+                    format!("{name}(): failed to set authentication tag: {error}"),
+                )
+            })?;
+        }
+        if !aad.is_empty() {
+            crypter.aad_update(aad).map_err(|error| {
+                BuiltinError::new(
+                    "E_PHP_RUNTIME_OPENSSL_CIPHER",
+                    format!("{name}(): cipher AAD update failed: {error}"),
+                )
+            })?;
+        }
+    }
+    let mut output = vec![0_u8; input.len() + cipher.cipher.block_size()];
     let mut count = crypter.update(input, &mut output).map_err(|error| {
         BuiltinError::new(
             "E_PHP_RUNTIME_OPENSSL_CIPHER",
@@ -424,7 +595,19 @@ fn openssl_crypt(
         }
     };
     output.truncate(count);
-    Ok(Some(output))
+    let tag = if cipher.aead && matches!(mode, Mode::Encrypt) {
+        let mut tag = vec![0_u8; tag_length];
+        crypter.get_tag(&mut tag).map_err(|error| {
+            BuiltinError::new(
+                "E_PHP_RUNTIME_OPENSSL_CIPHER",
+                format!("{name}(): failed to read authentication tag: {error}"),
+            )
+        })?;
+        Some(tag)
+    } else {
+        None
+    };
+    Ok(Some(CryptResult { output, tag }))
 }
 
 fn normalized_cipher_input(input: &[u8], length: usize) -> Vec<u8> {
@@ -491,16 +674,388 @@ pub(in crate::builtins::modules) fn builtin_openssl_verify(
 pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_public(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_pkey_get_public", &args, 1)?;
-    let _key = string_arg("openssl_pkey_get_public", &args[0])?;
-    queue_openssl_error(
-        context,
-        "openssl_pkey_get_public",
-        "Unable to load public key",
+    match public_key_pem_from_value(context, "openssl_pkey_get_public", &args[0], span)? {
+        Some(public_key) => Ok(Value::string(public_key)),
+        None => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_get_public",
+                "Unable to load public key",
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_private(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin openssl_pkey_get_private expects one or two argument(s)",
+        ));
+    }
+    match private_key_from_value(context, "openssl_pkey_get_private", &args[0], span)? {
+        Some(private_key) => match private_key.private_key_to_pem_pkcs8() {
+            Ok(pem) => Ok(Value::string(pem)),
+            Err(error) => {
+                queue_openssl_error(
+                    context,
+                    "openssl_pkey_get_private",
+                    format!("Unable to export private key: {error}"),
+                );
+                Ok(Value::Bool(false))
+            }
+        },
+        None => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_get_private",
+                "Unable to load private key",
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_pkey_new(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 1 {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin openssl_pkey_new expects zero or one argument(s)",
+        ));
+    }
+    let bits = openssl_pkey_option_int(args.first(), "private_key_bits").unwrap_or(2048);
+    let key_type =
+        openssl_pkey_option_int(args.first(), "private_key_type").unwrap_or(OPENSSL_KEYTYPE_RSA);
+    if key_type != OPENSSL_KEYTYPE_RSA {
+        queue_openssl_error(
+            context,
+            "openssl_pkey_new",
+            "Only RSA key generation is supported",
+        );
+        return Ok(Value::Bool(false));
+    }
+    if bits < 512 || bits > u32::MAX as i64 {
+        queue_openssl_error(context, "openssl_pkey_new", "Invalid RSA key size");
+        return Ok(Value::Bool(false));
+    }
+    let rsa = match Rsa::generate(bits as u32) {
+        Ok(rsa) => rsa,
+        Err(error) => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_new",
+                format!("RSA key generation failed: {error}"),
+            );
+            return Ok(Value::Bool(false));
+        }
+    };
+    let private_key = match PKey::from_rsa(rsa) {
+        Ok(private_key) => private_key,
+        Err(error) => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_new",
+                format!("RSA key conversion failed: {error}"),
+            );
+            return Ok(Value::Bool(false));
+        }
+    };
+    match private_key.private_key_to_pem_pkcs8() {
+        Ok(pem) => Ok(Value::string(pem)),
+        Err(error) => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_new",
+                format!("Unable to export generated private key: {error}"),
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_pkey_export(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=4).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin openssl_pkey_export expects two to four argument(s)",
+        ));
+    }
+    let Some(private_key) = private_key_from_value(context, "openssl_pkey_export", &args[0], span)?
+    else {
+        queue_openssl_error(
+            context,
+            "openssl_pkey_export",
+            "Cannot get key from parameter 1",
+        );
+        return Ok(Value::Bool(false));
+    };
+    let passphrase = args
+        .get(2)
+        .map(|value| string_arg("openssl_pkey_export", value))
+        .transpose()?;
+    let exported = if let Some(passphrase) = passphrase.filter(|value| !value.as_bytes().is_empty())
+    {
+        private_key
+            .private_key_to_pem_pkcs8_passphrase(Cipher::aes_128_cbc(), passphrase.as_bytes())
+    } else {
+        private_key.private_key_to_pem_pkcs8()
+    };
+    match exported {
+        Ok(pem) => {
+            assign_reference_arg(args.get(1), Value::string(pem));
+            Ok(Value::Bool(true))
+        }
+        Err(error) => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_export",
+                format!("Unable to export private key: {error}"),
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_details(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_pkey_get_details", &args, 1)?;
+    let public_key =
+        public_key_from_value(context, "openssl_pkey_get_details", &args[0], span.clone())?;
+    let Some(public_key) = public_key else {
+        queue_openssl_error(
+            context,
+            "openssl_pkey_get_details",
+            "Cannot get key from parameter 1",
+        );
+        return Ok(Value::Bool(false));
+    };
+    let public_pem = match public_key.public_key_to_pem() {
+        Ok(pem) => pem,
+        Err(error) => {
+            queue_openssl_error(
+                context,
+                "openssl_pkey_get_details",
+                format!("Unable to export public key: {error}"),
+            );
+            return Ok(Value::Bool(false));
+        }
+    };
+    let mut details = PhpArray::new();
+    details.insert(
+        ArrayKey::String(PhpString::from("bits")),
+        Value::Int(public_key.bits() as i64),
     );
-    Ok(Value::Bool(false))
+    details.insert(
+        ArrayKey::String(PhpString::from("key")),
+        Value::string(public_pem),
+    );
+    details.insert(
+        ArrayKey::String(PhpString::from("type")),
+        Value::Int(OPENSSL_KEYTYPE_RSA),
+    );
+    Ok(Value::Array(details))
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_sign(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(3..=4).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin openssl_sign expects three or four argument(s)",
+        ));
+    }
+    let data = string_arg("openssl_sign", &args[0])?;
+    let Some(digest) = message_digest_for_function(context, "openssl_sign", args.get(3))? else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(private_key) = private_key_from_value(context, "openssl_sign", &args[2], span)? else {
+        queue_openssl_error(
+            context,
+            "openssl_sign",
+            "Supplied key param cannot be coerced into a private key",
+        );
+        return Ok(Value::Bool(false));
+    };
+    let mut signer = match Signer::new(digest, &private_key) {
+        Ok(signer) => signer,
+        Err(error) => {
+            queue_openssl_error(context, "openssl_sign", error.to_string());
+            return Ok(Value::Bool(false));
+        }
+    };
+    if let Err(error) = signer.update(data.as_bytes()) {
+        queue_openssl_error(context, "openssl_sign", error.to_string());
+        return Ok(Value::Bool(false));
+    }
+    match signer.sign_to_vec() {
+        Ok(signature) => {
+            assign_reference_arg(args.get(1), Value::string(signature));
+            Ok(Value::Bool(true))
+        }
+        Err(error) => {
+            queue_openssl_error(context, "openssl_sign", error.to_string());
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_x509_read(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_x509_read", &args, 1)?;
+    match x509_from_value(context, "openssl_x509_read", &args[0], span)? {
+        Some(certificate) => match certificate.to_pem() {
+            Ok(pem) => Ok(Value::string(pem)),
+            Err(error) => {
+                queue_openssl_error(
+                    context,
+                    "openssl_x509_read",
+                    format!("Unable to export certificate: {error}"),
+                );
+                Ok(Value::Bool(false))
+            }
+        },
+        None => {
+            queue_openssl_error(context, "openssl_x509_read", "Unable to load certificate");
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_x509_parse(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin openssl_x509_parse expects one or two argument(s)",
+        ));
+    }
+    let Some(certificate) = x509_from_value(context, "openssl_x509_parse", &args[0], span)? else {
+        queue_openssl_error(context, "openssl_x509_parse", "Unable to load certificate");
+        return Ok(Value::Bool(false));
+    };
+    let mut parsed = PhpArray::new();
+    parsed.insert(
+        ArrayKey::String(PhpString::from("subject")),
+        Value::Array(x509_name_array(certificate.subject_name())),
+    );
+    parsed.insert(
+        ArrayKey::String(PhpString::from("issuer")),
+        Value::Array(x509_name_array(certificate.issuer_name())),
+    );
+    if let Ok(serial) = certificate
+        .serial_number()
+        .to_bn()
+        .and_then(|bn| bn.to_hex_str())
+    {
+        parsed.insert(
+            ArrayKey::String(PhpString::from("serialNumberHex")),
+            Value::string(serial.to_string()),
+        );
+    }
+    parsed.insert(
+        ArrayKey::String(PhpString::from("validFrom")),
+        Value::string(certificate.not_before().to_string()),
+    );
+    parsed.insert(
+        ArrayKey::String(PhpString::from("validTo")),
+        Value::string(certificate.not_after().to_string()),
+    );
+    Ok(Value::Array(parsed))
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_x509_check_private_key(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_x509_check_private_key", &args, 2)?;
+    let Some(certificate) = x509_from_value(
+        context,
+        "openssl_x509_check_private_key",
+        &args[0],
+        span.clone(),
+    )?
+    else {
+        queue_openssl_error(
+            context,
+            "openssl_x509_check_private_key",
+            "Unable to load certificate",
+        );
+        return Ok(Value::Bool(false));
+    };
+    let Some(private_key) =
+        private_key_from_value(context, "openssl_x509_check_private_key", &args[1], span)?
+    else {
+        queue_openssl_error(
+            context,
+            "openssl_x509_check_private_key",
+            "Unable to load private key",
+        );
+        return Ok(Value::Bool(false));
+    };
+    let cert_public = certificate
+        .public_key()
+        .and_then(|key| key.public_key_to_pem());
+    let private_public = private_key.public_key_to_pem();
+    Ok(Value::Bool(matches!(
+        (cert_public, private_public),
+        (Ok(left), Ok(right)) if left == right
+    )))
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_x509_verify(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_x509_verify", &args, 2)?;
+    let Some(certificate) =
+        x509_from_value(context, "openssl_x509_verify", &args[0], span.clone())?
+    else {
+        queue_openssl_error(context, "openssl_x509_verify", "Unable to load certificate");
+        return Ok(Value::Int(-1));
+    };
+    let Some(public_key) = public_key_from_value(context, "openssl_x509_verify", &args[1], span)?
+    else {
+        queue_openssl_error(context, "openssl_x509_verify", "Unable to load public key");
+        return Ok(Value::Int(-1));
+    };
+    match certificate.verify(&public_key) {
+        Ok(true) => Ok(Value::Int(1)),
+        Ok(false) => Ok(Value::Int(0)),
+        Err(error) => {
+            queue_openssl_error(context, "openssl_x509_verify", error.to_string());
+            Ok(Value::Int(-1))
+        }
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_openssl_error_string(
@@ -525,6 +1080,14 @@ fn message_digest_for_verify(
     context: &mut BuiltinContext<'_>,
     algorithm: Option<&Value>,
 ) -> Result<Option<MessageDigest>, BuiltinError> {
+    message_digest_for_function(context, "openssl_verify", algorithm)
+}
+
+fn message_digest_for_function(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    algorithm: Option<&Value>,
+) -> Result<Option<MessageDigest>, BuiltinError> {
     let digest = match algorithm.map(deref_value) {
         None => Some(MessageDigest::sha1()),
         Some(Value::Int(OPENSSL_ALGO_MD5)) => Some(MessageDigest::md5()),
@@ -535,26 +1098,21 @@ fn message_digest_for_verify(
         Some(Value::Int(OPENSSL_ALGO_SHA512)) => Some(MessageDigest::sha512()),
         Some(Value::Int(_)) => None,
         Some(value) => {
-            let algorithm = string_arg("openssl_verify", &value)?.to_string_lossy();
+            let algorithm = string_arg(function, &value)?.to_string_lossy();
             message_digest_for_name(&algorithm)
         }
     };
     if digest.is_none() {
-        queue_openssl_error(context, "openssl_verify", "Unknown digest algorithm");
+        queue_openssl_error(context, function, "Unknown digest algorithm");
     }
     Ok(digest)
 }
 
 fn message_digest_for_name(name: &str) -> Option<MessageDigest> {
-    match name.to_ascii_lowercase().replace('-', "").as_str() {
-        "md5" => Some(MessageDigest::md5()),
-        "sha1" => Some(MessageDigest::sha1()),
-        "sha224" => Some(MessageDigest::sha224()),
-        "sha256" => Some(MessageDigest::sha256()),
-        "sha384" => Some(MessageDigest::sha384()),
-        "sha512" => Some(MessageDigest::sha512()),
-        _ => None,
-    }
+    MessageDigest::from_name(name).or_else(|| {
+        let normalized = name.to_ascii_lowercase().replace('-', "");
+        MessageDigest::from_name(&normalized)
+    })
 }
 
 fn public_key_for_verify(
@@ -586,10 +1144,135 @@ fn public_key_for_verify(
     Ok(None)
 }
 
+fn openssl_input_bytes(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    value: &Value,
+    span: RuntimeSourceSpan,
+) -> Result<Option<Vec<u8>>, BuiltinError> {
+    let input = string_arg(function, value)?;
+    let input = input.to_string_lossy();
+    if let Some(path) = input.strip_prefix("file://") {
+        return match read_file_value(context, function, path, span)? {
+            Value::String(bytes) => Ok(Some(bytes.as_bytes().to_vec())),
+            _ => Ok(None),
+        };
+    }
+    Ok(Some(input.into_bytes()))
+}
+
+fn private_key_from_value(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    value: &Value,
+    span: RuntimeSourceSpan,
+) -> Result<Option<PKey<Private>>, BuiltinError> {
+    let (key_value, passphrase) = match deref_value(value) {
+        Value::Array(array) => {
+            let key = array
+                .get(&ArrayKey::Int(0))
+                .cloned()
+                .unwrap_or(Value::Bool(false));
+            let passphrase = array
+                .get(&ArrayKey::Int(1))
+                .map(|value| string_arg(function, value))
+                .transpose()?;
+            (key, passphrase)
+        }
+        value => (value, None),
+    };
+    let Some(bytes) = openssl_input_bytes(context, function, &key_value, span)? else {
+        return Ok(None);
+    };
+    if let Some(passphrase) = passphrase
+        && let Ok(key) = PKey::private_key_from_pem_passphrase(&bytes, passphrase.as_bytes())
+    {
+        return Ok(Some(key));
+    }
+    Ok(PKey::private_key_from_pem(&bytes).ok())
+}
+
+fn public_key_from_value(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    value: &Value,
+    span: RuntimeSourceSpan,
+) -> Result<Option<PKey<Public>>, BuiltinError> {
+    let Some(bytes) = openssl_input_bytes(context, function, value, span)? else {
+        return Ok(None);
+    };
+    if let Ok(public_key) = PKey::public_key_from_pem(&bytes) {
+        return Ok(Some(public_key));
+    }
+    if let Ok(private_key) = PKey::private_key_from_pem(&bytes)
+        && let Ok(public_pem) = private_key.public_key_to_pem()
+        && let Ok(public_key) = PKey::public_key_from_pem(&public_pem)
+    {
+        return Ok(Some(public_key));
+    }
+    if let Ok(certificate) = X509::from_pem(&bytes)
+        && let Ok(public_key) = certificate.public_key()
+    {
+        return Ok(Some(public_key));
+    }
+    Ok(None)
+}
+
+fn public_key_pem_from_value(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    value: &Value,
+    span: RuntimeSourceSpan,
+) -> Result<Option<Vec<u8>>, BuiltinError> {
+    Ok(public_key_from_value(context, function, value, span)?
+        .and_then(|public_key| public_key.public_key_to_pem().ok()))
+}
+
+fn x509_from_value(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    value: &Value,
+    span: RuntimeSourceSpan,
+) -> Result<Option<X509>, BuiltinError> {
+    let Some(bytes) = openssl_input_bytes(context, function, value, span)? else {
+        return Ok(None);
+    };
+    Ok(X509::from_pem(&bytes).ok())
+}
+
+fn openssl_pkey_option_int(options: Option<&Value>, name: &str) -> Option<i64> {
+    let Some(Value::Array(options)) = options.map(deref_value) else {
+        return None;
+    };
+    options
+        .get(&ArrayKey::String(PhpString::from(name)))
+        .and_then(|value| int_arg("openssl_pkey_new", value).ok())
+}
+
+fn x509_name_array(name: &X509NameRef) -> PhpArray {
+    let mut array = PhpArray::new();
+    for entry in name.entries() {
+        let Ok(short_name) = entry.object().nid().short_name() else {
+            continue;
+        };
+        let Ok(data) = entry.data().to_string() else {
+            continue;
+        };
+        array.insert(
+            ArrayKey::String(PhpString::from(short_name)),
+            Value::string(data),
+        );
+    }
+    array
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputBuffer;
+    use crate::{OutputBuffer, ReferenceCell};
+    use ::openssl::asn1::{Asn1Integer, Asn1Time};
+    use ::openssl::bn::BigNum;
+    use ::openssl::x509::{X509Builder, X509NameBuilder};
 
     #[test]
     fn openssl_digest_covers_common_hash_methods() {
@@ -614,6 +1297,26 @@ mod tests {
             .expect("unsupported digest"),
             Value::Bool(false)
         );
+    }
+
+    #[test]
+    fn openssl_random_pseudo_bytes_sets_strong_result_reference() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let strong_result = ReferenceCell::new(Value::Null);
+
+        let bytes = builtin_openssl_random_pseudo_bytes(
+            &mut context,
+            vec![Value::Int(8), Value::Reference(strong_result.clone())],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("random bytes");
+
+        let Value::String(bytes) = bytes else {
+            panic!("expected random byte string");
+        };
+        assert_eq!(bytes.as_bytes().len(), 8);
+        assert_eq!(strong_result.get(), Value::Bool(true));
     }
 
     #[test]
@@ -746,6 +1449,218 @@ mod tests {
             builtin_openssl_error_string(&mut context, vec![], RuntimeSourceSpan::default())
                 .expect("drained queue"),
             Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn openssl_generated_key_exports_signs_and_verifies() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let mut options = PhpArray::new();
+        options.insert(
+            ArrayKey::String(PhpString::from("private_key_bits")),
+            Value::Int(1024),
+        );
+
+        let private_key = builtin_openssl_pkey_new(
+            &mut context,
+            vec![Value::Array(options)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("pkey_new");
+        let Value::String(private_key_pem) = private_key.clone() else {
+            panic!("expected generated private key PEM");
+        };
+        assert!(
+            private_key_pem
+                .to_string_lossy()
+                .contains("BEGIN PRIVATE KEY")
+        );
+
+        let exported = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            builtin_openssl_pkey_export(
+                &mut context,
+                vec![
+                    private_key.clone(),
+                    Value::Reference(exported.clone()),
+                    Value::Null,
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("pkey_export"),
+            Value::Bool(true)
+        );
+        assert!(matches!(exported.get(), Value::String(_)));
+
+        let public_key = builtin_openssl_pkey_get_public(
+            &mut context,
+            vec![private_key.clone()],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("pkey public");
+        let details = builtin_openssl_pkey_get_details(
+            &mut context,
+            vec![private_key.clone()],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("pkey details");
+        let Value::Array(details) = details else {
+            panic!("expected key details");
+        };
+        assert_eq!(
+            details.get(&ArrayKey::String(PhpString::from("type"))),
+            Some(&Value::Int(OPENSSL_KEYTYPE_RSA))
+        );
+
+        let signature = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            builtin_openssl_sign(
+                &mut context,
+                vec![
+                    Value::string("payload"),
+                    Value::Reference(signature.clone()),
+                    private_key,
+                    Value::Int(OPENSSL_ALGO_SHA256),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("sign"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            builtin_openssl_verify(
+                &mut context,
+                vec![
+                    Value::string("payload"),
+                    signature.get(),
+                    public_key,
+                    Value::Int(OPENSSL_ALGO_SHA256),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("verify generated signature"),
+            Value::Int(1)
+        );
+    }
+
+    #[test]
+    fn openssl_aes_gcm_roundtrips_with_tag_and_aad() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let tag = ReferenceCell::new(Value::Null);
+        let encrypted = builtin_openssl_encrypt(
+            &mut context,
+            vec![
+                Value::string("secret"),
+                Value::string("aes-128-gcm"),
+                Value::string("0123456789abcdef"),
+                Value::Int(OPENSSL_RAW_DATA),
+                Value::string("123456789012"),
+                Value::Reference(tag.clone()),
+                Value::string("aad"),
+                Value::Int(12),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("gcm encrypt");
+        let Value::String(tag_bytes) = tag.get() else {
+            panic!("expected gcm tag");
+        };
+        assert_eq!(tag_bytes.as_bytes().len(), 12);
+        assert_eq!(
+            builtin_openssl_decrypt(
+                &mut context,
+                vec![
+                    encrypted,
+                    Value::string("aes-128-gcm"),
+                    Value::string("0123456789abcdef"),
+                    Value::Int(OPENSSL_RAW_DATA),
+                    Value::string("123456789012"),
+                    Value::string(tag_bytes.as_bytes().to_vec()),
+                    Value::string("aad"),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("gcm decrypt"),
+            Value::string("secret")
+        );
+    }
+
+    #[test]
+    fn openssl_x509_reads_parses_checks_and_verifies_generated_cert() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let private_key = PKey::from_rsa(Rsa::generate(1024).expect("rsa")).expect("pkey");
+        let mut name = X509NameBuilder::new().expect("name builder");
+        name.append_entry_by_text("CN", "phrust.test")
+            .expect("subject CN");
+        let name = name.build();
+        let mut builder = X509Builder::new().expect("cert builder");
+        builder.set_version(2).expect("version");
+        let serial_bn = BigNum::from_u32(1).expect("serial bn");
+        let serial = Asn1Integer::from_bn(&serial_bn).expect("serial");
+        builder.set_serial_number(&serial).expect("serial set");
+        builder.set_subject_name(&name).expect("subject");
+        builder.set_issuer_name(&name).expect("issuer");
+        builder.set_pubkey(&private_key).expect("pubkey");
+        let not_before = Asn1Time::days_from_now(0).expect("not before");
+        let not_after = Asn1Time::days_from_now(1).expect("not after");
+        builder.set_not_before(&not_before).expect("not before set");
+        builder.set_not_after(&not_after).expect("not after set");
+        builder
+            .sign(&private_key, MessageDigest::sha256())
+            .expect("sign cert");
+        let certificate_pem = builder.build().to_pem().expect("cert pem");
+        let private_key_pem = private_key
+            .private_key_to_pem_pkcs8()
+            .expect("private key pem");
+        let certificate = Value::string(certificate_pem.clone());
+
+        let read = builtin_openssl_x509_read(
+            &mut context,
+            vec![certificate.clone()],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("x509 read");
+        assert!(matches!(read, Value::String(_)));
+        let parsed = builtin_openssl_x509_parse(
+            &mut context,
+            vec![certificate.clone()],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("x509 parse");
+        let Value::Array(parsed) = parsed else {
+            panic!("expected parsed cert");
+        };
+        assert!(
+            parsed
+                .get(&ArrayKey::String(PhpString::from("subject")))
+                .is_some()
+        );
+        assert_eq!(
+            builtin_openssl_x509_check_private_key(
+                &mut context,
+                vec![certificate.clone(), Value::string(private_key_pem.clone())],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("x509 check private key"),
+            Value::Bool(true)
+        );
+        let public_key = builtin_openssl_pkey_get_public(
+            &mut context,
+            vec![Value::string(private_key_pem)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("public key");
+        assert_eq!(
+            builtin_openssl_x509_verify(
+                &mut context,
+                vec![Value::string(certificate_pem), public_key],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("x509 verify"),
+            Value::Int(1)
         );
     }
 }

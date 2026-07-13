@@ -1,6 +1,6 @@
 # Modifier Model
 
-Work item adds a semantic modifier layer without moving PHP modifier semantics
+The semantic frontend provides a semantic modifier layer without moving PHP modifier semantics
 into the parser.
 
 ## HIR Surface

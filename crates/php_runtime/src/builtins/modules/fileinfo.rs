@@ -53,9 +53,28 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 ];
 
 pub(in crate::builtins::modules) const FILEINFO_NONE: i64 = 0;
+const FILEINFO_SYMLINK: i64 = 2;
+const FILEINFO_DEVICES: i64 = 8;
 pub(in crate::builtins::modules) const FILEINFO_MIME_TYPE: i64 = 16;
+const FILEINFO_CONTINUE: i64 = 32;
+const FILEINFO_PRESERVE_ATIME: i64 = 128;
+const FILEINFO_RAW: i64 = 256;
 pub(in crate::builtins::modules) const FILEINFO_MIME_ENCODING: i64 = 1024;
 pub(in crate::builtins::modules) const FILEINFO_MIME: i64 = 1040;
+const FILEINFO_APPLE: i64 = 2048;
+const FILEINFO_EXTENSION: i64 = 16_777_216;
+
+const GENERATED_FILEINFO_FLAGS: i64 = FILEINFO_NONE
+    | FILEINFO_SYMLINK
+    | FILEINFO_DEVICES
+    | FILEINFO_MIME_TYPE
+    | FILEINFO_CONTINUE
+    | FILEINFO_PRESERVE_ATIME
+    | FILEINFO_RAW
+    | FILEINFO_MIME_ENCODING
+    | FILEINFO_MIME
+    | FILEINFO_APPLE
+    | FILEINFO_EXTENSION;
 
 type MagicHandle = *mut c_void;
 
@@ -133,6 +152,11 @@ impl MagicDetector {
     }
 }
 
+pub fn validate_fileinfo_options(flags: i64, magic_file: Option<&str>) -> Result<(), String> {
+    let _generated_flags_present = flags & GENERATED_FILEINFO_FLAGS;
+    MagicDetector::open(flags, magic_file).map(drop)
+}
+
 impl Drop for MagicDetector {
     fn drop(&mut self) {
         // SAFETY: `handle` is owned by this wrapper and closed exactly once.
@@ -201,14 +225,14 @@ fn builtin_finfo_buffer(
         .map(|value| int_arg("finfo_buffer", value))
         .transpose()?
         .unwrap_or(resource_flags);
-    Ok(Value::string(detect_buffer_mime(
+    detect_buffer_mime(
         context,
         data.as_bytes(),
         None,
         flags,
         magic_file.as_deref(),
         span,
-    )))
+    )
 }
 
 fn builtin_finfo_file(
@@ -365,7 +389,7 @@ fn fileinfo_object_with_options(flags: i64, magic_file: Option<String>) -> Objec
 
 fn fileinfo_runtime_class() -> ClassEntry {
     ClassEntry {
-        name: "finfo".to_owned(),
+        name: "finfo".to_owned().into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -426,14 +450,14 @@ fn mime_for_file(
         }
     }
     match read_file_value(context, name, path, span.clone())? {
-        Value::String(bytes) => Ok(Value::string(detect_buffer_mime(
+        Value::String(bytes) => detect_buffer_mime(
             context,
             bytes.as_bytes(),
             Some(path),
             flags,
             magic_file,
             span,
-        ))),
+        ),
         _ => Ok(Value::Bool(false)),
     }
 }
@@ -445,122 +469,14 @@ fn detect_buffer_mime(
     flags: i64,
     magic_file: Option<&str>,
     span: RuntimeSourceSpan,
-) -> String {
+) -> BuiltinResult {
     match MagicDetector::open(flags, magic_file).and_then(|detector| detector.buffer(bytes)) {
-        Ok(value) => {
-            let fallback = format_mime(mime_for_bytes(bytes, path), flags);
-            if is_inconclusive_magic_result(&value) && !is_inconclusive_magic_result(&fallback) {
-                fallback
-            } else {
-                value
-            }
-        }
+        Ok(value) => Ok(Value::string(value)),
         Err(message) => {
             context.php_warning("E_PHP_RUNTIME_FILEINFO_MAGIC", message, span);
-            format_mime(mime_for_bytes(bytes, path), flags)
+            let _ = path;
+            Ok(Value::Bool(false))
         }
-    }
-}
-
-fn is_inconclusive_magic_result(value: &str) -> bool {
-    value == "application/octet-stream" || value == "application/octet-stream; charset=binary"
-}
-
-pub(in crate::builtins::modules) fn mime_for_bytes(
-    bytes: &[u8],
-    path: Option<&str>,
-) -> &'static str {
-    let trimmed = bytes
-        .iter()
-        .copied()
-        .skip_while(|byte| byte.is_ascii_whitespace())
-        .collect::<Vec<_>>();
-    if bytes.starts_with(b"\xFF\xD8\xFF") {
-        "image/jpeg"
-    } else if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
-        "image/png"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        "image/webp"
-    } else if bytes.len() >= 12 && &bytes[4..12] == b"ftypavif" {
-        "image/avif"
-    } else if bytes.starts_with(b"%PDF-") {
-        "application/pdf"
-    } else if bytes.starts_with(b"PK\x03\x04")
-        || bytes.starts_with(b"PK\x05\x06")
-        || bytes.starts_with(b"PK\x07\x08")
-    {
-        "application/zip"
-    } else if is_svg_document(&trimmed) {
-        "image/svg+xml"
-    } else if trimmed.starts_with(b"{") || trimmed.starts_with(b"[") {
-        "application/json"
-    } else if trimmed.starts_with(b"<?xml") {
-        "text/xml"
-    } else if is_likely_text(bytes) {
-        "text/plain"
-    } else {
-        path.and_then(mime_from_extension)
-            .unwrap_or("application/octet-stream")
-    }
-}
-
-fn is_svg_document(trimmed: &[u8]) -> bool {
-    if starts_with_svg_tag(trimmed) {
-        return true;
-    }
-    let Some(after_declaration) = trimmed.strip_prefix(b"<?xml") else {
-        return false;
-    };
-    let Some(end) = after_declaration
-        .windows(2)
-        .position(|window| window == b"?>")
-    else {
-        return false;
-    };
-    starts_with_svg_tag(after_declaration[end + 2..].trim_ascii_start())
-}
-
-fn starts_with_svg_tag(bytes: &[u8]) -> bool {
-    bytes.len() >= 4
-        && bytes[0] == b'<'
-        && bytes[1].eq_ignore_ascii_case(&b's')
-        && bytes[2].eq_ignore_ascii_case(&b'v')
-        && bytes[3].eq_ignore_ascii_case(&b'g')
-        && bytes
-            .get(4)
-            .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>')
-}
-
-fn is_likely_text(bytes: &[u8]) -> bool {
-    !bytes.is_empty()
-        && bytes
-            .iter()
-            .all(|byte| matches!(*byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e) || *byte >= 0x80)
-}
-
-fn mime_from_extension(path: &str) -> Option<&'static str> {
-    match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "avif" => Some("image/avif"),
-        "pdf" => Some("application/pdf"),
-        "txt" => Some("text/plain"),
-        "json" => Some("application/json"),
-        "zip" => Some("application/zip"),
-        "svg" => Some("image/svg+xml"),
-        _ => None,
-    }
-}
-
-fn format_mime(mime: &str, flags: i64) -> String {
-    match flags {
-        FILEINFO_MIME => format!("{mime}; charset=binary"),
-        FILEINFO_MIME_ENCODING => "binary".to_owned(),
-        _ => mime.to_owned(),
     }
 }
 
@@ -998,28 +914,6 @@ mod tests {
     }
 
     #[test]
-    fn mime_for_bytes_distinguishes_svg_from_generic_xml() {
-        assert_eq!(
-            mime_for_bytes(
-                br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>"#,
-                None,
-            ),
-            "image/svg+xml"
-        );
-        assert_eq!(
-            mime_for_bytes(
-                br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>"#,
-                None,
-            ),
-            "image/svg+xml"
-        );
-        assert_eq!(
-            mime_for_bytes(br#"<?xml version="1.0"?><root></root>"#, None),
-            "text/xml"
-        );
-    }
-
-    #[test]
     fn finfo_object_uses_libmagic_flags_for_buffers() {
         let registry = BuiltinRegistry::new();
         let open = registry.get("finfo_open").expect("finfo_open exists");
@@ -1048,5 +942,69 @@ mod tests {
         )
         .expect("detect buffer");
         assert_eq!(detected, Value::string("text/plain"));
+    }
+
+    #[test]
+    fn fileinfo_does_not_guess_from_extension_when_libmagic_is_available() {
+        let registry = BuiltinRegistry::new();
+        let open = registry.get("finfo_open").expect("finfo_open exists");
+        let file = registry.get("finfo_file").expect("finfo_file exists");
+        let temp = std::env::temp_dir().join(format!(
+            "phrust-fileinfo-binary-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&temp, [0_u8, 1, 2, 3, 4]).expect("write fixture");
+        let root = temp
+            .parent()
+            .expect("temp fixture has parent directory")
+            .to_path_buf();
+
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::with_runtime(
+            &mut output,
+            ".",
+            FilesystemCapabilities::none().with_allowed_roots(vec![root]),
+            None,
+        );
+        let finfo = (open.function())(
+            &mut context,
+            vec![Value::Int(FILEINFO_MIME_TYPE)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("open finfo object");
+        let detected = (file.function())(
+            &mut context,
+            vec![
+                finfo,
+                Value::string(temp.to_string_lossy().into_owned()),
+                Value::Int(FILEINFO_MIME_TYPE),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("detect file");
+        let _ = std::fs::remove_file(&temp);
+
+        assert_eq!(detected, Value::string("application/octet-stream"));
+    }
+
+    #[test]
+    fn finfo_open_rejects_invalid_magic_database_path() {
+        let registry = BuiltinRegistry::new();
+        let open = registry.get("finfo_open").expect("finfo_open exists");
+        let mut output = OutputBuffer::new();
+        let mut context =
+            BuiltinContext::with_runtime(&mut output, ".", FilesystemCapabilities::none(), None);
+
+        let result = (open.function())(
+            &mut context,
+            vec![
+                Value::Int(FILEINFO_MIME_TYPE),
+                Value::string("/path/to/missing/magic.mgc"),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("invalid magic path returns false");
+
+        assert_eq!(result, Value::Bool(false));
     }
 }

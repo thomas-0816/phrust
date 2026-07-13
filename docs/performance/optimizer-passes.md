@@ -28,6 +28,64 @@ baseline by `optimizer-diff`, `performance-regression`, and `perf-flag-matrix`.
 | CFG cleanup | Simplifies constant branches, forwards empty blocks, and trims unreachable empty tails. | Must preserve exception boundaries, source maps, and verifier-valid definitions. |
 | Literal pooling/string interning | Reuses immutable literals through existing IR/runtime mechanisms. | Must not expose identity changes through PHP-visible mutation or references. |
 
+## Verification And Rollback Ownership
+
+`PassPipeline` is the sole owner of optimizer verification and rollback. It
+verifies the incoming unit once, then verifies each pass whose transaction has
+an observable change exactly once before commit. Pass implementations do not
+call the verifier and read-only or net-unchanged passes are not verified again.
+
+Each pass receives a `PassTransaction`. Mutation is copy-on-first-write at the
+smallest supported rollback scope: one function, the constant pool, the class
+table, or the global constant table. A pass error or failed verification drops
+or explicitly rolls back that scope. There is no complete `IrUnit` clone or
+serialization fallback in the transaction path.
+
+The JSON optimizer report exposes both a typed `scope` and deterministic
+statistics for every pass:
+
+- `scope.functions` and `scope.blocks` identify indexed IR regions.
+- `scope.constants` and `scope.metadata` identify unit tables.
+- `scope.source_mappings_may_change` is false because the transaction does not
+  expose source-map mutation.
+- `scope_snapshots` and `snapshot_bytes` report snapshot count and estimated
+  retained bytes. The byte count includes owned function instructions, locals,
+  and string constants; it is an estimate rather than allocator telemetry.
+- `verifier_calls` is zero for unchanged passes and one for changed passes.
+
+Pass order remains the order declared by `PassPipeline::performance`. Reports,
+scope indexes, metadata names, and statistics use stable vector or ordered-map
+representations.
+
+## Architecture And Measurement Baseline
+
+The pre-transaction implementation kept optimizer pipeline, passes, analyses,
+reports, and tests in one 3,280-line `lib.rs`. Its production section contained
+seven unconditional full-unit clone sites and eight verifier call sites,
+including pass-local verification plus pipeline phase verification. The current
+layout keeps the public surface in `lib.rs`, with separate `pipeline.rs`,
+`transaction.rs`, `reports.rs`, and `passes/` modules. The largest production
+optimizer module is below 500 lines.
+
+`just optimizer-diff` is the retained regression benchmark for small optimizer
+fixtures, selected medium runtime/stdlib fixtures, and the configured
+application corpus. In addition to output, diagnostics, exit status, and runtime
+counters, it archives each compile report under
+`target/performance/optimizer-diff/optimizer-reports/` and fails these ownership
+invariants:
+
+- a no-op pass creates a snapshot or reports a mutation scope;
+- an unchanged pass invokes the verifier;
+- a changed pass invokes the verifier other than exactly once.
+
+Aggregate snapshot bytes, snapshot counts, verifier calls, and transformations
+are written to `target/performance/optimizer-diff/summary.json`. Use
+`just architecture-performance-baseline --scope compile --scope benchmarks`
+when wall time, peak RSS, and incremental compile measurements are required;
+the compiler row runs `optimizer-diff`, while the WordPress row runs the pinned
+WordPress root benchmark. Generated reports stay under `target/` and are not
+committed.
+
 ## Validation
 
 Use the narrow gate while iterating:
@@ -46,7 +104,8 @@ nix develop -c just verify-performance
 ```
 
 `optimizer-diff` compares opt levels 0, 1, and 2 across optimizer fixtures and
-prints clear differences if stdout, stderr, exit status, or diagnostics diverge.
+prints clear differences if stdout, stderr, exit status, diagnostics, or
+optimizer transaction invariants diverge.
 
 ## Troubleshooting
 

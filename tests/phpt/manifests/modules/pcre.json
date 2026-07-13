@@ -1,17 +1,16 @@
 {
   "schema_version":"phpt-module-plan-v1",
   "module":"pcre",
-  "priority":18.6,
+  "priority":18,
   "selected_manifest":"tests/phpt/manifests/modules/pcre.selected.jsonl",
   "corpus_count":165,
-  "selected_count":173,
-  "pass_count":163,
-  "skip_count":10,
+  "pass_count":158,
+  "skip_count":7,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":0,
-  "scope":["preg_match captures and offsets","preg_match and preg_match_all negative offset normalization","preg_match and preg_match_all PHP_INT_MIN offset ValueError parity","preg_match and preg_match_all UTF-8 codepoint-boundary offset errors","preg_match and preg_match_all /u matching after invalid UTF-8 prefixes when the requested offset starts a valid suffix","preg_match, preg_match_all, and preg_replace_callback PCRE MARK match-array parity","preg_match, preg_replace, preg_split, and preg_grep malformed UTF-8 subject diagnostics","preg_match and preg_match_all pcre.backtrack_limit and pcre.recursion_limit failures","preg_match_all non-variable matches by-reference fatal shape","preg_split and preg_match_all UTF-8 character iteration with htmlentities entity rendering","preg_replace and preg_match_all UTF-8 lookbehind behavior","preg_match_all set-order captures","preg_match and preg_match_all PREG_* flag validation","preg_match and preg_match_all named duplicate capture precedence, named assignment stability, and trailing unmatched capture trimming","preg_match and preg_match_all pattern argument TypeError parity","preg_match_all, preg_replace, and preg_split zero-width \\K bump-along parity","preg_last_error state","PCRE version and JIT constants","PHP-compatible PCRE JIT stack sizing","PCRE request-shutdown safety under user stream wrapper close callbacks","paired delimiter parsing with nesting","preg_match malformed-pattern warning and last-error parity","preg_match stringable pattern and subject coercion with @-suppressed compile warnings","preg_match whitespace delimiter and empty-pattern diagnostics","preg_match NUL-byte delimiter and modifier diagnostics","PCRE2 compile-warning PHP text normalization","PHP delimiter modifier handling for A, D, J, n, r, U, S, X, and whitespace tails","preg_replace replacement/count MVP","preg_replace PHP backreference token parsing","preg_replace invalid-pattern warning and null result parity","preg_replace malformed-character-class compile-error parity","preg_replace array-pattern and array-replacement type parity","preg_replace failing-pattern array parity","preg_split flags, recursion-limit, empty delimiter capture, and zero-width \\K limit parity","preg_grep MVP and array element string-cast warnings without input mutation","preg_quote delimiter and NUL-byte escaping","preg_replace_callback named function, closure, invalid-callable dispatch, array-pattern dispatch, nested-array subject string-cast warnings, runtime redeclaration fatal output, array/method trampoline dispatch through __call, and array-subject warning/type ordering","preg_replace_callback invalid-pattern warnings and null return parity","preg_replace_callback PREG_OFFSET_CAPTURE and PREG_UNMATCHED_AS_NULL flags","preg_replace_callback_array function, closure, and array/method trampoline dispatch","preg_replace_callback_array invalid-pattern, callback-map TypeError, and callback-key TypeError parity","preg_replace_callback_array PREG_OFFSET_CAPTURE and PREG_UNMATCHED_AS_NULL flags","preg_filter replacement filtering"],
-  "non_scope":["PCRE callout parity","remaining byte-perfect warning text","locale-sensitive ctype behavior","remaining malformed-pattern diagnostics"],
-  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pcre"],
-  "next_step":"Keep the full pcre module gate green while expanding callout, byte-perfect warning text, malformed-pattern diagnostic, and locale-sensitive ctype coverage."
+  "scope":["preg_* builtins backed by PCRE2"],
+  "non_scope":["PCRE JIT/callout parity"],
+  "target_gates":["nix develop -c just phpt-module MODULE=pcre"],
+  "next_step":"Use PCRE2 while documenting unsupported modifier/callout gaps."
 }

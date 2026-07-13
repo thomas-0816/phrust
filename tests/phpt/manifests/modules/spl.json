@@ -4,13 +4,13 @@
   "priority":20,
   "selected_manifest":"tests/phpt/manifests/modules/spl.selected.jsonl",
   "corpus_count":520,
-  "pass_count":39,
+  "pass_count":306,
   "skip_count":3,
-  "fail_count":478,
+  "fail_count":211,
   "bork_count":0,
-  "known_failure_count":493,
-  "scope":["core SPL interfaces and common collections","generated SPL MVP submodule fixtures"],
+  "known_failure_count":211,
+  "scope":["core SPL interfaces and common collections"],
   "non_scope":["full SPL API parity"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=spl"],
+  "target_gates":["nix develop -c just phpt-module MODULE=spl"],
   "next_step":"Build on stable object, array, iterator, and filesystem layers."
 }

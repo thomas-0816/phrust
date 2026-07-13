@@ -1,6 +1,6 @@
 # Performance Experimental Release Build Profiles
 
-Work item is intentionally optional. The default debug/dev workflow and
+The performance layer is intentionally optional. The default debug/dev workflow and
 standard Cargo profiles stay unchanged; release-profile experiments are local
 measurement recipes only.
 

@@ -19,7 +19,7 @@ argument validation are semantic diagnostics.
 
 ## Fixtures
 
-Work item adds:
+The semantic frontend provides:
 
 - `fixtures/semantic/attributes/class.php`
 - `fixtures/semantic/attributes/function.php`

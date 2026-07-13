@@ -1,7 +1,9 @@
 //! Deterministic LDAP facade with explicit no-backend behavior.
 
 use super::core::{argument_type_error, arity_error, assign_reference_arg, int_arg, string_arg};
-use crate::builtins::{BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult};
+use crate::builtins::{
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, LdapSearchScope,
+};
 use crate::{
     ArrayKey, BuiltinError, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString,
     RuntimeSourceSpan, Value, normalize_class_name,
@@ -163,7 +165,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_ldap_get_values,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("ldap_list", builtin_ldap_query, BuiltinCompatibility::Php),
+    BuiltinEntry::new("ldap_list", builtin_ldap_list, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "ldap_mod_add",
         builtin_ldap_mutation_bool,
@@ -234,7 +236,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_ldap_parse_result,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("ldap_read", builtin_ldap_query, BuiltinCompatibility::Php),
+    BuiltinEntry::new("ldap_read", builtin_ldap_read, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "ldap_rename",
         builtin_ldap_mutation_bool,
@@ -250,7 +252,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_ldap_bind,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("ldap_search", builtin_ldap_query, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "ldap_search",
+        builtin_ldap_search,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "ldap_set_option",
         builtin_ldap_set_option,
@@ -321,9 +327,17 @@ fn builtin_ldap_bind(
     }
     let id = ldap_connection_id_arg("ldap_bind", &args[0])?;
     ensure_ldap_open(context, id, "ldap_bind")?;
-    validate_optional_string_args("ldap_bind", &args[1..])?;
+    let bind_dn = optional_string_arg("ldap_bind", args.get(1))?.unwrap_or_default();
+    let password = optional_string_arg("ldap_bind", args.get(2))?.unwrap_or_default();
     set_backend_unavailable(context, id, "ldap_bind");
-    Ok(Value::Bool(false))
+    let Some(uri) = configured_live_ldap_uri(context, id) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(
+        context
+            .ldap_state()
+            .bind_backend(id, &uri, &bind_dn, &password),
+    ))
 }
 
 fn builtin_ldap_bind_ext(
@@ -339,18 +353,51 @@ fn builtin_ldap_bind_ext(
     Ok(Value::Object(ldap_result_object(result_id)))
 }
 
-fn builtin_ldap_query(
+fn builtin_ldap_list(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    builtin_ldap_query(context, args, LdapSearchScope::OneLevel, "ldap_list")
+}
+
+fn builtin_ldap_read(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    builtin_ldap_query(context, args, LdapSearchScope::Base, "ldap_read")
+}
+
+fn builtin_ldap_search(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    builtin_ldap_query(context, args, LdapSearchScope::Subtree, "ldap_search")
+}
+
+fn builtin_ldap_query(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    scope: LdapSearchScope,
+    function: &'static str,
+) -> BuiltinResult {
     if args.len() < 3 || args.len() > 9 {
-        return Err(arity_error("ldap_search", "three to nine arguments"));
+        return Err(arity_error(function, "three to nine arguments"));
     }
-    let id = ldap_connection_id_arg("ldap_search", &args[0])?;
-    ensure_ldap_open(context, id, "ldap_search")?;
-    let _ = string_arg("ldap_search", &args[1])?;
-    let _ = string_arg("ldap_search", &args[2])?;
+    let id = ldap_connection_id_arg(function, &args[0])?;
+    ensure_ldap_open(context, id, function)?;
+    let base = string_arg(function, &args[1])?.to_string();
+    let filter = string_arg(function, &args[2])?.to_string();
+    let attributes = ldap_search_attributes(function, args.get(3))?;
+    if let Some(uri) = configured_live_ldap_uri(context, id)
+        && let Some(result_id) = context
+            .ldap_state()
+            .search_backend(id, &uri, &base, scope, &filter, attributes)
+    {
+        return Ok(Value::Object(ldap_result_object(result_id)));
+    }
     let result_id = context.ldap_state().empty_result();
     Ok(Value::Object(ldap_result_object(result_id)))
 }
@@ -877,14 +924,42 @@ fn builtin_ldap_exop_refresh(
     Ok(Value::Bool(false))
 }
 
-fn validate_optional_string_args(
+fn optional_string_arg(
     function: &'static str,
-    args: &[Value],
-) -> Result<(), BuiltinError> {
-    for value in args.iter().filter(|value| !matches!(value, Value::Null)) {
-        let _ = string_arg(function, value)?;
+    value: Option<&Value>,
+) -> Result<Option<String>, BuiltinError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => Ok(Some(string_arg(function, value)?.to_string())),
     }
-    Ok(())
+}
+
+fn ldap_search_attributes(
+    function: &'static str,
+    value: Option<&Value>,
+) -> Result<Vec<String>, BuiltinError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(attributes) => attributes
+            .iter()
+            .map(|(_, value)| string_arg(function, value).map(|value| value.to_string()))
+            .collect(),
+        value => Ok(vec![string_arg(function, value)?.to_string()]),
+    }
+}
+
+fn configured_live_ldap_uri(context: &mut BuiltinContext<'_>, id: i64) -> Option<String> {
+    let uri = context.ldap_state().connection_uri(id)?;
+    if !context.network_requests_enabled() {
+        return None;
+    }
+    context
+        .env_value("PHRUST_LDAP_LIVE_URI")
+        .is_some_and(|configured| configured == uri)
+        .then_some(uri)
 }
 
 fn ensure_ldap_open(
@@ -983,7 +1058,7 @@ fn ldap_entry_object(id: i64) -> ObjectRef {
 
 fn ldap_runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

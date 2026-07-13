@@ -77,7 +77,7 @@ def load_rust_registry() -> dict[str, dict[str, Any]]:
             "constants": {
                 symbol["name"]: {
                     "name": symbol["name"],
-                    "has_value": bool(symbol["has_value"]),
+                    "has_value": symbol["value"] is not None,
                 }
                 for symbol in extension["constants"]
             },

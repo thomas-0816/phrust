@@ -15,6 +15,7 @@
     "Imagick class surface metadata",
     "ReflectionClass extension/internal metadata",
     "WordPress image-editor selection method probes",
+    "common Imagick image method probes for read/write/blob/dimension/format/transform APIs",
     "fail-closed constructor backend gate"
   ],
   "non_scope": [

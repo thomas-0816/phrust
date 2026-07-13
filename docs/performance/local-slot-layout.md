@@ -1,6 +1,6 @@
 # Performance Local Slot Layout
 
-Work item is implemented on top of the existing Runtime VM frame model.
+The performance layer is implemented on top of the existing Runtime VM frame model.
 Compiled variables are already addressed by `LocalId` and stored in
 `Frame.locals: LocalFile`, where `LocalFile` is a fixed `Vec<Slot>`.
 

@@ -1,7 +1,7 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "sockets",
-  "priority": "Deterministic sockets loopback TCP subset",
+  "priority": "Deterministic sockets loopback and local stream subset",
   "selected_manifest": "tests/phpt/manifests/modules/sockets.selected.jsonl",
   "corpus_count": 1,
   "selected_count": 1,
@@ -13,15 +13,18 @@
   "scope": [
     "Socket class visibility",
     "IPv4 TCP loopback create/bind/listen/connect/accept",
+    "Unix-domain stream create/bind/listen/connect/accept where AF_UNIX is available",
     "Bidirectional socket_read/socket_write smoke",
     "Bidirectional socket_send/socket_recv smoke",
+    "socket_set_option/socket_get_option for SO_REUSEADDR and TCP_NODELAY",
     "Socket local and peer address reporting",
+    "Unix-domain local socket name reporting",
     "inet_pton/inet_ntop IPv4 roundtrip",
     "Socket shutdown and last-error helpers"
   ],
   "non_scope": [
     "External network access",
-    "UDP, Unix sockets, socket_select, options, nonblocking, timeouts, ancillary data, addrinfo helpers, stream import/export, and Windows helpers"
+    "UDP, socket_select, nonblocking, timeouts, ancillary data, addrinfo helpers, stream import/export, and Windows helpers"
   ],
   "target_gates": ["just phpt-dev-module MODULE=sockets"],
   "next_step": "Expand remaining socket_* functions behind deterministic loopback or host-capability gates."

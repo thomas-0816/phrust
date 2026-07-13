@@ -1,5 +1,5 @@
 --TEST--
-redis deterministic fake backend options, scan, and transaction mode
+redis constants, options, and mode state without fake cache success
 --SKIPIF--
 <?php if (!extension_loaded("redis")) die("skip redis extension not loaded"); ?>
 --FILE--
@@ -15,23 +15,15 @@ var_dump(Redis::SCAN_RETRY);
 var_dump(Redis::ATOMIC);
 var_dump(Redis::MULTI);
 var_dump(Redis::PIPELINE);
-var_dump($redis->pconnect("127.0.0.1"));
+var_dump($redis->pconnect("127.0.0.1", 1, 0.001));
 var_dump($redis->isConnected());
-var_dump($redis->ping());
 var_dump($redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP));
 var_dump($redis->getOption(Redis::OPT_SERIALIZER));
 var_dump($redis->setOption(Redis::OPT_COMPRESSION, Redis::COMPRESSION_NONE));
 var_dump($redis->getOption(Redis::OPT_COMPRESSION));
 var_dump($redis->setex("ttl", 30, "value"));
 var_dump($redis->expire("ttl", 60));
-var_dump($redis->persist("ttl"));
 var_dump($redis->ttl("ttl"));
-$redis->set("alpha", "one");
-$redis->set("beta", "two");
-$iterator = null;
-$scan = $redis->scan($iterator);
-sort($scan);
-var_dump($scan);
 var_dump($redis->getMode());
 var_dump($redis->multi() instanceof Redis);
 var_dump($redis->getMode());
@@ -55,25 +47,15 @@ int(1)
 int(0)
 int(1)
 int(2)
-bool(true)
-bool(true)
-string(5) "+PONG"
+bool(false)
+bool(false)
 bool(true)
 int(1)
 bool(true)
 int(0)
-bool(true)
-bool(true)
-bool(true)
-int(-1)
-array(3) {
-  [0]=>
-  string(5) "alpha"
-  [1]=>
-  string(4) "beta"
-  [2]=>
-  string(3) "ttl"
-}
+bool(false)
+bool(false)
+bool(false)
 int(0)
 bool(true)
 int(1)

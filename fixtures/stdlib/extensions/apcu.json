@@ -1,0 +1,151 @@
+{
+  "capabilities": [
+    "clock",
+    "process_shared_state"
+  ],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_add",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_cache_info",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_clear_cache",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_dec",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_delete",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_enabled",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_entry",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_exists",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_fetch",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_inc",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_sma_info",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "apcu"
+        }
+      ],
+      "name": "apcu_store",
+      "signature_gap": "APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    }
+  ],
+  "name": "apcu",
+  "schema_version": 1,
+  "state_slot": {
+    "factory": "create_state",
+    "type": "ApcuState"
+  },
+  "version": "5.1"
+}

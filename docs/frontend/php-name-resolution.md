@@ -3,7 +3,7 @@
 Semantic frontend implements PHP source-level name normalization and import resolution
 for a single analyzed file.
 
-## Work item Name Model
+## Name Model
 
 `php_semantics::hir::names` defines the source-level name representation used by
 later resolver passes:
@@ -30,7 +30,7 @@ uses ASCII lowercase canonical spelling for `NameKind::ClassLike`.
 
 Function names use case-insensitive global lookup. Namespace-local lookup,
 function-import handling, and runtime fallback are resolver concerns layered on
-top of the Work item model. `NameKind::Function` therefore also uses ASCII
+top of this model. `NameKind::Function` therefore also uses ASCII
 lowercase canonical spelling.
 
 Constants have their own rules. User-defined constants are not folded in this

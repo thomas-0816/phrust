@@ -572,7 +572,13 @@ fn exec_env(args: &[Value]) -> Result<Vec<CString>, BuiltinError> {
         pair.extend_from_slice(name.as_bytes());
         pair.push(b'=');
         pair.extend_from_slice(value.as_bytes());
-        values.push(CString::new(pair).expect("validated env name and value contain no nulls"));
+        values.push(CString::new(pair).map_err(|_| {
+            argument_value_error(
+                "pcntl_exec",
+                "#3 ($env_vars)",
+                "environment variable pair must not contain null bytes",
+            )
+        })?);
     }
     Ok(values)
 }

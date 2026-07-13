@@ -1,0 +1,445 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "GdImage"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "IMG_GIF",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMG_JPG",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMG_JPEG",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMG_PNG",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMG_WEBP",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IMG_AVIF",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "gd_info",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagealphablending",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecolorallocate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecolorallocatealpha",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecolortransparent",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecopy",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecopymerge",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecopyresampled",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecopyresized",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecreatefromjpeg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecreatefrompng",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecreatefromstring",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagecreatetruecolor",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagedestroy",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagefill",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagefilledrectangle",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imageflip",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagejpeg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imageline",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagepng",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagerectangle",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagerotate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagesavealpha",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagescale",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagesx",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagesy",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gd",
+        "source": "ext/gd/gd.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gd"
+        }
+      ],
+      "name": "imagetypes",
+      "visibility": "php"
+    }
+  ],
+  "name": "gd",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

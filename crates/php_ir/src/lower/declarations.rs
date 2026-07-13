@@ -28,7 +28,9 @@ pub(super) struct TraitMethodCandidate {
     pub(super) display_trait_name: String,
     pub(super) method_name: String,
     pub(super) display_method_name: String,
-    pub(super) signature: FunctionSignature,
+    pub(super) signature: Option<FunctionSignature>,
+    pub(super) function: Option<FunctionId>,
+    pub(super) attributes: Vec<AttributeEntry>,
     pub(super) flags: ClassMethodFlags,
 }
 
@@ -44,6 +46,7 @@ pub(super) struct TraitCompositionInput<'a> {
     pub(super) module: &'a HirModule,
     pub(super) trait_class_likes:
         &'a HashMap<String, (ClassLikeId, php_semantics::hir::HirClassLike)>,
+    pub(super) external_traits: &'a HashMap<String, ClassEntry>,
     pub(super) main_function: FunctionId,
     pub(super) class_like_id: ClassLikeId,
     pub(super) class_like: &'a php_semantics::hir::HirClassLike,
@@ -160,6 +163,12 @@ impl LoweringContext<'_> {
         builder: &mut IrBuilder,
         main_function: FunctionId,
     ) {
+        let external_traits = builder
+            .classes()
+            .iter()
+            .filter(|class| class.flags.is_trait)
+            .map(|class| (normalize_class_name(&class.name), class.clone()))
+            .collect::<HashMap<_, _>>();
         let Some(module) = self
             .frontend
             .database()
@@ -324,6 +333,7 @@ impl LoweringContext<'_> {
                 TraitCompositionInput {
                     module,
                     trait_class_likes: &trait_class_likes,
+                    external_traits: &external_traits,
                     main_function,
                     class_like_id,
                     class_like: &class_like,
@@ -1077,6 +1087,7 @@ impl LoweringContext<'_> {
         let TraitCompositionInput {
             module,
             trait_class_likes,
+            external_traits,
             main_function,
             class_like_id,
             class_like,
@@ -1097,39 +1108,101 @@ impl LoweringContext<'_> {
                 continue;
             };
             for trait_name in trait_use.traits() {
+                let display_trait_name = trait_name.source().to_owned();
                 let trait_name = trait_resolution_name(trait_name);
-                let Some((_trait_id, trait_class_like)) = trait_class_likes.get(&trait_name) else {
-                    self.unsupported(
-                        UnsupportedFeature::TraitRuntime,
-                        self.span_for(SourceMappedId::from(trait_use_id)),
-                        format!(
-                            "E_PHP_IR_TRAIT_NOT_FOUND: trait {trait_name} used by {class_name} is not declared"
-                        ),
+                if let Some((_trait_id, trait_class_like)) = trait_class_likes.get(&trait_name) {
+                    self.collect_trait_composition_members(
+                        builder,
+                        TraitCompositionMembersInput {
+                            module,
+                            trait_class_like,
+                            trait_name: &trait_name,
+                            class_name,
+                            display_class_name,
+                            class_constant_initializers,
+                            class_parents,
+                        },
+                        &mut candidates,
+                        properties,
                     );
                     continue;
-                };
-                self.collect_trait_composition_members(
-                    builder,
-                    TraitCompositionMembersInput {
-                        module,
-                        trait_class_like,
-                        trait_name: &trait_name,
-                        class_name,
-                        display_class_name,
-                        class_constant_initializers,
-                        class_parents,
-                    },
-                    &mut candidates,
-                    properties,
-                );
+                }
+                if let Some(external_trait) = external_traits.get(&trait_name) {
+                    for method in &external_trait.methods {
+                        candidates.push(TraitMethodCandidate {
+                            trait_name: normalize_class_name(&external_trait.name),
+                            display_trait_name: external_trait.display_name.clone(),
+                            method_name: method.name.clone(),
+                            display_method_name: method.name.clone(),
+                            signature: None,
+                            function: Some(method.function),
+                            attributes: method.attributes.clone(),
+                            flags: method.flags,
+                        });
+                    }
+                    for property in &external_trait.properties {
+                        if !properties
+                            .iter()
+                            .any(|existing| existing.name == property.name)
+                        {
+                            properties.push(property.clone());
+                        }
+                    }
+                    continue;
+                }
+                {
+                    let span = span_from_range(
+                        self.file,
+                        self.span_for(SourceMappedId::from(trait_use_id)),
+                    );
+                    let owner_kind = match class_like.kind() {
+                        ClassLikeKind::Class => MissingTraitOwnerKind::Class,
+                        ClassLikeKind::Interface => MissingTraitOwnerKind::Interface,
+                        ClassLikeKind::Trait => MissingTraitOwnerKind::Trait,
+                        ClassLikeKind::Enum => MissingTraitOwnerKind::Enum,
+                        ClassLikeKind::AnonymousClass => MissingTraitOwnerKind::AnonymousClass,
+                    };
+                    self.diagnostics.push(LoweringDiagnostic {
+                        id: UnsupportedFeature::TraitRuntime.diagnostic_id().to_string(),
+                        feature: UnsupportedFeature::TraitRuntime,
+                        span,
+                        message: format!(
+                            "E_PHP_IR_TRAIT_NOT_FOUND: trait {trait_name} used by {class_name} is not declared"
+                        ),
+                        payload: Some(LoweringDiagnosticPayload::MissingTrait(
+                            MissingTraitDiagnostic::new(
+                                &trait_name,
+                                display_trait_name,
+                                class_name,
+                                display_class_name,
+                                owner_kind,
+                                &self.options.source_path,
+                                span,
+                            ),
+                        )),
+                    });
+                    continue;
+                }
             }
+            let resolve_adaptation_trait = |name: &HirNameResolution| {
+                trait_use
+                    .traits()
+                    .iter()
+                    .find(|used| used.source().eq_ignore_ascii_case(name.source()))
+                    .map(trait_resolution_name)
+                    .unwrap_or_else(|| trait_resolution_name(name))
+            };
             for adaptation in trait_use.adaptations() {
                 let method_name = normalize_method_name(adaptation.method().method());
-                let trait_name = adaptation.method().trait_name().map(trait_resolution_name);
+                let trait_name = adaptation
+                    .method()
+                    .trait_name()
+                    .map(&resolve_adaptation_trait);
                 match adaptation.kind() {
                     HirTraitAdaptationKind::Precedence { instead_of } => {
                         for excluded in instead_of {
-                            removed.insert((trait_resolution_name(excluded), method_name.clone()));
+                            removed
+                                .insert((resolve_adaptation_trait(excluded), method_name.clone()));
                         }
                     }
                     HirTraitAdaptationKind::Alias { alias, visibility } => {
@@ -1160,6 +1233,7 @@ impl LoweringContext<'_> {
             }
         }
 
+        let original_candidates = candidates.clone();
         let mut composed = candidates
             .into_iter()
             .filter(|candidate| {
@@ -1172,7 +1246,12 @@ impl LoweringContext<'_> {
 
         for alias in aliases.into_iter().filter(|alias| alias.alias.is_some()) {
             let alias_name = alias.alias.clone().unwrap_or_default();
-            let matching = composed
+            let candidates = if alias.trait_name.is_some() {
+                &original_candidates
+            } else {
+                &composed
+            };
+            let matching = candidates
                 .iter()
                 .filter(|candidate| trait_alias_matches(&alias, candidate))
                 .cloned()
@@ -1215,24 +1294,34 @@ impl LoweringContext<'_> {
         }
 
         for candidate in composed {
-            let function = self.lower_method_function(
-                builder,
-                MethodFunctionInput {
-                    class_name,
-                    method_name: &candidate.method_name,
-                    display_class_name,
-                    display_method_name: &candidate.display_method_name,
-                    signature: &candidate.signature,
-                    class_constant_initializers,
-                    class_parents,
-                    main_function,
-                },
-            );
-            let attributes = self.lower_attributes_for_target_span(
-                builder,
-                AttributeTarget::Method,
-                candidate.signature.span(),
-            );
+            let (function, attributes) = if let Some(function) = candidate.function {
+                (function, candidate.attributes)
+            } else {
+                let signature = candidate
+                    .signature
+                    .as_ref()
+                    .expect("local trait candidate carries a signature");
+                (
+                    self.lower_method_function(
+                        builder,
+                        MethodFunctionInput {
+                            class_name,
+                            method_name: &candidate.method_name,
+                            display_class_name,
+                            display_method_name: &candidate.display_method_name,
+                            signature,
+                            class_constant_initializers,
+                            class_parents,
+                            main_function,
+                        },
+                    ),
+                    self.lower_attributes_for_target_span(
+                        builder,
+                        AttributeTarget::Method,
+                        signature.span(),
+                    ),
+                )
+            };
             methods.push(ClassMethodEntry {
                 name: candidate.method_name,
                 origin_class: candidate.display_trait_name,
@@ -1285,7 +1374,9 @@ impl LoweringContext<'_> {
                             .name()
                             .map(ToOwned::to_owned)
                             .unwrap_or_else(|| member.name().unwrap_or("method").to_owned()),
-                        signature,
+                        signature: Some(signature),
+                        function: None,
+                        attributes: Vec::new(),
                         flags: class_method_flags_from_modifiers(method.modifiers()),
                     });
                 }
@@ -1404,10 +1495,7 @@ impl LoweringContext<'_> {
         {
             map.insert(name, value);
         }
-        map.extend(define_constant_initializers_from_source(
-            self.source_text.as_str(),
-            &map,
-        ));
+        map.extend(define_constant_initializers_from_hir(module, &map));
         map
     }
 
@@ -1848,15 +1936,10 @@ impl LoweringContext<'_> {
     }
 
     pub(super) fn property_hooks_use_backing_storage(&self, property: &HirProperty) -> bool {
-        let Some(item) = property.items().first() else {
-            return false;
-        };
-        let needle = format!("->{}", local_name(item.name()));
-        property.hooks().iter().any(|hook| {
-            self.source_text
-                .slice(hook.span())
-                .is_some_and(|source| source.contains(&needle))
-        })
+        property
+            .hooks()
+            .iter()
+            .any(|hook| hook.uses_backing_storage())
     }
 
     pub(super) fn signature_for_expr(
@@ -1956,7 +2039,7 @@ impl LoweringContext<'_> {
                     return None;
                 }
                 match expr.kind() {
-                    HirExprKind::Variable { name } => {
+                    HirExprKind::Variable { name, .. } => {
                         let name = local_name(name).to_owned();
                         (!params.contains(&name)).then_some(name)
                     }
@@ -1975,10 +2058,8 @@ impl LoweringContext<'_> {
 
     pub(super) fn static_local_specs(
         &self,
-        stmt_id: StmtId,
-        initializers: &[ExprId],
+        locals: &[php_semantics::hir::HirStaticLocal],
     ) -> Vec<StaticLocalSpec> {
-        let stmt_span = self.span_for(SourceMappedId::from(stmt_id));
         let Some(module) = self
             .frontend
             .database()
@@ -1986,39 +2067,22 @@ impl LoweringContext<'_> {
         else {
             return Vec::new();
         };
-        let mut variables = module
-            .scopes()
+        locals
             .iter()
-            .flat_map(|(_, scope)| scope.statics().iter())
-            .filter_map(|binding| {
-                let variable = binding.variable();
-                range_contains(stmt_span, variable.span()).then(|| {
-                    (
-                        local_name(variable.name()).to_owned(),
-                        variable.span().start().to_usize(),
-                        variable.span().end().to_usize(),
-                    )
+            .filter_map(|local| {
+                let expression = module.expressions().get(local.variable)?;
+                let HirExprKind::Variable {
+                    name,
+                    sigil_count: 1,
+                    dynamic: None,
+                } = expression.kind()
+                else {
+                    return None;
+                };
+                Some(StaticLocalSpec {
+                    name: local_name(name).to_owned(),
+                    initializer: local.initializer,
                 })
-            })
-            .collect::<Vec<_>>();
-        variables.sort_by_key(|(_, start, _)| *start);
-        variables
-            .iter()
-            .enumerate()
-            .map(|(index, (name, _, end))| {
-                let next_start = variables
-                    .get(index + 1)
-                    .map(|(_, start, _)| *start)
-                    .unwrap_or_else(|| stmt_span.end().to_usize());
-                let initializer = initializers.iter().copied().find(|expr| {
-                    let span = self.span_for(SourceMappedId::from(*expr));
-                    let start = span.start().to_usize();
-                    start >= *end && start < next_start
-                });
-                StaticLocalSpec {
-                    name: name.clone(),
-                    initializer,
-                }
             })
             .collect()
     }

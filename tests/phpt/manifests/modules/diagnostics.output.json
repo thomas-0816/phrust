@@ -3,14 +3,14 @@
   "module":"diagnostics.output",
   "priority":6,
   "selected_manifest":"tests/phpt/manifests/modules/diagnostics.output.selected.jsonl",
-  "corpus_count":5,
-  "pass_count":5,
+  "corpus_count":0,
+  "pass_count":0,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":0,
   "scope":["warnings","notices","fatal formatting","display_errors","output channels"],
   "non_scope":["exact wording for intentionally unsupported extensions"],
-  "target_gates":["nix develop -c just phpt-module MODULE=diagnostics.output","nix develop -c just verify-runtime"],
-  "next_step":"Keep the selected diagnostic channel gate green while broader PHP wording parity is expanded through affected feature modules."
+  "target_gates":["nix develop -c just verify-runtime"],
+  "next_step":"Centralize runtime diagnostic rendering and continuation semantics."
 }

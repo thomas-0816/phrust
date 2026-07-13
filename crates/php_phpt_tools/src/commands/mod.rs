@@ -1261,6 +1261,7 @@ struct BaselineMetadata {
     corpus_count: usize,
     pass_count: usize,
     skip_count: usize,
+    xfail_count: usize,
     fail_count: usize,
     bork_count: usize,
     known_failure_count: usize,
@@ -1390,6 +1391,7 @@ impl BaselineMetadata {
             corpus_count: results.len(),
             pass_count: *outcomes.get("PASS").unwrap_or(&0),
             skip_count: *outcomes.get("SKIP").unwrap_or(&0),
+            xfail_count: *outcomes.get("XFAIL").unwrap_or(&0),
             fail_count: *outcomes.get("FAIL").unwrap_or(&0),
             bork_count: *outcomes.get("BORK").unwrap_or(&0),
             known_failure_count,
@@ -1406,6 +1408,7 @@ impl BaselineMetadata {
                 "  \"corpus_count\":{},\n",
                 "  \"pass_count\":{},\n",
                 "  \"skip_count\":{},\n",
+                "  \"xfail_count\":{},\n",
                 "  \"fail_count\":{},\n",
                 "  \"bork_count\":{},\n",
                 "  \"known_failure_count\":{},\n",
@@ -1417,6 +1420,7 @@ impl BaselineMetadata {
             self.corpus_count,
             self.pass_count,
             self.skip_count,
+            self.xfail_count,
             self.fail_count,
             self.bork_count,
             self.known_failure_count,
@@ -1431,6 +1435,12 @@ impl BaselineMetadata {
             corpus_count: extract_json_usize(source, "corpus_count")?,
             pass_count: extract_json_usize(source, "pass_count")?,
             skip_count: extract_json_usize(source, "skip_count")?,
+            // Older baselines predate XFAIL bookkeeping; absent means zero.
+            xfail_count: if source.contains("\"xfail_count\":") {
+                extract_json_usize(source, "xfail_count")?
+            } else {
+                0
+            },
             fail_count: extract_json_usize(source, "fail_count")?,
             bork_count: extract_json_usize(source, "bork_count")?,
             known_failure_count: extract_json_usize(source, "known_failure_count")?,
@@ -1974,6 +1984,7 @@ fn phpt_result_cache_key(
     phpt_source: &str,
     document: &PhptDocument,
     phpt_path: &Path,
+    timeout: Duration,
 ) -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(b"phpt-run-cache-v1\0");
@@ -1981,7 +1992,7 @@ fn phpt_result_cache_key(
     hasher.update(b"\0target-mode=");
     hasher.update(context.options.target_mode.as_str().as_bytes());
     hasher.update(b"\0timeout=");
-    hasher.update(context.options.timeout.as_secs().to_string().as_bytes());
+    hasher.update(timeout.as_secs().to_string().as_bytes());
     hasher.update(b"\0target=");
     hasher.update(context.target_fingerprint.as_bytes());
     hasher.update(b"\0runner=");
@@ -2008,6 +2019,7 @@ fn phpt_result_input_cache_key(
     phpt_source: &str,
     document: &PhptDocument,
     phpt_path: &Path,
+    timeout: Duration,
 ) -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(b"phpt-run-input-cache-v1\0");
@@ -2015,7 +2027,7 @@ fn phpt_result_input_cache_key(
     hasher.update(b"\0target-mode=");
     hasher.update(context.options.target_mode.as_str().as_bytes());
     hasher.update(b"\0timeout=");
-    hasher.update(context.options.timeout.as_secs().to_string().as_bytes());
+    hasher.update(timeout.as_secs().to_string().as_bytes());
     hasher.update(b"\0phpt=");
     hasher.update(phpt_source.as_bytes());
     if let Some(file_body) = file_body(&document.sections, phpt_path)? {
@@ -3569,19 +3581,20 @@ fn write_triage_outputs(
         let selected_manifest_path = options
             .module_manifests_dir
             .join(format!("{safe_module}.selected.jsonl"));
-        let preserve_curated_module = has_curated_generated_manifest(&selected_manifest_path);
-        if !preserve_curated_module {
-            fs::write(
-                &doc_path,
-                render_module_doc(spec, index + 1, &stats, &selected_manifest_path),
-            )
-            .map_err(|error| format!("{}: {error}", doc_path.display()))?;
-            fs::write(
-                &manifest_path,
-                render_module_manifest(spec, index + 1, &stats, &selected_manifest_path),
-            )
-            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-        }
+        // The curated selected manifest preserves itself inside
+        // render_selected_manifest; the plan JSON and doc are derived data and
+        // must always be re-rendered so their counts track the current
+        // baseline instead of freezing at the curation timestamp.
+        fs::write(
+            &doc_path,
+            render_module_doc(spec, index + 1, &stats, &selected_manifest_path),
+        )
+        .map_err(|error| format!("{}: {error}", doc_path.display()))?;
+        fs::write(
+            &manifest_path,
+            render_module_manifest(spec, index + 1, &stats, &selected_manifest_path),
+        )
+        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
         fs::write(
             &selected_manifest_path,
             render_selected_manifest(&selected_manifest_path, &stats, options.selected_limit),
@@ -4332,7 +4345,11 @@ fn failure_fingerprint(result: &PhptRunResult) -> String {
 
 fn normalize_failure_detail_for_fingerprint(detail: &str) -> String {
     let mut normalized = detail.to_string();
-    for marker in ["/target/phpt-work/", "target/phpt-work/"] {
+    // PHPT_WORK_DIR is configurable. Keep the conventional `phpt-work`
+    // prefix recognizable when callers use an isolated sibling such as
+    // `phpt-work-one-worker`; otherwise the run directory leaks into every
+    // failure fingerprint and makes an unchanged failure look new.
+    for marker in ["/target/phpt-work", "target/phpt-work"] {
         while let Some(marker_start) = normalized.find(marker) {
             let prefix_start = normalized[..marker_start]
                 .rfind(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '=' | '"' | '`'))
@@ -4345,7 +4362,7 @@ fn normalize_failure_detail_for_fingerprint(detail: &str) -> String {
             normalized.replace_range(prefix_start..end, "<phpt-test.php>");
         }
     }
-    for marker in ["/target/phpt-work/", "target/phpt-work/"] {
+    for marker in ["/target/phpt-work", "target/phpt-work"] {
         while let Some(marker_start) = normalized.find(marker) {
             let prefix_start = normalized[..marker_start]
                 .rfind(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '=' | '"' | '`'))
@@ -5341,9 +5358,10 @@ mod tests {
         let metadata = BaselineMetadata {
             schema_version: "phpt-full-baseline-v1".to_string(),
             timestamp: "20260624T125543Z".to_string(),
-            corpus_count: 21_548,
+            corpus_count: 21_556,
             pass_count: 1_056,
             skip_count: 64,
+            xfail_count: 8,
             fail_count: 19_973,
             bork_count: 455,
             known_failure_count: 20_428,
@@ -5859,6 +5877,7 @@ mod tests {
                 corpus_count: 8,
                 pass_count: 1,
                 skip_count: 1,
+                xfail_count: 0,
                 fail_count: 6,
                 bork_count: 0,
                 known_failure_count: 7,
@@ -5873,11 +5892,9 @@ mod tests {
                 "| phar | required-composer | 3 | 1 | 0 | 2 | 0 | `runtime-output-mismatch` 2 | no | yes | yes | real-implementation-required |"
             )
         );
-        assert!(
-            report.contains(
-                "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | stub-only |"
-            )
-        );
+        assert!(report.contains(
+            "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | partial-implementation |"
+        ));
         assert!(report.contains(
             "| pdo_sqlite | required-framework | 4 | 0 | 1 | 3 | 0 | none | no | no | yes | real-implementation-required |"
         ));
@@ -5964,6 +5981,7 @@ mod tests {
                 corpus_count: 1,
                 pass_count: 0,
                 skip_count: 0,
+                xfail_count: 0,
                 fail_count: 1,
                 bork_count: 0,
                 known_failure_count: 1,
@@ -6017,6 +6035,7 @@ mod tests {
                 corpus_count: 3,
                 pass_count: 0,
                 skip_count: 0,
+                xfail_count: 0,
                 fail_count: 1,
                 bork_count: 2,
                 known_failure_count: 3,
@@ -6050,6 +6069,71 @@ mod tests {
 
         assert!(has_curated_generated_manifest(&manifest));
         assert_eq!(render_selected_manifest(&manifest, &stats, 200), existing);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn triage_refreshes_plan_counts_for_curated_modules() {
+        let dir = env::temp_dir().join(format!("phrust-curated-plan-{}", std::process::id()));
+        let modules_dir = dir.join("docs");
+        let manifests_dir = dir.join("manifests");
+        fs::create_dir_all(&manifests_dir).unwrap();
+        let selected = manifests_dir.join("zend.basic.selected.jsonl");
+        let curated = "{\"path\":\"tests/phpt/generated/zend.basic/regression-example.phpt\",\"module\":\"zend.basic\",\"kind\":\"regression\"}\n";
+        fs::write(&selected, curated).unwrap();
+
+        let mut triage = PhptTriage::default();
+        triage.modules.insert(
+            "zend.basic".to_string(),
+            ModuleTriageStats {
+                corpus_count: 3509,
+                pass_count: 987,
+                skip_count: 89,
+                fail_count: 2432,
+                known_failure_count: 2432,
+                ..ModuleTriageStats::default()
+            },
+        );
+        let options = TriageOptions {
+            corpus: dir.join("corpus.jsonl"),
+            known_failures: dir.join("failures.jsonl"),
+            metadata: dir.join("metadata.json"),
+            module_counts: dir.join("module-counts.jsonl"),
+            results: None,
+            report: dir.join("report.md"),
+            extension_policy_report: dir.join("extension-policy.md"),
+            known_gap_report: dir.join("known-gaps.md"),
+            known_gap_catalog: dir.join("known-gap-catalog.jsonl"),
+            priority: dir.join("priority.json"),
+            modules_dir: modules_dir.clone(),
+            module_manifests_dir: manifests_dir.clone(),
+            selected_limit: 200,
+        };
+        let metadata = BaselineMetadata {
+            schema_version: "phpt-full-baseline-v1".to_string(),
+            timestamp: "20260712T101615Z".to_string(),
+            corpus_count: 3509,
+            pass_count: 987,
+            skip_count: 89,
+            xfail_count: 1,
+            fail_count: 2432,
+            bork_count: 0,
+            known_failure_count: 2432,
+            failure_manifest: "failures.jsonl".to_string(),
+        };
+
+        write_triage_outputs(&options, &metadata, &triage, &[]).unwrap();
+
+        let plan = fs::read_to_string(manifests_dir.join("zend.basic.json")).unwrap();
+        assert!(
+            plan.contains("\"pass_count\":987") && plan.contains("\"fail_count\":2432"),
+            "curated module plan must track current baseline counts: {plan}"
+        );
+        assert_eq!(
+            fs::read_to_string(&selected).unwrap(),
+            curated,
+            "curated selected manifest must be preserved verbatim"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -6588,6 +6672,13 @@ mod tests {
         assert_eq!(
             normalize_failure_detail_for_fingerprint(left),
             normalize_failure_detail_for_fingerprint(right)
+        );
+
+        let isolated = "stderr=/tmp/repo/target/phpt-work-one-worker/full-runs/c/work/target/case-3-4/test.php: E\nthread 'main' (789) panicked";
+
+        assert_eq!(
+            normalize_failure_detail_for_fingerprint(left),
+            normalize_failure_detail_for_fingerprint(isolated)
         );
 
         let left = "thread 'main' (123) panicked at crates/php_vm/src/vm.rs:7824:37:\n             at /rustc/hash/library/std/src/panicking.rs:689:5";

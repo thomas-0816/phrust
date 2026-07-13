@@ -41,5 +41,5 @@ pub use signatures::{
     DefaultValueRef, FunctionLikeFlags, FunctionSignature, Parameter, ParameterAttribute,
     ParameterFlags, PromotedPropertyInfo, ReturnType, SignatureKind, Visibility,
 };
-pub use stmt::{HirCatchClause, HirIfBranch, HirStmt, HirStmtKind, HirSwitchCase};
+pub use stmt::{HirCatchClause, HirIfBranch, HirStaticLocal, HirStmt, HirStmtKind, HirSwitchCase};
 pub use types::{BuiltinType, HirType, HirTypeKind, TypeContext};

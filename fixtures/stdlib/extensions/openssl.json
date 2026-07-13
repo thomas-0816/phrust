@@ -1,0 +1,415 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "OpenSSLAsymmetricKey"
+    },
+    {
+      "kind": "class",
+      "name": "OpenSSLCertificate"
+    },
+    {
+      "kind": "class",
+      "name": "OpenSSLCertificateSigningRequest"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ALGO_MD5",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ALGO_SHA1",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ALGO_SHA224",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ALGO_SHA256",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ALGO_SHA384",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ALGO_SHA512",
+      "value": {
+        "kind": "int",
+        "value": 9
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_RAW_DATA",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_ZERO_PADDING",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_DONT_ZERO_PAD_KEY",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OPENSSL_KEYTYPE_RSA",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_cipher_iv_length",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_cipher_key_length",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_decrypt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_digest",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_encrypt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_error_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_get_cipher_methods",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_get_md_methods",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_get_privatekey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_get_publickey",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_pkey_export",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_pkey_get_details",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_pkey_get_private",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_pkey_get_public",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_pkey_new",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_random_pseudo_bytes",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_sign",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_verify",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_x509_check_private_key",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_x509_parse",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_x509_read",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "openssl",
+        "source": "ext/openssl/openssl.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "openssl"
+        }
+      ],
+      "name": "openssl_x509_verify",
+      "visibility": "php"
+    }
+  ],
+  "name": "openssl",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

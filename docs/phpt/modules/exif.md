@@ -29,7 +29,7 @@
   - `ext/exif/tests/temporary_buffer_leak.phpt`
   - `ext/exif/tests/zero_length_makernote_leak.phpt`
 - Current selected module gate:
-  `/private/tmp/phrust-phpt-exif-selected-after-rebase`
+  `/private/tmp/phrust-phpt-work/module-runs/exif`
   reported reference SKIP 24 / target PASS 24. The local php-src oracle binary
   was built without EXIF, so reference rows skip while target rows prove the
   promoted phrust behavior.
@@ -42,14 +42,16 @@
 The runtime exposes `exif_imagetype`, `exif_read_data`, `exif_tagname`,
 `exif_thumbnail`, `getimagesize`, and `getimagesizefromstring`.
 
-`exif_read_data` currently reports common JPEG/TIFF fields needed by the
-selected media fixture: image dimensions, orientation, make, model, and
-DateTime. `exif_tagname` covers selected common IFD tag names, including the
-upstream basic row. `exif_thumbnail` reads JPEG EXIF APP1/TIFF IFD1 thumbnail
-offset and length tags, supports stream resources, preserves seekable stream
-cursors across repeated calls, and fills optional width, height, and image type
-reference arguments. Empty filenames and filenames containing null bytes raise
-the selected PHP `ValueError` messages.
+`exif_read_data` and the `read_exif_data` alias currently report common fields
+needed by selected media fixtures: image dimensions, orientation, make, model,
+and DateTime. Metadata parsing is backed by the pure-Rust `kamadak-exif` crate
+imported as `exif`; the local TIFF reader is retained only for the JPEG IFD1
+thumbnail byte extraction path. `exif_tagname` covers selected common IFD tag
+names, including the upstream basic row. `exif_thumbnail` reads JPEG EXIF
+APP1/TIFF IFD1 thumbnail offset and length tags, supports stream resources,
+preserves seekable stream cursors across repeated calls, and fills optional
+width, height, and image type reference arguments. Empty filenames and
+filenames containing null bytes raise the selected PHP `ValueError` messages.
 
 The VM named-argument binder supports `exif_thumbnail` and skipped optional
 by-reference parameters, which is required for calls such as
@@ -62,15 +64,16 @@ thumbnail extraction regressions.
 
 ## Gaps
 
-This is not complete PHP 8.5 EXIF parity. The implementation still uses a
-bounded internal TIFF reader for selected tags and thumbnail extraction; it has
-not yet been replaced with a mature EXIF/TIFF crate or libexif bridge.
+This is not complete PHP 8.5 EXIF parity. The common metadata path now uses a
+maintained EXIF parser crate, but PHP's full EXIF array shape and warning
+matrix are still bounded by selected fixtures.
 
 MakerNote parsing, GPS and interoperability tag matrices, full TIFF variants,
-HEIF EXIF metadata, data-wrapper inputs for `exif_read_data`, FILE/COMPUTED/IFD
-section shape parity, additional thumbnail bug regression rows, and exact
-corrupt-image warning text remain unpromoted. Broader upstream rows such as the
-`exif00x` fixtures should be promoted only after the parser backend is widened.
+data-wrapper inputs for `exif_read_data`, FILE/COMPUTED/IFD section shape
+parity, additional thumbnail bug regression rows, and exact corrupt-image
+warning text remain unpromoted. Broader upstream rows such as the `exif00x`
+fixtures should be promoted only after the PHP array-shape layer is widened on
+top of the parser backend.
 
 ## Target Gates
 

@@ -5,7 +5,9 @@ use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
-use crate::{ArrayKey, ResourceRef, StreamSeekWhence, StreamWrapperRegistry, Value};
+use crate::{
+    ArrayKey, ResourceRef, StreamFilterMode, StreamSeekWhence, StreamWrapperRegistry, Value,
+};
 use std::io::Write;
 use std::path::Path;
 
@@ -63,6 +65,26 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "stream_copy_to_stream",
         builtin_stream_copy_to_stream,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "stream_filter_append",
+        builtin_stream_filter_append,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "stream_filter_prepend",
+        builtin_stream_filter_prepend,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "stream_filter_register",
+        builtin_stream_filter_register,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "stream_filter_remove",
+        builtin_stream_filter_remove,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -605,6 +627,105 @@ pub(in crate::builtins::modules) fn builtin_stream_copy_to_stream(
         .map(|written| Value::Int(written as i64))
         .unwrap_or(Value::Bool(false)))
 }
+
+pub(in crate::builtins::modules) fn builtin_stream_filter_append(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    stream_filter_attach(context, args, span, false, "stream_filter_append")
+}
+
+pub(in crate::builtins::modules) fn builtin_stream_filter_prepend(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    stream_filter_attach(context, args, span, true, "stream_filter_prepend")
+}
+
+fn stream_filter_attach(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+    prepend: bool,
+    function_name: &str,
+) -> BuiltinResult {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(arity_error(function_name, "two to four argument(s)"));
+    }
+    let Some(stream) = resource_arg(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
+    let filter_name = string_arg(function_name, &args[1])?.to_string_lossy();
+    let mode = args
+        .get(2)
+        .map(|value| int_arg(function_name, value))
+        .transpose()?
+        .unwrap_or(0);
+    let Some(mode) = StreamFilterMode::from_php(mode) else {
+        context.php_warning(
+            "E_PHP_RUNTIME_STREAM_FILTER_MODE",
+            format!("{function_name}(): invalid stream filter mode"),
+            span,
+        );
+        return Ok(Value::Bool(false));
+    };
+    let attach_result = {
+        let Some(resources) = context.resources() else {
+            return Ok(Value::Bool(false));
+        };
+        resources.register_stream_filter(&stream, filter_name.clone(), mode, prepend)
+    };
+    match attach_result {
+        Ok(Some(filter)) => Ok(Value::Resource(filter)),
+        Ok(None) => {
+            context.php_warning(
+                "E_PHP_RUNTIME_STREAM_FILTER_UNKNOWN",
+                format!("{function_name}(): Unable to create or locate filter `{filter_name}`"),
+                span,
+            );
+            Ok(Value::Bool(false))
+        }
+        Err(error) => {
+            context.php_warning(
+                error.diagnostic_id(),
+                format!("{function_name}(): {}", error.message()),
+                span,
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_stream_filter_register(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("stream_filter_register", &args, 2)?;
+    let filter_name = string_arg("stream_filter_register", &args[0])?.to_string_lossy();
+    let _class_name = string_arg("stream_filter_register", &args[1])?;
+    context.php_warning(
+        "E_PHP_RUNTIME_STREAM_FILTER_REGISTER_UNSUPPORTED",
+        format!("stream_filter_register(): user filter `{filter_name}` is not supported"),
+        span,
+    );
+    Ok(Value::Bool(false))
+}
+
+pub(in crate::builtins::modules) fn builtin_stream_filter_remove(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("stream_filter_remove", &args, 1)?;
+    let Some(filter) = resource_arg(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(filter.remove_stream_filter_resource()))
+}
+
 pub(in crate::builtins::modules) fn builtin_stream_context_create(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,

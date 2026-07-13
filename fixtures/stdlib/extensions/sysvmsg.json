@@ -1,0 +1,157 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SysvMessageQueue"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "MSG_IPC_NOWAIT",
+      "value": {
+        "kind": "int",
+        "value": 2048
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MSG_EAGAIN",
+      "value": {
+        "kind": "int",
+        "value": 35
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MSG_ENOMSG",
+      "value": {
+        "kind": "int",
+        "value": 91
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MSG_NOERROR",
+      "value": {
+        "kind": "int",
+        "value": 4096
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MSG_EXCEPT",
+      "value": {
+        "kind": "int",
+        "value": 8192
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_get_queue",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_queue_exists",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_receive",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_remove_queue",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_send",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_set_queue",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvmsg",
+        "source": "ext/sysvmsg/sysvmsg.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvmsg"
+        }
+      ],
+      "name": "msg_stat_queue",
+      "visibility": "php"
+    }
+  ],
+  "name": "sysvmsg",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

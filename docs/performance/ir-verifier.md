@@ -2,8 +2,8 @@
 
 Performance optimizer, cache, quickening, inline-cache, and JIT work must treat
 `php_ir::verify_unit()` as the boundary check before and after every transform.
-Work item does not add an optimizer pass; the post-optimizer check is the
-identity boundary until Work item introduces real optimization modes.
+The performance layer does not add an optimizer pass; the post-optimizer check is the
+identity boundary until the performance layer provides real optimization modes.
 
 ## Gate
 
@@ -12,7 +12,7 @@ nix develop -c just ir-verify
 nix develop -c just optimizer-diff
 ```
 
-`optimizer-diff` runs `ir-verify` before its Work item placeholder, so
+`optimizer-diff` runs `ir-verify` before its placeholder, so
 the layer gate already proves verifier coverage before optimizer work lands.
 
 ## Invariants
@@ -64,7 +64,7 @@ snapshot and runtime differential tests.
 
 Verifier errors expose stable `VerificationErrorCode` values and
 `E_PHP_IR_VERIFY_*` diagnostic IDs via `VerificationError::diagnostic_id()`.
-Work item adds:
+The performance layer provides:
 
 - `E_PHP_IR_VERIFY_UNDEFINED_REGISTER_USE`;
 - `E_PHP_IR_VERIFY_INVALID_CALL_ARG_METADATA`.

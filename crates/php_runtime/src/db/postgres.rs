@@ -86,6 +86,15 @@ impl PostgresState {
         }
     }
 
+    pub fn query_params(
+        &mut self,
+        id: i64,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Option<i64>, PostgresError> {
+        self.execute_prepared(id, sql, params)
+    }
+
     pub fn exec_changes(&mut self, id: i64, sql: &str) -> Result<i64, PostgresError> {
         let Some(connection) = self.connections.get_mut(&id) else {
             return Err(PostgresError::new(
@@ -260,6 +269,13 @@ impl PostgresState {
     }
 
     #[must_use]
+    pub fn result_error(&self, id: i64) -> Option<String> {
+        self.results
+            .get(&id)
+            .map(|result| result.error_message.clone())
+    }
+
+    #[must_use]
     pub fn field_names(&self, id: i64) -> Vec<String> {
         self.results
             .get(&id)
@@ -317,6 +333,7 @@ impl PostgresState {
                 columns: result.columns,
                 rows: result.rows,
                 affected_rows: result.affected_rows,
+                error_message: result.error_message,
                 offset: 0,
             },
         );
@@ -345,6 +362,7 @@ struct PostgresBufferedResult {
     columns: Vec<String>,
     rows: Vec<PostgresRow>,
     affected_rows: i64,
+    error_message: String,
     offset: usize,
 }
 
@@ -447,6 +465,7 @@ pub struct PostgresQueryResult {
     columns: Vec<String>,
     rows: Vec<PostgresRow>,
     affected_rows: i64,
+    error_message: String,
 }
 
 impl PostgresQueryResult {
@@ -455,6 +474,7 @@ impl PostgresQueryResult {
             columns: Vec::new(),
             rows: Vec::new(),
             affected_rows,
+            error_message: String::new(),
         }
     }
 
@@ -470,6 +490,7 @@ impl PostgresQueryResult {
             columns,
             rows,
             affected_rows,
+            error_message: String::new(),
         }
     }
 }
@@ -670,5 +691,18 @@ mod tests {
         )
         .expect("libpq-style DSN should parse");
         assert!(format!("{options:?}").contains("dbname=app"));
+    }
+
+    #[test]
+    fn pdo_pgsql_connect_options_preserve_libpq_options() {
+        let options = PostgresConnectOptions::from_dsn(
+            "host=127.0.0.1 port=5433 dbname=app user=app password=secret sslmode=disable",
+        )
+        .expect("PDO PostgreSQL DSN should map to libpq options");
+        let rendered = format!("{options:?}");
+        assert!(rendered.contains("host=127.0.0.1"), "{rendered}");
+        assert!(rendered.contains("port=5433"), "{rendered}");
+        assert!(rendered.contains("dbname=app"), "{rendered}");
+        assert!(rendered.contains("sslmode=disable"), "{rendered}");
     }
 }

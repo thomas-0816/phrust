@@ -14,7 +14,14 @@ use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
     rc::{Rc, Weak},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static NEXT_ARRAY_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_array_storage_id() -> u64 {
+    NEXT_ARRAY_STORAGE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// PHP array key after runtime-semantics key normalization.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -44,7 +51,9 @@ impl ArrayKey {
             Value::Bool(false) => Some(Self::Int(0)),
             Value::Bool(true) => Some(Self::Int(1)),
             Value::Null => Some(Self::String(PhpString::from_bytes(Vec::new()))),
-            Value::Float(value) => Some(Self::Int(value.to_f64() as i64)),
+            Value::Float(value) => {
+                Some(Self::Int(crate::convert::php_float_to_int(value.to_f64())))
+            }
             Value::String(value) => Some(Self::from_php_string(value.clone())),
             Value::Uninitialized => Some(Self::String(PhpString::from_bytes(Vec::new()))),
             Value::Resource(resource) => i64::try_from(resource.id().get()).ok().map(Self::Int),
@@ -316,7 +325,12 @@ impl ExactSizeIterator for PackedArrayValues<'_> {}
 pub enum PhpArrayIter<'a> {
     Packed(std::iter::Enumerate<std::slice::Iter<'a, Value>>),
     Record(std::iter::Zip<std::slice::Iter<'a, PhpString>, std::slice::Iter<'a, Value>>),
-    Mixed(std::slice::Iter<'a, ArrayEntry>),
+    Mixed(MixedArrayIter<'a>),
+}
+
+pub struct MixedArrayIter<'a> {
+    entries: std::slice::Iter<'a, Option<ArrayEntry>>,
+    remaining: usize,
 }
 
 impl<'a> Iterator for PhpArrayIter<'a> {
@@ -330,9 +344,16 @@ impl<'a> Iterator for PhpArrayIter<'a> {
             Self::Record(pairs) => pairs
                 .next()
                 .map(|(key, value)| (ArrayKey::String(key.clone()), value)),
-            Self::Mixed(entries) => entries
-                .next()
-                .map(|entry| (entry.key.clone(), &entry.value)),
+            Self::Mixed(entries) => {
+                for entry in entries.entries.by_ref() {
+                    let Some(entry) = entry.as_ref() else {
+                        continue;
+                    };
+                    entries.remaining -= 1;
+                    return Some((entry.key.clone(), &entry.value));
+                }
+                None
+            }
         }
     }
 
@@ -340,7 +361,7 @@ impl<'a> Iterator for PhpArrayIter<'a> {
         match self {
             Self::Packed(values) => values.size_hint(),
             Self::Record(pairs) => pairs.size_hint(),
-            Self::Mixed(entries) => entries.size_hint(),
+            Self::Mixed(entries) => (entries.remaining, Some(entries.remaining)),
         }
     }
 }
@@ -397,11 +418,7 @@ struct ArrayCachedMetadata {
 }
 
 impl ArrayCachedMetadata {
-    fn from_entries_for_debug(entries: &[ArrayEntry]) -> Self {
-        Self::from_entries_without_counter(entries)
-    }
-
-    fn from_entries_without_counter(entries: &[ArrayEntry]) -> Self {
+    fn from_entry_iter_for_debug<'a>(entries: impl IntoIterator<Item = &'a ArrayEntry>) -> Self {
         let mut metadata = Self::default();
         for entry in entries {
             metadata.add_entry(entry);
@@ -579,6 +596,7 @@ impl ArrayCachedMetadata {
 /// one `Value` instead of a full key/value entry.
 #[derive(Clone, Debug)]
 struct PackedArrayStorage {
+    storage_id: u64,
     values: Vec<Value>,
     next_append_key: Option<i64>,
     internal_pointer: Option<usize>,
@@ -734,6 +752,7 @@ fn record_shape_extended(shape: &Rc<RecordShape>, key: &PhpString) -> Rc<RecordS
 /// values-only slot vector.
 #[derive(Clone, Debug)]
 struct RecordArrayStorage {
+    storage_id: u64,
     shape: Rc<RecordShape>,
     values: Vec<Value>,
     next_append_key: Option<i64>,
@@ -745,7 +764,9 @@ struct RecordArrayStorage {
 /// Mixed array storage for holes, string keys, and non-sequential integer keys.
 #[derive(Clone, Debug)]
 struct MixedArrayStorage {
-    entries: Vec<ArrayEntry>,
+    storage_id: u64,
+    entries: Vec<Option<ArrayEntry>>,
+    live_len: usize,
     index: StableKeyMap<ArrayKey, usize>,
     next_append_key: Option<i64>,
     internal_pointer: Option<usize>,
@@ -767,6 +788,7 @@ enum ArrayStorage {
 impl Default for ArrayStorage {
     fn default() -> Self {
         Self::Packed(PackedArrayStorage {
+            storage_id: next_array_storage_id(),
             values: Vec::new(),
             next_append_key: None,
             internal_pointer: None,
@@ -786,7 +808,11 @@ impl PartialEq for ArrayStorage {
         }
         match (self, other) {
             (Self::Packed(lhs), Self::Packed(rhs)) => lhs.values == rhs.values,
-            (Self::Mixed(lhs), Self::Mixed(rhs)) => lhs.entries == rhs.entries,
+            (Self::Mixed(lhs), Self::Mixed(rhs)) => lhs
+                .entries
+                .iter()
+                .filter_map(Option::as_ref)
+                .eq(rhs.entries.iter().filter_map(Option::as_ref)),
             (Self::Record(lhs), Self::Record(rhs)) => {
                 (Rc::ptr_eq(&lhs.shape, &rhs.shape)
                     || lhs
@@ -799,14 +825,14 @@ impl PartialEq for ArrayStorage {
             }
             (Self::Packed(packed), Self::Mixed(mixed))
             | (Self::Mixed(mixed), Self::Packed(packed)) => {
-                mixed.entries.iter().enumerate().all(|(index, entry)| {
+                mixed.entries.iter().filter_map(Option::as_ref).enumerate().all(|(index, entry)| {
                     matches!(&entry.key, ArrayKey::Int(key) if *key == index as i64)
                         && entry.value == packed.values[index]
                 })
             }
             (Self::Record(record), Self::Mixed(mixed))
             | (Self::Mixed(mixed), Self::Record(record)) => {
-                mixed.entries.iter().enumerate().all(|(index, entry)| {
+                mixed.entries.iter().filter_map(Option::as_ref).enumerate().all(|(index, entry)| {
                     matches!(&entry.key, ArrayKey::String(key) if key.same_symbol_or_bytes(&record.shape.keys[index]))
                         && entry.value == record.values[index]
                 })
@@ -822,11 +848,33 @@ impl PartialEq for ArrayStorage {
 impl Eq for ArrayStorage {}
 
 impl ArrayStorage {
+    fn storage_id(&self) -> u64 {
+        match self {
+            Self::Packed(storage) => storage.storage_id,
+            Self::Record(storage) => storage.storage_id,
+            Self::Mixed(storage) => storage.storage_id,
+        }
+    }
+
+    fn set_storage_id(&mut self, storage_id: u64) {
+        match self {
+            Self::Packed(storage) => storage.storage_id = storage_id,
+            Self::Record(storage) => storage.storage_id = storage_id,
+            Self::Mixed(storage) => storage.storage_id = storage_id,
+        }
+    }
+    const MIXED_COMPACTION_MIN_TOMBSTONES: usize = 32;
+
     fn value_at(&self, index: usize) -> &Value {
         match self {
             Self::Packed(storage) => &storage.values[index],
             Self::Record(storage) => &storage.values[index],
-            Self::Mixed(storage) => &storage.entries[index].value,
+            Self::Mixed(storage) => {
+                &storage.entries[index]
+                    .as_ref()
+                    .expect("mixed index must point to a live slot")
+                    .value
+            }
         }
     }
 
@@ -834,7 +882,12 @@ impl ArrayStorage {
         match self {
             Self::Packed(storage) => &mut storage.values[index],
             Self::Record(storage) => &mut storage.values[index],
-            Self::Mixed(storage) => &mut storage.entries[index].value,
+            Self::Mixed(storage) => {
+                &mut storage.entries[index]
+                    .as_mut()
+                    .expect("mixed index must point to a live slot")
+                    .value
+            }
         }
     }
 
@@ -842,7 +895,11 @@ impl ArrayStorage {
         match self {
             Self::Packed(storage) => storage.values.get(index),
             Self::Record(storage) => storage.values.get(index),
-            Self::Mixed(storage) => storage.entries.get(index).map(ArrayEntry::value),
+            Self::Mixed(storage) => storage
+                .entries
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(ArrayEntry::value),
         }
     }
 
@@ -857,7 +914,11 @@ impl ArrayStorage {
                 .keys
                 .get(index)
                 .map(|key| ArrayKey::String(key.clone())),
-            Self::Mixed(storage) => storage.entries.get(index).map(|entry| entry.key.clone()),
+            Self::Mixed(storage) => storage
+                .entries
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|entry| entry.key.clone()),
         }
     }
 
@@ -870,7 +931,10 @@ impl ArrayStorage {
             Self::Record(storage) => {
                 PhpArrayIter::Record(storage.shape.keys.iter().zip(storage.values.iter()))
             }
-            Self::Mixed(storage) => PhpArrayIter::Mixed(storage.entries.iter()),
+            Self::Mixed(storage) => PhpArrayIter::Mixed(MixedArrayIter {
+                entries: storage.entries.iter(),
+                remaining: storage.live_len,
+            }),
         }
     }
 
@@ -942,12 +1006,82 @@ impl ArrayStorage {
         match self {
             Self::Packed(storage) => storage.values.len(),
             Self::Record(storage) => storage.values.len(),
-            Self::Mixed(storage) => storage.entries.len(),
+            Self::Mixed(storage) => storage.live_len,
         }
     }
 
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    fn first_index(&self) -> Option<usize> {
+        match self {
+            Self::Packed(storage) => (!storage.values.is_empty()).then_some(0),
+            Self::Record(storage) => (!storage.values.is_empty()).then_some(0),
+            Self::Mixed(storage) => storage.entries.iter().position(Option::is_some),
+        }
+    }
+
+    fn last_index(&self) -> Option<usize> {
+        match self {
+            Self::Packed(storage) => storage.values.len().checked_sub(1),
+            Self::Record(storage) => storage.values.len().checked_sub(1),
+            Self::Mixed(storage) => storage.entries.iter().rposition(Option::is_some),
+        }
+    }
+
+    fn next_index(&self, index: usize) -> Option<usize> {
+        match self {
+            Self::Packed(storage) => (index + 1 < storage.values.len()).then_some(index + 1),
+            Self::Record(storage) => (index + 1 < storage.values.len()).then_some(index + 1),
+            Self::Mixed(storage) => storage
+                .entries
+                .iter()
+                .enumerate()
+                .skip(index.saturating_add(1))
+                .find_map(|(index, entry)| entry.is_some().then_some(index)),
+        }
+    }
+
+    fn previous_index(&self, index: usize) -> Option<usize> {
+        match self {
+            Self::Packed(_) | Self::Record(_) => index.checked_sub(1),
+            Self::Mixed(storage) => storage.entries[..index].iter().rposition(Option::is_some),
+        }
+    }
+
+    fn compact_mixed_if_needed(&mut self) {
+        let Self::Mixed(storage) = self else {
+            return;
+        };
+        let tombstones = storage.entries.len().saturating_sub(storage.live_len);
+        if tombstones < Self::MIXED_COMPACTION_MIN_TOMBSTONES
+            || tombstones.saturating_mul(2) < storage.entries.len()
+        {
+            return;
+        }
+
+        let old_pointer = storage.internal_pointer;
+        let mut pointer = None;
+        let mut entries = Vec::with_capacity(storage.live_len);
+        #[allow(clippy::mutable_key_type)] // ArrayKey hash/eq are byte-pure.
+        let mut index = StableKeyMap::with_capacity_and_hasher(storage.live_len, StableKeyState);
+        for (old_index, entry) in std::mem::take(&mut storage.entries).into_iter().enumerate() {
+            let Some(entry) = entry else {
+                continue;
+            };
+            let new_index = entries.len();
+            if old_pointer == Some(old_index) {
+                pointer = Some(new_index);
+            }
+            let previous = index.insert(entry.key.clone(), new_index);
+            debug_assert!(previous.is_none());
+            entries.push(Some(entry));
+        }
+        storage.entries = entries;
+        storage.index = index;
+        storage.internal_pointer = pointer;
+        self.debug_assert_consistent();
     }
 
     fn is_packed(&self) -> bool {
@@ -964,7 +1098,9 @@ impl ArrayStorage {
         debug_assert!(self.is_packed() && self.is_empty());
         crate::layout_stats::record_record_storage_array();
         crate::layout_stats::record_record_shape_promotion();
+        let storage_id = self.storage_id();
         *self = Self::Record(RecordArrayStorage {
+            storage_id,
             shape: record_shape_for(&[], None),
             values: Vec::new(),
             next_append_key: self.next_append_key(),
@@ -989,7 +1125,9 @@ impl ArrayStorage {
         #[allow(clippy::mutable_key_type)]
         let index = build_index(&entries);
         let mixed = MixedArrayStorage {
-            entries,
+            storage_id: storage.storage_id,
+            live_len: entries.len(),
+            entries: entries.into_iter().map(Some).collect(),
             index,
             next_append_key: storage.next_append_key,
             internal_pointer: storage.internal_pointer,
@@ -1019,7 +1157,9 @@ impl ArrayStorage {
         #[allow(clippy::mutable_key_type)]
         let index = build_index(&entries);
         let mixed = MixedArrayStorage {
-            entries,
+            storage_id: storage.storage_id,
+            live_len: entries.len(),
+            entries: entries.into_iter().map(Some).collect(),
             index,
             next_append_key: storage.next_append_key,
             internal_pointer: storage.internal_pointer,
@@ -1090,8 +1230,9 @@ impl ArrayStorage {
                 let index = storage.entries.len();
                 let old = storage.index.insert(entry.key.clone(), index);
                 debug_assert!(old.is_none(), "mixed array index must be unique");
-                storage.entries.push(entry);
-                storage.cached_metadata.add_entry(&storage.entries[index]);
+                storage.cached_metadata.add_entry(&entry);
+                storage.entries.push(Some(entry));
+                storage.live_len += 1;
             }
         }
         self.debug_assert_consistent();
@@ -1125,14 +1266,12 @@ impl ArrayStorage {
                 (ArrayKey::Int(index as i64), value)
             }
             Self::Mixed(storage) => {
-                let entry = storage.entries.remove(index);
+                let entry = storage.entries[index]
+                    .take()
+                    .expect("mixed index must point to a live slot");
                 storage.cached_metadata.remove_entry(&entry);
                 storage.index.remove(&entry.key);
-                for value in storage.index.values_mut() {
-                    if *value > index {
-                        *value -= 1;
-                    }
-                }
+                storage.live_len -= 1;
                 self.debug_assert_consistent();
                 (entry.key, entry.value)
             }
@@ -1161,11 +1300,15 @@ impl ArrayStorage {
             Self::Mixed(storage) => {
                 debug_assert_eq!(
                     self.metadata(),
-                    ArrayCachedMetadata::from_entries_for_debug(&storage.entries)
+                    ArrayCachedMetadata::from_entry_iter_for_debug(
+                        storage.entries.iter().filter_map(Option::as_ref)
+                    )
                 );
-                debug_assert_eq!(storage.index.len(), storage.entries.len());
+                debug_assert_eq!(storage.index.len(), storage.live_len);
                 for (index, entry) in storage.entries.iter().enumerate() {
-                    debug_assert_eq!(storage.index.get(&entry.key), Some(&index));
+                    if let Some(entry) = entry {
+                        debug_assert_eq!(storage.index.get(&entry.key), Some(&index));
+                    }
                 }
             }
         }
@@ -1253,10 +1396,18 @@ fn build_index(entries: &[ArrayEntry]) -> StableKeyMap<ArrayKey, usize> {
 /// `separate_for_write` through `storage_mut`, so by-value assignment shares
 /// until the first write while true PHP references still write through their
 /// owning slot/reference cell.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct PhpArray {
     storage: Rc<ArrayStorage>,
 }
+
+impl PartialEq for PhpArray {
+    fn eq(&self, other: &Self) -> bool {
+        self.storage == other.storage
+    }
+}
+
+impl Eq for PhpArray {}
 
 impl Default for PhpArray {
     fn default() -> Self {
@@ -1276,14 +1427,14 @@ impl Clone for PhpArray {
 /// Weak debug handle to array storage for GC tests.
 #[derive(Clone, Debug)]
 pub struct WeakArrayHandle {
-    id: usize,
+    id: u64,
     storage: Weak<ArrayStorage>,
 }
 
 impl WeakArrayHandle {
     /// Returns the process-local debug ID for this handle.
     #[must_use]
-    pub const fn id(&self) -> usize {
+    pub const fn id(&self) -> u64 {
         self.id
     }
 
@@ -1300,6 +1451,7 @@ impl PhpArray {
     pub fn new() -> Self {
         Self {
             storage: Rc::new(ArrayStorage::Packed(PackedArrayStorage {
+                storage_id: next_array_storage_id(),
                 values: Vec::new(),
                 next_append_key: None,
                 internal_pointer: None,
@@ -1317,6 +1469,7 @@ impl PhpArray {
         let cached_metadata = ArrayCachedMetadata::from_packed_values(&elements);
         Self {
             storage: Rc::new(ArrayStorage::Packed(PackedArrayStorage {
+                storage_id: next_array_storage_id(),
                 values: elements,
                 next_append_key: (len > 0).then(|| i64::try_from(len).ok()).flatten(),
                 internal_pointer: (len > 0).then_some(0),
@@ -1369,6 +1522,7 @@ impl PhpArray {
                 ArrayStorage::Mixed(storage) => storage
                     .entries
                     .into_iter()
+                    .flatten()
                     .map(ArrayEntry::into_key_value)
                     .collect(),
             },
@@ -1536,10 +1690,39 @@ impl PhpArray {
     /// PHP-visible copy. Used by handle-based foreach iteration.
     #[must_use]
     pub fn pair_at(&self, index: usize) -> Option<(ArrayKey, Value)> {
+        if let ArrayStorage::Mixed(storage) = self.storage.as_ref() {
+            let entry = storage
+                .entries
+                .iter()
+                .filter_map(Option::as_ref)
+                .nth(index)?;
+            let _source = enter_default_layout_source_family(SOURCE_FOREACH_VALUE);
+            return Some((entry.key.clone(), entry.value.clone()));
+        }
         let key = self.storage.key_at(index)?;
         let _source = enter_default_layout_source_family(SOURCE_FOREACH_VALUE);
         let value = self.storage.get_value(index)?.clone();
         Some((key, value))
+    }
+
+    /// Advances a storage cursor and returns the next insertion-order pair.
+    /// Mixed-array cursors skip tombstones in one forward pass, avoiding the
+    /// quadratic cost of repeatedly resolving a logical position.
+    pub fn next_pair_at_cursor(&self, cursor: &mut usize) -> Option<(ArrayKey, Value)> {
+        if let ArrayStorage::Mixed(storage) = self.storage.as_ref() {
+            while let Some(entry) = storage.entries.get(*cursor) {
+                *cursor += 1;
+                let Some(entry) = entry else {
+                    continue;
+                };
+                let _source = enter_default_layout_source_family(SOURCE_FOREACH_VALUE);
+                return Some((entry.key.clone(), entry.value.clone()));
+            }
+            return None;
+        }
+        let pair = self.pair_at(*cursor)?;
+        *cursor += 1;
+        Some(pair)
     }
 
     /// True when this array currently uses shaped record storage.
@@ -1634,8 +1817,8 @@ impl PhpArray {
     /// This is not a PHP-visible handle and must only be used by runtime tests
     /// and diagnostics.
     #[must_use]
-    pub fn gc_debug_id(&self) -> usize {
-        Rc::as_ptr(&self.storage).cast::<()>() as usize
+    pub fn gc_debug_id(&self) -> u64 {
+        self.storage.storage_id()
     }
 
     /// Returns the current `Rc` strong count for GC debug metadata.
@@ -1705,7 +1888,7 @@ impl PhpArray {
         }
         storage.push_entry(ArrayEntry::new(key, value));
         if storage.internal_pointer().is_none() {
-            storage.set_internal_pointer(Some(0));
+            storage.set_internal_pointer(storage.first_index());
         }
         bump_mutation_epoch(storage);
         None
@@ -1732,7 +1915,7 @@ impl PhpArray {
         }
         storage.push_entry(ArrayEntry::new(key.clone(), value));
         if storage.internal_pointer().is_none() {
-            storage.set_internal_pointer(Some(0));
+            storage.set_internal_pointer(storage.first_index());
         }
         bump_mutation_epoch(storage);
         key
@@ -1777,7 +1960,11 @@ impl PhpArray {
             ArrayStorage::Mixed(storage) => {
                 let index = storage.index.get(key).copied()?;
                 crate::layout_stats::record_array_mixed_indexed_get();
-                storage.entries.get(index).map(ArrayEntry::value)
+                storage
+                    .entries
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .map(ArrayEntry::value)
             }
         }
     }
@@ -1813,6 +2000,7 @@ impl PhpArray {
         }
         let (_removed_key, value) = storage.remove_index(index);
         adjust_pointer_after_remove(storage, index);
+        storage.compact_mixed_if_needed();
         bump_mutation_epoch(storage);
         Some(value)
     }
@@ -1823,8 +2011,7 @@ impl PhpArray {
     /// so a following `[]=` reuses it (e.g. popping `-2` from `[-2 => x]` makes
     /// the next append `-2` again).
     pub fn pop(&mut self) -> Option<Value> {
-        let len = self.storage.len();
-        let last_key = self.storage.key_at(len.checked_sub(1)?)?;
+        let last_key = self.storage.key_at(self.storage.last_index()?)?;
         let previous_next = self.storage.next_append_key();
         let value = self.remove(&last_key);
         if let ArrayKey::Int(key) = last_key
@@ -1860,14 +2047,15 @@ impl PhpArray {
             storage.set_internal_pointer(None);
             return None;
         }
-        storage.set_internal_pointer(Some(0));
-        storage.get_value(0).cloned()
+        let first = storage.first_index()?;
+        storage.set_internal_pointer(Some(first));
+        storage.get_value(first).cloned()
     }
 
     /// Moves the internal pointer to the last element.
     pub fn end_pointer(&mut self) -> Option<Value> {
         let storage = self.storage_mut_for(PhpArrayWriteIntent::PointerMutation);
-        let last = storage.len().checked_sub(1)?;
+        let last = storage.last_index()?;
         storage.set_internal_pointer(Some(last));
         storage.get_value(last).cloned()
     }
@@ -1876,11 +2064,10 @@ impl PhpArray {
     pub fn next_pointer(&mut self) -> Option<Value> {
         let storage = self.storage_mut_for(PhpArrayWriteIntent::PointerMutation);
         let current = storage.internal_pointer()?;
-        let next = current.saturating_add(1);
-        if next >= storage.len() {
+        let Some(next) = storage.next_index(current) else {
             storage.set_internal_pointer(None);
             return None;
-        }
+        };
         storage.set_internal_pointer(Some(next));
         storage.get_value(next).cloned()
     }
@@ -1889,11 +2076,11 @@ impl PhpArray {
     pub fn prev_pointer(&mut self) -> Option<Value> {
         let storage = self.storage_mut_for(PhpArrayWriteIntent::PointerMutation);
         let Some(current) = storage.internal_pointer() else {
-            let last = storage.len().checked_sub(1)?;
+            let last = storage.last_index()?;
             storage.set_internal_pointer(Some(last));
             return storage.get_value(last).cloned();
         };
-        let Some(previous) = current.checked_sub(1) else {
+        let Some(previous) = storage.previous_index(current) else {
             storage.set_internal_pointer(None);
             return None;
         };
@@ -1919,8 +2106,13 @@ impl PhpArray {
             ArrayStorage::Record(_) => return None,
             ArrayStorage::Mixed(storage) => storage,
         };
-        let mut elements = Vec::with_capacity(storage.entries.len());
-        for (index, entry) in storage.entries.iter().enumerate() {
+        let mut elements = Vec::with_capacity(storage.live_len);
+        for (index, entry) in storage
+            .entries
+            .iter()
+            .filter_map(Option::as_ref)
+            .enumerate()
+        {
             if entry.key != ArrayKey::Int(index as i64) {
                 return None;
             }
@@ -1950,12 +2142,22 @@ impl PhpArray {
             ArrayStorage::Packed(storage) => storage.values.get(index),
             ArrayStorage::Record(_) => None,
             ArrayStorage::Mixed(storage) => {
-                for (entry_index, entry) in storage.entries.iter().enumerate() {
+                for (entry_index, entry) in storage
+                    .entries
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .enumerate()
+                {
                     if entry.key != ArrayKey::Int(entry_index as i64) {
                         return None;
                     }
                 }
-                storage.entries.get(index).map(ArrayEntry::value)
+                storage
+                    .entries
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .nth(index)
+                    .map(ArrayEntry::value)
             }
         }
     }
@@ -1973,12 +2175,15 @@ impl PhpArray {
     fn storage_mut_for(&mut self, _intent: PhpArrayWriteIntent) -> &mut ArrayStorage {
         if self.is_shared() {
             crate::layout_stats::record_cow_separation();
+            crate::layout_stats::sample_cow_separation_backtrace(Rc::strong_count(&self.storage));
             // Attribute the element deep-copy performed by `Rc::make_mut` to
             // the separation itself instead of the outer operation family.
             let _source = crate::layout_stats::enter_layout_source_family(
                 crate::layout_stats::SOURCE_COW_SEPARATION_CONTENTS,
             );
-            return Rc::make_mut(&mut self.storage);
+            let storage = Rc::make_mut(&mut self.storage);
+            storage.set_storage_id(next_array_storage_id());
+            return storage;
         }
         Rc::make_mut(&mut self.storage)
     }
@@ -2004,6 +2209,17 @@ fn adjust_pointer_after_remove(storage: &mut ArrayStorage, removed_index: usize)
     let Some(pointer) = storage.internal_pointer() else {
         return;
     };
+    if matches!(storage, ArrayStorage::Mixed(_)) {
+        let pointer = if storage.is_empty() {
+            None
+        } else if pointer == removed_index {
+            storage.next_index(removed_index)
+        } else {
+            Some(pointer)
+        };
+        storage.set_internal_pointer(pointer);
+        return;
+    }
     let pointer = if storage.is_empty() {
         None
     } else if pointer > removed_index {
@@ -2202,7 +2418,9 @@ mod tests {
 
         if let ArrayStorage::Mixed(storage) = copy.storage.as_ref() {
             for (index, entry) in storage.entries.iter().enumerate() {
-                assert_eq!(storage.index.get(entry.key()), Some(&index));
+                if let Some(entry) = entry {
+                    assert_eq!(storage.index.get(entry.key()), Some(&index));
+                }
             }
         } else {
             panic!("copy should use indexed mixed storage");
@@ -2239,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn packed_get_uses_direct_index_and_mixed_transition_rebuilds_index() {
+    fn packed_get_uses_direct_index_and_mixed_transition_keeps_stable_slots() {
         crate::layout_stats::reset_layout_stats();
 
         let mut array = PhpArray::from_packed(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
@@ -2249,7 +2467,7 @@ mod tests {
 
         if let ArrayStorage::Mixed(storage) = array.storage.as_ref() {
             assert_eq!(storage.index.get(&ArrayKey::Int(0)), Some(&0));
-            assert_eq!(storage.index.get(&ArrayKey::Int(2)), Some(&1));
+            assert_eq!(storage.index.get(&ArrayKey::Int(2)), Some(&2));
         } else {
             panic!("middle removal should transition to mixed storage");
         }
@@ -2257,6 +2475,39 @@ mod tests {
         let stats = crate::layout_stats::take_layout_stats();
         assert_eq!(stats.array_packed_direct_gets, 1, "{stats:?}");
         assert_eq!(stats.array_mixed_indexed_gets, 1, "{stats:?}");
+    }
+
+    #[test]
+    fn mixed_deletion_compacts_tombstones_at_the_bounded_threshold() {
+        let mut array = PhpArray::new();
+        for index in 0..128 {
+            array.insert(
+                ArrayKey::String(PhpString::from_bytes(format!("key-{index}").into_bytes())),
+                Value::Int(index),
+            );
+        }
+        for index in 0..80 {
+            assert_eq!(
+                array.remove(&ArrayKey::String(PhpString::from_bytes(
+                    format!("key-{index}").into_bytes(),
+                ))),
+                Some(Value::Int(index))
+            );
+        }
+
+        let ArrayStorage::Mixed(storage) = array.storage.as_ref() else {
+            panic!("removal from record storage should transition to mixed storage");
+        };
+        assert_eq!(storage.live_len, 48);
+        assert!(storage.entries.len() <= storage.live_len + 31);
+        assert_eq!(
+            array.iter().next().map(|(key, _)| key),
+            Some(ArrayKey::String(PhpString::from("key-80")))
+        );
+        assert_eq!(
+            array.iter().last().map(|(key, _)| key),
+            Some(ArrayKey::String(PhpString::from("key-127")))
+        );
     }
 
     #[test]
@@ -2307,10 +2558,10 @@ mod tests {
         );
 
         if let ArrayStorage::Mixed(storage) = array.storage.as_ref() {
-            assert_eq!(storage.entries.len(), 1);
+            assert_eq!(storage.live_len, 1);
             assert_eq!(
                 storage.index.get(&ArrayKey::String(PhpString::from("01"))),
-                Some(&0)
+                storage.entries.iter().position(Option::is_some).as_ref()
             );
         } else {
             panic!("numeric-string key should keep mixed storage");
@@ -2795,5 +3046,16 @@ mod tests {
                 .record_shape_string_key_lookup(&ArrayKey::String(PhpString::from("id"))),
             PhpArrayShapeLookup::Fallback(PhpArrayShapeLookupFallback::CowOrReference)
         );
+    }
+
+    #[test]
+    fn logical_storage_id_changes_only_when_cow_separates() {
+        let original = PhpArray::from_packed(vec![Value::Int(1)]);
+        let mut copy = original.clone();
+
+        assert_eq!(original.gc_debug_id(), copy.gc_debug_id());
+        copy.append(Value::Int(2));
+        assert_ne!(original.gc_debug_id(), copy.gc_debug_id());
+        assert_eq!(original.get(&ArrayKey::Int(1)), None);
     }
 }

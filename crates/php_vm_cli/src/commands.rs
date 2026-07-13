@@ -1,18 +1,25 @@
 //! php-vm command implementation.
+mod optimizer_report;
+mod phase_timing;
+
+use optimizer_report::OptimizerReportJson;
+use phase_timing::PhaseTimingCollector;
 use php_bytecode_cache::{
     CacheArtifact, CacheFingerprint, CacheFingerprintInput, CacheHeader, CachedIrArtifact,
     PHP_TARGET_VERSION,
 };
 use php_diagnostics::{DebugEvent, DiagnosticLayer, DiagnosticOutputFormat, DiagnosticPhase};
 use php_executor::{
-    CompiledPhpScript, EngineProfileName, PhpCompileInput, PhpExecutionError, PhpExecutionOutput,
-    PhpExecutionStatus, PhpExecutor, PhpExecutorOptions, PhpRequestExecutionInput,
-    usage_diagnostic, write_diagnostic_envelope,
+    CompiledPhpScript, EngineProfileName, ExecutorIncludeCompiler, PhpCompileInput,
+    PhpExecutionError, PhpExecutionOutput, PhpExecutionStatus, PhpExecutor, PhpExecutorOptions,
+    PhpRequestExecutionInput, usage_diagnostic, write_diagnostic_envelope,
 };
 use php_ir::{LoweringOptions, lower_frontend_result, module::IrUnit, verify_unit};
 use php_optimizer::{OptimizationLevel, OptimizationReport, PassContext, PassPipeline};
 use php_perf::PhaseTimingReport;
-use php_runtime::api::{ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic};
+use php_runtime::api::{
+    ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
+};
 use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::DiagnosticId};
 use php_source::{SourceText, TextRange};
 use php_vm::api::{
@@ -42,44 +49,6 @@ const EXIT_RUNTIME_ERROR: i32 = 3;
 const EXIT_UNSUPPORTED: i32 = 4;
 const EXIT_USAGE: i32 = 5;
 const EXIT_PHP_FATAL_ERROR: i32 = 255;
-
-#[derive(Debug)]
-struct PhaseTimingCollector {
-    report: PhaseTimingReport,
-    started: Instant,
-}
-
-impl PhaseTimingCollector {
-    fn new(command: impl Into<String>, path: impl Into<String>) -> Self {
-        Self {
-            report: PhaseTimingReport::new(command, path),
-            started: Instant::now(),
-        }
-    }
-
-    fn record_phase(&mut self, name: impl Into<String>, started: Instant) {
-        self.report
-            .phases
-            .insert(name.into(), started.elapsed().as_secs_f64() * 1000.0);
-    }
-
-    fn add_phase_ms(&mut self, name: impl Into<String>, elapsed_ms: f64) {
-        self.report.phases.insert(name.into(), elapsed_ms);
-    }
-
-    fn count(&mut self, name: impl Into<String>, value: u64) {
-        self.report.counts.insert(name.into(), value);
-    }
-
-    fn flag(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.report.flags.insert(name.into(), value.into());
-    }
-
-    fn finish(mut self) -> PhaseTimingReport {
-        self.report.total_internal_ms = self.started.elapsed().as_secs_f64() * 1000.0;
-        self.report
-    }
-}
 
 pub(crate) fn main_entry() {
     let mut stdin = io::stdin();
@@ -848,7 +817,6 @@ where
         trace_runtime: run_options.trace_runtime,
         trace_includes: run_options.trace_includes,
         collect_counters,
-        include_optimization_level: run_options.include_opt_level,
         execution_format: run_options.execution_format,
         superinstructions: run_options.superinstructions,
         last_use_moves: run_options.last_use_moves,
@@ -980,6 +948,7 @@ where
     let started = Instant::now();
     let executor = PhpExecutor::with_options(PhpExecutorOptions {
         optimization_level: run_options.opt_level,
+        include_optimization_level: run_options.include_opt_level,
         vm_options,
         collect_quickening_feedback: persistent_feedback.write_path.is_some(),
     });
@@ -1194,6 +1163,9 @@ where
         );
         let vm = Vm::with_options(VmOptions {
             include_loader,
+            include_compiler: Some(std::sync::Arc::new(ExecutorIncludeCompiler::new(
+                OptimizationLevel::O0,
+            ))),
             runtime_context,
             // CLI runs must not hit the embedded/test step ceiling.
             max_steps: usize::MAX,
@@ -1340,44 +1312,6 @@ struct IrJson {
     functions: usize,
     constants: usize,
     verified: bool,
-}
-
-#[derive(Serialize)]
-struct OptimizerReportJson<'a> {
-    level: &'a str,
-    enabled_pass_count: usize,
-    passes: Vec<OptimizerPassJson<'a>>,
-}
-
-impl<'a> From<&'a OptimizationReport> for OptimizerReportJson<'a> {
-    fn from(report: &'a OptimizationReport) -> Self {
-        Self {
-            level: report.level.as_str(),
-            enabled_pass_count: report.enabled_pass_count(),
-            passes: report
-                .passes
-                .iter()
-                .map(|pass| OptimizerPassJson {
-                    name: pass.name,
-                    phase: pass.phase.as_str(),
-                    enabled: pass.enabled,
-                    changed: pass.changed,
-                    source_spans_preserved: pass.source_spans_preserved,
-                    stats: &pass.stats,
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct OptimizerPassJson<'a> {
-    name: &'a str,
-    phase: &'a str,
-    enabled: bool,
-    changed: bool,
-    source_spans_preserved: bool,
-    stats: &'a BTreeMap<&'static str, u64>,
 }
 
 fn compile_pipeline_with_optimization(
@@ -1667,16 +1601,12 @@ fn runtime_diagnostic_was_rendered(diagnostic: &RuntimeDiagnostic, php_output: &
     if matches!(
         diagnostic.id(),
         "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ"
-    ) && let Some(target) = include_diagnostic_target(diagnostic.message())
+    ) && let Some(RuntimeDiagnosticPayload::IncludeFailure(payload)) = diagnostic.payload()
     {
-        return php_output.contains(target) && php_output.contains("Failed to open stream");
+        return php_output.contains(payload.target())
+            && php_output.contains("Failed to open stream");
     }
     false
-}
-
-fn include_diagnostic_target(message: &str) -> Option<&str> {
-    let payload = message.split_once(": ")?.1;
-    payload.rsplit_once(": ").map(|(target, _)| target)
 }
 
 fn write_trace<W: Write>(
@@ -1790,7 +1720,8 @@ fn write_parser_diagnostic<W: Write>(
 fn semantic_diagnostic_uses_php_fatal_line(id: DiagnosticId) -> bool {
     matches!(
         id,
-        DiagnosticId::ClosureUseDuplicatesParameter
+        DiagnosticId::InvalidIntersectionMember
+            | DiagnosticId::ClosureUseDuplicatesParameter
             | DiagnosticId::DuplicateClosureUseVariable
             | DiagnosticId::ClosureUseAutoGlobal
             | DiagnosticId::ThisParameter
@@ -3021,6 +2952,12 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::EmptyDim
         | DenseOpcode::AssignDim
         | DenseOpcode::AssignPropertyDim
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty
+        | DenseOpcode::UnsetProperty
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => BaselineStencilClass {
@@ -3385,6 +3322,12 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
         | DenseOpcode::AssignPropertyDim
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty
+        | DenseOpcode::UnsetProperty
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => unsupported_copy_patch_class(
@@ -3692,6 +3635,12 @@ fn classify_mid_tier_instruction(
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
         | DenseOpcode::AssignPropertyDim
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty
+        | DenseOpcode::UnsetProperty
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => {
@@ -5070,6 +5019,9 @@ mod tests {
 
     #[test]
     fn run_output_matches_php_executor_for_basic_fixture() {
+        // `run` reads error-format environment variables; hold the lock so
+        // concurrently running env-mutating tests cannot flip its behavior.
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let fixture_path = fixture("fixtures/runtime/valid/hello.php");
         let mut cli_stdout = Vec::new();
         let mut cli_stderr = Vec::new();
@@ -5629,7 +5581,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let counters = parse_json_text(&json);
         assert_eq!(counters["jit_mode"], "off");
-        assert_eq!(counters["native_executions"], counters["jit_executed"]);
+        assert_eq!(counters["jit_executed"], 0);
+        assert_eq!(
+            counters["native_executions"],
+            counters["copy_patch_executed"]
+        );
         assert!(
             counters["bytecode_lower_attempts"].as_u64().unwrap() > 0,
             "{json}"
@@ -6436,7 +6392,7 @@ mod tests {
         let code = run(
             [
                 "report".to_string(),
-                fixture("fixtures/runtime/invalid/errors/undefined-function.php"),
+                fixture("fixtures/runtime/invalid/errors/unresolved-callable.php"),
             ],
             &mut stdout,
             &mut stderr,
@@ -6446,7 +6402,7 @@ mod tests {
         assert!(stderr.is_empty());
         let stdout = String::from_utf8(stdout).unwrap();
         assert!(stdout.contains("## Runtime Diagnostics"));
-        assert!(stdout.contains("E_PHP_RUNTIME_UNDEFINED_FUNCTION"));
+        assert!(stdout.contains("E_PHP_VM_UNRESOLVED_CALLABLE"));
     }
 
     #[test]
@@ -6521,6 +6477,10 @@ mod tests {
 
     #[test]
     fn class_table_compile_errors_render_php_fatal_line() {
+        // `run` reads error-format environment variables; hold the lock so
+        // concurrently running env-mutating tests cannot flip the rendering
+        // path mid-test.
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let path = std::env::temp_dir().join(format!(
             "phrust-vm-cli-visibility-{}.php",
             std::process::id()
@@ -6565,7 +6525,7 @@ mod tests {
                 "run".to_string(),
                 "--error-format".to_string(),
                 "text".to_string(),
-                fixture("fixtures/runtime/invalid/errors/undefined-function.php"),
+                fixture("fixtures/runtime/invalid/errors/unresolved-callable.php"),
             ],
             &mut stdout,
             &mut stderr,
@@ -6576,7 +6536,7 @@ mod tests {
         let stderr = String::from_utf8(stderr).unwrap();
         assert!(stderr.contains("runtime-diagnostic:"), "{stderr}");
         assert!(
-            stderr.contains("\"id\":\"E_PHP_RUNTIME_UNDEFINED_FUNCTION\""),
+            stderr.contains("\"id\":\"E_PHP_VM_UNRESOLVED_CALLABLE\""),
             "{stderr}"
         );
         assert!(

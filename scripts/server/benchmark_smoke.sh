@@ -50,7 +50,7 @@ fi
 url="http://$address/hello.php"
 
 if command -v oha >/dev/null 2>&1; then
-  oha -n 30 -c 2 "$url"
+  NO_COLOR=true oha -n 30 -c 2 "$url"
 elif command -v wrk >/dev/null 2>&1; then
   wrk -t1 -c2 -d2s "$url"
 elif command -v ab >/dev/null 2>&1; then

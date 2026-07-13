@@ -146,8 +146,9 @@ Runtime tracing is opt-in with `php-vm run --trace-runtime`. Diff failures
 should be minimized with `scripts/minimize_runtime_failure.py` and retained in
 `fixtures/runtime_semantics/regressions/pass/` or
 `fixtures/runtime_semantics/regressions/known_gaps/` with the required inline metadata.
-`just regression-fixtures` is part of `just runtime-semantics-fixtures` and therefore part
-of `just verify-runtime`.
+`just regression-fixtures` is part of `just runtime-semantics-fixtures`; the
+regression corpus also runs inside `just verify-runtime` through the
+full-corpus differential, which supersets every category gate.
 
 ## Compatibility Oracle Requirements
 

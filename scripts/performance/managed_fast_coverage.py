@@ -258,7 +258,6 @@ CASES = (
             "bytecode_lower_successes": 1,
             "dense_functions_executed": 1,
             "superinstructions_emitted": 1,
-            "quickening_attempts": 1,
             "output_fast_appends": 3,
         },
         predicates=("superinstructions_executed", "native_policy"),

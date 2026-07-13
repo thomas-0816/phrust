@@ -6,6 +6,8 @@ use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
+use unicode_normalization::{UnicodeNormalization, is_nfc, is_nfd, is_nfkc, is_nfkd};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
@@ -44,6 +46,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "grapheme_strpos",
+        builtin_grapheme_strpos,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "grapheme_stripos",
+        builtin_grapheme_stripos,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "transliterator_transliterate",
         builtin_transliterator_transliterate,
         BuiltinCompatibility::Php,
@@ -57,7 +69,7 @@ fn builtin_grapheme_strlen(
 ) -> BuiltinResult {
     expect_arity("grapheme_strlen", &args, 1)?;
     let input = utf8_string_arg("grapheme_strlen", &args[0])?;
-    Ok(Value::Int(input.chars().count() as i64))
+    Ok(Value::Int(graphemes(&input).len() as i64))
 }
 
 fn builtin_intl_get_error_message(
@@ -124,13 +136,9 @@ fn builtin_normalizer_normalize(
         .map(|value| int_arg("normalizer_normalize", value))
         .transpose()?
         .unwrap_or(NORMALIZER_FORM_C);
-    if form != NORMALIZER_FORM_C {
-        return Err(unsupported_intl(
-            "normalizer_normalize",
-            "only NFC form is supported",
-        ));
-    }
-    Ok(Value::string(input.into_bytes()))
+    normalize_string(&input, form)
+        .map(|value| Value::string(value.into_bytes()))
+        .ok_or_else(|| invalid_normalizer_form("normalizer_normalize"))
 }
 
 fn builtin_normalizer_is_normalized(
@@ -144,19 +152,15 @@ fn builtin_normalizer_is_normalized(
             "one or two argument(s)",
         ));
     }
-    let _ = utf8_string_arg("normalizer_is_normalized", &args[0])?;
+    let input = utf8_string_arg("normalizer_is_normalized", &args[0])?;
     let form = args
         .get(1)
         .map(|value| int_arg("normalizer_is_normalized", value))
         .transpose()?
         .unwrap_or(NORMALIZER_FORM_C);
-    if form != NORMALIZER_FORM_C {
-        return Err(unsupported_intl(
-            "normalizer_is_normalized",
-            "only NFC form is supported",
-        ));
-    }
-    Ok(Value::Bool(true))
+    is_normalized_string(&input, form)
+        .map(Value::Bool)
+        .ok_or_else(|| invalid_normalizer_form("normalizer_is_normalized"))
 }
 
 fn builtin_grapheme_substr(
@@ -172,24 +176,38 @@ fn builtin_grapheme_substr(
     }
     let input = utf8_string_arg("grapheme_substr", &args[0])?;
     let start = int_arg("grapheme_substr", &args[1])?;
-    let chars = input.chars().collect::<Vec<_>>();
-    let len = chars.len() as i64;
+    let clusters = graphemes(&input);
+    let len = clusters.len() as i64;
     let start = if start < 0 { len + start } else { start }.clamp(0, len);
     let count = args
         .get(2)
         .map(|value| int_arg("grapheme_substr", value))
         .transpose()?
         .unwrap_or(len - start);
-    if count < 0 {
-        return Ok(Value::string(Vec::<u8>::new()));
-    }
-    let end = (start + count).clamp(start, len);
+    let end = if count < 0 {
+        (len + count).clamp(start, len)
+    } else {
+        (start + count).clamp(start, len)
+    };
     Ok(Value::string(
-        chars[start as usize..end as usize]
-            .iter()
-            .collect::<String>()
-            .into_bytes(),
+        clusters[start as usize..end as usize].concat(),
     ))
+}
+
+fn builtin_grapheme_strpos(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    grapheme_strpos_impl("grapheme_strpos", args, false)
+}
+
+fn builtin_grapheme_stripos(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    grapheme_strpos_impl("grapheme_stripos", args, true)
 }
 
 fn builtin_transliterator_transliterate(
@@ -214,7 +232,84 @@ fn builtin_transliterator_transliterate(
     ))
 }
 
-pub const NORMALIZER_FORM_C: i64 = 4;
+pub const NORMALIZER_FORM_D: i64 = 4;
+pub const NORMALIZER_FORM_KD: i64 = 8;
+pub const NORMALIZER_FORM_C: i64 = 16;
+pub const NORMALIZER_FORM_KC: i64 = 32;
+
+pub fn normalize_string(input: &str, form: i64) -> Option<String> {
+    match form {
+        NORMALIZER_FORM_D => Some(input.nfd().collect()),
+        NORMALIZER_FORM_KD => Some(input.nfkd().collect()),
+        NORMALIZER_FORM_C => Some(input.nfc().collect()),
+        NORMALIZER_FORM_KC => Some(input.nfkc().collect()),
+        _ => None,
+    }
+}
+
+pub fn is_normalized_string(input: &str, form: i64) -> Option<bool> {
+    match form {
+        NORMALIZER_FORM_D => Some(is_nfd(input)),
+        NORMALIZER_FORM_KD => Some(is_nfkd(input)),
+        NORMALIZER_FORM_C => Some(is_nfc(input)),
+        NORMALIZER_FORM_KC => Some(is_nfkc(input)),
+        _ => None,
+    }
+}
+
+fn graphemes(input: &str) -> Vec<&str> {
+    UnicodeSegmentation::graphemes(input, true).collect()
+}
+
+fn grapheme_strpos_impl(
+    function: &'static str,
+    args: Vec<Value>,
+    case_insensitive: bool,
+) -> BuiltinResult {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(super::core::arity_error(
+            function,
+            "two or three argument(s)",
+        ));
+    }
+    let haystack = utf8_string_arg(function, &args[0])?;
+    let needle = utf8_string_arg(function, &args[1])?;
+    let offset = args
+        .get(2)
+        .map(|value| int_arg(function, value))
+        .transpose()?
+        .unwrap_or(0);
+    let haystack_clusters = graphemes(&haystack);
+    let len = haystack_clusters.len() as i64;
+    let start = if offset < 0 { len + offset } else { offset };
+    if start < 0 || start > len {
+        return Ok(Value::Bool(false));
+    }
+    if needle.is_empty() {
+        return Ok(Value::Int(start));
+    }
+    let search_haystack = if case_insensitive {
+        haystack.to_lowercase()
+    } else {
+        haystack.clone()
+    };
+    let search_needle = if case_insensitive {
+        needle.to_lowercase()
+    } else {
+        needle
+    };
+    let byte_start = haystack_clusters
+        .iter()
+        .take(start as usize)
+        .map(|cluster| cluster.len())
+        .sum::<usize>();
+    let Some(relative_byte) = search_haystack[byte_start..].find(&search_needle) else {
+        return Ok(Value::Bool(false));
+    };
+    let absolute_byte = byte_start + relative_byte;
+    let grapheme_index = haystack[..absolute_byte].graphemes(true).count();
+    Ok(Value::Int(grapheme_index as i64))
+}
 
 fn utf8_string_arg(name: &str, value: &Value) -> Result<String, BuiltinError> {
     let input = string_arg(name, value)?;
@@ -226,6 +321,13 @@ fn utf8_string_arg(name: &str, value: &Value) -> Result<String, BuiltinError> {
                 format!("{name}(): input must be valid UTF-8"),
             )
         })
+}
+
+fn invalid_normalizer_form(name: &'static str) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_INTL_NORMALIZER_FORM",
+        format!("{name}(): Argument #2 ($form) must be a valid normalization form"),
+    )
 }
 
 fn unsupported_intl(name: &'static str, detail: &'static str) -> BuiltinError {

@@ -10,7 +10,13 @@ libc = "0.2"
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_ir = { path = "../php_ir", version = "0.0.0" }
 php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
-php_runtime = { path = "../php_runtime", version = "0.0.0" }
+php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }
 php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_source = { path = "../php_source", version = "0.0.0" }
-php_vm = { path = "../php_vm", version = "0.0.0" }
+php_vm = { path = "../php_vm", version = "0.0.0", default-features = false }
+
+[features]
+default = ["runtime-telemetry", "jit-copy-patch"]
+runtime-telemetry = ["php_vm/runtime-telemetry", "php_runtime/runtime-telemetry"]
+jit-copy-patch = ["php_vm/jit-copy-patch"]
+jit-cranelift = ["php_vm/jit-cranelift"]

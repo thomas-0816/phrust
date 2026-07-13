@@ -1,6 +1,6 @@
 # Function-Like Semantics
 
-Work item extends function-like HIR with compile-time metadata. It does not
+The semantic frontend extends function-like HIR with compile-time metadata. It does not
 create runtime closure objects, generator objects, or perform capture-value
 evaluation.
 
@@ -31,12 +31,11 @@ The Semantic frontend frontend reports stable diagnostics for reference-safe cas
 Generator-specific return-value rules are deferred. The HIR sets `is_generator`
 when `yield` or `yield from` appears directly in a function-like body, excluding
 nested function-like bodies. `$this` availability is recorded as metadata only;
-PHP 8.5 lint accepts `$this` in static methods and static closures, so Work item
-keeps that behavior deferred rather than reporting a semantic diagnostic.
+PHP 8.5 lint accepts `$this` in static methods and static closures, so the semantic frontend keeps that behavior deferred rather than reporting a semantic diagnostic.
 
 ## Fixtures
 
-Work item fixtures live under `fixtures/semantic/functions/`:
+The fixtures live under `fixtures/semantic/functions/`:
 
 - `return-void-valid.php`
 - `return-void-invalid.php`

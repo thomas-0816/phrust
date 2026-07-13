@@ -3,14 +3,14 @@
   "module":"operators.conversions",
   "priority":5,
   "selected_manifest":"tests/phpt/manifests/modules/operators.conversions.selected.jsonl",
-  "corpus_count":5,
-  "pass_count":5,
-  "skip_count":0,
-  "fail_count":0,
+  "corpus_count":129,
+  "pass_count":46,
+  "skip_count":7,
+  "fail_count":76,
   "bork_count":0,
-  "known_failure_count":0,
+  "known_failure_count":76,
   "scope":["arithmetic","bitwise operators","comparison","boolean conversion","numeric-string conversion","concat","assignment operators","increment/decrement","leading numeric string warnings","object numeric casts"],
   "non_scope":["array union semantics","array/object concat beyond __toString smoke coverage","full TypeError/Throwable catch semantics for non-numeric operands","pipe operator","nullsafe operator","property hooks","fiber error suppression","performance-only concat stress"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=operators.conversions"],
-  "next_step":"Keep the selected scalar conversion gate green while later modules expand unsupported operand diagnostics and advanced operator families."
+  "target_gates":["nix develop -c just phpt-module MODULE=operators.conversions"],
+  "next_step":"Keep the selected scalar conversion gate green while later modules expand arrays, objects, and diagnostics."
 }

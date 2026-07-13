@@ -1,0 +1,116 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SysvSharedMemory"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_attach",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_detach",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_get_var",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_has_var",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_put_var",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_remove",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvshm",
+        "source": "ext/sysvshm/sysvshm.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvshm"
+        }
+      ],
+      "name": "shm_remove_var",
+      "visibility": "php"
+    }
+  ],
+  "name": "sysvshm",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

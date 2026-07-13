@@ -22,9 +22,11 @@
 //! merely decrements the refcount, freeing no contents and running no
 //! destructors — so behavior stays byte-identical.
 //!
-//! The whole feature is default-off: [`crate::vm::VmOptions::last_use_moves`]
-//! gates both building this plan and consulting it. With the flag off the plan
-//! is never built and the executor's read path is byte-identical to today.
+//! [`crate::vm::VmOptions::last_use_moves`] gates both building this plan and
+//! consulting it. With the flag off the plan is never built. Default profiles
+//! enable it, but low-yield functions adaptively stop move checks after a
+//! bounded sample; array-release proofs remain enabled because they prevent
+//! whole-container COW separations.
 //!
 //! # Safety of the marked subset
 //!
@@ -52,6 +54,7 @@
 //! opcode are never the marked movable operand, and they are still counted as
 //! uses so they correctly veto marking an earlier read.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -90,24 +93,32 @@ struct RegisterFacts {
     last_use: Option<usize>,
 }
 
+/// Register sentinel for an instruction with no eligible read.
+const NO_REGISTER: u32 = u32::MAX;
+const ADAPTIVE_MOVE_SAMPLE: u32 = 256;
+const ADAPTIVE_MOVE_MIN_HIT_DIVISOR: u32 = 4;
+
 /// Move-eligibility plan for one dense function. Cheap to consult during
-/// execution: a hash-set membership test keyed by the dense instruction index
-/// and register index.
+/// execution: one bounds-checked vector read followed by a register comparison.
 #[derive(Clone, Debug, Default)]
 pub struct LastUseMovePlan {
-    /// Packed `(instruction_index << 32) | register_index` keys marking the
-    /// single movable source register read of an instruction.
-    eligible: HashSet<u64>,
-    /// Packed keys marking a dimension fetch's source-array register read whose
-    /// block-local last use this is, so the executor may drop the transient
-    /// array handle after extracting the (owned) element value.
-    array_release_eligible: HashSet<u64>,
+    /// Register marking the single movable source read at each instruction, or
+    /// [`NO_REGISTER`] when the instruction has no eligible read.
+    eligible: Vec<u32>,
+    /// Source-array register marking a releasable dimension fetch at each
+    /// instruction, or [`NO_REGISTER`] when no handle can be released.
+    array_release_eligible: Vec<u32>,
     /// Count of register reads marked move-eligible.
     eligible_reads: u64,
     /// Count of array-read source registers marked release-eligible.
     array_release_reads: u64,
     /// Candidate registers rejected, grouped by stable reason.
     ineligible_by_reason: BTreeMap<&'static str, u64>,
+    /// Runtime sampling for bypassing low-yield move checks. These cells are
+    /// request-local with the VM's `Rc` plan cache and never cross threads.
+    move_consultations: Cell<u32>,
+    move_hits: Cell<u32>,
+    move_checks_disabled: Cell<bool>,
     /// Registers that are written but never read anywhere in the function
     /// (per the same exhaustive def/use classifier the move proof rests on).
     /// A value-producing opcode whose destination is such a register may skip
@@ -118,18 +129,36 @@ pub struct LastUseMovePlan {
 }
 
 impl LastUseMovePlan {
-    /// Packs an instruction index and register index into a single key.
-    #[must_use]
-    const fn key(instruction_index: u32, register: u32) -> u64 {
-        ((instruction_index as u64) << 32) | (register as u64)
-    }
-
     /// Returns whether the register read at `instruction_index` for `register`
     /// is a provably-safe last use that may be moved instead of cloned.
     #[must_use]
     pub fn is_move_eligible(&self, instruction_index: u32, register: u32) -> bool {
-        self.eligible
-            .contains(&Self::key(instruction_index, register))
+        if self.move_checks_disabled.get() {
+            return false;
+        }
+        let eligible = self
+            .eligible
+            .get(instruction_index as usize)
+            .is_some_and(|eligible| *eligible == register);
+        let consultations = self.move_consultations.get().saturating_add(1);
+        let hits = self.move_hits.get().saturating_add(u32::from(eligible));
+        if consultations >= ADAPTIVE_MOVE_SAMPLE {
+            if hits.saturating_mul(ADAPTIVE_MOVE_MIN_HIT_DIVISOR) < consultations {
+                self.move_checks_disabled.set(true);
+            }
+            self.move_consultations.set(0);
+            self.move_hits.set(0);
+        } else {
+            self.move_consultations.set(consultations);
+            self.move_hits.set(hits);
+        }
+        eligible
+    }
+
+    /// Whether value-move eligibility should still be consulted for this plan.
+    #[must_use]
+    pub fn move_checks_enabled(&self) -> bool {
+        !self.move_checks_disabled.get()
     }
 
     /// Number of register reads marked move-eligible.
@@ -144,13 +173,21 @@ impl LastUseMovePlan {
     #[must_use]
     pub fn is_array_release_eligible(&self, instruction_index: u32, register: u32) -> bool {
         self.array_release_eligible
-            .contains(&Self::key(instruction_index, register))
+            .get(instruction_index as usize)
+            .is_some_and(|eligible| *eligible == register)
     }
 
     /// Number of array-read source registers marked release-eligible.
     #[must_use]
     pub fn array_release_reads(&self) -> u64 {
         self.array_release_reads
+    }
+
+    /// Whether this plan carries array-handle release proofs that remain useful
+    /// even after low-yield value-move checks are bypassed.
+    #[must_use]
+    pub fn has_array_release_reads(&self) -> bool {
+        self.array_release_reads != 0
     }
 
     /// Returns whether `register` is written but never read in this function,
@@ -175,7 +212,7 @@ impl LastUseMovePlan {
     /// True when no reads were marked (nothing to move or release).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.eligible.is_empty() && self.array_release_eligible.is_empty()
+        self.eligible_reads == 0 && self.array_release_reads == 0
     }
 
     fn record_ineligible(&mut self, reason: &'static str) {
@@ -190,6 +227,9 @@ impl LastUseMovePlan {
         if instruction_count == 0 {
             return plan;
         }
+        plan.eligible.resize(instruction_count, NO_REGISTER);
+        plan.array_release_eligible
+            .resize(instruction_count, NO_REGISTER);
 
         let instruction_block = instruction_block_map(function, instruction_count);
 
@@ -266,11 +306,10 @@ impl LastUseMovePlan {
                 continue;
             };
             if is_value_move {
-                plan.eligible.insert(Self::key(instruction_index, register));
+                plan.eligible[instruction_index as usize] = register;
                 plan.eligible_reads += 1;
             } else {
-                plan.array_release_eligible
-                    .insert(Self::key(instruction_index, register));
+                plan.array_release_eligible[instruction_index as usize] = register;
                 plan.array_release_reads += 1;
             }
         }
@@ -291,9 +330,15 @@ impl LastUseMovePlan {
         let mut uses = Vec::new();
         // The move set and the array-release set carry identical liveness
         // invariants; re-derive both from scratch.
-        for &packed in self.eligible.iter().chain(&self.array_release_eligible) {
-            let instruction_index = (packed >> 32) as usize;
-            let register = (packed & 0xffff_ffff) as u32;
+        for (instruction_index, &register) in self
+            .eligible
+            .iter()
+            .enumerate()
+            .chain(self.array_release_eligible.iter().enumerate())
+        {
+            if register == NO_REGISTER {
+                continue;
+            }
             let marked_block = instruction_block[instruction_index];
             let mut saw_def_before_use = false;
             let mut first_use_seen = false;
@@ -620,6 +665,30 @@ pub(crate) fn collect_defs_uses(
             }
             push_use(uses, *value);
         }
+        DenseOperands::UnsetProperty { object, .. } => {
+            push_use(uses, *object);
+        }
+        DenseOperands::UnsetPropertyDim { object, dims, .. } => {
+            push_use(uses, *object);
+            for dim in dims {
+                push_use(uses, *dim);
+            }
+        }
+        DenseOperands::AssignStaticProperty { dst, value, .. } => {
+            defs.push(*dst);
+            push_use(uses, *value);
+        }
+        DenseOperands::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => {
+            defs.push(*dst);
+            push_use(uses, *object);
+            push_use(uses, *property);
+            push_use(uses, *value);
+        }
         DenseOperands::PropertyDimProbe {
             dst, object, dims, ..
         } => {
@@ -802,6 +871,31 @@ mod tests {
         ));
         assert!(plan.is_move_eligible(1, 1));
         assert_eq!(plan.eligible_reads(), 1);
+    }
+
+    #[test]
+    fn adaptive_bypass_disables_low_yield_move_checks() {
+        let plan = LastUseMovePlan::analyze(&function(
+            vec![load_const(1), move_reg(2, 1), ret()],
+            one_block(3),
+        ));
+        for _ in 0..ADAPTIVE_MOVE_SAMPLE {
+            assert!(!plan.is_move_eligible(0, 15));
+        }
+        assert!(!plan.move_checks_enabled());
+        assert!(!plan.is_move_eligible(1, 1));
+    }
+
+    #[test]
+    fn adaptive_bypass_keeps_high_yield_move_checks() {
+        let plan = LastUseMovePlan::analyze(&function(
+            vec![load_const(1), move_reg(2, 1), ret()],
+            one_block(3),
+        ));
+        for _ in 0..ADAPTIVE_MOVE_SAMPLE {
+            assert!(plan.is_move_eligible(1, 1));
+        }
+        assert!(plan.move_checks_enabled());
     }
 
     #[test]

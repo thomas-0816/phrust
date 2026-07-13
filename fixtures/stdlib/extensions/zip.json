@@ -1,0 +1,158 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "ZipArchive"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_compressedsize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_compressionmethod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_filesize",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_name",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_entry_read",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "zip",
+        "source": "ext/zip/php_zip.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "zip"
+        }
+      ],
+      "name": "zip_read",
+      "visibility": "php"
+    }
+  ],
+  "name": "zip",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

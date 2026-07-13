@@ -1,0 +1,777 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "GMP"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "GMP_ROUND_ZERO",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_ROUND_PLUSINF",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_ROUND_MINUSINF",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_MSW_FIRST",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_LSW_FIRST",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_LITTLE_ENDIAN",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_BIG_ENDIAN",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_NATIVE_ENDIAN",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "GMP_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "6.3.0"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_abs",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_add",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_and",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_binomial",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_cmp",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_com",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_div",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_div_q",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_div_qr",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_div_r",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_divexact",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_export",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_fact",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_gcd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_gcdext",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_hamdist",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_import",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_init",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_intval",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_invert",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_jacobi",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_kronecker",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_lcm",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_legendre",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_mod",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_mul",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_neg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_nextprime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_or",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_perfect_power",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_perfect_square",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_popcount",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_pow",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_powm",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_prob_prime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_random_bits",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_random_range",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_random_seed",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_root",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_rootrem",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_scan0",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_scan1",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_sign",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_sqrt",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_sqrtrem",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_strval",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_sub",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_testbit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "gmp",
+        "source": "ext/gmp/gmp.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "gmp"
+        }
+      ],
+      "name": "gmp_xor",
+      "visibility": "php"
+    }
+  ],
+  "name": "gmp",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

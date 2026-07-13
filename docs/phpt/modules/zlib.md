@@ -6,14 +6,16 @@ The zlib slice keeps the existing `flate2` backend and narrows promotion to
 PHP-visible wrapper behavior proven against the php-src PHPT oracle. Selected
 rows cover compression roundtrips, deflate/inflate contexts, gzip-backed stream
 resources, selected output-compression header/no-op rows, and target-green
-gzip cursor/write variations.
+gzip cursor/write variations. The current slice also covers the built-in
+`zlib.deflate` and `zlib.inflate` stream filters on memory-backed streams.
 
 ## Selected Rows
 
-The selected manifest currently contains 55 rows.
+The selected manifest currently contains 56 rows.
 
 - `tests/phpt/generated/zlib/compression-basic.phpt`
 - `tests/phpt/generated/zlib/gzip-stream-helpers.phpt`
+- `tests/phpt/generated/zlib/stream-filters.phpt`
 - `ext/zlib/tests/gzcompress_basic1.phpt`
 - `ext/zlib/tests/gzdeflate_basic1.phpt`
 - `ext/zlib/tests/gzdeflate_variation1.phpt`
@@ -85,6 +87,13 @@ The selected manifest currently contains 55 rows.
   for gzip helper calls.
 - `gzgets($stream, $length)` now consumes and returns at most `length - 1`
   bytes, matching `fgets` cursor behavior.
+- `STREAM_FILTER_READ`, `STREAM_FILTER_WRITE`, and `STREAM_FILTER_ALL` are
+  registered, and `stream_filter_append`, `stream_filter_prepend`,
+  `stream_filter_remove`, and the unsupported-user-filter failure path for
+  `stream_filter_register` are available.
+- Built-in `zlib.deflate` write filters and `zlib.inflate` read filters are
+  backed by `flate2` and covered for append/prepend, removal, and unknown-filter
+  failure on `php://temp` streams.
 - Selected output-compression rows cover disabled/no-op compression behavior,
   Vary/Content-Encoding header preservation, Content-Length output, and
   unsupported `br` coding-type fallback. They do not prove full SAPI output
@@ -92,15 +101,12 @@ The selected manifest currently contains 55 rows.
 
 ## Current Gate
 
-The selected zlib module gate is policy-green with 55 selected rows. In the
+The selected zlib module gate is policy-green with 56 selected rows. In the
 current local php-src oracle build, reference rows skip because the zlib
-extension is not loaded; the target runtime reports 55 PASS.
+extension is not loaded; the target runtime reports 56 PASS.
 
 ```text
-REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php \
-PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src \
-PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_TIMEOUT_SECONDS=20 \
-PHPT_WORK_DIR=/private/tmp/phrust-phpt-zlib-selected-expanded-after-rebase \
+PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 \
 nix develop -c just phpt-dev-module MODULE=zlib
 ```
 
@@ -122,7 +128,8 @@ is improved.
 
 ## Remaining Gaps
 
-- Full `zlib.deflate` and `zlib.inflate` stream filters are not implemented.
+- User-defined stream filters, zlib filter params/window-size parity, and
+  incremental multi-chunk stream-filter state parity remain unpromoted.
 - `ob_gzhandler`, full SAPI output compression, and related INI interactions
   remain outside the selected gate except for the no-op/header rows listed
   above.
@@ -131,8 +138,7 @@ is improved.
 - Large compression loops and byte-by-byte `inflate_add` loops remain outside
   the selected gate until the relevant runtime performance paths are optimized.
 - `compress.zlib://` wrapper parity, strict invalid level/max-length warning
-  text, unsupported stream filter constants, and wrapper stat/unlink/rename
-  behavior remain open.
+  text, and wrapper stat/unlink/rename behavior remain open.
 - Process-control dependent upstream gzip stream rows are not selected for the
   php-cli target contract. The generated `gzpassthru` helper is selected and
   target-green; the PHPT tooling process-control skip classifier treats

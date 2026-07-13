@@ -16,6 +16,14 @@
   `bindParam()` coverage.
 - `lastInsertRowID()`, `changes()`, `busyTimeout()`, and `escapeString()`.
 
+## Current gate
+
+- `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=sqlite3`
+  - Target: PASS 2.
+  - Reference: PASS 2.
+  - Source integrity verified 24468 php-src manifest entries; skipped 7
+    host-generated entries.
+
 ## Known gaps
 
 - Callback APIs, custom SQL functions, collations, authorizers, and progress

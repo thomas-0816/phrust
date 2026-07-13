@@ -1166,7 +1166,7 @@ fn hash_context_int(
 
 fn hash_context_class() -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(HASH_CONTEXT_CLASS),
+        name: normalize_class_name(HASH_CONTEXT_CLASS).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: vec![ClassMethodEntry {

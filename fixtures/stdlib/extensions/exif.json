@@ -1,0 +1,92 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "EXIF_USE_MBSTRING",
+      "value": {
+        "kind": "bool",
+        "value": false
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "exif",
+        "source": "ext/exif/exif.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "exif_imagetype",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "exif",
+        "source": "ext/exif/exif.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "exif_read_data",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "exif",
+        "source": "ext/exif/exif.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "exif_tagname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "exif",
+        "source": "ext/exif/exif.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "exif_thumbnail",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "exif",
+        "source": "ext/exif/exif.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "exif"
+        }
+      ],
+      "name": "read_exif_data",
+      "visibility": "php"
+    }
+  ],
+  "name": "exif",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

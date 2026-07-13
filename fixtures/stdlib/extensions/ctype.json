@@ -1,0 +1,167 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_alnum",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_alpha",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_cntrl",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_digit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_graph",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_lower",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_print",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_punct",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_space",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_upper",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "ctype",
+        "source": "ext/ctype/ctype.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "extension",
+          "module": "ctype"
+        }
+      ],
+      "name": "ctype_xdigit",
+      "visibility": "php"
+    }
+  ],
+  "name": "ctype",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

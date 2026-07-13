@@ -4,14 +4,13 @@
   "priority":19,
   "selected_manifest":"tests/phpt/manifests/modules/date.selected.jsonl",
   "corpus_count":687,
-  "selected_count":11,
-  "pass_count":11,
-  "skip_count":0,
-  "fail_count":0,
+  "pass_count":47,
+  "skip_count":12,
+  "fail_count":628,
   "bork_count":0,
-  "known_failure_count":676,
-  "scope":["timezone defaults","time/date/gmdate/microtime","DateTime and DateTimeImmutable MVP","DateTimeZone MVP","restricted strtotime","DateInterval MVP"],
-  "non_scope":["complete timelib natural-language parity","complete tzdb/DST transitions","complete Date/Time class method surface"],
-  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=date"],
-  "next_step":"Keep the focused Date/Time fixtures green while promoting broader upstream date PHPT rows incrementally."
+  "known_failure_count":628,
+  "scope":["date/time builtins and DateTime MVP"],
+  "non_scope":["complete timelib natural-language parity"],
+  "target_gates":["nix develop -c just phpt-module MODULE=date"],
+  "next_step":"Stabilize timezone persistence and common formatting/parsing."
 }

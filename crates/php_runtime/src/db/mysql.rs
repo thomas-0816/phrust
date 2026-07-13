@@ -35,6 +35,10 @@ pub const MYSQLI_REPORT_ERROR: i64 = 1;
 pub const MYSQLI_REPORT_STRICT: i64 = 2;
 /// `mysqli_report()` index-reporting mode.
 pub const MYSQLI_REPORT_INDEX: i64 = 4;
+/// `mysqli_store_result()` mode.
+pub const MYSQLI_STORE_RESULT: i64 = 0;
+/// `mysqli_use_result()` mode.
+pub const MYSQLI_USE_RESULT: i64 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MysqlBufferedResult {
@@ -51,6 +55,8 @@ struct MysqlRuntimeConnection {
     last_field_count: i64,
     affected_rows: i64,
     last_insert_id: i64,
+    active_multi_result: Option<i64>,
+    pending_multi_results: Vec<i64>,
 }
 
 #[derive(Debug)]
@@ -197,6 +203,8 @@ impl MysqlState {
                 connection.affected_rows = result.affected_rows;
                 connection.last_insert_id = result.last_insert_id;
                 connection.last_field_count = result.columns.len().try_into().unwrap_or(i64::MAX);
+                connection.active_multi_result = None;
+                connection.pending_multi_results.clear();
                 if result.columns.is_empty() {
                     return Ok(None);
                 }
@@ -455,6 +463,139 @@ impl MysqlState {
         self.execute(id, &format!("SET NAMES {normalized}"))
     }
 
+    /// Pings an open connection through the backend without changing result-set state.
+    pub fn ping(&mut self, id: i64) -> Result<(), MysqlError> {
+        let Some(connection) = self.connections.get_mut(&id) else {
+            return Err(MysqlError::new(
+                MysqlErrorKind::Client,
+                "not an open MySQL connection",
+            ));
+        };
+        match connection.connection.ping() {
+            Ok(()) => {
+                connection.last_errno = 0;
+                connection.last_error.clear();
+                Ok(())
+            }
+            Err(error) => {
+                connection.last_errno = error.mysql_errno();
+                connection.last_error = error.message.clone();
+                Err(error)
+            }
+        }
+    }
+
+    /// Enables or disables autocommit on the connection.
+    pub fn autocommit(&mut self, id: i64, mode: bool) -> Result<(), MysqlError> {
+        self.execute_control(id, |connection| connection.autocommit(mode))
+    }
+
+    /// Starts a transaction. Flags and name are accepted at the mysqli layer;
+    /// the current backend exposes the common `START TRANSACTION` behavior.
+    pub fn begin_transaction(&mut self, id: i64) -> Result<(), MysqlError> {
+        self.execute_control(id, MysqlConnectionBackend::begin_transaction)
+    }
+
+    /// Commits the active transaction.
+    pub fn commit(&mut self, id: i64) -> Result<(), MysqlError> {
+        self.execute_control(id, MysqlConnectionBackend::commit)
+    }
+
+    /// Rolls back the active transaction.
+    pub fn rollback(&mut self, id: i64) -> Result<(), MysqlError> {
+        self.execute_control(id, MysqlConnectionBackend::rollback)
+    }
+
+    /// Executes one or more semicolon-separated statements and records the
+    /// row-returning result sets for `mysqli_store_result()` / `next_result()`.
+    pub fn multi_query(&mut self, id: i64, sql: &str) -> Result<bool, MysqlError> {
+        let statements = split_mysql_multi_query(sql);
+        if statements.is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+
+        let mut buffered_results = Vec::new();
+        let mut last_field_count = 0_i64;
+        let mut affected_rows = 0_i64;
+        let mut last_insert_id = 0_i64;
+        {
+            let Some(connection) = self.connections.get_mut(&id) else {
+                return Err(MysqlError::new(
+                    MysqlErrorKind::Client,
+                    "not an open MySQL connection",
+                ));
+            };
+            for statement in statements {
+                match connection.connection.query(&statement) {
+                    Ok(result) => {
+                        last_field_count = result.columns.len().try_into().unwrap_or(i64::MAX);
+                        affected_rows = result.affected_rows;
+                        last_insert_id = result.last_insert_id;
+                        if !result.columns.is_empty() {
+                            buffered_results.push(result);
+                        }
+                    }
+                    Err(error) => {
+                        connection.last_errno = error.mysql_errno();
+                        connection.last_error = error.message.clone();
+                        return Err(error);
+                    }
+                }
+            }
+            connection.last_errno = 0;
+            connection.last_error.clear();
+            connection.last_field_count = last_field_count;
+            connection.affected_rows = affected_rows;
+            connection.last_insert_id = last_insert_id;
+        }
+
+        let mut result_ids = buffered_results
+            .into_iter()
+            .map(|result| self.insert_result(result))
+            .collect::<Vec<_>>();
+        let active_multi_result = result_ids.first().copied();
+        if !result_ids.is_empty() {
+            result_ids.remove(0);
+        }
+        if let Some(connection) = self.connections.get_mut(&id) {
+            connection.active_multi_result = active_multi_result;
+            connection.pending_multi_results = result_ids;
+        }
+        Ok(true)
+    }
+
+    /// Returns true when another row-returning multi-query result is pending.
+    #[must_use]
+    pub fn more_results(&self, id: i64) -> bool {
+        self.connections
+            .get(&id)
+            .is_some_and(|connection| !connection.pending_multi_results.is_empty())
+    }
+
+    /// Advances to the next row-returning result from a multi query.
+    pub fn next_result(&mut self, id: i64) -> bool {
+        let Some(connection) = self.connections.get_mut(&id) else {
+            return false;
+        };
+        if connection.pending_multi_results.is_empty() {
+            connection.active_multi_result = None;
+            return false;
+        }
+        connection.active_multi_result = Some(connection.pending_multi_results.remove(0));
+        true
+    }
+
+    /// Returns the currently active buffered multi-query result, if any.
+    #[must_use]
+    pub fn store_result(&self, id: i64) -> Option<i64> {
+        self.connections
+            .get(&id)
+            .and_then(|connection| connection.active_multi_result)
+    }
+
     fn execute(&mut self, id: i64, sql: &str) -> Result<(), MysqlError> {
         let Some(connection) = self.connections.get_mut(&id) else {
             return Err(MysqlError::new(
@@ -469,6 +610,38 @@ impl MysqlState {
                 connection.last_field_count = 0;
                 connection.affected_rows = result.affected_rows;
                 connection.last_insert_id = result.last_insert_id;
+                connection.active_multi_result = None;
+                connection.pending_multi_results.clear();
+                Ok(())
+            }
+            Err(error) => {
+                connection.last_errno = error.mysql_errno();
+                connection.last_error = error.message.clone();
+                Err(error)
+            }
+        }
+    }
+
+    fn execute_control(
+        &mut self,
+        id: i64,
+        f: impl FnOnce(&mut MysqlConnectionBackend) -> Result<MysqlQueryResult, MysqlError>,
+    ) -> Result<(), MysqlError> {
+        let Some(connection) = self.connections.get_mut(&id) else {
+            return Err(MysqlError::new(
+                MysqlErrorKind::Client,
+                "not an open MySQL connection",
+            ));
+        };
+        match f(&mut connection.connection) {
+            Ok(result) => {
+                connection.last_errno = 0;
+                connection.last_error.clear();
+                connection.last_field_count = 0;
+                connection.affected_rows = result.affected_rows;
+                connection.last_insert_id = result.last_insert_id;
+                connection.active_multi_result = None;
+                connection.pending_multi_results.clear();
                 Ok(())
             }
             Err(error) => {
@@ -613,6 +786,8 @@ impl MysqlState {
                 last_field_count: 0,
                 affected_rows: 0,
                 last_insert_id: 0,
+                active_multi_result: None,
+                pending_multi_results: Vec::new(),
             },
         );
         id
@@ -674,11 +849,32 @@ impl MysqlConnectOptions {
         database: Option<&str>,
         port: Option<u16>,
     ) -> Result<Self, MysqlError> {
+        Self::from_parts_with_socket(host, user, password, database, port, None)
+    }
+
+    /// Builds a MySQL DSN from connection parts plus an optional Unix socket.
+    pub fn from_parts_with_socket(
+        host: &str,
+        user: &str,
+        password: &str,
+        database: Option<&str>,
+        port: Option<u16>,
+        socket: Option<&str>,
+    ) -> Result<Self, MysqlError> {
         let host = if host.trim().is_empty() {
             "localhost"
         } else {
             host.trim()
         };
+        if host
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("p:"))
+        {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidDsn,
+                "mysqli persistent connection syntax is not supported; connection pooling is not implemented",
+            ));
+        }
         let host = if host.contains(':') && !host.starts_with('[') {
             format!("[{host}]")
         } else {
@@ -699,6 +895,12 @@ impl MysqlConnectOptions {
         {
             dsn.push('/');
             dsn.push_str(&percent_encode_mysql_url_component(database));
+        }
+        if let Some(socket) = socket
+            && !socket.is_empty()
+        {
+            dsn.push_str("?socket=");
+            dsn.push_str(&percent_encode_mysql_url_component(socket));
         }
         Self::from_dsn(dsn)
     }
@@ -852,6 +1054,11 @@ impl MysqlConnection {
             last_insert_id: self.conn.last_insert_id().try_into().unwrap_or(i64::MAX),
         })
     }
+
+    /// Verifies that the server connection is still usable.
+    pub fn ping(&mut self) -> Result<(), MysqlError> {
+        self.conn.ping().map_err(MysqlError::from_client)
+    }
 }
 
 fn mysql_opts_with_default_timeouts(opts: Opts) -> OptsBuilder {
@@ -892,6 +1099,44 @@ impl MysqlConnectionBackend {
         match self {
             Self::Live(connection) => connection.execute(sql),
             Self::SqliteCompat(connection) => connection.execute(sql),
+        }
+    }
+
+    fn ping(&mut self) -> Result<(), MysqlError> {
+        match self {
+            Self::Live(connection) => connection.ping(),
+            Self::SqliteCompat(connection) => connection.ping(),
+        }
+    }
+
+    fn autocommit(&mut self, mode: bool) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => {
+                let value = if mode { 1 } else { 0 };
+                connection.execute(&format!("SET autocommit={value}"))
+            }
+            Self::SqliteCompat(connection) => connection.autocommit(mode),
+        }
+    }
+
+    fn begin_transaction(&mut self) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => connection.execute("START TRANSACTION"),
+            Self::SqliteCompat(connection) => connection.execute("BEGIN"),
+        }
+    }
+
+    fn commit(&mut self) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => connection.execute("COMMIT"),
+            Self::SqliteCompat(connection) => connection.execute("COMMIT"),
+        }
+    }
+
+    fn rollback(&mut self) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => connection.execute("ROLLBACK"),
+            Self::SqliteCompat(connection) => connection.execute("ROLLBACK"),
         }
     }
 
@@ -1035,6 +1280,21 @@ impl MysqliSqliteCompatConnection {
         Ok(MysqlQueryResult {
             columns,
             rows,
+            affected_rows: 0,
+            last_insert_id: self.conn.last_insert_rowid(),
+        })
+    }
+
+    fn ping(&mut self) -> Result<(), MysqlError> {
+        self.conn
+            .query_row("SELECT 1", [], |_| Ok(()))
+            .map_err(Self::error)
+    }
+
+    fn autocommit(&mut self, _mode: bool) -> Result<MysqlQueryResult, MysqlError> {
+        Ok(MysqlQueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
             affected_rows: 0,
             last_insert_id: self.conn.last_insert_rowid(),
         })
@@ -1203,6 +1463,14 @@ fn value_to_sqlite_param(value: &Value) -> SqliteValue {
     }
 }
 
+fn split_mysql_multi_query(sql: &str) -> Vec<String> {
+    sql.split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn sqlite_cell(value: SqliteValueRef<'_>) -> MysqlCell {
     match value {
         SqliteValueRef::Null => MysqlCell::Null,
@@ -1303,6 +1571,36 @@ mod tests {
             options.dsn,
             "mysql://word%20press:secret%2Fpass@127.0.0.1:13306/wp%20db"
         );
+    }
+
+    #[test]
+    fn pdo_mysql_connect_options_include_unix_socket() {
+        let options = MysqlConnectOptions::from_parts_with_socket(
+            "localhost",
+            "socket user",
+            "socket/pass",
+            Some("wp db"),
+            None,
+            Some("/tmp/mysql.sock"),
+        )
+        .expect("valid PDO MySQL socket parts");
+
+        assert_eq!(
+            options.dsn,
+            "mysql://socket%20user:socket%2Fpass@localhost/wp%20db?socket=%2Ftmp%2Fmysql.sock"
+        );
+        let opts = options.opts().expect("valid options");
+        assert_eq!(opts.get_socket(), Some("/tmp/mysql.sock"));
+        assert_eq!(opts.get_db_name(), Some("wp db"));
+    }
+
+    #[test]
+    fn mysqli_persistent_host_syntax_fails_closed() {
+        let error = MysqlConnectOptions::from_parts("p:localhost", "user", "pass", None, None)
+            .expect_err("persistent mysqli syntax must not fake pooling");
+
+        assert_eq!(error.kind, MysqlErrorKind::InvalidDsn);
+        assert!(error.message.contains("pooling is not implemented"));
     }
 
     #[test]

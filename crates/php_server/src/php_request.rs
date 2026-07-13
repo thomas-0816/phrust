@@ -2,13 +2,12 @@ use super::{
     diagnostics::{RequestDiagnostic, emit_request_diagnostic, emit_server_debug_lazy},
     metrics::RequestPhase,
     perf_trace::PerfTraceEvent,
-    sessions::{finalize_session_state, seed_session_state},
+    request_pipeline::{PhpResponseBytes, RequestCleanup, RequestOutcome, RequestStage},
+    sessions::seed_session_state,
     state::{AppState, RequestExecutorCacheKey},
 };
 use crate::{
-    multipart::{
-        MultipartError, cleanup_uploaded_files, multipart_boundary, parse_multipart_into_context,
-    },
+    multipart::{MultipartError, MultipartStats, multipart_boundary, parse_multipart_into_context},
     response::{self, RequestBody, ResponseBody},
     routing::RequestRewriteRule,
 };
@@ -25,8 +24,8 @@ use php_executor::{
     PhpExecutionStatus, PhpExecutor, PhpRequestExecutionInput,
 };
 use php_runtime::api::{
-    RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionLoadCallback,
-    SessionState, Value, parse_cookie_header, parse_form_urlencoded_body,
+    RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionIdGenerateCallback,
+    SessionLoadCallback, SessionState, Value, parse_cookie_header, parse_form_urlencoded_body,
 };
 use std::{
     cell::RefCell,
@@ -36,7 +35,10 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{task, time::timeout};
+use tokio::{
+    sync::{OwnedSemaphorePermit, TryAcquireError},
+    time::timeout,
+};
 use tracing::{debug, warn};
 
 pub(crate) struct PartsAndBody {
@@ -53,11 +55,20 @@ struct CachedRequestExecutor {
     executor: PhpExecutor,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RequestLocalAddr(pub(crate) SocketAddr);
+struct RequestTarget {
+    script_path: PathBuf,
+    path_info: Option<String>,
+}
+
+fn route_target_selection_stage(script_path: PathBuf, path_info: Option<String>) -> RequestTarget {
+    RequestTarget {
+        script_path,
+        path_info,
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
-struct PhpResponseBytes(u64);
+pub(crate) struct RequestLocalAddr(pub(crate) SocketAddr);
 
 pub(crate) async fn execute_php_request(
     request: PartsAndBody,
@@ -68,8 +79,17 @@ pub(crate) async fn execute_php_request(
     request_id: String,
     route_resolution: Duration,
 ) -> (Response<ResponseBody>, Option<bool>) {
+    let RequestTarget {
+        script_path,
+        path_info,
+    } = route_target_selection_stage(script_path, path_info);
     let PartsAndBody { parts, body } = request;
-    let mut trace = PerfTraceEvent {
+    // Trace events only reach the perf-trace/request-profile writers; skip
+    // the per-request string clones and phase vector entirely when neither
+    // consumer is configured.
+    let collect_request_trace =
+        state.observability.perf_trace.is_some() || state.observability.request_profile.is_some();
+    let mut trace = collect_request_trace.then(|| PerfTraceEvent {
         request_id: request_id.clone(),
         method: parts.method.to_string(),
         path: parts
@@ -79,7 +99,7 @@ pub(crate) async fn execute_php_request(
         script_path: script_path.display().to_string(),
         phases: vec![("route_resolution", route_resolution.as_nanos())],
         ..PerfTraceEvent::default()
-    };
+    });
     emit_server_debug_lazy(
         &state,
         Some(&request_id),
@@ -89,17 +109,12 @@ pub(crate) async fn execute_php_request(
         || {
             BTreeMap::from([(
                 "max_body_bytes".to_string(),
-                state.max_body_bytes.to_string(),
+                state.request.max_body_bytes.to_string(),
             )])
         },
     );
     let body_started = Instant::now();
-    let body = match timeout(
-        state.request_timeout,
-        read_limited_body(body, state.max_body_bytes),
-    )
-    .await
-    {
+    let body = match body_and_multipart_stage(&state, body).await {
         Err(_) => {
             emit_server_debug_lazy(
                 &state,
@@ -110,7 +125,7 @@ pub(crate) async fn execute_php_request(
                 || {
                     BTreeMap::from([(
                         "timeout_ms".to_string(),
-                        state.request_timeout.as_millis().to_string(),
+                        state.request.request_timeout.as_millis().to_string(),
                     )])
                 },
             );
@@ -122,11 +137,21 @@ pub(crate) async fn execute_php_request(
                 body_started.elapsed(),
             );
             let response = response::text(StatusCode::REQUEST_TIMEOUT, "request timeout\n");
-            return finish_php_request(&state, trace, response, None, Some("body_read"));
+            return finish_php_request(
+                &state,
+                trace,
+                response,
+                None,
+                Some(RequestStage::BodyAndMultipart),
+            );
         }
         Ok(Ok(body)) => body,
         Ok(Err(BodyReadError::TooLarge)) => {
-            state.metrics.body_too_large.fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .body_too_large
+                .fetch_add(1, Ordering::Relaxed);
             emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
@@ -136,11 +161,11 @@ pub(crate) async fn execute_php_request(
                 || {
                     BTreeMap::from([(
                         "max_body_bytes".to_string(),
-                        state.max_body_bytes.to_string(),
+                        state.request.max_body_bytes.to_string(),
                     )])
                 },
             );
-            debug!(%peer, max_body_bytes=state.max_body_bytes, "request body too large");
+            debug!(%peer, max_body_bytes=state.request.max_body_bytes, "request body too large");
             record_phase(
                 &state,
                 &mut trace,
@@ -149,7 +174,13 @@ pub(crate) async fn execute_php_request(
                 body_started.elapsed(),
             );
             let response = response::text(StatusCode::PAYLOAD_TOO_LARGE, "payload too large\n");
-            return finish_php_request(&state, trace, response, None, Some("body_read"));
+            return finish_php_request(
+                &state,
+                trace,
+                response,
+                None,
+                Some(RequestStage::BodyAndMultipart),
+            );
         }
         Ok(Err(BodyReadError::Invalid)) => {
             let script_filename = script_path.display().to_string();
@@ -183,7 +214,13 @@ pub(crate) async fn execute_php_request(
                 body_started.elapsed(),
             );
             let response = response::text(StatusCode::BAD_REQUEST, "bad request\n");
-            return finish_php_request(&state, trace, response, None, Some("body_read"));
+            return finish_php_request(
+                &state,
+                trace,
+                response,
+                None,
+                Some(RequestStage::BodyAndMultipart),
+            );
         }
     };
     record_phase(
@@ -193,7 +230,9 @@ pub(crate) async fn execute_php_request(
         "body_read",
         body_started.elapsed(),
     );
-    trace.body_bytes = body.len() as u64;
+    if let Some(trace) = trace.as_mut() {
+        trace.body_bytes = body.len() as u64;
+    }
     emit_server_debug_lazy(
         &state,
         Some(&request_id),
@@ -209,8 +248,16 @@ pub(crate) async fn execute_php_request(
         peer,
         &request_id,
         Some(&script_path),
-    ) {
-        return finish_php_request(&state, trace, response, None, Some("builtin_router"));
+    )
+    .await
+    {
+        return finish_php_request(
+            &state,
+            trace,
+            response,
+            None,
+            Some(RequestStage::RouteTargetSelection),
+        );
     }
     emit_server_debug_lazy(
         &state,
@@ -236,9 +283,13 @@ pub(crate) async fn execute_php_request(
         "script cache lookup started",
         || BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
     );
-    let script_cache_before = state.engine.script_cache.cache_stats();
+    // Cache-stat deltas only surface through the perf-trace/request-profile
+    // writers; snapshotting locks every script-cache shard, so skip it when
+    // no trace consumer is configured.
+    let script_cache_before =
+        collect_request_trace.then(|| state.services.engine.script_cache.cache_stats());
     let script_cache_started = Instant::now();
-    let lookup = match state.compile_script(&script_path) {
+    let lookup = match executor_acquisition_stage(&state, &script_path) {
         Ok(lookup) => {
             emit_server_debug_lazy(
                 &state,
@@ -276,7 +327,13 @@ pub(crate) async fn execute_php_request(
             );
             let response =
                 php_output_response(*output, parts.method == Method::HEAD, parts.version);
-            return finish_php_request(&state, trace, response, None, Some("script_cache"));
+            return finish_php_request(
+                &state,
+                trace,
+                response,
+                None,
+                Some(RequestStage::ExecutorAcquisition),
+            );
         }
         Err(PhpExecutionError::Engine(_)) => {
             emit_server_debug_lazy(
@@ -290,7 +347,13 @@ pub(crate) async fn execute_php_request(
             warn!(script=%script_path.display(), "php execution engine error");
             let response =
                 response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n");
-            return finish_php_request(&state, trace, response, None, Some("script_cache"));
+            return finish_php_request(
+                &state,
+                trace,
+                response,
+                None,
+                Some(RequestStage::ExecutorAcquisition),
+            );
         }
     };
     record_phase(
@@ -300,31 +363,88 @@ pub(crate) async fn execute_php_request(
         "script_cache_lookup",
         script_cache_started.elapsed(),
     );
-    let script_cache_after = state.engine.script_cache.cache_stats();
-    trace.counters.extend([
-        (
-            "entry_script_cache_hits",
-            script_cache_after
-                .hits
-                .saturating_sub(script_cache_before.hits),
-        ),
-        (
-            "entry_script_cache_misses",
-            script_cache_after
-                .misses
-                .saturating_sub(script_cache_before.misses),
-        ),
-        (
-            "entry_script_source_reads",
-            script_cache_after
-                .source_reads
-                .saturating_sub(script_cache_before.source_reads),
-        ),
-    ]);
+    if let Some((script_cache_before, trace)) = script_cache_before.as_ref().zip(trace.as_mut()) {
+        let script_cache_after = state.services.engine.script_cache.cache_stats();
+        trace.counters.extend([
+            (
+                "entry_script_cache_hits",
+                script_cache_after
+                    .hits
+                    .saturating_sub(script_cache_before.hits),
+            ),
+            (
+                "entry_script_cache_misses",
+                script_cache_after
+                    .misses
+                    .saturating_sub(script_cache_before.misses),
+            ),
+            (
+                "entry_script_source_reads",
+                script_cache_after
+                    .source_reads
+                    .saturating_sub(script_cache_before.source_reads),
+            ),
+        ]);
+    }
     let script_cache_hit = Some(lookup.hit);
+    let Some(cpu_permit) = acquire_cpu_execution_permit(&state).await else {
+        let response = response::text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PHP execution queue full\n",
+        );
+        return finish_php_request(
+            &state,
+            trace,
+            response,
+            script_cache_hit,
+            Some(RequestStage::ExecutorAcquisition),
+        );
+    };
+    let workers = Arc::clone(&state.concurrency.php_workers);
+    workers
+        .execute(move || {
+            run_php_request_on_worker(
+                state,
+                parts,
+                body,
+                script_path,
+                path_info,
+                peer,
+                request_id,
+                trace,
+                lookup,
+                script_cache_hit,
+                cpu_permit,
+            )
+        })
+        .await
+}
+
+/// Synchronous request core: builds the PHP runtime context, parses
+/// multipart bodies, seeds the session, executes the compiled script, and
+/// renders the HTTP response. Everything execution-side (`RuntimeContext`,
+/// `PhpExecutionOutput`) is created and consumed here, so this function can
+/// run unchanged on a dedicated worker thread — its inputs and its return
+/// value are the `Send` payload set pinned by `worker_payload_tests`.
+#[allow(clippy::too_many_arguments)]
+fn run_php_request_on_worker(
+    state: Arc<AppState>,
+    parts: Parts,
+    body: Arc<[u8]>,
+    script_path: PathBuf,
+    path_info: Option<String>,
+    peer: SocketAddr,
+    request_id: String,
+    mut trace: Option<PerfTraceEvent>,
+    lookup: CompiledScriptCacheLookup,
+    script_cache_hit: Option<bool>,
+    cpu_permit: OwnedSemaphorePermit,
+) -> (Response<ResponseBody>, Option<bool>) {
+    let collect_request_trace =
+        state.observability.perf_trace.is_some() || state.observability.request_profile.is_some();
     let script_name = script_name_for(&state.route_config.docroot, &script_path);
     let request_context_started = Instant::now();
-    let mut request_context = http_runtime_context(
+    let mut request_context = request_globals_stage(
         &parts,
         &state,
         &script_path,
@@ -333,8 +453,36 @@ pub(crate) async fn execute_php_request(
         Arc::clone(&body),
         peer,
     );
-    if let Some(boundary) = match multipart_boundary(request_context.content_type.as_deref()) {
-        Ok(boundary) => boundary,
+    match multipart_handling_stage(&mut request_context, &body, &state) {
+        Ok(Some(stats)) => {
+            emit_server_debug_lazy(
+                &state,
+                Some(&request_id),
+                "D_PHRUST_SERVER_MULTIPART_PARSED",
+                "multipart",
+                "multipart body parsed",
+                || {
+                    BTreeMap::from([
+                        ("upload_count".to_string(), stats.uploads_total.to_string()),
+                        (
+                            "upload_bytes".to_string(),
+                            stats.upload_bytes_accepted.to_string(),
+                        ),
+                    ])
+                },
+            );
+            state
+                .services
+                .metrics
+                .uploads_total
+                .fetch_add(stats.uploads_total, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .upload_bytes_accepted
+                .fetch_add(stats.upload_bytes_accepted, Ordering::Relaxed);
+        }
+        Ok(None) => {}
         Err(error) => {
             let response =
                 multipart_error_response(error, &state, &parts, &request_id, &script_path, peer);
@@ -343,59 +491,8 @@ pub(crate) async fn execute_php_request(
                 trace,
                 response,
                 script_cache_hit,
-                Some("request_context"),
+                Some(RequestStage::BodyAndMultipart),
             );
-        }
-    } {
-        match parse_multipart_into_context(
-            &mut request_context,
-            &body,
-            &boundary,
-            &state.multipart_config,
-        ) {
-            Ok(stats) => {
-                emit_server_debug_lazy(
-                    &state,
-                    Some(&request_id),
-                    "D_PHRUST_SERVER_MULTIPART_PARSED",
-                    "multipart",
-                    "multipart body parsed",
-                    || {
-                        BTreeMap::from([
-                            ("upload_count".to_string(), stats.uploads_total.to_string()),
-                            (
-                                "upload_bytes".to_string(),
-                                stats.upload_bytes_accepted.to_string(),
-                            ),
-                        ])
-                    },
-                );
-                state
-                    .metrics
-                    .uploads_total
-                    .fetch_add(stats.uploads_total, Ordering::Relaxed);
-                state
-                    .metrics
-                    .upload_bytes_accepted
-                    .fetch_add(stats.upload_bytes_accepted, Ordering::Relaxed);
-            }
-            Err(error) => {
-                let response = multipart_error_response(
-                    error,
-                    &state,
-                    &parts,
-                    &request_id,
-                    &script_path,
-                    peer,
-                );
-                return finish_php_request(
-                    &state,
-                    trace,
-                    response,
-                    script_cache_hit,
-                    Some("request_context"),
-                );
-            }
         }
     }
     record_phase(
@@ -405,7 +502,7 @@ pub(crate) async fn execute_php_request(
         "request_context",
         request_context_started.elapsed(),
     );
-    let upload_cleanup = request_context.uploaded_files.clone();
+    let cleanup = RequestCleanup::new(request_context.uploaded_files.clone());
     emit_server_debug_lazy(
         &state,
         Some(&request_id),
@@ -415,12 +512,12 @@ pub(crate) async fn execute_php_request(
         || {
             BTreeMap::from([(
                 "sessions_enabled".to_string(),
-                state.session_config.enabled.to_string(),
+                state.sessions.config.enabled.to_string(),
             )])
         },
     );
     let session_seed_started = Instant::now();
-    let session_state = match seed_session_state(&request_context, &state) {
+    let session_state = match session_load_stage(&request_context, &state) {
         Ok(session) => session,
         Err(error) => {
             emit_request_diagnostic(
@@ -454,7 +551,7 @@ pub(crate) async fn execute_php_request(
                 trace,
                 response,
                 script_cache_hit,
-                Some("session_seed"),
+                Some(RequestStage::SessionLoad),
             );
         }
     };
@@ -485,8 +582,9 @@ pub(crate) async fn execute_php_request(
         Arc::clone(&body),
         server_env_for_request(&state),
     );
-    if state.execution_time_limit.is_none() {
+    if state.request.execution_time_limit.is_none() {
         state
+            .services
             .metrics
             .execution_deadline_disabled
             .fetch_add(1, Ordering::Relaxed);
@@ -507,15 +605,17 @@ pub(crate) async fn execute_php_request(
             )])
         },
     );
-    let include_cache_before = state.engine.include_cache.cache_stats();
+    let include_cache_before =
+        collect_request_trace.then(|| state.services.engine.include_cache.cache_stats());
     let profile_requested = request_profile_requested(&state, &parts.headers);
-    let result = execute_compiled_php_in_blocking_region(
+    let result = execution_stage(
         Arc::clone(&state),
         lookup,
         script_path,
         runtime_context,
         profile_requested,
     );
+    drop(cpu_permit);
     record_phase(
         &state,
         &mut trace,
@@ -523,46 +623,80 @@ pub(crate) async fn execute_php_request(
         "php_vm_execution",
         execution_started.elapsed(),
     );
-    let include_cache_after = state.engine.include_cache.cache_stats();
-    trace.counters.extend([
-        (
-            "include_resolution_hits",
-            include_cache_after
-                .resolution_hits
-                .saturating_sub(include_cache_before.resolution_hits),
-        ),
-        (
-            "include_resolution_misses",
-            include_cache_after
-                .resolution_misses
-                .saturating_sub(include_cache_before.resolution_misses),
-        ),
-        (
-            "include_compile_hits",
-            include_cache_after
-                .compile_hits
-                .saturating_sub(include_cache_before.compile_hits),
-        ),
-        (
-            "include_compile_misses",
-            include_cache_after
-                .compile_misses
-                .saturating_sub(include_cache_before.compile_misses),
-        ),
-        (
-            "include_source_reads",
-            include_cache_after
-                .source_reads
-                .saturating_sub(include_cache_before.source_reads),
-        ),
-    ]);
+    if let Some((include_cache_before, trace)) = include_cache_before.as_ref().zip(trace.as_mut()) {
+        let include_cache_after = state.services.engine.include_cache.cache_stats();
+        trace.counters.extend([
+            (
+                "include_resolution_hits",
+                include_cache_after
+                    .resolution_hits
+                    .saturating_sub(include_cache_before.resolution_hits),
+            ),
+            (
+                "include_resolution_misses",
+                include_cache_after
+                    .resolution_misses
+                    .saturating_sub(include_cache_before.resolution_misses),
+            ),
+            (
+                "include_compile_hits",
+                include_cache_after
+                    .compile_hits
+                    .saturating_sub(include_cache_before.compile_hits),
+            ),
+            (
+                "include_compile_misses",
+                include_cache_after
+                    .compile_misses
+                    .saturating_sub(include_cache_before.compile_misses),
+            ),
+            (
+                "include_source_reads",
+                include_cache_after
+                    .source_reads
+                    .saturating_sub(include_cache_before.source_reads),
+            ),
+            (
+                "include_source_bytes_hashed",
+                include_cache_after
+                    .source_bytes_hashed
+                    .saturating_sub(include_cache_before.source_bytes_hashed),
+            ),
+            (
+                "include_content_validations",
+                include_cache_after
+                    .content_validations
+                    .saturating_sub(include_cache_before.content_validations),
+            ),
+            (
+                "include_identity_only_hits",
+                include_cache_after
+                    .identity_only_hits
+                    .saturating_sub(include_cache_before.identity_only_hits),
+            ),
+            (
+                "include_content_mismatches",
+                include_cache_after
+                    .content_mismatches
+                    .saturating_sub(include_cache_before.content_mismatches),
+            ),
+            (
+                "include_conservative_misses",
+                include_cache_after
+                    .conservative_misses
+                    .saturating_sub(include_cache_before.conservative_misses),
+            ),
+        ]);
+    }
     match result {
         Ok(mut output) => {
-            append_vm_counters_to_trace(&mut trace, output.counters.as_ref());
-            if state.request_profile.is_some() {
-                trace.profile_counters = output.counters.clone();
+            if let Some(trace) = trace.as_mut() {
+                append_vm_counters_to_trace(trace, output.counters.as_ref());
+                if state.observability.request_profile.is_some() {
+                    trace.profile_counters = output.counters.clone();
+                }
+                trace.profile_requested = profile_requested;
             }
-            trace.profile_requested = profile_requested;
             emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
@@ -599,9 +733,8 @@ pub(crate) async fn execute_php_request(
                     execute_end_context
                 },
             );
-            output.upload_registry.cleanup_unmoved();
             let session_finalize_started = Instant::now();
-            if let Err(error) = finalize_session_state(&mut output, &state) {
+            if let Err(error) = cleanup.finalize_output(&mut output, &state) {
                 emit_request_diagnostic(
                     &state,
                     &parts,
@@ -633,7 +766,7 @@ pub(crate) async fn execute_php_request(
                     trace,
                     response,
                     script_cache_hit,
-                    Some("session_finalize"),
+                    Some(RequestStage::SessionAndUploadCleanup),
                 );
             }
             record_phase(
@@ -643,13 +776,18 @@ pub(crate) async fn execute_php_request(
                 "session_finalize",
                 session_finalize_started.elapsed(),
             );
-            trace.runtime_diagnostics = output.runtime_diagnostics.len() as u64;
+            let runtime_diagnostics = output.runtime_diagnostics.len() as u64;
+            if let Some(trace) = trace.as_mut() {
+                trace.runtime_diagnostics = runtime_diagnostics;
+            }
             state
+                .services
                 .metrics
                 .runtime_diagnostics
-                .fetch_add(trace.runtime_diagnostics, Ordering::Relaxed);
+                .fetch_add(runtime_diagnostics, Ordering::Relaxed);
             if php_execution_timed_out(&output) {
                 state
+                    .services
                     .metrics
                     .execution_timeouts
                     .fetch_add(1, Ordering::Relaxed);
@@ -659,12 +797,12 @@ pub(crate) async fn execute_php_request(
                     trace,
                     response,
                     script_cache_hit,
-                    Some("php_vm_execution"),
+                    Some(RequestStage::Execution),
                 );
             }
             log_php_execution_failure(&script_log_path, &output);
             let response_started = Instant::now();
-            let response = php_output_response(output, is_head, parts.version);
+            let response = response_construction_stage(output, is_head, parts.version);
             record_phase(
                 &state,
                 &mut trace,
@@ -675,7 +813,6 @@ pub(crate) async fn execute_php_request(
             finish_php_request(&state, trace, response, script_cache_hit, None)
         }
         Err(PhpExecutionError::Compile(output)) => {
-            cleanup_uploaded_files(&upload_cleanup);
             log_php_execution_failure(&script_log_path, &output);
             emit_server_debug_lazy(
                 &state,
@@ -697,17 +834,16 @@ pub(crate) async fn execute_php_request(
                     ])
                 },
             );
-            let response = php_output_response(*output, is_head, parts.version);
+            let response = response_construction_stage(*output, is_head, parts.version);
             finish_php_request(
                 &state,
                 trace,
                 response,
                 script_cache_hit,
-                Some("php_vm_execution"),
+                Some(RequestStage::Execution),
             )
         }
         Err(PhpExecutionError::Engine(error)) => {
-            cleanup_uploaded_files(&upload_cleanup);
             emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
@@ -733,13 +869,13 @@ pub(crate) async fn execute_php_request(
                 trace,
                 response,
                 script_cache_hit,
-                Some("php_vm_execution"),
+                Some(RequestStage::Execution),
             )
         }
     }
 }
 
-pub(crate) fn execute_builtin_router_if_configured(
+pub(crate) async fn execute_builtin_router_if_configured(
     parts: &Parts,
     state: Arc<AppState>,
     body: Arc<[u8]>,
@@ -764,6 +900,12 @@ pub(crate) fn execute_builtin_router_if_configured(
     if target_script_path.is_some_and(|target| router_path == target) {
         return None;
     }
+    let Some(cpu_permit) = acquire_cpu_execution_permit(&state).await else {
+        return Some(response::text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PHP execution queue full\n",
+        ));
+    };
     let script_name = script_name_for(&state.route_config.docroot, &router_path);
     let request_context = http_runtime_context(
         parts,
@@ -774,7 +916,7 @@ pub(crate) fn execute_builtin_router_if_configured(
         Arc::clone(&body),
         peer,
     );
-    let session_state = match seed_session_state(&request_context, &state) {
+    let session_state = match session_load_stage(&request_context, &state) {
         Ok(session) => session,
         Err(error) => {
             warn!(%peer, error=%error, "router session state preparation failed");
@@ -791,7 +933,7 @@ pub(crate) fn execute_builtin_router_if_configured(
         body,
         server_env_for_request(&state),
     );
-    let lookup = match state.compile_script(&router_path) {
+    let lookup = match executor_acquisition_stage(&state, &router_path) {
         Ok(lookup) => lookup,
         Err(PhpExecutionError::Compile(output)) => {
             return Some(php_output_response(*output, false, parts.version));
@@ -804,7 +946,7 @@ pub(crate) fn execute_builtin_router_if_configured(
             ));
         }
     };
-    let output = match execute_compiled_php_in_blocking_region(
+    let output = match execution_stage(
         Arc::clone(&state),
         lookup,
         router_path.clone(),
@@ -820,6 +962,7 @@ pub(crate) fn execute_builtin_router_if_configured(
             ));
         }
     };
+    drop(cpu_permit);
     emit_server_debug_lazy(
         &state,
         Some(request_id),
@@ -844,37 +987,144 @@ pub(crate) fn execute_builtin_router_if_configured(
     }
 }
 
-pub(crate) fn execute_compiled_php_in_blocking_region(
+struct CpuQueueCancellationGuard<'a> {
+    metrics: &'a super::metrics::ServerMetrics,
+    completed: bool,
+}
+
+impl Drop for CpuQueueCancellationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics
+                .cpu_execution_cancelled
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+async fn acquire_cpu_execution_permit(state: &AppState) -> Option<OwnedSemaphorePermit> {
+    let started = Instant::now();
+    match Arc::clone(&state.concurrency.cpu_execution).try_acquire_owned() {
+        Ok(permit) => {
+            state
+                .services
+                .metrics
+                .cpu_execution_admitted
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .record_phase(RequestPhase::CpuQueue, started.elapsed().as_nanos());
+            return Some(permit);
+        }
+        Err(TryAcquireError::Closed) => {
+            state
+                .services
+                .metrics
+                .cpu_execution_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Err(TryAcquireError::NoPermits) => {
+            state
+                .services
+                .metrics
+                .cpu_execution_queued
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .cpu_execution_saturated
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let mut cancellation = CpuQueueCancellationGuard {
+        metrics: &state.services.metrics,
+        completed: false,
+    };
+    let permit = timeout(
+        state.request.request_timeout,
+        Arc::clone(&state.concurrency.cpu_execution).acquire_owned(),
+    )
+    .await;
+    cancellation.completed = true;
+    state
+        .services
+        .metrics
+        .record_phase(RequestPhase::CpuQueue, started.elapsed().as_nanos());
+    match permit {
+        Ok(Ok(permit)) => {
+            state
+                .services
+                .metrics
+                .cpu_execution_admitted
+                .fetch_add(1, Ordering::Relaxed);
+            Some(permit)
+        }
+        Ok(Err(_)) => {
+            state
+                .services
+                .metrics
+                .cpu_execution_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            None
+        }
+        Err(_) => {
+            state
+                .services
+                .metrics
+                .cpu_execution_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .services
+                .metrics
+                .cpu_execution_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+/// Executes a compiled script on the current thread. Callers are pinned
+/// PHP worker threads (or the pool's degraded inline path, which already
+/// wraps the whole request core in `block_in_place`), so no additional
+/// scheduling boundary is needed here.
+fn executor_acquisition_stage(
+    state: &AppState,
+    script_path: &Path,
+) -> Result<CompiledScriptCacheLookup, PhpExecutionError> {
+    state.compile_script(script_path)
+}
+
+pub(crate) fn execution_stage(
     state: Arc<AppState>,
     lookup: CompiledScriptCacheLookup,
     script_path: PathBuf,
     runtime_context: RuntimeContext,
     profile_requested: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
-    task::block_in_place(move || {
-        let mode = if profile_requested {
-            request_counter_mode(&state)
-        } else {
-            perf_trace_counter_mode(&state)
-        };
-        let collect_profile_spans =
-            profile_requested && collect_vm_profile_spans_for_request(&state);
-        execute_compiled_php_with_state(
-            &state,
-            lookup,
-            script_path,
-            runtime_context,
-            mode,
-            collect_profile_spans,
-        )
-    })
+    let mode = if profile_requested {
+        request_counter_mode(&state)
+    } else {
+        perf_trace_counter_mode(&state)
+    };
+    let collect_profile_spans = profile_requested && collect_vm_profile_spans_for_request(&state);
+    execute_compiled_php_with_state(
+        &state,
+        lookup,
+        script_path,
+        runtime_context,
+        mode,
+        collect_profile_spans,
+    )
 }
 
 /// Counter mode for requests that did not ask for a profile (only relevant
 /// with `--request-profile-trigger-header`); perf-trace VM counters still
 /// apply because they are a process-wide policy.
 pub(crate) fn perf_trace_counter_mode(state: &AppState) -> RequestCounterMode {
-    if state.perf_trace.is_some() && state.perf_trace_vm_counters {
+    if state.observability.perf_trace.is_some() && state.observability.perf_trace_vm_counters {
         return RequestCounterMode::VmCounters;
     }
     RequestCounterMode::Off
@@ -884,7 +1134,7 @@ pub(crate) fn perf_trace_counter_mode(state: &AppState) -> RequestCounterMode {
 /// default; config/env can explicitly disable the header trigger for
 /// profiling every request in controlled benchmark runs.
 pub(crate) fn request_profile_requested(state: &AppState, headers: &HeaderMap) -> bool {
-    if !state.request_profile_trigger_header {
+    if !state.observability.request_profile_trigger_header {
         return true;
     }
     headers
@@ -915,23 +1165,27 @@ impl RequestCounterMode {
 }
 
 pub(crate) fn request_counter_mode(state: &AppState) -> RequestCounterMode {
-    if state.request_profile.is_some() && state.request_profile_source_attribution {
+    if state.observability.request_profile.is_some()
+        && state.observability.request_profile_source_attribution
+    {
         return RequestCounterMode::SourceAttributedLayout;
     }
-    if state.request_profile.is_some() && state.request_profile_vm_counters {
+    if state.observability.request_profile.is_some()
+        && state.observability.request_profile_vm_counters
+    {
         return RequestCounterMode::VmCounters;
     }
-    if state.perf_trace.is_some() && state.perf_trace_vm_counters {
+    if state.observability.perf_trace.is_some() && state.observability.perf_trace_vm_counters {
         return RequestCounterMode::VmCounters;
     }
-    if state.request_profile.is_some() {
+    if state.observability.request_profile.is_some() {
         return RequestCounterMode::Summary;
     }
     RequestCounterMode::Off
 }
 
 pub(crate) fn collect_vm_profile_spans_for_request(state: &AppState) -> bool {
-    state.request_profile.is_some()
+    state.observability.request_profile.is_some()
 }
 
 pub(crate) fn execute_compiled_php_with_state(
@@ -943,17 +1197,20 @@ pub(crate) fn execute_compiled_php_with_state(
     collect_profile_spans: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
     state
+        .services
         .metrics
         .persistent_engine_request_local_resets
         .fetch_add(1, Ordering::Relaxed);
-    // Honest accounting: every request rebuilds its request-local engine
-    // state; nothing beyond compiled artifacts and feedback templates is
-    // persisted, and that rejection stays visible as a metric.
+    // PHP-visible state is always rebuilt. The worker retains only explicitly
+    // engine-owned plans, constants, builtin/JIT handles, tiering hotness, and
+    // guarded adaptive tables; rejecting frames/globals/resources remains visible.
     state
+        .services
         .metrics
         .persistent_engine_request_local_rejections
         .fetch_add(1, Ordering::Relaxed);
     state
+        .services
         .metrics
         .persistent_engine_policy_reuses
         .fetch_add(1, Ordering::Relaxed);
@@ -970,15 +1227,6 @@ pub(crate) fn execute_compiled_php_with_state(
             collect_layout_source_attribution: mode.collects_source_attribution(),
         },
     );
-    let absorbed = state
-        .engine
-        .absorb_quickening_feedback(output.quickening_feedback.clone());
-    if absorbed > 0 {
-        state
-            .metrics
-            .persistent_engine_feedback_template_absorptions
-            .fetch_add(absorbed as u64, Ordering::Relaxed);
-    }
     Ok(output)
 }
 
@@ -987,12 +1235,11 @@ fn execute_compiled_with_request_executor(
     compiled: &CompiledPhpScript,
     input: PhpRequestExecutionInput,
 ) -> PhpExecutionOutput {
-    let options = state.engine.executor_options_for_request(&state.metrics);
-    if !options.vm_options.quickening_seed.is_empty() {
-        return PhpExecutor::with_options(options).execute_compiled(compiled, input);
-    }
-
-    let key = state.engine.request_executor_cache_key();
+    let options = state
+        .services
+        .engine
+        .executor_options_for_request(compiled.path(), &state.services.metrics);
+    let key = state.services.engine.request_executor_cache_key();
     REQUEST_EXECUTOR_CACHE.with(|cache| {
         let mut cached = cache.borrow_mut();
         let refresh = match cached.as_ref() {
@@ -1006,7 +1253,10 @@ fn execute_compiled_with_request_executor(
             });
         }
         match cached.as_mut() {
-            Some(cached) => cached.executor.execute_compiled(compiled, input),
+            Some(cached) => {
+                cached.executor.reconfigure(options);
+                cached.executor.execute_compiled(compiled, input)
+            }
             None => PhpExecutor::with_options(options).execute_compiled(compiled, input),
         }
     })
@@ -1265,6 +1515,7 @@ pub(crate) fn multipart_error_response(
     match error {
         MultipartError::Malformed => {
             state
+                .services
                 .metrics
                 .upload_parse_errors
                 .fetch_add(1, Ordering::Relaxed);
@@ -1273,6 +1524,7 @@ pub(crate) fn multipart_error_response(
         }
         MultipartError::TooManyFiles | MultipartError::FileTooLarge => {
             state
+                .services
                 .metrics
                 .upload_files_rejected
                 .fetch_add(1, Ordering::Relaxed);
@@ -1284,6 +1536,14 @@ pub(crate) fn multipart_error_response(
             response::text(StatusCode::INTERNAL_SERVER_ERROR, "upload storage failed\n")
         }
     }
+}
+
+fn response_construction_stage(
+    output: PhpExecutionOutput,
+    is_head: bool,
+    version: Version,
+) -> Response<ResponseBody> {
+    php_output_response(output, is_head, version)
 }
 
 pub(crate) fn php_output_response(
@@ -1404,6 +1664,17 @@ pub(crate) enum BodyReadError {
     Invalid,
 }
 
+async fn body_and_multipart_stage(
+    state: &AppState,
+    body: RequestBody,
+) -> Result<Result<Arc<[u8]>, BodyReadError>, tokio::time::error::Elapsed> {
+    timeout(
+        state.request.request_timeout,
+        read_limited_body(body, state.request.max_body_bytes),
+    )
+    .await
+}
+
 pub(crate) async fn read_limited_body(
     mut body: RequestBody,
     max_body_bytes: usize,
@@ -1420,6 +1691,46 @@ pub(crate) async fn read_limited_body(
         bytes.extend_from_slice(&data);
     }
     Ok(Arc::from(bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_globals_stage(
+    parts: &Parts,
+    state: &AppState,
+    script_path: &Path,
+    script_name: &str,
+    path_info: Option<String>,
+    body: Arc<[u8]>,
+    peer: SocketAddr,
+) -> RuntimeHttpRequestContext {
+    http_runtime_context(
+        parts,
+        state,
+        script_path,
+        script_name,
+        path_info,
+        body,
+        peer,
+    )
+}
+
+fn multipart_handling_stage(
+    context: &mut RuntimeHttpRequestContext,
+    body: &[u8],
+    state: &AppState,
+) -> Result<Option<MultipartStats>, MultipartError> {
+    let Some(boundary) = multipart_boundary(context.content_type.as_deref())? else {
+        return Ok(None);
+    };
+    parse_multipart_into_context(context, body, &boundary, &state.request.multipart_config)
+        .map(Some)
+}
+
+fn session_load_stage(
+    request: &RuntimeHttpRequestContext,
+    state: &AppState,
+) -> Result<SessionState, String> {
+    seed_session_state(request, state)
 }
 
 pub(crate) fn http_runtime_context(
@@ -1447,17 +1758,17 @@ pub(crate) fn http_runtime_context(
         script_path.to_string_lossy().into_owned(),
         state.route_config.docroot.to_string_lossy().into_owned(),
     );
-    context.scheme = state.request_scheme.to_string();
+    context.scheme = state.transport.request_scheme.to_string();
     context.host = host;
     context.server_name = server_name_from_host(&context.host);
     let local_addr = parts
         .extensions
         .get::<RequestLocalAddr>()
-        .map_or(state.local_addr, |addr| addr.0);
+        .map_or(state.transport.local_addr, |addr| addr.0);
     context.server_addr = local_addr.ip().to_string();
     context.server_port = local_addr.port();
     context.server_protocol = format!("{:?}", parts.version);
-    context.https = state.request_scheme == "https";
+    context.https = state.transport.request_scheme == "https";
     context.php_self = php_self_for(script_name, path_info.as_deref());
     context.path_info = path_info;
     context.remote_addr = peer.ip().to_string();
@@ -1472,14 +1783,17 @@ pub(crate) fn http_runtime_context(
     context.request_time_float_micros = request_time_float_micros;
     let header_snapshot = runtime_headers(&parts.headers);
     state
+        .services
         .metrics
         .request_headers_seen
         .fetch_add(header_snapshot.seen, Ordering::Relaxed);
     state
+        .services
         .metrics
         .request_headers_materialized
         .fetch_add(header_snapshot.entries.len() as u64, Ordering::Relaxed);
     state
+        .services
         .metrics
         .request_headers_skipped_direct
         .fetch_add(header_snapshot.skipped_direct, Ordering::Relaxed);
@@ -1566,16 +1880,22 @@ fn hex_digit(nibble: u8) -> char {
 }
 
 pub(crate) fn server_env_for_request(state: &AppState) -> Arc<Vec<(String, String)>> {
-    if !state.network_requests_enabled
+    if !state.capabilities.network_requests_enabled
         || state
+            .capabilities
             .env_snapshot
             .iter()
             .any(|(name, _)| name == "PHRUST_NET_TESTS")
     {
-        return Arc::clone(&state.env_snapshot);
+        return Arc::clone(&state.capabilities.env_snapshot);
     }
 
-    let mut env = state.env_snapshot.iter().cloned().collect::<Vec<_>>();
+    let mut env = state
+        .capabilities
+        .env_snapshot
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     env.push(("PHRUST_NET_TESTS".to_string(), "1".to_string()));
     env.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
     Arc::new(env)
@@ -1593,14 +1913,15 @@ pub(crate) fn php_runtime_context_for_http(
         .with_include_path(vec![state.route_config.docroot.clone()])
         .with_session_state(session_state)
         .with_session_loader(session_load_callback(state))
-        .with_execution_time_limit(state.execution_time_limit)
+        .with_session_id_generator(session_id_generate_callback(state))
+        .with_execution_time_limit(state.request.execution_time_limit)
         .with_sorted_env_arc(env)
         .with_stdin(body)
 }
 
 fn session_load_callback(state: &AppState) -> SessionLoadCallback {
-    let metrics = Arc::clone(&state.metrics);
-    let store = Arc::clone(&state.session_store);
+    let metrics = Arc::clone(&state.services.metrics);
+    let store = Arc::clone(&state.sessions.session_store);
     SessionLoadCallback::new(move |id| {
         metrics.session_lazy_loads.fetch_add(1, Ordering::Relaxed);
         metrics.session_store_loads.fetch_add(1, Ordering::Relaxed);
@@ -1610,56 +1931,44 @@ fn session_load_callback(state: &AppState) -> SessionLoadCallback {
     })
 }
 
+fn session_id_generate_callback(state: &AppState) -> SessionIdGenerateCallback {
+    let metrics = Arc::clone(&state.services.metrics);
+    SessionIdGenerateCallback::new(move || {
+        metrics
+            .session_id_generations
+            .fetch_add(1, Ordering::Relaxed);
+        crate::session_store::generate_session_id().map_err(|error| {
+            format!("E_PHP_SESSION_STORE_UNAVAILABLE: failed to generate session id: {error}")
+        })
+    })
+}
+
 fn record_phase(
     state: &AppState,
-    trace: &mut PerfTraceEvent,
+    trace: &mut Option<PerfTraceEvent>,
     phase: RequestPhase,
     name: &'static str,
     duration: Duration,
 ) {
     let nanos = duration.as_nanos();
-    state.metrics.record_phase(phase, nanos);
-    trace.phases.push((name, nanos));
+    state.services.metrics.record_phase(phase, nanos);
+    if let Some(trace) = trace.as_mut() {
+        trace.phases.push((name, nanos));
+    }
 }
 
 fn finish_php_request(
     state: &AppState,
-    mut trace: PerfTraceEvent,
+    trace: Option<PerfTraceEvent>,
     response: Response<ResponseBody>,
     cache_hit: Option<bool>,
-    failure_phase: Option<&'static str>,
+    failure_stage: Option<RequestStage>,
 ) -> (Response<ResponseBody>, Option<bool>) {
-    trace.status = response.status().as_u16();
-    trace.cache_hit = cache_hit;
-    trace.failure_phase = failure_phase;
-    trace.response_bytes = response
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .or_else(|| {
-            response
-                .extensions()
-                .get::<PhpResponseBytes>()
-                .map(|bytes| bytes.0)
-        })
-        .unwrap_or(0);
-    state
-        .metrics
-        .response_output_bytes
-        .fetch_add(trace.response_bytes, Ordering::Relaxed);
-    if let Some(writer) = &state.perf_trace
-        && let Err(error) = writer.write(&trace)
-    {
-        warn!(%error, path=%writer.path().display(), "perf trace write failed");
+    match failure_stage {
+        Some(stage) => RequestOutcome::failure(response, cache_hit, stage),
+        None => RequestOutcome::success(response, cache_hit),
     }
-    if trace.profile_requested
-        && let Some(writer) = &state.request_profile
-        && let Err(error) = writer.write(&trace, trace.profile_counters.as_ref())
-    {
-        warn!(%error, dir=%writer.dir().display(), "request profile write failed");
-    }
-    (response, cache_hit)
+    .finalize(state, trace)
 }
 
 pub(crate) fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
@@ -1775,4 +2084,29 @@ pub(crate) fn request_time_pair() -> (i64, i64) {
             .saturating_mul(1_000_000)
             .saturating_add(u64::from(duration.subsec_micros())) as i64,
     )
+}
+
+#[cfg(test)]
+mod worker_payload_tests {
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+
+    /// The dedicated PHP worker pool moves a request job onto a pinned
+    /// worker thread and a finished HTTP response back. Everything the job
+    /// captures and everything it returns must stay `Send`; execution-side
+    /// types (`RuntimeContext`, `PhpExecutionOutput`) are deliberately NOT
+    /// in this list — they are `Rc`-based and must be created and consumed
+    /// entirely inside the worker.
+    #[test]
+    fn worker_job_payload_types_are_send() {
+        assert_send::<Arc<AppState>>();
+        assert_send::<CompiledScriptCacheLookup>();
+        assert_send::<PathBuf>();
+        assert_send::<Parts>();
+        assert_send::<Arc<[u8]>>();
+        assert_send::<Option<crate::perf_trace::PerfTraceEvent>>();
+        assert_send::<OwnedSemaphorePermit>();
+        assert_send::<Response<ResponseBody>>();
+    }
 }

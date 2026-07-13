@@ -85,24 +85,34 @@ The integrated server exposes these counters on `/__phrust/metrics`:
 
 The server also owns a process-local include cache used by request VMs. Include
 path resolution entries are keyed by the including directory, requested path,
-include path entries, cwd, and allowed-root fingerprint. Compiled include
-entries are keyed by canonical path, file metadata, optimization level,
-compiler/runtime fingerprint, and local dependency fingerprints discovered
-during compile.
+include path entries, cwd, and allowed-root fingerprint. They retain the
+selected candidate path so symlink target swaps invalidate the cached canonical
+target. Compiled include entries are keyed by canonical path, an opened-source
+identity (filesystem generation plus content hash), optimization level,
+compiler/runtime fingerprint, and opened-source identities for local
+dependencies discovered during compile. The compiler fingerprint includes the
+explicit declaration-to-path map supplied by the include/executor layer, so a
+mapping change cannot reuse an artifact linked against a previous dependency.
+Compilation does not recursively search allowed roots for matching filenames.
 
-A warm compiled-include hit validates the resolved include metadata and
-recorded local dependency metadata before returning the cached `CompiledUnit`.
-It does not call the source-read path and it does not rerun local dependency
-source scanning. If the include file or a recorded local dependency changes,
-the entry is removed and the request falls back to source read and compile.
+In the default mutable mode, a warm compiled-include hit reads through an opened
+file handle, verifies that the file generation stayed stable across the read,
+hashes the exact bytes, and compares both generation and content before
+returning the cached `CompiledUnit`. Recorded local dependencies follow the same
+policy. An operator-declared immutable deployment may use a metadata-only hit
+only while the deployment-root, parent-directory, and reliable file-generation
+guards all remain current. Missing platform identity or an unobservable guard
+fails closed to content validation or a conservative miss. A compile miss
+reuses the already validated bytes instead of reading the primary source twice.
 
 `include_once` and `require_once` remain request-local VM state. The shared
 include cache only reuses resolution metadata and compiled units; it never
 decides whether an include should execute for a request.
 
 Include cache metrics include resolution hits/misses, compiled include
-hits/misses, include source reads, dependency metadata validations, stale
-invalidations, stale dependency invalidations, and compile errors.
+hits/misses, source reads and bytes hashed, content validations, identity-only
+hits, content mismatches, conservative misses, dependency metadata validations,
+stale invalidations, stale dependency invalidations, and compile errors.
 
 ## Why The Key Logic Is Not Shared
 
@@ -123,9 +133,9 @@ unsafe reuse.
 
 The server entry cache invalidates the requested entry script. The compiled
 include cache records local source dependencies discovered during compile, but
-dynamic include graphs, autoload registration order, symlink-sensitive graphs,
-and cross-process invalidation remain known boundaries. These caches are not
-treated as an OPcache replacement.
+dynamic include graphs, autoload registration order, and cross-process
+invalidation remain known boundaries. These caches are not treated as an
+OPcache replacement.
 
 The CLI bytecode cache remains an optional local optimization. Programs must run
 correctly when the cache is disabled, empty, corrupt, or stale.

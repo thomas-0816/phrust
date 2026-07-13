@@ -8,7 +8,9 @@ use crate::{
     serve::serve_until_shutdown,
     session_store::SessionStore,
     state::{
-        AppState, ServerEngineState, SessionConfig, preload_script_cache, server_env_snapshot,
+        AppState, CapabilityState, ConcurrencyServices, ObservabilityState, RequestRuntimeConfig,
+        RequestTransport, RuntimeServices, ServerEngineState, SessionConfig, SessionServices,
+        preload_script_cache, server_env_snapshot,
     },
     tls::build_tls_acceptor,
 };
@@ -16,10 +18,15 @@ use php_diagnostics::{
     DiagnosticCause, DiagnosticEnvelope, DiagnosticLayer, DiagnosticPhase, DiagnosticSeverity,
     DiagnosticSuggestion,
 };
-use php_executor::{CompiledScriptCache, DeploymentRootFingerprint, IncludeCache};
+use php_executor::{
+    CompiledScriptCache, DeploymentRootFingerprint, IncludeCache, PhpExecutionError,
+    SERVER_INCLUDE_REVALIDATION_INTERVAL, include_revalidation_interval_from_env,
+};
+use php_vm::api::VmError;
 use std::{
     collections::BTreeMap,
     fmt,
+    path::Path,
     sync::{Arc, atomic::AtomicU64},
     time::Duration,
 };
@@ -30,7 +37,7 @@ use tracing::debug;
 pub enum ServerError {
     Config(Box<ConfigError>),
     Io(std::io::Error),
-    Preload(String),
+    Preload(Box<PreloadError>),
     Tls(String),
 }
 
@@ -76,19 +83,7 @@ impl ServerError {
                 ));
                 diagnostic
             }
-            Self::Preload(message) => {
-                let mut diagnostic = DiagnosticEnvelope::new(
-                    "E_PHRUST_SERVER_PRELOAD",
-                    DiagnosticLayer::server(),
-                    DiagnosticPhase::new("preload"),
-                    DiagnosticSeverity::Error,
-                    message.clone(),
-                );
-                diagnostic.suggestion = Some(DiagnosticSuggestion::new(
-                    "fix the preload file entry or run without --strict-preload",
-                ));
-                diagnostic
-            }
+            Self::Preload(error) => error.diagnostic().clone(),
             Self::Tls(message) => {
                 let mut diagnostic = DiagnosticEnvelope::new(
                     "E_PHRUST_SERVER_TLS",
@@ -106,6 +101,133 @@ impl ServerError {
     }
 }
 
+#[derive(Debug)]
+pub struct PreloadError {
+    message: String,
+    diagnostic: DiagnosticEnvelope,
+}
+
+impl PreloadError {
+    pub(crate) fn manifest_read(path: &Path, error: &std::io::Error) -> Self {
+        let message = format!(
+            "script cache preload file `{}` cannot be read: {error}",
+            path.display()
+        );
+        let diagnostic = DiagnosticEnvelope::new(
+            "E_PHRUST_SERVER_PRELOAD_READ",
+            DiagnosticLayer::server(),
+            DiagnosticPhase::new("preload_manifest"),
+            DiagnosticSeverity::Error,
+            message.clone(),
+        )
+        .with_context(BTreeMap::from([
+            ("preload_file".to_string(), path.display().to_string()),
+            ("stage".to_string(), "manifest_read".to_string()),
+        ]));
+        Self {
+            message,
+            diagnostic,
+        }
+    }
+
+    pub(crate) fn compile_entry(
+        preload_file: &Path,
+        line: usize,
+        script_path: &Path,
+        error: PhpExecutionError,
+    ) -> Self {
+        let message = format!(
+            "script cache preload entry {line} in `{}` failed for `{}`",
+            preload_file.display(),
+            script_path.display()
+        );
+        let mut diagnostic = match error {
+            PhpExecutionError::Compile(output) => {
+                output.diagnostics.first().cloned().unwrap_or_else(|| {
+                    DiagnosticEnvelope::new(
+                        "E_PHRUST_SERVER_PRELOAD_COMPILE",
+                        DiagnosticLayer::server(),
+                        DiagnosticPhase::new("preload_compile"),
+                        DiagnosticSeverity::Error,
+                        output.diagnostics_text,
+                    )
+                })
+            }
+            PhpExecutionError::Engine(error) => DiagnosticEnvelope::new(
+                "E_PHRUST_SERVER_PRELOAD_ENGINE",
+                DiagnosticLayer::server(),
+                DiagnosticPhase::new("preload_compile"),
+                DiagnosticSeverity::Error,
+                error,
+            ),
+        };
+        diagnostic
+            .context
+            .extend(preload_context(preload_file, line, script_path, "compile"));
+        diagnostic.suggestion = Some(DiagnosticSuggestion::new(
+            "fix the preload entry or run without --strict-preload",
+        ));
+        Self {
+            message,
+            diagnostic,
+        }
+    }
+
+    pub(crate) fn include_entry(
+        preload_file: &Path,
+        line: usize,
+        script_path: &Path,
+        error: VmError,
+    ) -> Self {
+        let message = format!(
+            "script cache preload entry {line} in `{}` failed for `{}`",
+            preload_file.display(),
+            script_path.display()
+        );
+        let mut diagnostic = error.to_diagnostic_envelope();
+        diagnostic.context.extend(preload_context(
+            preload_file,
+            line,
+            script_path,
+            "include_compile",
+        ));
+        diagnostic.suggestion = Some(DiagnosticSuggestion::new(
+            "fix the preload entry or run without --strict-preload",
+        ));
+        Self {
+            message,
+            diagnostic,
+        }
+    }
+
+    pub(crate) fn diagnostic(&self) -> &DiagnosticEnvelope {
+        &self.diagnostic
+    }
+}
+
+impl fmt::Display for PreloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+fn preload_context(
+    preload_file: &Path,
+    line: usize,
+    script_path: &Path,
+    stage: &str,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "preload_file".to_string(),
+            preload_file.display().to_string(),
+        ),
+        ("preload_line".to_string(), line.to_string()),
+        ("script_path".to_string(), script_path.display().to_string()),
+        ("stage".to_string(), stage.to_string()),
+    ])
+}
+
 impl From<ConfigError> for ServerError {
     fn from(error: ConfigError) -> Self {
         Self::Config(Box::new(error))
@@ -120,33 +242,36 @@ impl From<std::io::Error> for ServerError {
 
 pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let docroot = config.validated_docroot()?;
-    let listener = TcpListener::bind(config.listen).await?;
+    let listener = TcpListener::bind(config.transport.listen).await?;
     let local_addr = listener.local_addr()?;
-    let script_cache_preload = config.script_cache_preload.clone();
-    let strict_preload = config.strict_preload;
-    let startup_front_controller = config.front_controller.clone();
-    let startup_upload_temp_dir = config.upload_temp_dir.clone();
-    let startup_session_save_path = config.session_save_path.clone();
-    let startup_script_cache_enabled = config.script_cache_enabled;
-    let startup_script_cache_shards = config.script_cache_shards;
-    let startup_script_cache_max_entries = config.script_cache_max_entries;
-    let startup_metrics_endpoint_enabled = config.metrics_endpoint_enabled;
-    let startup_metrics_token_enabled = config.metrics_token.is_some();
-    let startup_access_log = config.access_log.clone();
-    let startup_perf_trace = config.perf_trace.clone();
-    let startup_request_profile = config.request_profile.clone();
-    let startup_tls_enabled = config.tls_cert.is_some();
-    let startup_http3_enabled = config.http3_enabled;
-    let http3_listen = config.http3_listen.unwrap_or(local_addr);
-    let engine_profile = config.engine_preset;
-    let tls_acceptor = build_tls_acceptor(config.tls_cert.as_deref(), config.tls_key.as_deref())?;
-    let http3_endpoint = if config.http3_enabled {
-        let cert_path = config.tls_cert.as_deref().ok_or_else(|| {
+    let script_cache_preload = config.engine.script_cache_preload.clone();
+    let strict_preload = config.engine.strict_preload;
+    let startup_front_controller = config.routing.front_controller.clone();
+    let startup_upload_temp_dir = config.sessions_uploads.upload_temp_dir.clone();
+    let startup_session_save_path = config.sessions_uploads.session_save_path.clone();
+    let startup_script_cache_enabled = config.engine.script_cache_enabled;
+    let startup_script_cache_shards = config.engine.script_cache_shards;
+    let startup_script_cache_max_entries = config.engine.script_cache_max_entries;
+    let startup_metrics_endpoint_enabled = config.routing.metrics_endpoint_enabled;
+    let startup_metrics_token_enabled = config.observability.metrics_token.is_some();
+    let startup_access_log = config.observability.access_log.clone();
+    let startup_perf_trace = config.observability.perf_trace.clone();
+    let startup_request_profile = config.observability.request_profile.clone();
+    let startup_tls_enabled = config.transport.tls_cert.is_some();
+    let startup_http3_enabled = config.transport.http3_enabled;
+    let http3_listen = config.transport.http3_listen.unwrap_or(local_addr);
+    let engine_profile = config.engine.engine_preset;
+    let tls_acceptor = build_tls_acceptor(
+        config.transport.tls_cert.as_deref(),
+        config.transport.tls_key.as_deref(),
+    )?;
+    let http3_endpoint = if config.transport.http3_enabled {
+        let cert_path = config.transport.tls_cert.as_deref().ok_or_else(|| {
             ConfigError::new(
                 "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
             )
         })?;
-        let key_path = config.tls_key.as_deref().ok_or_else(|| {
+        let key_path = config.transport.tls_key.as_deref().ok_or_else(|| {
             ConfigError::new(
                 "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
             )
@@ -161,23 +286,26 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         .transpose()?;
     let http3_alt_svc = http3_local_addr.map(|addr| format!("h3=\":{}\"; ma=86400", addr.port()));
     let access_log = config
+        .observability
         .access_log
         .as_deref()
         .map(AccessLogger::open)
         .transpose()?
         .map(Arc::new);
     let perf_trace = config
+        .observability
         .perf_trace
         .map(crate::perf_trace::PerfTraceWriter::open)
         .transpose()?
         .map(Arc::new);
     let request_profile = config
+        .observability
         .request_profile
         .map(crate::request_profile::RequestProfileWriter::open)
         .transpose()?
         .map(Arc::new);
-    let session_store = Arc::new(SessionStore::new(config.session_save_path));
-    if config.sessions_enabled {
+    let session_store = Arc::new(SessionStore::new(config.sessions_uploads.session_save_path));
+    if config.sessions_uploads.sessions_enabled {
         session_store
             .ensure_ready()
             .map_err(std::io::Error::other)?;
@@ -217,78 +345,107 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             .unwrap_or_else(|| "-".to_string()),
     );
     debug!(%local_addr, docroot=%docroot.display(), "starting phrust server");
-    let script_cache = Arc::new(if config.script_cache_enabled {
+    let script_cache = Arc::new(if config.engine.script_cache_enabled {
         CompiledScriptCache::new_with_limits(
-            config.script_cache_shards,
-            config.script_cache_max_entries,
-            Duration::from_millis(config.script_cache_check_interval_ms),
+            config.engine.script_cache_shards,
+            config.engine.script_cache_max_entries,
+            Duration::from_millis(config.engine.script_cache_check_interval_ms),
         )
     } else {
         CompiledScriptCache::disabled()
     });
-    let include_cache = Arc::new(IncludeCache::new(config.script_cache_shards));
+    // Server default mirrors an opcache deployment (validate_timestamps=1,
+    // revalidate_freq=2): cached includes serve without filesystem probes for
+    // two seconds. PHRUST_INCLUDE_REVALIDATE_MS overrides; 0 validates every
+    // hit like the reference CLI.
+    let include_cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        config.engine.script_cache_shards,
+        include_revalidation_interval_from_env().unwrap_or(SERVER_INCLUDE_REVALIDATION_INTERVAL),
+    ));
     // Deployment-root fingerprint: metadata + counters only. A root that
     // cannot be observed counts as `deployment_fingerprint_missing` and keeps
     // every fingerprint-gated persistent reuse blocked.
     include_cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
         &docroot,
-        config.deployment_mode,
+        config.engine.deployment_mode,
     ));
     let engine = Arc::new(ServerEngineState::new(
         engine_profile,
-        config.max_vm_steps,
+        config.limits.max_vm_steps,
         script_cache,
         include_cache,
-        config.dense_includes,
-        config.perf_ablation,
+        config.engine.dense_includes,
+        config.engine.perf_ablation,
     ));
     let state = Arc::new(AppState {
         route_config: RouteConfig {
             docroot,
-            index: config.index,
-            front_controller: config.front_controller,
-            builtin_router: config.builtin_router,
-            request_rewrites: config.request_rewrites,
-            metrics_endpoint_enabled: config.metrics_endpoint_enabled,
-            cache_clear_endpoint_enabled: config.cache_clear_endpoint_enabled,
+            index: config.routing.index,
+            front_controller: config.routing.front_controller,
+            builtin_router: config.routing.builtin_router,
+            request_rewrites: config.routing.request_rewrites,
+            metrics_endpoint_enabled: config.routing.metrics_endpoint_enabled,
+            cache_clear_endpoint_enabled: config.routing.cache_clear_endpoint_enabled,
         },
-        max_body_bytes: config.max_body_bytes,
-        multipart_config: MultipartConfig {
-            upload_temp_dir: config.upload_temp_dir,
-            max_upload_files: config.max_upload_files,
-            max_upload_file_bytes: config.max_upload_file_bytes,
+        request: RequestRuntimeConfig {
+            max_body_bytes: config.limits.max_body_bytes,
+            multipart_config: MultipartConfig {
+                upload_temp_dir: config.sessions_uploads.upload_temp_dir,
+                max_upload_files: config.sessions_uploads.max_upload_files,
+                max_upload_file_bytes: config.sessions_uploads.max_upload_file_bytes,
+            },
+            request_timeout: Duration::from_millis(config.limits.request_timeout_ms),
+            execution_time_limit: config
+                .limits
+                .execution_deadline_enabled
+                .then(|| Duration::from_millis(config.limits.max_execution_ms)),
         },
-        request_timeout: Duration::from_millis(config.request_timeout_ms),
-        execution_time_limit: config
-            .execution_deadline_enabled
-            .then(|| Duration::from_millis(config.max_execution_ms)),
-        in_flight: Arc::new(Semaphore::new(config.max_in_flight)),
-        max_in_flight: config.max_in_flight,
-        metrics: Arc::new(ServerMetrics::default()),
-        engine,
-        metrics_token: config.metrics_token,
-        access_log,
-        perf_trace,
-        perf_trace_vm_counters: config.perf_trace_vm_counters,
-        request_profile,
-        request_profile_vm_counters: config.request_profile_vm_counters,
-        request_profile_source_attribution: config.request_profile_source_attribution,
-        request_profile_trigger_header: config.request_profile_trigger_header,
-        network_requests_enabled: config.network_requests_enabled,
-        env_snapshot: server_env_snapshot(std::env::vars()),
-        debug: config.debug,
-        error_format: config.error_format,
-        debug_log: config.debug_log,
-        request_counter: Arc::new(AtomicU64::new(0)),
-        session_config: SessionConfig {
-            enabled: config.sessions_enabled,
-            cookie_name: config.session_cookie_name,
-            cookie_path: config.session_cookie_path,
+        concurrency: ConcurrencyServices {
+            in_flight: Arc::new(Semaphore::new(config.limits.max_in_flight)),
+            max_in_flight: config.limits.max_in_flight,
+            cpu_execution: Arc::new(Semaphore::new(config.limits.cpu_execution_limit)),
+            cpu_execution_limit: config.limits.cpu_execution_limit,
+            php_workers: Arc::new(crate::worker_pool::PhpWorkerPool::new(
+                config.limits.cpu_execution_limit,
+            )),
         },
-        session_store,
-        local_addr,
-        request_scheme: if startup_tls_enabled { "https" } else { "http" },
-        http3_alt_svc,
+        observability: ObservabilityState {
+            metrics_token: config.observability.metrics_token,
+            access_log,
+            perf_trace,
+            perf_trace_vm_counters: config.observability.perf_trace_vm_counters,
+            request_profile,
+            request_profile_vm_counters: config.observability.request_profile_vm_counters,
+            request_profile_source_attribution: config
+                .observability
+                .request_profile_source_attribution,
+            request_profile_trigger_header: config.observability.request_profile_trigger_header,
+            debug: config.observability.debug,
+            error_format: config.observability.error_format,
+            debug_log: config.observability.debug_log,
+        },
+        capabilities: CapabilityState {
+            network_requests_enabled: config.capabilities.network_requests_enabled,
+            env_snapshot: server_env_snapshot(std::env::vars()),
+        },
+        sessions: SessionServices {
+            config: SessionConfig {
+                enabled: config.sessions_uploads.sessions_enabled,
+                cookie_name: config.sessions_uploads.session_cookie_name,
+                cookie_path: config.sessions_uploads.session_cookie_path,
+            },
+            session_store,
+        },
+        transport: RequestTransport {
+            local_addr,
+            request_scheme: if startup_tls_enabled { "https" } else { "http" },
+            http3_alt_svc,
+        },
+        services: RuntimeServices {
+            metrics: Arc::new(ServerMetrics::default()),
+            engine,
+            request_counter: Arc::new(AtomicU64::new(0)),
+        },
     });
     preload_script_cache(&state, script_cache_preload.as_deref(), strict_preload)?;
     serve_until_shutdown(listener, state, tls_acceptor, http3_endpoint).await;
@@ -314,6 +471,7 @@ mod tests {
             execute_compiled_php_with_state, http_runtime_context, php_output_response,
             php_runtime_context_for_http, request_counter_mode, server_env_for_request,
         },
+        request_pipeline::{RequestOutcome, RequestStage},
         request_profile::RequestProfileWriter,
         routing::RequestRewriteRule,
         serve::clear_cache_response,
@@ -331,7 +489,8 @@ mod tests {
     };
     use php_diagnostics::DiagnosticOutputFormat;
     use php_executor::{
-        EngineProfileName, IncludeLoader, OptimizationLevel, PhpExecutionOutput, PhpExecutionStatus,
+        EngineProfileName, ExecutorIncludeCompiler, IncludeLoader, OptimizationLevel,
+        PhpExecutionOutput, PhpExecutionStatus,
     };
     use php_runtime::api::{
         RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionState,
@@ -470,7 +629,8 @@ mod tests {
         assert_eq!(output.stdout, b"123512351235");
         let counters = output.counters.expect("counters should be collected");
         assert_eq!(counters.jit_mode, "off");
-        assert_eq!(counters.native_executions, counters.jit_executed);
+        assert_eq!(counters.jit_executed, 0);
+        assert_eq!(counters.native_executions, counters.copy_patch_executed);
         assert!(counters.bytecode_lower_attempts > 0, "{counters:?}");
         assert!(counters.quickening_attempts > 0, "{counters:?}");
         assert!(counters.inline_cache_observations > 0, "{counters:?}");
@@ -535,10 +695,7 @@ mod tests {
         assert!(!options.vm_options.internal_function_dispatch_cache);
         assert_eq!(options.vm_options.jit, JitMode::Off);
         assert!(!options.vm_options.tiering.enabled);
-        assert_eq!(
-            options.vm_options.include_optimization_level,
-            OptimizationLevel::O0
-        );
+        assert_eq!(options.include_optimization_level, OptimizationLevel::O0);
         assert_eq!(
             options.vm_options.dense_jump_threading,
             DenseJumpThreadingMode::Off
@@ -560,7 +717,7 @@ mod tests {
 
         assert_eq!(engine.compile_optimization_level, OptimizationLevel::O2);
         assert_eq!(
-            options.vm_options.include_optimization_level,
+            options.include_optimization_level,
             engine.compile_optimization_level
         );
     }
@@ -572,12 +729,12 @@ mod tests {
         assert_eq!(request_counter_mode(&plain_state), RequestCounterMode::Off);
 
         let mut traced_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        traced_state.perf_trace = Some(Arc::new(
+        traced_state.observability.perf_trace = Some(Arc::new(
             PerfTraceWriter::open(fixture.root.join("perf.jsonl")).expect("perf trace"),
         ));
         assert_eq!(request_counter_mode(&traced_state), RequestCounterMode::Off);
 
-        traced_state.perf_trace_vm_counters = true;
+        traced_state.observability.perf_trace_vm_counters = true;
         assert_eq!(
             request_counter_mode(&traced_state),
             RequestCounterMode::VmCounters
@@ -586,7 +743,7 @@ mod tests {
         // A request profile alone stays in Summary: no VM hot counters and
         // no per-clone source attribution for ordinary profiled requests.
         let mut profiled_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        profiled_state.request_profile = Some(Arc::new(
+        profiled_state.observability.request_profile = Some(Arc::new(
             RequestProfileWriter::open(fixture.root.join("profiles")).expect("request profile"),
         ));
         assert_eq!(
@@ -595,14 +752,16 @@ mod tests {
         );
         assert!(!request_counter_mode(&profiled_state).collects_vm_counters());
 
-        profiled_state.request_profile_vm_counters = true;
+        profiled_state.observability.request_profile_vm_counters = true;
         assert_eq!(
             request_counter_mode(&profiled_state),
             RequestCounterMode::VmCounters
         );
         assert!(!request_counter_mode(&profiled_state).collects_source_attribution());
 
-        profiled_state.request_profile_source_attribution = true;
+        profiled_state
+            .observability
+            .request_profile_source_attribution = true;
         assert_eq!(
             request_counter_mode(&profiled_state),
             RequestCounterMode::SourceAttributedLayout
@@ -612,9 +771,35 @@ mod tests {
     }
 
     #[test]
+    fn request_outcome_emits_final_metrics_once_when_consumed() {
+        let fixture = ServerCacheFixture::new();
+        let state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        let mut response = crate::response::text(StatusCode::BAD_REQUEST, "failure\n");
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from_static("8"));
+
+        let (response, cache_hit) =
+            RequestOutcome::failure(response, Some(false), RequestStage::Execution)
+                .finalize(&state, None);
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(cache_hit, Some(false));
+        assert_eq!(
+            state
+                .services
+                .metrics
+                .response_output_bytes
+                .load(Ordering::Relaxed),
+            "failure\n".len() as u64
+        );
+    }
+
+    #[test]
     fn persistent_engine_shares_immutable_artifacts_without_request_state() {
         let fixture = ServerCacheFixture::new();
         fixture.write(request_isolation_source());
+        std::fs::create_dir(fixture.root.join("subdir")).expect("create request cwd fixture");
         let cache = Arc::new(CompiledScriptCache::new_with_limits(2, 8, Duration::ZERO));
         let state = Arc::new(test_state(&fixture, Arc::clone(&cache), false));
         let initial = state
@@ -653,7 +838,13 @@ mod tests {
                     false,
                 )
                 .expect("request execution");
-                assert_eq!(output.status, PhpExecutionStatus::Success);
+                assert_eq!(
+                    output.status,
+                    PhpExecutionStatus::Success,
+                    "diagnostics={} runtime={:?}",
+                    output.diagnostics_text,
+                    output.runtime_diagnostics
+                );
                 let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
                 let isolated_header = output.http_response.headers.iter().any(|header| {
                     header.name.eq_ignore_ascii_case("x-isolated") && header.value == id
@@ -669,6 +860,10 @@ mod tests {
                 "{stdout}"
             );
             assert!(stdout.contains("|destruct"), "{stdout}");
+            assert!(stdout.contains("|static=1:1"), "{stdout}");
+            assert!(stdout.contains("|ini=14"), "{stdout}");
+            assert!(stdout.contains("|timezone=UTC"), "{stdout}");
+            assert!(stdout.contains("|cwd=phrust-server-cache-"), "{stdout}");
             assert!(isolated_header);
         }
 
@@ -678,6 +873,7 @@ mod tests {
         assert_eq!(stats.entries, 1);
         assert_eq!(
             state
+                .services
                 .metrics
                 .persistent_engine_request_local_resets
                 .load(Ordering::Relaxed),
@@ -687,6 +883,7 @@ mod tests {
         // persistence stays visible instead of being renamed away.
         assert_eq!(
             state
+                .services
                 .metrics
                 .persistent_engine_request_local_rejections
                 .load(Ordering::Relaxed),
@@ -694,6 +891,7 @@ mod tests {
         );
         assert_eq!(
             state
+                .services
                 .metrics
                 .persistent_engine_immutable_metadata_reuses
                 .load(Ordering::Relaxed),
@@ -715,11 +913,12 @@ mod tests {
 
         let stats = cache.cache_stats();
         assert_eq!(stats.entries, 2);
-        let include_stats = state.engine.include_cache.cache_stats();
+        let include_stats = state.services.engine.include_cache.cache_stats();
         assert_eq!(include_stats.compile_misses, 2);
         assert_eq!(include_stats.source_reads, 2);
         assert_eq!(
             state
+                .services
                 .metrics
                 .script_cache_preload_successes
                 .load(Ordering::Relaxed),
@@ -727,6 +926,7 @@ mod tests {
         );
         assert_eq!(
             state
+                .services
                 .metrics
                 .script_cache_preload_failures
                 .load(Ordering::Relaxed),
@@ -737,20 +937,60 @@ mod tests {
 
         let loader = IncludeLoader::for_root(&fixture.root).expect("include loader");
         let resolved = state
+            .services
             .engine
             .include_cache
             .resolve_with_include_path(&loader, None, "first.php", &[], Some(&fixture.root))
             .expect("resolve preloaded include");
         state
+            .services
             .engine
             .include_cache
-            .get_or_compile_include(&loader, &resolved, state.engine.compile_optimization_level)
+            .get_or_compile_include(
+                &loader,
+                &resolved,
+                &ExecutorIncludeCompiler::new(state.services.engine.compile_optimization_level),
+            )
             .expect("preloaded include cache hit");
-        let include_stats_after_hit = state.engine.include_cache.cache_stats();
+        let include_stats_after_hit = state.services.engine.include_cache.cache_stats();
         assert_eq!(include_stats_after_hit.compile_hits, 1);
         assert_eq!(
             include_stats_after_hit.source_reads,
-            include_stats.source_reads
+            include_stats.source_reads + 1,
+            "mutable include hits validate current source bytes"
+        );
+        assert_eq!(
+            include_stats_after_hit.content_validations,
+            include_stats.content_validations + 1
+        );
+    }
+
+    #[test]
+    fn strict_preload_preserves_compile_diagnostic_and_entry_context() {
+        let fixture = ServerCacheFixture::new();
+        fixture.write_named("broken.php", "<?php function broken( {");
+        let preload = fixture.root.join("preload.txt");
+        std::fs::write(&preload, "broken.php\n").expect("write preload list");
+        let state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+
+        let error = preload_script_cache(&state, Some(&preload), true)
+            .expect_err("strict preload should preserve compile failure");
+        let diagnostic = error.diagnostic();
+
+        assert_ne!(diagnostic.code, "E_PHRUST_SERVER_PRELOAD");
+        assert_eq!(
+            diagnostic.context.get("preload_line").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            diagnostic.context.get("stage").map(String::as_str),
+            Some("compile")
+        );
+        assert!(
+            diagnostic
+                .context
+                .get("script_path")
+                .is_some_and(|path| path.ends_with("broken.php"))
         );
     }
 
@@ -828,7 +1068,7 @@ mod tests {
     fn server_env_for_request_injects_network_capability_when_enabled() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.network_requests_enabled = true;
+        state.capabilities.network_requests_enabled = true;
 
         let env = server_env_for_request(&state);
 
@@ -844,14 +1084,14 @@ mod tests {
     fn server_env_for_request_reuses_prepared_snapshot_without_overlay() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.env_snapshot = server_env_snapshot(vec![
+        state.capabilities.env_snapshot = server_env_snapshot(vec![
             ("ZED".to_string(), "last".to_string()),
             ("ALPHA".to_string(), "first".to_string()),
         ]);
 
         let env = server_env_for_request(&state);
 
-        assert!(Arc::ptr_eq(&env, &state.env_snapshot));
+        assert!(Arc::ptr_eq(&env, &state.capabilities.env_snapshot));
         assert_eq!(env[0].0, "ALPHA");
         assert_eq!(env[1].0, "ZED");
     }
@@ -860,7 +1100,7 @@ mod tests {
     fn server_env_for_request_hides_rewrite_configuration() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.env_snapshot = server_env_snapshot(vec![(
+        state.capabilities.env_snapshot = server_env_snapshot(vec![(
             crate::config::BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV.to_string(),
             "/api=route".to_string(),
         )]);
@@ -878,8 +1118,8 @@ mod tests {
     fn server_env_for_request_preserves_existing_network_capability_value() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.network_requests_enabled = true;
-        state.env_snapshot =
+        state.capabilities.network_requests_enabled = true;
+        state.capabilities.env_snapshot =
             server_env_snapshot(vec![("PHRUST_NET_TESTS".to_string(), "0".to_string())]);
 
         let env = server_env_for_request(&state);
@@ -897,8 +1137,8 @@ mod tests {
     fn http_runtime_context_maps_server_name_https_and_remote_addr() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.request_scheme = "https";
-        state.local_addr = "127.0.0.1:8443".parse().expect("local addr");
+        state.transport.request_scheme = "https";
+        state.transport.local_addr = "127.0.0.1:8443".parse().expect("local addr");
         let script_path = fixture.write_named("index.php", "<?php echo 'ok';");
         let (parts, _) = Request::builder()
             .method("GET")
@@ -970,7 +1210,7 @@ mod tests {
     fn http_runtime_context_applies_configured_prefix_query_rewrite() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.local_addr = "127.0.0.1:18080".parse().expect("local addr");
+        state.transport.local_addr = "127.0.0.1:18080".parse().expect("local addr");
         state
             .route_config
             .request_rewrites
@@ -1079,48 +1319,65 @@ mod tests {
                 metrics_endpoint_enabled: true,
                 cache_clear_endpoint_enabled,
             },
-            max_body_bytes: 1024,
-            multipart_config: MultipartConfig {
-                upload_temp_dir: fixture.root.join("uploads"),
-                max_upload_files: 32,
-                max_upload_file_bytes: 1024,
+            request: RequestRuntimeConfig {
+                max_body_bytes: 1024,
+                multipart_config: MultipartConfig {
+                    upload_temp_dir: fixture.root.join("uploads"),
+                    max_upload_files: 32,
+                    max_upload_file_bytes: 1024,
+                },
+                request_timeout: Duration::from_secs(30),
+                execution_time_limit: Some(Duration::from_secs(30)),
             },
-            request_timeout: Duration::from_secs(30),
-            execution_time_limit: Some(Duration::from_secs(30)),
-            in_flight: Arc::new(Semaphore::new(1)),
-            max_in_flight: 1,
-            metrics: Arc::new(ServerMetrics::default()),
-            engine: Arc::new(ServerEngineState::new(
-                EngineProfileName::Default,
-                100_000,
-                cache,
-                Arc::new(IncludeCache::new(1)),
-                None,
-                Default::default(),
-            )),
-            metrics_token: None,
-            access_log: None,
-            perf_trace: None,
-            perf_trace_vm_counters: false,
-            request_profile: None,
-            request_profile_vm_counters: false,
-            request_profile_source_attribution: false,
-            request_profile_trigger_header: false,
-            network_requests_enabled: false,
-            env_snapshot: server_env_snapshot(Vec::new()),
-            debug: false,
-            error_format: DiagnosticOutputFormat::Text,
-            debug_log: None,
-            request_counter: Arc::new(AtomicU64::new(0)),
-            session_config: SessionConfig {
-                enabled: false,
-                cookie_name: "PHPSESSID".to_string(),
-                cookie_path: "/".to_string(),
+            concurrency: ConcurrencyServices {
+                in_flight: Arc::new(Semaphore::new(1)),
+                max_in_flight: 1,
+                cpu_execution: Arc::new(Semaphore::new(1)),
+                cpu_execution_limit: 1,
+                php_workers: Arc::new(crate::worker_pool::PhpWorkerPool::new(1)),
             },
-            session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
-            local_addr: "127.0.0.1:8080".parse().expect("local addr"),
-            request_scheme: "http",
-            http3_alt_svc: None,
+            observability: ObservabilityState {
+                metrics_token: None,
+                access_log: None,
+                perf_trace: None,
+                perf_trace_vm_counters: false,
+                request_profile: None,
+                request_profile_vm_counters: false,
+                request_profile_source_attribution: false,
+                request_profile_trigger_header: false,
+                debug: false,
+                error_format: DiagnosticOutputFormat::Text,
+                debug_log: None,
+            },
+            capabilities: CapabilityState {
+                network_requests_enabled: false,
+                env_snapshot: server_env_snapshot(Vec::new()),
+            },
+            sessions: SessionServices {
+                config: SessionConfig {
+                    enabled: false,
+                    cookie_name: "PHPSESSID".to_string(),
+                    cookie_path: "/".to_string(),
+                },
+                session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
+            },
+            transport: RequestTransport {
+                local_addr: "127.0.0.1:8080".parse().expect("local addr"),
+                request_scheme: "http",
+                http3_alt_svc: None,
+            },
+            services: RuntimeServices {
+                metrics: Arc::new(ServerMetrics::default()),
+                engine: Arc::new(ServerEngineState::new(
+                    EngineProfileName::Default,
+                    100_000,
+                    cache,
+                    Arc::new(IncludeCache::new(1)),
+                    None,
+                    Default::default(),
+                )),
+                request_counter: Arc::new(AtomicU64::new(0)),
+            },
         }
     }
 
@@ -1140,7 +1397,18 @@ mod tests {
 
     fn request_isolation_source() -> &'static str {
         "<?php\n\
+         function request_static_counter() { static $value = 0; $value = $value + 1; return $value; }\n\
+         class ServerIsolationStatics { public static $value = 0; }\n\
          $GLOBALS['counter'] = ($GLOBALS['counter'] ?? 0) + 1;\n\
+         $functionStatic = request_static_counter();\n\
+         $classStatic = ServerIsolationStatics::$value + 1;\n\
+         ServerIsolationStatics::$value = $classStatic;\n\
+         $initialPrecision = ini_get('precision');\n\
+         ini_set('precision', '9');\n\
+         $initialTimezone = date_default_timezone_get();\n\
+         date_default_timezone_set('Europe/Paris');\n\
+         $initialCwd = basename(getcwd());\n\
+         chdir('subdir');\n\
          header('X-Isolated: ' . $_GET['id']);\n\
          ob_start();\n\
          echo 'buffer';\n\
@@ -1155,7 +1423,7 @@ mod tests {
              public function __destruct() { echo '|destruct'; }\n\
          }\n\
          $object = new ServerIsolationDestructor();\n\
-         echo 'id=', $_GET['id'], '|global=', $GLOBALS['counter'], '|buf=', $buffer, '|cow=', count($items), ':', count($copy), '|ref=', $ref;\n"
+         echo 'id=', $_GET['id'], '|global=', $GLOBALS['counter'], '|buf=', $buffer, '|cow=', count($items), ':', count($copy), '|ref=', $ref, '|static=', $functionStatic, ':', $classStatic, '|ini=', $initialPrecision, '|timezone=', $initialTimezone, '|cwd=', $initialCwd;\n"
     }
 
     struct ServerCacheFixture {

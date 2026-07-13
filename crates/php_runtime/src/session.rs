@@ -324,7 +324,7 @@ impl SessionState {
     /// Creates a new deterministic session id without activating it.
     pub fn create_id_with_prefix(&mut self, prefix: &str, id_length: usize) -> String {
         let mut id = String::from(prefix);
-        id.push_str(&self.deterministic_session_id(id_length));
+        id.push_str(&self.next_session_id(id_length));
         id
     }
 
@@ -333,6 +333,11 @@ impl SessionState {
             return id;
         }
         self.deterministic_session_id(id_length)
+    }
+
+    /// Stages a transport-generated id for the next session activation.
+    pub fn set_pending_generated_id(&mut self, id: impl Into<String>) {
+        self.pending_generated_id = Some(id.into());
     }
 
     fn deterministic_session_id(&mut self, id_length: usize) -> String {

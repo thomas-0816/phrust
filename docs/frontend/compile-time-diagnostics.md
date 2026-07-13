@@ -30,7 +30,7 @@ Exact PHP error text compatibility is not required for Semantic frontend. Accept
 diagnostic category, source location, and known-gap classification are the
 primary comparison points.
 
-## Work item Diagnostic System
+## Diagnostic System
 
 `php_semantics::diagnostics` defines the stable diagnostic surface:
 

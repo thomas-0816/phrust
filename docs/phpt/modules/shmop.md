@@ -4,8 +4,9 @@ Current focused coverage:
 
 - `shmop` extension visibility, `Shmop` class visibility, and function
   registration.
-- Request-local keyed segments for `shmop_open()` modes used by the selected
-  fixture.
+- Host System V shared-memory segments for `shmop_open()` modes used by the
+  selected fixture, backed by `shmget()`, `shmat()`, `shmdt()`, and
+  `shmctl(IPC_RMID)`.
 - Binary-safe `shmop_write()` and `shmop_read()` including embedded NUL bytes.
 - Read-only attach mode, `IPC_PRIVATE`-style key `0` isolation, `shmop_size()`,
   and `shmop_delete()` semantics.
@@ -13,12 +14,11 @@ Current focused coverage:
   `ext/shmop/tests/002.phpt`, and
   `ext/shmop/tests/shmop_open_private.phpt`.
 
-This slice uses a deterministic in-memory backend, which avoids leaking host
-SysV shared-memory resources during tests. Remaining host/platform gaps are
-real SysV shared memory allocation, cross-process segment sharing, platform
-errno-specific warning text, host resource cleanup behavior, exact
-`shmop_close()` deprecation warning text, and the two Windows-only upstream
-rows on non-Windows hosts.
+The selected fixture derives a unique SysV key with `tempnam()`/`ftok()` and
+deletes the created segment after the read/write checks. Remaining
+host/platform gaps are platform errno-specific warning text, exhaustive host
+resource cleanup edge behavior, exact `shmop_close()` deprecation warning text,
+and the two Windows-only upstream rows on non-Windows hosts.
 
 Measured target coverage:
 

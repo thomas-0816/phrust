@@ -10,7 +10,21 @@ foreach (['Imagick', 'ImagickDraw', 'ImagickPixel', 'ImagickPixelIterator', 'Ima
 }
 $class = new ReflectionClass('Imagick');
 echo $class->getName(), "|", $class->getExtensionName(), "|", ($class->isInternal() ? "internal" : "user"), "\n";
-foreach (['readImage', 'writeImage', 'resizeImage', 'cropImage', 'thumbnailImage', 'identifyImage'] as $method) {
+foreach ([
+    'readImage',
+    'readImageBlob',
+    'writeImage',
+    'getImagesBlob',
+    'resizeImage',
+    'cropImage',
+    'thumbnailImage',
+    'identifyImage',
+    'getImageWidth',
+    'getImageHeight',
+    'getImageFormat',
+    'setImageFormat',
+    'stripImage',
+] as $method) {
     echo method_exists('Imagick', $method) ? "$method method\n" : "$method missing\n";
 }
 new Imagick();
@@ -24,10 +38,17 @@ ImagickPixelIterator class
 ImagickException class
 Imagick|imagick|internal
 readImage method
+readImageBlob method
 writeImage method
+getImagesBlob method
 resizeImage method
 cropImage method
 thumbnailImage method
 identifyImage method
+getImageWidth method
+getImageHeight method
+getImageFormat method
+setImageFormat method
+stripImage method
 %s: runtime-diagnostic: %s"E_PHP_VM_UNSUPPORTED_IMAGICK"%sImageMagick backend capability gate%s
 %s: runtime_error: E_PHP_VM_UNSUPPORTED_IMAGICK: class %s requires an ImageMagick backend capability gate

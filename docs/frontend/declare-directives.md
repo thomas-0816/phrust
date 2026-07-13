@@ -1,6 +1,6 @@
 # Declare Directives
 
-Work item records `declare(...)` statements as frontend metadata. The semantic
+The semantic frontend records `declare(...)` statements as frontend metadata. The semantic
 frontend does not apply runtime behavior for `strict_types`, `ticks`, or
 `encoding`.
 

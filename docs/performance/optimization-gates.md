@@ -1,7 +1,5 @@
 # Performance Optimization Gates
 
-Date: 2026-07-05.
-
 Performance documentation in this repository distinguishes three gate classes
 so that safety blockers stop only the work they actually block. A doc saying an
 area is "blocked" without one of these labels means the broad/generic form of

@@ -1,5 +1,7 @@
 {"path":"tests/phpt/generated/phar/platform-checks.phpt"}
 {"path":"tests/phpt/generated/phar/read-only-methods.phpt"}
+{"path":"tests/phpt/generated/phar/arrayaccess-fileinfo-metadata.phpt"}
+{"path":"tests/phpt/generated/phar/archive-format-reads.phpt"}
 {"path":"ext/phar/tests/phar_get_supportedcomp1.phpt"}
 {"path":"ext/phar/tests/phar_get_supportedcomp2.phpt"}
 {"path":"ext/phar/tests/phar_get_supportedcomp3.phpt"}

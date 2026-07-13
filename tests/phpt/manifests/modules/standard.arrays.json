@@ -4,14 +4,13 @@
   "priority":12,
   "selected_manifest":"tests/phpt/manifests/modules/standard.arrays.selected.jsonl",
   "corpus_count":821,
-  "selected_count":35,
-  "pass_count":35,
-  "skip_count":0,
-  "fail_count":0,
+  "pass_count":553,
+  "skip_count":8,
+  "fail_count":260,
   "bork_count":0,
-  "known_failure_count":735,
-  "scope":["count","array_key_exists","array_keys","array_values","array_merge","array_slice","array_splice","array_column","in_array","array_search","array_unique","range","array_fill","array_key_first","array_key_last","array_pad","array_pop","array_push","array_unshift","array_chunk","array_flip","array_diff_assoc","array_intersect","array_intersect_assoc","deterministic sort/asort/ksort"],
-  "non_scope":["array COW engine work","callback-heavy array builtins without VM callable dispatch"],
-  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.arrays","nix develop -c just verify-stdlib"],
-  "next_step":"Keep the selected array builtin gate green while expanding callback and broader upstream array PHPT coverage."
+  "known_failure_count":260,
+  "scope":["ext/standard array builtins"],
+  "non_scope":["array COW engine work"],
+  "target_gates":["nix develop -c just phpt-module MODULE=standard.arrays"],
+  "next_step":"Implement array builtins after array data model gaps are closed."
 }

@@ -8,6 +8,8 @@
 //! This crate intentionally contains no PHP lexer, parser, AST, CST, VM, or
 //! runtime implementation.
 
+use std::sync::Arc;
+
 pub mod byte_kernel;
 mod line_index;
 mod span;
@@ -18,7 +20,7 @@ pub use span::{BytePos, TextRange};
 /// Owned PHP source text with a byte-oriented line index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceText {
-    text: String,
+    text: Arc<str>,
     line_index: LineIndex,
 }
 
@@ -26,7 +28,7 @@ impl SourceText {
     /// Creates source text and builds its line index.
     #[must_use]
     pub fn new(text: impl Into<String>) -> Self {
-        let text = text.into();
+        let text = Arc::<str>::from(text.into());
         let line_index = LineIndex::new(&text);
         Self { text, line_index }
     }
@@ -41,6 +43,12 @@ impl SourceText {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         self.text.as_bytes()
+    }
+
+    /// Returns shared ownership of the immutable source buffer.
+    #[must_use]
+    pub fn shared_text(&self) -> Arc<str> {
+        Arc::clone(&self.text)
     }
 
     /// Returns the source length in bytes.
@@ -84,6 +92,7 @@ pub const fn reference_php_version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{BytePos, LineCol, SourceText, TextRange, reference_php_version};
+    use std::sync::Arc;
 
     #[test]
     fn exposes_foundation_reference_version() {
@@ -103,5 +112,15 @@ mod tests {
         let source = SourceText::new("<?php");
         let range = TextRange::new(0, 2);
         assert_eq!(source.slice(range), Some("<?"));
+    }
+
+    #[test]
+    fn source_text_exposes_the_canonical_shared_buffer() {
+        let source = SourceText::new("<?php echo 1;");
+        let first = source.shared_text();
+        let second = source.shared_text();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.as_ref(), source.as_str());
     }
 }

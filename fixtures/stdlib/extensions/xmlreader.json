@@ -1,0 +1,17 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "XMLReader"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "xmlreader",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

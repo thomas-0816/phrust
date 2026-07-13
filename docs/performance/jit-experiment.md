@@ -67,7 +67,7 @@ FPM/SAPI lifecycle are out of scope.
 
 Default builds run with JIT disabled and must not allocate executable memory.
 Feature-on builds may compile JIT infrastructure and execute the guarded
-Work item int-leaf prototype through safe VM-owned code after Cranelift IR
+the int-leaf prototype through safe VM-owned code after Cranelift IR
 verification. Native machine-code execution remains blocked until a W^X or
 equivalent executable-memory policy is implemented and audited. Unsupported
 platforms must skip or fall back cleanly.
@@ -79,7 +79,7 @@ The Cargo feature is `jit-cranelift`, default off. The CLI switch is
 only makes the experiment available; eligibility, warmup/hotness, guards, and
 runtime flags still decide whether any region can attempt compilation.
 
-Work item routes JIT attempts through the request-local tiering policy.
+The performance layer routes JIT attempts through the request-local tiering policy.
 `--tiering=off` prevents JIT compilation attempts even if `--jit=on` is
 specified. `--tiering-stats-json <path>` exposes the function-entry,
 loop-backedge, IC-stability, guard-failure, and Tier 2 candidate counters used
@@ -99,16 +99,14 @@ Stop or hand off the experiment if:
 
 ## Validation Surface
 
-Work item adds `crates/php_jit` as a default-off API skeleton. Work item
-adds conservative eligibility analysis for a primitive int/bool leaf-function IR
-subset with stable rejection and unknown reason codes. Work item adds a
+The performance layer provides `crates/php_jit` as a default-off API skeleton. The performance layer adds conservative eligibility analysis for a primitive int/bool leaf-function IR
+subset with stable rejection and unknown reason codes. The performance layer provides a
 safe, handle-based VM/JIT ABI for context/frame views, value boundaries,
-bailout/deopt results, runtime callouts, and exception markers. Work item
-adds an optional `jit-cranelift` lowering prototype that converts the tiny
+bailout/deopt results, runtime callouts, and exception markers. The performance layer adds an optional `jit-cranelift` lowering prototype that converts the tiny
 integer subset into verified Cranelift IR text and rejects unsupported IR with
 typed errors.
 
-Work item adds the first execution integration under both
+The performance layer provides the first execution integration under both
 `--features jit-cranelift` and CLI `--jit=on`. The VM tracks request-local
 hotness, attempts compilation only after warmup, calls the Cranelift lowerer as
 the compile proof, and then executes only guarded int leaf functions through a
@@ -120,7 +118,7 @@ fibers, methods, closures, and non-integer values fall back to the interpreter.
 `jit_compile_attempts`, `jit_compiled`, `jit_executed`, and `jit_bailouts`, and
 keeps `native_machine_code_execution` false.
 
-Work item adds the tiering policy and stats surface. The JIT remains
+The performance layer provides the tiering policy and stats surface. The JIT remains
 default-off, feature-gated, and limited to eligible hot int-leaf functions; the
 tiering layer only controls when the VM may attempt that path.
 

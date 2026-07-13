@@ -7,7 +7,7 @@ symbols:
   - conditional_class_like BaseThing
 hir_summary:
   statements: 1
-  expressions: 3
+  expressions: 4
   types: 1
   const_exprs: 0
   class_likes: 1

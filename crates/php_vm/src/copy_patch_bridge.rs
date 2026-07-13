@@ -4,12 +4,12 @@
 //! It marshals a frame's locals into the flat `JitCValue` slot buffer a
 //! [`CompiledScalarRegion`](php_jit::copy_patch::CompiledScalarRegion) expects,
 //! runs the emitted native code, and marshals
-//! the result back to a VM [`Value`](php_runtime::Value). Non-scalar locals are
+//! the result back to a VM [`Value`](php_runtime::api::Value). Non-scalar locals are
 //! marshaled as `Uninitialized` so the region's `Int` guards take the
 //! interpreter side exit rather than misreading a heap handle as an integer.
 //!
 //! The interpreter's function-entry fork (`try_execute_copy_patch_leaf` in
-//! `crate::vm`) consults [`cached_leaf`] before dense dispatch, so recognized
+//! `crate::vm`) consults `cached_leaf_with_event` before dense dispatch, so recognized
 //! leaves run natively on their first call under the default engine. The bridge
 //! is additionally exercised by unit tests over a real
 //! [`LocalFile`](crate::frame::LocalFile) so the marshal-in / marshal-out ABI is
@@ -25,9 +25,11 @@
 
 use std::sync::OnceLock;
 
+#[cfg(test)]
 use php_jit::copy_patch::CompiledScalarRegion;
-use php_runtime::Value;
+use php_runtime::api::Value;
 
+#[cfg(test)]
 use crate::frame::LocalFile;
 
 // The marshaling types, local addressing, and compiled-leaf cache are only
@@ -35,7 +37,7 @@ use crate::frame::LocalFile;
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::ids::LocalId;
 #[cfg(all(unix, target_arch = "aarch64"))]
-use php_ir::instruction::{IrCallArg, TerminatorKind};
+use php_ir::instruction::{CastKind, IrCallArg, TerminatorKind};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::module::{ClassEntry, ClassPropertyEntry, IrUnit, normalize_class_name};
 #[cfg(all(unix, target_arch = "aarch64"))]
@@ -53,12 +55,19 @@ use php_jit::{
 #[cfg(all(unix, target_arch = "aarch64"))]
 use std::cell::RefCell;
 #[cfg(all(unix, target_arch = "aarch64"))]
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use std::rc::Rc;
 
 #[cfg(all(unix, target_arch = "aarch64"))]
 use crate::compiled_unit::CompiledUnit;
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+const ARRAY_FETCH_STATUS_KEY_MISS: i32 = 11;
+#[cfg(all(unix, target_arch = "aarch64"))]
+const ARRAY_FETCH_STATUS_KEY_COERCION: i32 = 12;
+#[cfg(all(unix, target_arch = "aarch64"))]
+const ARRAY_FETCH_STATUS_REFERENCE: i32 = 13;
 
 /// Marshal a VM `Value` into the flat-buffer `JitCValue` the native tier reads.
 ///
@@ -87,7 +96,7 @@ use crate::compiled_unit::CompiledUnit;
 /// pointer *into* `value`. The caller MUST keep the pointed-to `Value` alive and
 /// unmoved for the entire duration of the native `run` call its buffer is passed
 /// to, and the native code MUST NOT retain the pointer past that call. Both call
-/// sites uphold this — [`run_scalar_int_region`] marshals pointers into an owned
+/// sites uphold this; the test runner marshals pointers into an owned
 /// backing `Vec<Option<Value>>` that outlives the call, and
 /// [`NativeLeaf::run_outcome`] marshals pointers into the caller's `&[Value]`
 /// params slice, which likewise outlives the call. The consumers of a borrowed
@@ -105,30 +114,19 @@ use crate::compiled_unit::CompiledUnit;
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn marshal_local(value: &Value) -> JitCValue {
     match value {
+        Value::Null => JitCValue::null(),
         Value::Int(int) => JitCValue::int(*int),
         Value::Bool(boolean) => JitCValue::bool(*boolean),
         Value::Float(float) => JitCValue::float(float.to_f64()),
-        // Read-only borrowed array handle: the payload is a `*const Value` valid
-        // only for the synchronous native call (see the contract above).
-        Value::Array(_) => JitCValue {
-            tag: JitCValueTag::OpaqueArray,
-            reserved: 0,
-            payload: value as *const Value as u64,
-            aux: 0,
-        },
-        // Read-only borrowed string handle, same lifetime contract as the array
-        // handle above; the payload is read only for its byte length.
-        Value::String(_) => JitCValue {
-            tag: JitCValueTag::OpaqueString,
-            reserved: 0,
-            payload: value as *const Value as u64,
-            aux: 0,
-        },
-        // Read-only borrowed object handle, same lifetime contract; the payload
-        // is read only through the monomorphic property-load helper, which guards
-        // the object's layout and reads one declared property slot.
-        Value::Object(_) => JitCValue {
-            tag: JitCValueTag::OpaqueObject,
+        Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_)
+        | Value::Resource(_)
+        | Value::Reference(_)
+        | Value::Callable(_)
+        | Value::Generator(_)
+        | Value::Fiber(_) => JitCValue {
+            tag: opaque_value_tag(value).expect("matched opaque value"),
             reserved: 0,
             payload: value as *const Value as u64,
             aux: 0,
@@ -137,11 +135,26 @@ fn marshal_local(value: &Value) -> JitCValue {
     }
 }
 
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn opaque_value_tag(value: &Value) -> Option<JitCValueTag> {
+    match value {
+        Value::String(_) => Some(JitCValueTag::OpaqueString),
+        Value::Array(_) => Some(JitCValueTag::OpaqueArray),
+        Value::Object(_) => Some(JitCValueTag::OpaqueObject),
+        Value::Resource(_) => Some(JitCValueTag::OpaqueResource),
+        Value::Reference(_) => Some(JitCValueTag::OpaqueReference),
+        Value::Callable(_) => Some(JitCValueTag::OpaqueCallable),
+        Value::Generator(_) => Some(JitCValueTag::OpaqueGenerator),
+        Value::Fiber(_) => Some(JitCValueTag::OpaqueFiber),
+        _ => None,
+    }
+}
+
 /// C-ABI wrapper the `count` stencil `blr`s: read the borrowed `Value` at
 /// `value_ptr` and write its packed-array length through `out`. Mirrors the
 /// Cranelift `jit_array_len_abi` (identical `extern "C" fn(usize, *mut i64) ->
 /// i32` shape) so both native tiers reuse the one runtime helper
-/// `php_runtime::php_jit_array_len` rather than re-implementing array length.
+/// `php_runtime::experimental::php_jit_array_len` rather than re-implementing array length.
 ///
 /// Read-only and non-re-entrant: it only reads the borrowed value's length and
 /// never mutates, frees, or re-enters the VM. It returns a non-OK status (so the
@@ -155,22 +168,24 @@ fn marshal_local(value: &Value) -> JitCValue {
 #[cfg(all(unix, target_arch = "aarch64"))]
 extern "C" fn copy_patch_array_len_abi(value_ptr: usize, out: *mut i64) -> i32 {
     if value_ptr == 0 || out.is_null() {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
     let value = unsafe { &*(value_ptr as *const Value) };
     let mut length = 0_usize;
-    if php_runtime::php_jit_array_len(value, &mut length) != php_runtime::PHP_JIT_ARRAY_STATUS_OK {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    if php_runtime::experimental::php_jit_array_len(value, &mut length)
+        != php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
+    {
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     }
     let Ok(length) = i64::try_from(length) else {
-        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+        return php_runtime::experimental::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
     };
     // SAFETY: `out` is non-null and valid for this synchronous call (checked).
     unsafe {
         *out = length;
     }
-    php_runtime::PHP_JIT_ARRAY_STATUS_OK
+    php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
 }
 
 /// C-ABI wrapper the `strlen` stencil `blr`s: read the borrowed `Value` at
@@ -260,12 +275,28 @@ extern "C" fn copy_patch_property_load_abi(
     let Ok(value) = crate::vm::jit_property_load_fetch(value, metadata) else {
         return JIT_HELPER_STATUS_FALLBACK;
     };
-    // Scalar-result scoping: only Int/Bool/Float can be committed to the result
-    // slot; every other property value side-exits to the interpreter.
+    // Heap results are transferred as one owned `Value`. The native leaf is a
+    // direct property-return shape, so a successful helper status immediately
+    // returns this slot and `unmarshal_result` consumes the box exactly once.
     let marshaled = match value {
         Value::Int(int) => JitCValue::int(int),
         Value::Bool(boolean) => JitCValue::bool(boolean),
         Value::Float(float) => JitCValue::float(float.to_f64()),
+        Value::Null => JitCValue::null(),
+        value @ (Value::String(_) | Value::Array(_) | Value::Object(_)) => {
+            let tag = match value {
+                Value::String(_) => JitCValueTag::OpaqueString,
+                Value::Array(_) => JitCValueTag::OpaqueArray,
+                Value::Object(_) => JitCValueTag::OpaqueObject,
+                _ => unreachable!("matched heap result"),
+            };
+            JitCValue {
+                tag,
+                reserved: 0,
+                payload: Box::into_raw(Box::new(value)) as u64,
+                aux: 1,
+            }
+        }
         _ => return JIT_HELPER_STATUS_FALLBACK,
     };
     // Return-type scoping: the native result bypasses the interpreter's
@@ -274,6 +305,13 @@ extern "C" fn copy_patch_property_load_abi(
     // returned through `: int` side-exits and the interpreter coerces it to
     // `int(1)`). `0` means no expectation (`mixed`).
     if metadata.expected_result_tag != 0 && marshaled.tag as u16 != metadata.expected_result_tag {
+        if marshaled.aux == 1 {
+            // SAFETY: the heap-result arm above allocated this exact box and
+            // no pointer escaped because the helper is returning fallback.
+            unsafe {
+                drop(Box::from_raw(marshaled.payload as *mut Value));
+            }
+        }
         return JIT_HELPER_STATUS_FALLBACK;
     }
     // SAFETY: `out` is non-null and a valid `JitCValue` for this synchronous call.
@@ -283,43 +321,51 @@ extern "C" fn copy_patch_property_load_abi(
     JIT_HELPER_STATUS_OK
 }
 
-/// C-ABI wrapper the packed-array-fetch stencil `blr`s: read element `index`
-/// of the borrowed packed-int array `Value` at `value_ptr` and write it
-/// through `out`. Delegates to `php_runtime::php_jit_array_fetch_int_slow`,
-/// the same safe facade the Cranelift tier's packed fetch uses, so both
-/// native tiers share one bounds/layout-guarded element read.
-///
-/// Read-only and non-re-entrant: it reads one packed element and never
-/// mutates, frees, or re-enters the VM. It returns a non-OK status (so the
-/// stencil side-exits to the interpreter) for a null pointer, a negative or
-/// out-of-bounds index (PHP emits the undefined-key warning and yields
-/// `null` — exactly the interpreter's job), a non-packed or non-int-element
-/// array, or a non-array value.
-///
-/// SAFETY: `value_ptr` is the `payload` of an `OpaqueArray` slot the bridge
-/// marshaled as `&Value as *const Value` into the live params/backing buffer,
-/// so it is a valid `Value` pointer for this synchronous call (see
-/// `marshal_local`). `out` is the stencil's stack out-slot, non-null and valid
-/// for the call.
+/// Exact integer/string-key array lookup returning a complete ABI value.
+/// Missing keys, coercion-sensitive keys, and references side-exit before any
+/// warning or other PHP-visible effect. Heap results remain borrowed from the
+/// live parameter array only for this synchronous invocation.
 #[cfg(all(unix, target_arch = "aarch64"))]
-extern "C" fn copy_patch_array_fetch_abi(value_ptr: usize, index: i64, out: *mut i64) -> i32 {
-    if value_ptr == 0 || out.is_null() {
+extern "C" fn copy_patch_array_fetch_abi(
+    value_ptr: usize,
+    slot_base: *const JitCValue,
+    key_slot: u32,
+    out: *mut JitCValue,
+) -> i32 {
+    if value_ptr == 0 || slot_base.is_null() || out.is_null() {
         return JIT_HELPER_STATUS_FALLBACK;
     }
-    let Ok(index) = usize::try_from(index) else {
+    // SAFETY: the emitted stencil passes a live parameter pointer and slot buffer.
+    let value = unsafe { &*(value_ptr as *const Value) };
+    let key = unsafe { &*slot_base.add(key_slot as usize) };
+    let Value::Array(array) = value else {
         return JIT_HELPER_STATUS_FALLBACK;
     };
-    // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
-    let value = unsafe { &*(value_ptr as *const Value) };
-    let mut element = 0_i64;
-    if php_runtime::php_jit_array_fetch_int_slow(value, index, &mut element)
-        != php_runtime::PHP_JIT_ARRAY_STATUS_OK
-    {
+    let key = match key.tag {
+        JitCValueTag::Int => php_runtime::api::ArrayKey::Int(key.payload as i64),
+        JitCValueTag::OpaqueString if key.payload != 0 && key.aux == 0 => {
+            // SAFETY: borrowed string pointer produced by `marshal_local`.
+            let key_value = unsafe { &*(key.payload as *const Value) };
+            let Value::String(string) = key_value else {
+                return JIT_HELPER_STATUS_FALLBACK;
+            };
+            php_runtime::api::ArrayKey::String(string.clone())
+        }
+        _ => return ARRAY_FETCH_STATUS_KEY_COERCION,
+    };
+    let Some(element) = array.get(&key) else {
+        return ARRAY_FETCH_STATUS_KEY_MISS;
+    };
+    if matches!(element, Value::Reference(_)) {
+        return ARRAY_FETCH_STATUS_REFERENCE;
+    }
+    let marshaled = marshal_local(element);
+    if marshaled.tag == JitCValueTag::Uninitialized {
         return JIT_HELPER_STATUS_FALLBACK;
     }
-    // SAFETY: `out` is non-null and valid for this synchronous call (checked).
+    // SAFETY: `out` is a valid stack-owned `JitCValue`.
     unsafe {
-        *out = element;
+        *out = marshaled;
     }
     JIT_HELPER_STATUS_OK
 }
@@ -372,14 +418,41 @@ extern "C" fn copy_patch_property_store_abi(
     let metadata = unsafe { &*(metadata_ptr as *const php_jit::JitPropertyStoreMetadata) };
     // SAFETY: a live `JitCValue` slot inside the stencil's buffer (see the doc).
     let marshaled = unsafe { &*(new_value_ptr as *const JitCValue) };
-    // Scalar-value scoping: only Int/Bool/Float reconstruct faithfully by value;
-    // every other tag side-exits to the interpreter before any write.
+    // Borrowed heap handles point into the live parameter slice for the whole
+    // synchronous native invocation, so cloning them reproduces PHP's normal
+    // COW/object-handle assignment semantics.
     let new_value = match marshaled.tag {
+        JitCValueTag::Null => Value::Null,
         JitCValueTag::Int => Value::Int(marshaled.payload as i64),
         JitCValueTag::Bool => Value::Bool(marshaled.payload != 0),
-        JitCValueTag::FloatBits => Value::Float(php_runtime::FloatValue::from_f64(f64::from_bits(
-            marshaled.payload,
-        ))),
+        JitCValueTag::FloatBits => Value::Float(php_runtime::api::FloatValue::from_f64(
+            f64::from_bits(marshaled.payload),
+        )),
+        JitCValueTag::OpaqueString
+        | JitCValueTag::OpaqueArray
+        | JitCValueTag::OpaqueObject
+        | JitCValueTag::OpaqueResource
+        | JitCValueTag::OpaqueReference
+        | JitCValueTag::OpaqueCallable
+        | JitCValueTag::OpaqueGenerator
+        | JitCValueTag::OpaqueFiber => {
+            if marshaled.payload == 0 || marshaled.aux != 0 {
+                return JIT_HELPER_STATUS_FALLBACK;
+            }
+            // SAFETY: `marshal_local` created this borrowed pointer from a
+            // parameter `Value` that remains alive until the native call ends.
+            let value = unsafe { &*(marshaled.payload as *const Value) };
+            let tag_matches = matches!(
+                (marshaled.tag, value),
+                (JitCValueTag::OpaqueString, Value::String(_))
+                    | (JitCValueTag::OpaqueArray, Value::Array(_))
+                    | (JitCValueTag::OpaqueObject, Value::Object(_))
+            );
+            if !tag_matches {
+                return JIT_HELPER_STATUS_FALLBACK;
+            }
+            value.clone()
+        }
         _ => return JIT_HELPER_STATUS_FALLBACK,
     };
     if crate::vm::jit_property_store_commit(value, metadata, new_value).is_err() {
@@ -393,11 +466,29 @@ extern "C" fn copy_patch_property_store_abi(
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn unmarshal_result(value: &JitCValue) -> Option<Value> {
     match value.tag {
+        JitCValueTag::Null => Some(Value::Null),
         JitCValueTag::Int => Some(Value::Int(value.payload as i64)),
         JitCValueTag::Bool => Some(Value::Bool(value.payload != 0)),
-        JitCValueTag::FloatBits => Some(Value::Float(php_runtime::FloatValue::from_f64(
+        JitCValueTag::FloatBits => Some(Value::Float(php_runtime::api::FloatValue::from_f64(
             f64::from_bits(value.payload),
         ))),
+        JitCValueTag::OpaqueString | JitCValueTag::OpaqueArray | JitCValueTag::OpaqueObject => {
+            if value.payload == 0 {
+                return None;
+            }
+            let result = if value.aux == 1 {
+                // SAFETY: property-load result marshaling allocated this exact
+                // `Box<Value>` and marks ownership with `aux == 1`.
+                unsafe { *Box::from_raw(value.payload as *mut Value) }
+            } else if value.aux == 0 {
+                // SAFETY: borrowed handles are only unmarshaled while their
+                // parameter backing values remain alive around the native call.
+                unsafe { (&*(value.payload as *const Value)).clone() }
+            } else {
+                return None;
+            };
+            (opaque_value_tag(&result) == Some(value.tag)).then_some(result)
+        }
         _ => None,
     }
 }
@@ -410,7 +501,7 @@ fn unmarshal_result(value: &JitCValue) -> Option<Value> {
 /// unrepresentable result. Buffer slot `i` is marshaled from local `i`, matching
 /// the region compiler's convention that a `Param`'s `VmSlotId` is the `LocalId`
 /// index.
-#[cfg(all(unix, target_arch = "aarch64"))]
+#[cfg(all(test, unix, target_arch = "aarch64"))]
 pub fn run_scalar_int_region(compiled: &CompiledScalarRegion, locals: &LocalFile) -> Option<Value> {
     use php_jit::code_memory::CodeMemory;
 
@@ -441,18 +532,18 @@ pub fn run_scalar_int_region(compiled: &CompiledScalarRegion, locals: &LocalFile
         core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
     };
     let status = run(buffer.as_mut_ptr());
-    // `owned` must stay live until the native call returns (it may hold arrays
-    // the region read by pointer); reference it here to pin that lifetime.
-    drop(owned);
     if status != 0 {
         return None; // guard/overflow side exit → interpreter fallback
     }
-    unmarshal_result(buffer.get(compiled.result_slot as usize)?)
+    let result = unmarshal_result(buffer.get(compiled.result_slot as usize)?);
+    // Borrowed result handles must be cloned before their backing locals drop.
+    drop(owned);
+    result
 }
 
 /// Hosts without a copy-and-patch emitter (non-aarch64 / non-unix) always fall
 /// back to the interpreter.
-#[cfg(not(all(unix, target_arch = "aarch64")))]
+#[cfg(all(test, not(all(unix, target_arch = "aarch64"))))]
 pub fn run_scalar_int_region(
     _compiled: &CompiledScalarRegion,
     _locals: &LocalFile,
@@ -514,6 +605,8 @@ fn native_call_permits(unit: &CompiledUnit) -> php_jit::copy_patch::NativeCallPe
         builtin_is_array: unit.lookup_function("is_array").is_none(),
         builtin_is_float: unit.lookup_function("is_float").is_none(),
         builtin_is_bool: unit.lookup_function("is_bool").is_none(),
+        builtin_is_null: unit.lookup_function("is_null").is_none(),
+        builtin_is_object: unit.lookup_function("is_object").is_none(),
     }
 }
 
@@ -649,18 +742,25 @@ fn recognize_property_load_leaf(
     }
     // The native result bypasses the interpreter's return-site coercion, so
     // only return types whose value can be committed *unchanged* are admitted:
-    // a scalar type (the helper then requires the property value to already
+    // an exact ABI type (the helper then requires the property value to already
     // have exactly that tag — a `bool` in an untyped property returned through
     // `: int` must side-exit so the interpreter coerces it to `int(1)`), or
-    // `mixed` (never coerces; any scalar commits). Everything else — string/
-    // array/class returns always side-exit at the scalar gate anyway, and
-    // nullable/union/literal types have a coercion matrix — rejects.
+    // `mixed` (never coerces; any scalar commits). An UNDECLARED return type
+    // has no return-site coercion at all — identical to `mixed` — and it is
+    // the norm in legacy code (every WordPress getter), so it is admitted the
+    // same way. Everything else — string/array/class returns always side-exit
+    // at the scalar gate anyway, and nullable/union/literal types have a
+    // coercion matrix — rejects.
     let expected_result_tag = match function.return_type.as_ref() {
         Some(IrReturnType::Int) => JitCValueTag::Int as u16,
         Some(IrReturnType::Float) => JitCValueTag::FloatBits as u16,
         Some(IrReturnType::Bool) => JitCValueTag::Bool as u16,
-        Some(IrReturnType::Mixed) => 0,
-        _ => return None,
+        Some(IrReturnType::String) => JitCValueTag::OpaqueString as u16,
+        Some(IrReturnType::Array) => JitCValueTag::OpaqueArray as u16,
+        Some(IrReturnType::Object) => JitCValueTag::OpaqueObject as u16,
+        Some(IrReturnType::Null) => JitCValueTag::Null as u16,
+        Some(IrReturnType::Mixed) | None => 0,
+        Some(_) => return None,
     };
     // The receiver (free-function object parameter or `$this`), with no
     // further declared parameters for a getter.
@@ -683,19 +783,64 @@ fn recognize_property_load_leaf(
         .map(|instruction| &instruction.kind)
         .filter(|kind| !matches!(kind, InstructionKind::Discard { .. }))
         .collect();
-    let [
-        InstructionKind::LoadLocal {
-            dst: load_reg,
-            local: load_local,
-        },
-        InstructionKind::FetchProperty {
-            dst: fetch_dst,
-            object: Operand::Register(object_reg),
-            property,
-        },
-    ] = kinds.as_slice()
-    else {
-        return None;
+    // Optionally with a trailing scalar cast (`return (bool) $this->prop;`,
+    // the ubiquitous legacy predicate shape): a cast to bool/int/float is an
+    // identity on a value that already carries exactly that tag, so it
+    // narrows the expected result tag instead of rejecting — any other
+    // runtime tag side-exits and the interpreter performs the real cast.
+    let (load_reg, load_local, fetch_dst, object_reg, property, cast) = match kinds.as_slice() {
+        [
+            InstructionKind::LoadLocal {
+                dst: load_reg,
+                local: load_local,
+            },
+            InstructionKind::FetchProperty {
+                dst: fetch_dst,
+                object: Operand::Register(object_reg),
+                property,
+            },
+        ] => (load_reg, load_local, fetch_dst, object_reg, property, None),
+        [
+            InstructionKind::LoadLocal {
+                dst: load_reg,
+                local: load_local,
+            },
+            InstructionKind::FetchProperty {
+                dst: fetch_dst,
+                object: Operand::Register(object_reg),
+                property,
+            },
+            InstructionKind::Cast {
+                dst: cast_dst,
+                kind: cast_kind,
+                src: Operand::Register(cast_src),
+            },
+        ] if cast_src == fetch_dst => {
+            let cast_tag = match cast_kind {
+                CastKind::Bool => JitCValueTag::Bool as u16,
+                CastKind::Int => JitCValueTag::Int as u16,
+                CastKind::Float => JitCValueTag::FloatBits as u16,
+                _ => return None,
+            };
+            (
+                load_reg,
+                load_local,
+                fetch_dst,
+                object_reg,
+                property,
+                Some((cast_dst, cast_tag)),
+            )
+        }
+        _ => return None,
+    };
+    let expected_result_tag = match (expected_result_tag, cast) {
+        (tag, None) => tag,
+        // Cast into an undeclared/mixed return: the cast tag is the whole
+        // contract. A declared scalar return must agree with the cast tag,
+        // or the committed value could still need return-site coercion.
+        (0, Some((_, cast_tag))) => cast_tag,
+        (tag, Some((_, cast_tag))) if tag == cast_tag => tag,
+        _ => return None,
     };
     if load_local.raw() != receiver.local {
         return None;
@@ -710,7 +855,8 @@ fn recognize_property_load_leaf(
     else {
         return None;
     };
-    if ret_reg != fetch_dst {
+    let expected_ret_reg = cast.map_or(fetch_dst, |(cast_dst, _)| cast_dst);
+    if ret_reg != expected_ret_reg {
         return None;
     }
 
@@ -730,9 +876,16 @@ fn recognize_property_load_leaf(
     if property_entry.hooks.get.is_some() || property_entry.hooks.set.is_some() {
         return None;
     }
-    if class_or_parent_has_public_magic_get(ir, class) {
-        return None;
-    }
+    // A hierarchy `__get` does NOT reject: PHP only routes reads through
+    // `__get` when the property is inaccessible or undefined, and this shape
+    // admits only accessible declared slots (public, or private/protected
+    // from their own scope). The one way such a slot becomes undefined —
+    // `unset($this->prop)` — empties its runtime storage, which the native
+    // helper answers with a storage side exit (`jit_property_load_fetch`
+    // returns `STORAGE_EXIT` for an absent slot), so the interpreter runs
+    // the getter and re-arms `__get` exactly as before. Every WordPress
+    // core class carries a compat `__get`; the blanket rejection kept the
+    // whole property-leaf family off real legacy code.
     let property_slot_index = declaring_class
         .properties
         .iter()
@@ -919,9 +1072,13 @@ fn recognize_property_store_leaf(
     if property_entry.hooks.get.is_some() || property_entry.hooks.set.is_some() {
         return None;
     }
-    if class_or_parent_has_public_magic_set(ir, class) {
-        return None;
-    }
+    // A hierarchy `__set` does NOT reject, mirroring the load leaf's `__get`
+    // reasoning: writes reach `__set` only for inaccessible or undefined
+    // properties, this shape admits only accessible declared slots, and the
+    // undefined case (`unset($this->prop)` re-arming `__set`) empties the
+    // runtime storage, which `jit_property_store_commit` answers with a
+    // storage side exit *before any write* — the interpreter then performs
+    // the store and invokes `__set` exactly as before.
     let property_slot_index = declaring_class
         .properties
         .iter()
@@ -978,48 +1135,6 @@ fn lookup_property_in_unit<'a>(
     lookup_property_in_unit(unit, parent, property)
 }
 
-/// True when `class` or an ancestor declares a public instance `__get`, which
-/// would make a "missing" property read call user code (mirrors the Cranelift
-/// recognizer's `class_or_parent_has_public_magic_get`).
-#[cfg(all(unix, target_arch = "aarch64"))]
-fn class_or_parent_has_public_magic_get(unit: &IrUnit, class: &ClassEntry) -> bool {
-    if class.methods.iter().any(|method| {
-        method.name.eq_ignore_ascii_case("__get")
-            && !method.flags.is_static
-            && !method.flags.is_private
-            && !method.flags.is_protected
-    }) {
-        return true;
-    }
-    class
-        .parent
-        .as_deref()
-        .and_then(|parent| lookup_ir_class(unit, parent))
-        .is_some_and(|parent| class_or_parent_has_public_magic_get(unit, parent))
-}
-
-/// True when `class` or an ancestor declares a public instance `__set`, which
-/// would make a "missing" (`unset()`) property write call user code (the write
-/// mirror of [`class_or_parent_has_public_magic_get`]; the runtime storage
-/// guard also side-exits that case, so this is recognition-time defense in
-/// depth).
-#[cfg(all(unix, target_arch = "aarch64"))]
-fn class_or_parent_has_public_magic_set(unit: &IrUnit, class: &ClassEntry) -> bool {
-    if class.methods.iter().any(|method| {
-        method.name.eq_ignore_ascii_case("__set")
-            && !method.flags.is_static
-            && !method.flags.is_private
-            && !method.flags.is_protected
-    }) {
-        return true;
-    }
-    class
-        .parent
-        .as_deref()
-        .and_then(|parent| lookup_ir_class(unit, parent))
-        .is_some_and(|parent| class_or_parent_has_public_magic_set(unit, parent))
-}
-
 /// Runtime storage name for a declared property (mirrors the Cranelift
 /// recognizer's `property_storage_name`), so the helper's `get_property` reads
 /// the same slot the VM stores under. A private property is name-mangled; the
@@ -1041,7 +1156,7 @@ fn property_storage_name(class: &ClassEntry, property: &ClassPropertyEntry) -> S
 /// A recognized + compiled scalar-int leaf function, ready to invoke natively.
 ///
 /// Holds the finalized executable mapping so a function is recognized and lowered
-/// once, then reused across calls (the [`cached_leaf`] cache owns these).
+/// once, then reused across calls (the native leaf cache owns these).
 #[cfg(all(unix, target_arch = "aarch64"))]
 pub struct NativeLeaf {
     code: php_jit::code_memory::CodeMemory,
@@ -1104,6 +1219,7 @@ pub struct ResumePlan {
 #[cfg(all(unix, target_arch = "aarch64"))]
 pub struct ResumeSession {
     buffer: Vec<JitCValue>,
+    result_owners: Vec<Option<Box<Value>>>,
 }
 
 /// One step of driving a return-and-resume leaf.
@@ -1133,11 +1249,23 @@ pub enum LeafOutcome {
         args: Vec<Value>,
     },
     /// A guard/overflow side exit or an unrepresentable value: interpret instead.
-    Fallback,
+    Fallback { reason: Option<&'static str> },
 }
 
 #[cfg(all(unix, target_arch = "aarch64"))]
 impl NativeLeaf {
+    /// Object-operation attribution for a native property accessor/mutator.
+    #[must_use]
+    pub fn property_operation_family(&self) -> Option<&'static str> {
+        if self.property_metadata.is_some() {
+            Some("property_fetch")
+        } else if self.property_store_metadata.is_some() {
+            Some("property_assign")
+        } else {
+            None
+        }
+    }
+
     /// Recognize and lower `function` to native code, or `None` if it is outside
     /// the scalar-int subset or the executable-memory finalize fails.
     ///
@@ -1160,7 +1288,7 @@ impl NativeLeaf {
         // disjoint from every scalar-int/float/builtin subset, so it never
         // steals another leaf, and on any mismatch it falls through to the
         // existing recognizers unchanged. `region_id` is the function's ID in
-        // the unit (see `cached_leaf`), which method recognition uses to
+        // the unit (see `cached_leaf_with_event`), which method recognition uses to
         // resolve the declaring class.
         if let Some(leaf) = recognize_property_load_leaf(unit, function, region_id) {
             // Box the metadata so its address is stable across the move into
@@ -1232,7 +1360,7 @@ impl NativeLeaf {
         let permits = native_call_permits(unit);
         // Runtime-owned helper addresses `php_jit` cannot name itself (mirrors the
         // Cranelift `JitRuntimeHelperAddresses` plumbing). `count` reads array
-        // length through the wrapper over `php_runtime::php_jit_array_len`, and
+        // length through the wrapper over `php_runtime::experimental::php_jit_array_len`, and
         // `strlen` reads string byte length through its wrapper.
         let helpers = CopyPatchRuntimeHelpers {
             array_len: copy_patch_array_len_abi as *const () as usize as u64,
@@ -1320,10 +1448,10 @@ impl NativeLeaf {
     /// Builds and runs the flat buffer, then dispatches on the region's status:
     /// `0` (OK) unmarshals `result_slot` to a [`LeafOutcome::Value`] (or
     /// `Fallback` when the tag is unrepresentable); `2` — the tail-call status —
-    /// reads each argument slot (which the region guaranteed is `Int`) into a
-    /// [`LeafOutcome::TailCall`]; any other status (a guard/overflow side exit)
-    /// is [`LeafOutcome::Fallback`]. Any defensive mismatch (missing plan, a
-    /// non-`Int` argument slot) also falls back rather than misinterpreting.
+    /// unmarshals each full-value argument slot into a [`LeafOutcome::TailCall`];
+    /// any other status (a guard/overflow side exit) is
+    /// [`LeafOutcome::Fallback`]. Any defensive mismatch also falls back rather
+    /// than misinterpreting a handle.
     #[must_use]
     pub fn run_outcome(&self, params: &[Value]) -> LeafOutcome {
         let mut buffer: Vec<JitCValue> = (0..self.buffer_slots)
@@ -1355,7 +1483,9 @@ impl NativeLeaf {
                 .and_then(unmarshal_result)
             {
                 Some(value) => LeafOutcome::Value(value),
-                None => LeafOutcome::Fallback,
+                None => LeafOutcome::Fallback {
+                    reason: Some("resume_value_tag_unsupported"),
+                },
             };
         }
         if status == JIT_HELPER_STATUS_TAILCALL
@@ -1363,33 +1493,25 @@ impl NativeLeaf {
         {
             let mut args = Vec::with_capacity(plan.arg_slots.len());
             for &slot in &plan.arg_slots {
-                // The region emits an `Int` guard before storing each argument,
-                // so the slot is `Int` here; treat anything else as a fallback
-                // rather than misreading a payload.
-                match buffer.get(slot as usize) {
-                    Some(value) if value.tag == JitCValueTag::Int => {
-                        args.push(Value::Int(value.payload as i64));
-                    }
-                    _ => return LeafOutcome::Fallback,
-                }
+                let Some(value) = buffer.get(slot as usize).and_then(unmarshal_result) else {
+                    return LeafOutcome::Fallback {
+                        reason: Some("resume_value_tag_unsupported"),
+                    };
+                };
+                args.push(value);
             }
             return LeafOutcome::TailCall {
                 callee_name: plan.callee_name.clone(),
                 args,
             };
         }
-        LeafOutcome::Fallback
-    }
-
-    /// Invoke over positional parameter values, returning a committed scalar
-    /// result only. A thin wrapper over [`Self::run_outcome`]: a tail call or any
-    /// side exit yields `None` so the caller falls back to the interpreter.
-    #[must_use]
-    pub fn run(&self, params: &[Value]) -> Option<Value> {
-        match self.run_outcome(params) {
-            LeafOutcome::Value(value) => Some(value),
-            LeafOutcome::TailCall { .. } | LeafOutcome::Fallback => None,
-        }
+        let reason = match status {
+            ARRAY_FETCH_STATUS_KEY_MISS => Some("array_key_miss_requires_warning"),
+            ARRAY_FETCH_STATUS_KEY_COERCION => Some("array_key_coercion"),
+            ARRAY_FETCH_STATUS_REFERENCE => Some("array_reference_value"),
+            _ => None,
+        };
+        LeafOutcome::Fallback { reason }
     }
 
     /// The return-and-resume plan, when this leaf is a call-composition region.
@@ -1458,33 +1580,31 @@ impl NativeLeaf {
             .collect();
         let status = self.run_at(0, &mut buffer);
         let step = self.resume_step(status, &buffer);
-        Some((ResumeSession { buffer }, step))
+        let result_owners = (0..self.resume.as_ref()?.sites.len())
+            .map(|_| None)
+            .collect();
+        Some((
+            ResumeSession {
+                buffer,
+                result_owners,
+            },
+            step,
+        ))
     }
 
-    /// Read call site `site`'s marshaled `Int` arguments out of the session.
-    /// `None` on a non-`Int` slot — impossible by construction (the region
-    /// guards or proves every argument source), so the driver treats it as an
-    /// invariant violation, never a fallback.
+    /// Read one site's complete ABI values out of the persistent slot buffer.
     #[must_use]
     pub fn resume_args(&self, session: &ResumeSession, site: usize) -> Option<Vec<Value>> {
         let plan = self.resume.as_ref()?;
         let slots = &plan.sites.get(site)?.arg_slots;
         let mut args = Vec::with_capacity(slots.len());
         for &slot in slots {
-            match session.buffer.get(slot as usize) {
-                Some(value) if value.tag == JitCValueTag::Int => {
-                    args.push(Value::Int(value.payload as i64));
-                }
-                _ => return None,
-            }
+            args.push(unmarshal_result(session.buffer.get(slot as usize)?)?);
         }
         Some(args)
     }
 
-    /// Write call site `site`'s result into its slot and re-enter the region at
-    /// the site's resume offset. `result` must be `Value::Int` (the callee's
-    /// declared `: int` return guarantees it; the driver validated it) —
-    /// anything else returns `Fallback` without re-entering.
+    /// Write a complete call result into its slot and re-enter the region.
     #[must_use]
     pub fn resume(&self, session: &mut ResumeSession, site: usize, result: &Value) -> ResumeStep {
         let Some(plan) = self.resume.as_ref() else {
@@ -1493,13 +1613,23 @@ impl NativeLeaf {
         let Some(site_plan) = plan.sites.get(site) else {
             return ResumeStep::Fallback;
         };
-        let Value::Int(int) = result else {
-            return ResumeStep::Fallback;
-        };
         let Some(slot) = session.buffer.get_mut(site_plan.result_slot as usize) else {
             return ResumeStep::Fallback;
         };
-        *slot = JitCValue::int(*int);
+        *slot = match result {
+            Value::Null => JitCValue::null(),
+            Value::Bool(value) => JitCValue::bool(*value),
+            Value::Int(value) => JitCValue::int(*value),
+            Value::Float(value) => JitCValue::float(value.to_f64()),
+            Value::Uninitialized => return ResumeStep::Fallback,
+            _ => {
+                let Some(owner) = session.result_owners.get_mut(site) else {
+                    return ResumeStep::Fallback;
+                };
+                *owner = Some(Box::new(result.clone()));
+                marshal_local(owner.as_deref().expect("resume result owner"))
+            }
+        };
         let status = self.run_at(site_plan.resume_offset, &mut session.buffer);
         self.resume_step(status, &session.buffer)
     }
@@ -1508,8 +1638,9 @@ impl NativeLeaf {
 /// Resolve `name` (as written at a call site) as a valid return-and-resume
 /// callee of arity `arity`: a same-unit plain userland function — not a
 /// method/closure/generator, no by-ref return or by-ref/variadic parameters —
-/// whose declared `: int` return type proves the call-result slot's tag
-/// without a runtime guard, and whose parameter list accepts `arity`
+/// whose return type can cross the complete Value ABI without return-site
+/// coercion after the normal callee has returned, and whose parameters accept
+/// `arity`
 /// positional arguments. Same-unit resolution is stable for the whole request:
 /// a unit function's name can never be legally redeclared, so a later dynamic
 /// unit cannot shadow it.
@@ -1524,7 +1655,21 @@ fn resume_callee_target(unit: &CompiledUnit, name: &str, arity: usize) -> Option
     if function.returns_by_ref || !function.captures.is_empty() {
         return None;
     }
-    if function.return_type != Some(IrReturnType::Int) {
+    if !matches!(
+        function.return_type,
+        None | Some(
+            IrReturnType::Mixed
+                | IrReturnType::Null
+                | IrReturnType::Void
+                | IrReturnType::Bool
+                | IrReturnType::Int
+                | IrReturnType::Float
+                | IrReturnType::String
+                | IrReturnType::Array
+                | IrReturnType::Object
+                | IrReturnType::Class { .. }
+        )
+    ) {
         return None;
     }
     if function
@@ -1545,49 +1690,179 @@ fn resume_callee_target(unit: &CompiledUnit, name: &str, arity: usize) -> Option
     Some(function_id)
 }
 
-/// `(unit id, function id)` → compiled leaf, or `None` for a function proven
-/// outside the subset (so it is not re-recognized on every call).
+/// Cached positive and negative native-leaf recognition outcomes.
 #[cfg(all(unix, target_arch = "aarch64"))]
-type LeafCache = HashMap<(u32, u32), Option<Rc<NativeLeaf>>>;
+enum LeafCacheEntry {
+    Compiled(Rc<NativeLeaf>),
+    Rejected { shape: String },
+}
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+type LeafCache = HashMap<(u64, u32), LeafCacheEntry>;
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeLeafCacheEvent {
+    PositiveHit,
+    NegativeHit {
+        shape: String,
+    },
+    Compiled {
+        compile_time_nanos: u64,
+        code_bytes: u64,
+    },
+    Rejected {
+        compile_time_nanos: u64,
+        shape: String,
+    },
+}
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub struct NativeLeafCacheLookup {
+    pub leaf: Option<Rc<NativeLeaf>>,
+    pub event: NativeLeafCacheEvent,
+}
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct NativeLeafPrewarmStats {
+    pub attempts: u64,
+    pub compiled: u64,
+    pub rejected: u64,
+    pub code_bytes: u64,
+    pub compile_time_nanos: u64,
+    pub rejections_by_shape: BTreeMap<String, u64>,
+}
 
 #[cfg(all(unix, target_arch = "aarch64"))]
 thread_local! {
     /// Native code depends only on the function's immutable IR, so no epoch
     /// invalidation is needed within a process.
     static LEAF_CACHE: RefCell<LeafCache> = RefCell::new(HashMap::new());
+    static PREWARMED_UNITS: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
 }
 
-/// Look up — or recognize, compile, and cache — the native leaf for a function.
-///
-/// `unit` supplies the sibling functions the pre-inline pass may splice in; the
-/// cache key stays `(unit id, function id)`. Compilation (including the inline
-/// pass) never re-enters this cache, so holding the borrow across it is safe.
+/// Look up or compile a leaf, returning metadata to attribute cache and compile costs.
+/// The cache key is `(compiled-unit identity, function id)`, so recompilation
+/// cannot inherit code from an older immutable unit.
 #[cfg(all(unix, target_arch = "aarch64"))]
-pub fn cached_leaf(
+pub fn cached_leaf_with_event(
     unit: &CompiledUnit,
     function_id: u32,
     function: &IrFunction,
     constants: &[IrConstant],
-) -> Option<Rc<NativeLeaf>> {
-    let unit_id = unit.unit().id.raw();
+) -> NativeLeafCacheLookup {
+    // `IrUnit::id` is not globally unique (separate compilations commonly use
+    // the same source-local id). The VM cache identity is process-unique, so a
+    // recompiled script cannot inherit native code recognized for unrelated IR.
+    let unit_id = unit.cache_identity();
     LEAF_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .entry((unit_id, function_id))
-            .or_insert_with(|| {
-                let leaf = NativeLeaf::compile(unit, function, constants, function_id).map(Rc::new);
-                if std::env::var_os("PHRUST_JIT_COPY_PATCH_DEBUG").is_some() {
-                    eprintln!(
-                        "[copy-patch] fn={} (id={}) recognized={}",
-                        function.name,
-                        function_id,
-                        leaf.is_some()
-                    );
-                }
-                leaf
-            })
-            .clone()
+        let mut cache = cache.borrow_mut();
+        if let Some(entry) = cache.get(&(unit_id, function_id)) {
+            return match entry {
+                LeafCacheEntry::Compiled(leaf) => NativeLeafCacheLookup {
+                    leaf: Some(leaf.clone()),
+                    event: NativeLeafCacheEvent::PositiveHit,
+                },
+                LeafCacheEntry::Rejected { shape } => NativeLeafCacheLookup {
+                    leaf: None,
+                    event: NativeLeafCacheEvent::NegativeHit {
+                        shape: shape.clone(),
+                    },
+                },
+            };
+        }
+
+        let started = std::time::Instant::now();
+        let leaf = NativeLeaf::compile(unit, function, constants, function_id).map(Rc::new);
+        let compile_time_nanos = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let (entry, event) = if let Some(leaf) = leaf {
+            let code_bytes = leaf.code.len() as u64;
+            (
+                LeafCacheEntry::Compiled(leaf.clone()),
+                NativeLeafCacheEvent::Compiled {
+                    compile_time_nanos,
+                    code_bytes,
+                },
+            )
+        } else {
+            let shape = rejection_shape(function);
+            (
+                LeafCacheEntry::Rejected {
+                    shape: shape.clone(),
+                },
+                NativeLeafCacheEvent::Rejected {
+                    compile_time_nanos,
+                    shape,
+                },
+            )
+        };
+        if std::env::var_os("PHRUST_JIT_COPY_PATCH_DEBUG").is_some() {
+            match &entry {
+                LeafCacheEntry::Compiled(_) => eprintln!(
+                    "[copy-patch] fn={} (id={}) recognized=true",
+                    function.name, function_id,
+                ),
+                LeafCacheEntry::Rejected { shape } => eprintln!(
+                    "[copy-patch] fn={} (id={}) recognized=false shape={}",
+                    function.name, function_id, shape,
+                ),
+            }
+        }
+        let result = match &entry {
+            LeafCacheEntry::Compiled(leaf) => Some(leaf.clone()),
+            LeafCacheEntry::Rejected { .. } => None,
+        };
+        cache.insert((unit_id, function_id), entry);
+        NativeLeafCacheLookup {
+            leaf: result,
+            event,
+        }
     })
+}
+
+/// Compile a bounded set of leaves once per immutable unit on the worker thread.
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub fn prewarm_copy_patch_leaves(
+    unit: &CompiledUnit,
+    max_functions: usize,
+    max_duration: std::time::Duration,
+) -> NativeLeafPrewarmStats {
+    let unit_id = unit.cache_identity();
+    if !PREWARMED_UNITS.with(|units| units.borrow_mut().insert(unit_id)) {
+        return NativeLeafPrewarmStats::default();
+    }
+
+    let started = std::time::Instant::now();
+    let mut stats = NativeLeafPrewarmStats::default();
+    for (function_id, function) in unit.unit().functions.iter().enumerate() {
+        if stats.attempts as usize >= max_functions || started.elapsed() >= max_duration {
+            break;
+        }
+        stats.attempts += 1;
+        let lookup =
+            cached_leaf_with_event(unit, function_id as u32, function, &unit.unit().constants);
+        match lookup.event {
+            NativeLeafCacheEvent::Compiled {
+                compile_time_nanos,
+                code_bytes,
+            } => {
+                stats.compiled += 1;
+                stats.compile_time_nanos += compile_time_nanos;
+                stats.code_bytes += code_bytes;
+            }
+            NativeLeafCacheEvent::Rejected {
+                compile_time_nanos,
+                shape,
+            } => {
+                stats.rejected += 1;
+                stats.compile_time_nanos += compile_time_nanos;
+                *stats.rejections_by_shape.entry(shape).or_default() += 1;
+            }
+            NativeLeafCacheEvent::PositiveHit | NativeLeafCacheEvent::NegativeHit { .. } => {}
+        }
+    }
+    stats
 }
 
 /// Recursion budget for the transitive inline pass. Bounds mutually-recursive
@@ -1621,10 +1896,12 @@ enum InlineOutcome {
 /// transitively inlining *its* calls, reduces to a single-block, call-free,
 /// register-only scalar leaf (recognized by
 /// [`compile_scalar_int_function`](php_jit::copy_patch::compile_scalar_int_function))
-/// whose body reads only its by-value int/float parameters and returns one
-/// register. Arguments must be plain positional register/constant values. Any
-/// mismatch leaves the call in place (so it side-exits to the interpreter),
-/// preserving observable behavior.
+/// whose body reads only unrestricted by-value parameters and returns one
+/// register. Typed parameters and returns stay as calls because removing their
+/// call boundary would also remove PHP's coercion and `TypeError` behavior.
+/// Arguments must be plain positional register/constant values. Any mismatch
+/// leaves the call in place (so it side-exits to the interpreter), preserving
+/// observable behavior.
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn inline_scalar_leaf_calls(
     function: &IrFunction,
@@ -1636,6 +1913,33 @@ fn inline_scalar_leaf_calls(
         InlineOutcome::Inlined(inlined) => Some(*inlined),
         InlineOutcome::NoCalls | InlineOutcome::Rejected => None,
     }
+}
+
+/// Coarse shape label for `recognized=false` debug lines: which structural
+/// bucket kept a candidate out of every leaf recognizer. Debug-only output
+/// for ranking coverage work; never used for recognition decisions.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn rejection_shape(function: &IrFunction) -> String {
+    let blocks = function.blocks.len();
+    let instrs: usize = function
+        .blocks
+        .iter()
+        .map(|block| block.instructions.len())
+        .sum();
+    let mut kinds = std::collections::BTreeSet::new();
+    for block in &function.blocks {
+        for instruction in &block.instructions {
+            let debug = format!("{:?}", instruction.kind);
+            let name = debug
+                .split([' ', '(', '{'])
+                .next()
+                .unwrap_or("?")
+                .to_owned();
+            kinds.insert(name);
+        }
+    }
+    let kinds = kinds.into_iter().collect::<Vec<_>>().join(",");
+    format!("blocks={blocks} instrs={instrs} kinds=[{kinds}]")
 }
 
 /// True when any block of `function` contains a `CallFunction`.
@@ -1726,6 +2030,20 @@ fn reduce_inlinable_callee(
     if callee.returns_by_ref || !callee.captures.is_empty() {
         return None;
     }
+    // Inlining removes the VM call boundary, including parameter coercion and
+    // return-type validation. Keep every signature that needs those semantics
+    // out of this purely structural native rewrite.
+    if callee
+        .params
+        .iter()
+        .any(|param| !matches!(param.type_.as_ref(), None | Some(IrReturnType::Mixed)))
+        || !matches!(
+            callee.return_type.as_ref(),
+            None | Some(IrReturnType::Mixed)
+        )
+    {
+        return None;
+    }
 
     let reduced = match inline_calls(callee, unit, constants, Some(callee_id), depth + 1) {
         InlineOutcome::NoCalls => callee.clone(),
@@ -1748,13 +2066,10 @@ fn reduce_inlinable_callee(
         return None;
     }
 
-    // Parameters must be plain by-value int/float scalars (matching the leaf
-    // recognizer), so an argument value can be bound by register substitution.
+    // Parameters must be plain by-value slots, so an argument value can be
+    // bound by register substitution without removing a typed call boundary.
     for param in &reduced.params {
         if param.by_ref || param.variadic || param.default.is_some() {
-            return None;
-        }
-        if !matches!(param.type_, Some(IrReturnType::Int | IrReturnType::Float)) {
             return None;
         }
     }
@@ -1982,6 +2297,32 @@ mod tests {
         );
         let sum = i64_node(&mut graph, RegionNodeKind::Add, vec![p0, p1]);
         compile_scalar_int_region(&graph, sum).expect("region compiles")
+    }
+
+    fn passthrough_region() -> php_jit::copy_patch::CompiledScalarRegion {
+        use php_jit::copy_patch::{ScalarIntOp, emit_scalar_int_ops};
+
+        php_jit::copy_patch::CompiledScalarRegion {
+            code: emit_scalar_int_ops(&[ScalarIntOp::Copy { dst: 1, src: 0 }])
+                .expect("value-copy stencil compiles"),
+            result_slot: 1,
+            buffer_slots: 2,
+            tail_call: None,
+        }
+    }
+
+    #[test]
+    fn passthrough_region_returns_string_array_and_null_values() {
+        for value in [
+            Value::string("wordpress"),
+            Value::packed_array(vec![Value::Int(1), Value::string("two")]),
+            Value::Null,
+        ] {
+            let compiled = passthrough_region();
+            let mut locals = LocalFile::new(compiled.buffer_slots);
+            locals.set(LocalId::new(0), value.clone()).unwrap();
+            assert_eq!(run_scalar_int_region(&compiled, &locals), Some(value));
+        }
     }
 
     #[test]
@@ -2329,6 +2670,8 @@ mod tests {
             "is_array" => matches!(value, Value::Array(_)),
             "is_float" => matches!(value, Value::Float(_)),
             "is_bool" => matches!(value, Value::Bool(_)),
+            "is_null" => matches!(value, Value::Null),
+            "is_object" => matches!(value, Value::Object(_)),
             _ => unreachable!("unhandled predicate {name}"),
         }
     }
@@ -2338,7 +2681,7 @@ mod tests {
         use php_jit::copy_patch::NativeCallPermits;
 
         // Each predicate with only its own permit set.
-        let predicates: [(&str, NativeCallPermits); 5] = [
+        let predicates: [(&str, NativeCallPermits); 7] = [
             (
                 "is_int",
                 NativeCallPermits {
@@ -2374,16 +2717,45 @@ mod tests {
                     ..NativeCallPermits::default()
                 },
             ),
+            (
+                "is_null",
+                NativeCallPermits {
+                    builtin_is_null: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_object",
+                NativeCallPermits {
+                    builtin_is_object: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
         ];
         // One value per definite category — every marshaled tag the stencil can
         // observe (int, string, array, float, bool).
         let definite = || {
+            let class = php_runtime::api::ClassEntry {
+                name: "Box".into(),
+                parent: None,
+                interfaces: Vec::new(),
+                methods: Vec::new(),
+                properties: Vec::new(),
+                constants: Vec::new(),
+                enum_cases: Vec::new(),
+                attributes: Vec::new(),
+                enum_backing_type: None,
+                constructor_id: None,
+                flags: php_runtime::api::ClassFlags::default(),
+            };
             vec![
                 Value::Int(7),
                 Value::string("hi"),
                 Value::packed_array(vec![Value::Int(1), Value::Int(2)]),
-                Value::Float(php_runtime::FloatValue::from_f64(1.5)),
+                Value::Float(php_runtime::api::FloatValue::from_f64(1.5)),
                 Value::Bool(true),
+                Value::Null,
+                Value::Object(php_runtime::api::ObjectRef::new(&class)),
             ]
         };
 
@@ -2405,16 +2777,6 @@ mod tests {
                     "{name}({value:?}) must equal {expected} natively"
                 );
             }
-
-            // An ambiguous argument (null, marshaled as Uninitialized) side-exits
-            // so the interpreter answers — it could be null/object/etc.
-            let mut locals = LocalFile::new(compiled.buffer_slots);
-            locals.set(LocalId::new(0), Value::Null).unwrap();
-            assert_eq!(
-                run_scalar_int_region(&compiled, &locals),
-                None,
-                "{name}(null) side-exits (Uninitialized is ambiguous)"
-            );
         }
     }
 }

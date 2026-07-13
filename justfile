@@ -15,17 +15,24 @@ help:
       '  just check                Format, lint, and run workspace tests' \
       '  just verify               Run the full local verification gate' \
       '  just verify-frontend      Lexer, parser, CST, AST, semantics, CLI snapshots' \
-      '  just verify-runtime       IR, VM, runtime fixtures, hardening checks' \
+      '  just verify-runtime       IR, VM, runtime fixtures + oracle diffs' \
       '  just verify-stdlib        Builtins, streams, JSON/PCRE/date, SPL/reflection' \
       '  just verify-server        Integrated HTTP server tests and smoke gate' \
       '  just verify-performance   Optimizer, cache, quickening, IC, JIT smoke gates' \
+      '  just verify-performance-extended  Release-profile and hotpath-report gates' \
       '  just verify-phpt          PHPT tooling, manifests, and source-integrity checks' \
       '  just known-gaps           Validate checked known-gap manifests' \
       '  just source-integrity      Check module wiring and generated metadata' \
+      '  just architecture-guardrails Enforce all architecture rule classes' \
+      '  just architecture-inventory Check source-derived architecture baseline' \
+      '  just architecture-performance-baseline Capture compile/runtime architecture metrics' \
       '  just dependency-boundaries Check documented workspace dependency edges' \
+      '  just runtime-core-boundaries Check core and extension dependency direction' \
+      '  just request-state-boundaries Check typed request-state ownership and views' \
       '  just panic-unwrap-policy   Check production panic/unwrap policy' \
       '  just stdlib-registry-drift Check stdlib/runtime registry drift' \
       '  just verify-generated-arginfo Strict php-src arginfo drift check' \
+      '  just verify-generated-extension-surfaces Strict canonical descriptor drift check' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
       '  just oracle-probe-generate Generate bounded oracle runtime probes' \
@@ -86,11 +93,20 @@ help:
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just wordpress-root-profile Run optional local real WordPress request profile' \
-      '  just wordpress-root-benchmark Run optional real WordPress root benchmark gate' \
+      '  just wordpress-arm64-sample Capture external ARM64 WordPress CPU samples' \
+      '  just wordpress-arm64-accounting-gate Classify and gate ARM64 CPU samples' \
+      '  just wordpress-reference-image Build pinned PHP-FPM/OPcache benchmark image' \
+      '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
+      '  just wordpress-root-tranche-gate Run strict c1-p50 performance acceptance gate' \
+      '  just wordpress-root-benchmark-feedback-ab Run persistent-feedback A/B' \
+      '  just wordpress-root-benchmark-cranelift Run experimental Cranelift arm' \
+      '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
+      '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
       '  just wordpress-clone-churn-report Summarize clone/COW attribution from latest request profile' \
       '  just wordpress-array-hotpath-report Summarize array hotpath attribution from latest request profile' \
       '  just wordpress-call-hotpath-report Summarize call/frame attribution from latest request profile' \
+      '  just wordpress-exclusive-work-report Rank exact exclusive request work' \
       '  just wordpress-persistent-metadata-report Summarize persistent metadata attribution from latest request profile' \
       '  just wordpress-native-region-report Summarize native-region attribution from latest request profile' \
       '  just mysqli-integration   Run explicit live MySQLi integration gate' \
@@ -108,6 +124,8 @@ help:
       'Standard library and compatibility:' \
       '  just generate-arginfo     Regenerate stdlib arginfo from php-src stubs' \
       '  just verify-generated-arginfo Regenerate and diff committed arginfo' \
+      '  just generate-extension-surfaces Regenerate canonical extension Rust surfaces' \
+      '  just verify-generated-extension-surfaces Regenerate and diff extension surfaces' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
       '  just oracle-probe-generate Generate bounded oracle runtime probes' \
@@ -192,7 +210,9 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
 runtime-hardening-lints:
-    cargo clippy -p php_runtime -p php_vm --all-targets -- -D warnings -D unsafe-code
+    # unsafe enforcement lives in the crate roots (#![deny(unsafe_code)]);
+    # php_runtime carves out only the audited runtime_memory module.
+    cargo clippy -p php_runtime -p php_vm --all-targets -- -D warnings
 
 test:
     RUST_MIN_STACK="${PHRUST_RUST_MIN_STACK:-8388608}" cargo test --workspace
@@ -232,8 +252,16 @@ debug-smoke:
     scripts/diagnostics/smoke.sh debug
 
 verify-server:
-    cargo test -p php_executor -p php_server
-    @just server-smoke
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Combined runs (ci-local, verify) execute the workspace test suite,
+    # which contains these crates' suites; standalone runs keep them.
+    if [[ "${PHRUST_COMBINED_RUN:-0}" == "1" ]]; then
+      printf '%s\n' '[skip] php_executor/php_server suites covered by the combined workspace tests'
+    else
+      cargo test -p php_executor -p php_server
+    fi
+    just server-smoke
 
 server-compat-smoke SECTION="all":
     scripts/server/compat_smoke.sh {{SECTION}}
@@ -254,12 +282,32 @@ check:
     @just test
 
 source-integrity:
-    scripts/verify/source_integrity.py
-    scripts/verify/dependency_boundaries.py
+    @just architecture-guardrails
     scripts/verify/panic_unwrap_policy.py
+    scripts/verify/docs_strategy.py
+
+architecture-guardrails:
+    scripts/verify/architecture_guardrails.py --self-test
+    scripts/verify/architecture_guardrails.py
+    scripts/verify/dependency_boundaries.py
+    scripts/verify/validation_strategy.py --self-test
+    scripts/verify/validation_strategy.py
+
+architecture-inventory:
+    scripts/verify/architecture_inventory.py --check --verify-determinism
+
+architecture-performance-baseline *args:
+    scripts/performance/architecture_baseline.py {{args}}
 
 dependency-boundaries:
     scripts/verify/dependency_boundaries.py
+
+runtime-core-boundaries:
+    scripts/verify/runtime_core_boundaries.py
+    cargo check -p php_runtime --no-default-features
+
+request-state-boundaries:
+    scripts/verify/request_state_boundaries.py
 
 panic-unwrap-policy:
     scripts/verify/panic_unwrap_policy.py
@@ -377,9 +425,10 @@ verify:
     @just verify-frontend
     @just verify-runtime
     @just verify-stdlib
-    @just verify-server
+    @PHRUST_COMBINED_RUN=1 just verify-server
     @just verify-performance
-    @just verify-phpt
+    @just verify-performance-extended
+    @PHRUST_COMBINED_RUN=1 just verify-phpt
 
 ci-rust:
     @just fmt
@@ -399,7 +448,7 @@ ci-phpt-smoke:
 ci-local:
     @just quality-fast
     @just ci-rust
-    @just ci-domain-gates
+    @PHRUST_COMBINED_RUN=1 just ci-domain-gates
     @just ci-phpt-smoke
 
 verify-frontend:
@@ -431,57 +480,51 @@ verify-runtime:
     just vm-trace-smoke
     just runtime-fixtures
     just runtime-known-gaps
-    just runtime-semantics-fixtures
+    # The per-category fixture gates (runtime-semantics-fixtures) are focused
+    # iteration tools; the full diff below runs a strict superset of them, so
+    # the aggregate does not repeat the categories. runtime-hardening-lints is
+    # likewise a strict subset of `just lint` since ADR 0020 moved unsafe
+    # enforcement into the crate roots; combined runs and CI's parallel
+    # workspace job already clippy these crates.
     just runtime-semantics-diff
     just vm-semantics-oracle
-    just runtime-hardening-lints
 
 verify-stdlib:
     @just stdlib-docs
     @just stdlib-coverage
+    @just verify-generated-extension-surfaces
     @just stdlib-registry-drift
     @just diff-stdlib
     @just diff-streams
     @just diff-json-pcre-date
     @just diff-spl-reflection
 
-verify-performance:
-    @just performance-tests
-    @just performance-regression
-    @just perf-flag-matrix
-    @just benchmark-smoke
-    @just framework-smoke
-    @just release-benchmark-smoke
-    @just acceleration-matrix
-    @just fastest-engine-matrix
-    @just default-profile-smoke
-    @just managed-fast-coverage
-    @just fast-preset-smoke
-    @just app-flow-smoke
-    @just baseline-native-stencil-smoke
-    @just copy-patch-stencil-smoke
-    @just mid-tier-plan-smoke
-    @just cache-roundtrip
-    @just optimizer-diff
-    @just bytecode-layout-smoke
-    @just superinstruction-smoke
-    @just templates-smoke
-    @just quickening-smoke
-    @just inline-cache-smoke
-    @just callgrind-smoke
-    @just jit-smoke
-    @just safety-audit-smoke
-    @just hotpath-inventory
-    @just fastest-hotpath-report
-    @just perf-report
+# Correctness-focused performance gates. Sub-gates share one engine build
+# through the perf-build dependency (deduplicated within this invocation).
+# perf-flag-matrix runs via performance-regression; the release-profile and
+# report gates live in verify-performance-extended.
+verify-performance: wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke acceleration-matrix fastest-engine-matrix default-profile-smoke managed-fast-coverage fast-preset-smoke app-flow-smoke baseline-native-stencil-smoke copy-patch-stencil-smoke mid-tier-plan-smoke cache-roundtrip optimizer-diff bytecode-layout-smoke superinstruction-smoke templates-smoke quickening-smoke inline-cache-smoke inline-cache-lookup-benchmark-gate jit-smoke safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
+# Heavy release-profile and report gates, split out of verify-performance so
+# the serial local gate fits pre-push budgets; CI runs both gates in its
+# parallel matrix. Depends on benchmark-smoke for the hotpath report inputs.
+verify-performance-extended: benchmark-smoke release-benchmark-smoke callgrind-smoke hotpath-inventory fastest-hotpath-report perf-report
+    @printf '%s\n' '[pass] extended performance verification complete'
+
 verify-phpt:
-    @just known-gaps
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just known-gaps
     scripts/phpt/verify_foundation.sh
-    @just phpt-verify-baseline
+    just phpt-verify-baseline
     scripts/phpt/verify_source_integrity.sh
-    cargo test -p php_phpt_tools
+    # See verify-server: combined runs already ran this crate's suite.
+    if [[ "${PHRUST_COMBINED_RUN:-0}" == "1" ]]; then
+      printf '%s\n' '[skip] php_phpt_tools suite covered by the combined workspace tests'
+    else
+      cargo test -p php_phpt_tools
+    fi
 
 verify-foundation:
     scripts/verify/foundation.sh
@@ -681,6 +724,14 @@ generate-arginfo php_src="third_party/php-src" out="crates/php_std/src/generated
 verify-generated-arginfo:
     scripts/stdlib/verify_generated_arginfo.sh
 
+generate-extension-surfaces:
+    scripts/stdlib/generate_extension_surfaces.py --schema-dir fixtures/stdlib/extensions --arginfo crates/php_std/src/generated/arginfo.rs --out-root .
+    cargo fmt --all
+
+verify-generated-extension-surfaces:
+    scripts/stdlib/test_generate_extension_surfaces.py
+    scripts/stdlib/verify_generated_extension_surfaces.sh
+
 oracle-api-index:
     cargo build -q -p php_std --bin dump_stdlib_registry
     scripts/oracle/api_index.py --self-test
@@ -819,12 +870,10 @@ bytecode-exec-smoke:
     cargo build -p php_vm_cli
     scripts/performance/bytecode_exec_smoke.sh
 
-bytecode-layout-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+bytecode-layout-smoke: perf-build
     scripts/performance/bytecode_layout_smoke.sh
 
-superinstruction-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+superinstruction-smoke: perf-build
     scripts/performance/superinstruction_smoke.sh
 
 superinstruction-patterns:
@@ -991,23 +1040,25 @@ vm-semantics-oracle *args:
     scripts/vm_semantics_oracle.py {{args}}
 
 runtime-toolchain-audit:
-    @for tool in cargo rustc rustfmt cargo-clippy just jq python3 rg clang sccache; do \
-      if ! command -v "$tool" >/dev/null 2>&1; then \
-        printf '%s\n' "[missing] required runtime semantics devshell tool: $tool" >&2; \
-        exit 1; \
-      fi; \
-    done; \
-    @if ! command -v shellcheck >/dev/null 2>&1; then \
-      case "$$(uname -s)" in \
-        Darwin) printf '%s\n' '[skip] shellcheck unavailable; Darwin devshell omits it to avoid the Haskell closure';; \
-        *) printf '%s\n' '[missing] required runtime semantics devshell tool: shellcheck' >&2; exit 1;; \
-      esac; \
-    fi; \
-    test "${PHP_REF_SERIES:-}" = "8.5"; \
-    test "${PHP_REF_VERSION:-}" = "8.5.7"; \
-    test "${PHP_REF_TAG:-}" = "php-8.5.7"; \
-    test -n "${CARGO_TARGET_DIR:-}"; \
-    test -n "${SCCACHE_DIR:-}"; \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in cargo rustc rustfmt cargo-clippy just jq python3 rg clang sccache; do
+      if ! command -v "$tool" >/dev/null 2>&1; then
+        printf '%s\n' "[missing] required runtime semantics devshell tool: $tool" >&2
+        exit 1
+      fi
+    done
+    if ! command -v shellcheck >/dev/null 2>&1; then
+      case "$(uname -s)" in
+        Darwin) printf '%s\n' '[skip] shellcheck unavailable; Darwin devshell omits it to avoid the Haskell closure';;
+        *) printf '%s\n' '[missing] required runtime semantics devshell tool: shellcheck' >&2; exit 1;;
+      esac
+    fi
+    test "${PHP_REF_SERIES:-}" = "8.5"
+    test "${PHP_REF_VERSION:-}" = "8.5.7"
+    test "${PHP_REF_TAG:-}" = "php-8.5.7"
+    test -n "${CARGO_TARGET_DIR:-}"
+    test -n "${SCCACHE_DIR:-}"
     printf '%s\n' '[ok] runtime semantics devshell toolchain audit passed'
 
 runtime-miri-smoke:
@@ -1020,6 +1071,8 @@ runtime-miri-smoke:
       exit 0; \
     fi; \
     cargo miri test -p php_runtime reference::tests::slot_alias_and_copy_semantics_are_distinct
+    cargo miri test -p php_runtime runtime_memory::tests
+    cargo miri test -p php_vm frame_memory::tests
 
 runtime-sanitizer-smoke:
     @if [[ "${PHRUST_RUN_SANITIZER:-0}" != "1" ]]; then \
@@ -1104,20 +1157,67 @@ wordpress-root-profile:
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
 
-wordpress-root-benchmark:
-    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
-    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py
+# External, instrumentation-free ARM64 CPU sampling of one pinned PHP worker.
+wordpress-arm64-sample *args:
+    scripts/performance/arm64_work_accounting.py {{args}}
 
-# Regression gate: compare a WordPress root run against a recorded baseline;
-# fails on >5% latency / >10% clone-counter regressions, SKIPs without WordPress.
+# Exclusive, single-owner accounting over the latest external ARM64 sample run.
+wordpress-arm64-accounting-gate *args:
+    scripts/performance/arm64_stack_classifier.py --gate {{args}}
+
+wordpress-benchmark-self-test:
+    scripts/performance/wordpress_root_benchmark.py --self-test
+
+# Build the pinned stock PHP-FPM 8.5.7 + mysqli + OPcache reference image.
+wordpress-reference-image:
+    docker build --build-arg PHP_VERSION=8.5.7 --tag phrust-php-fpm:8.5.7 docker/performance/php-fpm
+    docker pull nginx:1.28.0-alpine
+
+# Clean timing: release Phrust and stock PHP-FPM/OPcache. This never enables
+# request profiles, VM counters, or trace collection.
+wordpress-root-benchmark *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean {{args}}
+
+# Explicit experimental-JIT arm for the clean WordPress A/B matrix. The
+# default benchmark remains copy-patch-only and is the control arm.
+wordpress-root-benchmark-cranelift *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch,jit-cranelift; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit {{args}}
+
+# Isolated persistent-feedback A/B using the same lean binary and benchmark
+# contract. Both arms and their joint ratio report share one result directory.
+wordpress-root-benchmark-feedback-ab *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --feedback-ab {{args}}
+
+# Instrumented Phrust-only attribution. Its samples are marked timing-ineligible.
+wordpress-root-diagnostics *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode diagnostic {{args}}
+
+# Strict regression gate: compare both engines and a recorded Phrust baseline;
+# missing WordPress or reference PHP is a failure.
 wordpress-root-regression-gate *args:
-    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
-    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
+
+# Prompt-pack tranche acceptance: the leading result is the warm,
+# instrumentation-free WordPress concurrency-1 p50. The ordinary regression
+# recipe remains a no-regression CI guard and does not require a speedup.
+wordpress-root-tranche-gate baseline *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 {{args}}
 
 # Anti-theater guard: fail performance branches that only add docs, reports,
 # counters, or metric renames without production Rust changes or gates.
 perf-pr-guard *args:
     scripts/verify/perf_pr_guard.py {{args}}
+
+# Worker-local adaptive state: direct quickening/IC reuse must preserve the
+# kill switch, compiled-generation isolation, and PHP-visible request isolation.
+worker-adaptive-state-smoke:
+    cargo test -p php_executor worker_ -- --nocapture
 
 # Profiler containment: unprofiled requests after a profiled request must stay
 # within 5% of clean unprofiled requests in the same server process.
@@ -1136,6 +1236,9 @@ wordpress-array-hotpath-report:
 
 wordpress-call-hotpath-report:
     scripts/performance/call_hotpath_report.py
+
+wordpress-exclusive-work-report:
+    scripts/performance/exclusive_work_report.py
 
 wordpress-persistent-metadata-report:
     scripts/performance/persistent_metadata_report.py
@@ -1178,8 +1281,13 @@ compat-corpus-smoke:
     cargo build -p php_vm_cli
     scripts/stdlib_diff.py --fixtures tests/fixtures/stdlib/corpus --area corpus --out target/stdlib/corpus
 
+# Shared debug engine build for the performance gates. Declared as a recipe
+# dependency so one `just verify-performance` invocation builds once instead
+# of re-invoking cargo per sub-gate.
+perf-build:
+    cargo build -p php_vm_cli --bin php-vm
+
 performance-tests:
-    RUST_MIN_STACK="${PHRUST_RUST_MIN_STACK:-8388608}" cargo test --workspace
     scripts/performance/compare_perf_json.py --self-test
     scripts/performance/hotpath_inventory.py --self-test
     scripts/performance/fastest_hotpath_report.py --self-test
@@ -1198,9 +1306,8 @@ performance-tests:
     scripts/performance/decision_baseline.py --self-test
     scripts/performance/startup_matrix.py --self-test
 
-performance-regression:
+performance-regression: perf-build
     scripts/performance_regression_smoke.sh
-    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/regression_smoke.sh
     @just perf-flag-matrix
     @just polymorphic-inline-cache-smoke
@@ -1208,24 +1315,19 @@ performance-regression:
 perf-flag-matrix:
     scripts/performance/perf_flag_matrix.py
 
-default-profile-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+default-profile-smoke: perf-build
     scripts/performance/default_profile_smoke.py
 
-managed-fast-coverage:
-    cargo build -p php_vm_cli --bin php-vm
+managed-fast-coverage: perf-build
     scripts/performance/managed_fast_coverage.py
 
-fast-preset-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+fast-preset-smoke: perf-build
     scripts/performance/fast_preset_smoke.py
 
-baseline-native-stencil-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+baseline-native-stencil-smoke: perf-build
     scripts/performance/baseline_native_stencil_smoke.py
 
-copy-patch-stencil-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+copy-patch-stencil-smoke: perf-build
     scripts/performance/copy_patch_stencil_smoke.py
 
 # Differential check that the native copy-patch tier matches the interpreter and
@@ -1235,15 +1337,13 @@ copy-patch-native-diff:
     cargo build -p php_vm_cli --bin php-vm --features jit-copy-patch
     scripts/performance/copy_patch_native_diff.py
 
-mid-tier-plan-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+mid-tier-plan-smoke: perf-build
     scripts/performance/mid_tier_plan_smoke.py
 
 ir-verify:
     cargo test -p php_ir verify --lib
 
-benchmark-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+benchmark-smoke: perf-build
     scripts/performance/bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/benchmark-smoke.json --repetitions "${PHRUST_PERF_BENCH_SMOKE_REPETITIONS:-1}" --warmups "${PHRUST_PERF_BENCH_SMOKE_WARMUPS:-0}" --timeout "${PHRUST_PERF_BENCH_TIMEOUT:-10.0}"
 
 callgrind-smoke:
@@ -1272,6 +1372,14 @@ profile-composer:
 release-profile-plan:
     scripts/performance/release_profile_plan.sh
 
+# Production binaries with telemetry recorders compiled out (runtime
+# request-profiling and layout counters are unavailable in these builds;
+# use the default release build for diagnosis). Measured on microbenches:
+# property reads ~11% faster, concatenation ~5%.
+release-lean:
+    cargo build --release -p php_server --no-default-features --features jit-copy-patch
+    cargo build --release -p php_vm_cli --bin php-vm --no-default-features --features jit-copy-patch
+
 release-benchmark-smoke:
     scripts/performance/release_profiles.py release
 
@@ -1281,16 +1389,14 @@ pgo-benchmark-smoke:
 bolt-benchmark-smoke:
     scripts/performance/release_profiles.py bolt
 
-framework-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+framework-smoke: perf-build
     scripts/performance/framework_micro_smoke.py
 
 front-controller-hotpath-smoke:
     cargo build -p php_server --bin phrust-server
     scripts/performance/front_controller_hotpath_smoke.py --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/front-controller-hotpath/report.json
 
-app-flow-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+app-flow-smoke: perf-build
     scripts/performance/app_flow_matrix.py --smoke --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}"
 
 app-flow-matrix:
@@ -1378,19 +1484,16 @@ perf-ratchet-next-prompt:
 perf-ratchet-accept-local:
     scripts/performance/perf_ratchet.py accept-local
 
-acceleration-matrix:
-    cargo build -p php_vm_cli --bin php-vm
+acceleration-matrix: perf-build
     scripts/performance/acceleration_matrix.py
 
-fastest-engine-matrix:
-    cargo build -p php_vm_cli --bin php-vm
+fastest-engine-matrix: perf-build
     scripts/performance/fastest_engine_matrix.py
 
 hotpath-inventory:
     scripts/performance/hotpath_inventory.py target/performance/benchmark-smoke.json --json-out target/performance/hotpaths.json --markdown-out target/performance/hotpath-inventory.md
 
-fastest-hotpath-report:
-    cargo build -p php_vm_cli --bin php-vm
+fastest-hotpath-report: perf-build
     @if [ ! -f target/performance/benchmark-smoke.json ]; then \
         scripts/performance/bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/benchmark-smoke.json --repetitions "${PHRUST_PERF_BENCH_SMOKE_REPETITIONS:-1}" --warmups "${PHRUST_PERF_BENCH_SMOKE_WARMUPS:-0}" --timeout "${PHRUST_PERF_BENCH_TIMEOUT:-10.0}"; \
     fi
@@ -1427,13 +1530,16 @@ optimizer-diff:
     @just ir-verify
     scripts/performance/optimizer_diff_smoke.sh
 
-quickening-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+quickening-smoke: perf-build
     scripts/performance/quickening_smoke.sh
 
-inline-cache-smoke:
-    cargo build -p php_vm_cli --bin php-vm
+inline-cache-smoke: perf-build
     scripts/performance/inline_cache_smoke.sh
+
+inline-cache-lookup-benchmark-gate:
+    scripts/performance/inline_cache_lookup_gate.py --self-test
+    cargo bench --manifest-path crates/php_bench/Cargo.toml --bench perf_hotpaths -- inline_cache_function_hit
+    scripts/performance/inline_cache_lookup_gate.py
 
 polymorphic-inline-cache-smoke:
     cargo build -p php_vm_cli --bin php-vm

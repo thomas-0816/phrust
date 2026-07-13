@@ -4,14 +4,14 @@
   "priority":"bounded intl MVP",
   "selected_manifest":"tests/phpt/manifests/modules/intl.selected.jsonl",
   "corpus_count":477,
-  "selected_count":3,
-  "pass_count":3,
+  "selected_count":6,
+  "pass_count":6,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":464,
-  "scope":["extension_loaded(\"intl\")","Normalizer NFC static methods","normalizer_* functions","grapheme_strlen","grapheme_substr","Latin-ASCII transliteration","intl_get_error_code"],
-  "non_scope":["full upstream ext/intl corpus","ICU locale data","collation parity","formatter behavior","IDNA","break iterators","full grapheme cluster segmentation"],
+  "scope":["extension_loaded(\"intl\")","Normalizer NFC/NFD/NFKC/NFKD static methods","normalizer_* functions","Normalizer form constants","grapheme_strlen","grapheme_substr","grapheme_strpos","grapheme_stripos","extended grapheme clusters for combining marks, emoji ZWJ, flags, and skin tones","Latin-ASCII transliteration","intl_get_error_code"],
+  "non_scope":["full upstream ext/intl corpus","ICU locale data","collation parity","formatter behavior","IDNA","break iterator objects"],
   "target_gates":["nix develop -c just phpt-module-target MODULE=intl","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=intl","nix develop -c just verify-phpt","nix develop -c just verify-stdlib"],
-  "next_step":"Promote ICU-backed locale, normalization, formatter, and collator parity only after a reference-backed ICU strategy is selected."
+  "next_step":"Promote ICU-backed locale, formatter, collator, IDNA, and break-iterator object parity after a reference-backed ICU strategy is selected."
 }

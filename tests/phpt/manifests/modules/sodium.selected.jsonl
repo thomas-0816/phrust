@@ -1,4 +1,6 @@
 {"path":"tests/phpt/generated/sodium/basic.phpt"}
+{"path":"tests/phpt/generated/sodium/libsodium-utils-keygens.phpt"}
+{"path":"tests/phpt/generated/sodium/libsodium-crypto-families.phpt"}
 {"path":"ext/sodium/tests/installed.phpt"}
 {"path":"ext/sodium/tests/version.phpt"}
 {"path":"ext/sodium/tests/crypto_hex.phpt"}

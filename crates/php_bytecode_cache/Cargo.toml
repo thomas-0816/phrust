@@ -14,4 +14,8 @@ sha2 = "0.10"
 
 [dev-dependencies]
 php_semantics = { path = "../php_semantics", version = "0.1.0" }
-php_vm = { path = "../php_vm", version = "0.0.0" }
+php_vm = { path = "../php_vm", version = "0.0.0", default-features = false }
+
+[features]
+default = ["runtime-telemetry"]
+runtime-telemetry = ["php_vm/runtime-telemetry"]

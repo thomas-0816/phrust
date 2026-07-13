@@ -1,0 +1,437 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SSH2\\Channel"
+    },
+    {
+      "kind": "class",
+      "name": "SSH2\\Session"
+    },
+    {
+      "kind": "class",
+      "name": "SSH2\\Sftp"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "SSH2_FINGERPRINT_MD5",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_FINGERPRINT_SHA1",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_FINGERPRINT_HEX",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_FINGERPRINT_RAW",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_TERM_UNIT_CHARS",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_TERM_UNIT_PIXELS",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_DEFAULT_TERMINAL",
+      "value": {
+        "kind": "string",
+        "value": "vanilla"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_DEFAULT_TERM_WIDTH",
+      "value": {
+        "kind": "int",
+        "value": 80
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_DEFAULT_TERM_HEIGHT",
+      "value": {
+        "kind": "int",
+        "value": 25
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SSH2_DEFAULT_TERM_UNIT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_auth_hostbased_file",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_auth_none",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_auth_password",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_auth_pubkey_file",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_connect",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_disconnect",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_exec",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_fingerprint",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_forward_accept",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_forward_listen",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_methods_negotiated",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_publickey_add",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_publickey_init",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_publickey_list",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_publickey_remove",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_scp_recv",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_scp_send",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_chmod",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_lstat",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_mkdir",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_readlink",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_realpath",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_rename",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_rmdir",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_stat",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_symlink",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_sftp_unlink",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_shell",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "ssh2"
+        }
+      ],
+      "name": "ssh2_tunnel",
+      "signature_gap": "ssh2 is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    }
+  ],
+  "name": "ssh2",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements a stack-aware output buffer in `php_runtime` and
+The standard library implements a stack-aware output buffer in `php_runtime` and
 VM-backed standard functions for Composer/framework-style output capture.
 
 ## Implemented

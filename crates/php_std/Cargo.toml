@@ -7,5 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 libc = "0.2"
-php_lexer = { path = "../php_lexer", version = "0.1.0" }
-php_runtime = { path = "../php_runtime", version = "0.0.0" }
+php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }
+php_extensions = { path = "../php_extensions", version = "0.0.0", default-features = false }
+
+[features]
+default = ["runtime-telemetry"]
+runtime-telemetry = ["php_runtime/runtime-telemetry", "php_extensions/runtime-telemetry"]

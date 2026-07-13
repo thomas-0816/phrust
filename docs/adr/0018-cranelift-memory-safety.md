@@ -55,7 +55,7 @@ original handle value is dropped:
 nix develop -c cargo test -p php_jit --features jit-cranelift cranelift_native_handle_copy_survives_original_handle_drop
 ```
 
-The full Work item.33 gates are:
+The full gate set is:
 
 ```bash
 nix develop -c cargo test --workspace --features jit-cranelift

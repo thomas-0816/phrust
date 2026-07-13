@@ -2426,6 +2426,10 @@ fn property_load_candidate(
         Some(IrReturnType::Int) => crate::JitCValueTag::Int as u16,
         Some(IrReturnType::Float) => crate::JitCValueTag::FloatBits as u16,
         Some(IrReturnType::Bool) => crate::JitCValueTag::Bool as u16,
+        Some(IrReturnType::String) => crate::JitCValueTag::OpaqueString as u16,
+        Some(IrReturnType::Array) => crate::JitCValueTag::OpaqueArray as u16,
+        Some(IrReturnType::Object) => crate::JitCValueTag::OpaqueObject as u16,
+        Some(IrReturnType::Null) => crate::JitCValueTag::Null as u16,
         _ => 0,
     };
     Ok(PropertyLoadCandidate {
@@ -3837,6 +3841,7 @@ fn lower_inline_cfg_condition(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_inline_cfg_terminator(
     builder: &mut FunctionBuilder<'_>,
     unit: &IrUnit,

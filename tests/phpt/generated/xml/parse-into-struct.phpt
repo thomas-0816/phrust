@@ -7,12 +7,16 @@ xml
 --FILE--
 <?php
 $parser = xml_parser_create();
+$values = array();
+$index = array();
 var_dump(xml_parse_into_struct($parser, '<root a="b">hi<child/>there</root>', $values, $index));
 print_r($index);
 print_r($values);
 
 $parser = xml_parser_create();
 xml_parser_set_option($parser, XML_OPTION_CASE_FOLDING, false);
+$values = array();
+$index = array();
 var_dump(xml_parse_into_struct($parser, '<root a="b"><child>text</child></root>', $values, $index));
 print_r($index);
 print_r($values);

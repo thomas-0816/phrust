@@ -10,8 +10,8 @@
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":101,
-  "scope":["extension_loaded(\"pgsql\")","generated PgSql\\\\Connection PgSql\\\\Result and PgSql\\\\Lob class metadata","PGSQL_ASSOC PGSQL_NUM PGSQL_BOTH and PGSQL_CONNECTION_OK constants","procedural pg_connect pg_query pg_prepare pg_execute fetch row/assoc/array/object/result row and field counts affected rows last error and escape helpers","opt-in live PostgreSQL smoke when PHRUST_POSTGRES_TEST_DSN is set"],
-  "non_scope":["persistent connections and connection pooling","large objects copy helpers notifications async polling and tracing","full libpq option/status/metadata parity","default connection edge-case parity beyond last successful connection"],
+  "scope":["extension_loaded(\"pgsql\")","generated PgSql\\\\Connection PgSql\\\\Result and PgSql\\\\Lob class metadata","PGSQL_ASSOC PGSQL_NUM PGSQL_BOTH and PGSQL_CONNECTION_OK constants","procedural pg_connect pg_pconnect pg_close pg_query pg_query_params pg_prepare pg_execute fetch row/assoc/array/object/result row and field counts affected rows last error result error and escape helpers","opt-in live PostgreSQL smoke when PHRUST_POSTGRES_TEST_DSN is set"],
+  "non_scope":["persistent connection pooling because pg_pconnect opens a normal connection","large objects copy helpers notifications async polling and tracing","full libpq option/status/metadata parity","default connection edge-case parity beyond last successful connection"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=pgsql","nix develop -c just verify-phpt"],
   "next_step":"Promote upstream pgsql PHPTs once resource/object identity, large objects, copy helpers, notifications, and connection status APIs are implemented."
 }

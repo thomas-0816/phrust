@@ -215,6 +215,12 @@ pub fn take_cache_stats() -> NumericStringCacheStats {
     })
 }
 
+/// Returns a non-destructive stats snapshot for nested request profiling.
+#[must_use]
+pub fn snapshot_cache_stats() -> NumericStringCacheStats {
+    CLASSIFICATION_STATS.with(|stats| *stats.borrow())
+}
+
 /// Classifies a byte string using the runtime-semantics PHP numeric-string subset.
 #[must_use]
 pub fn classify(bytes: &[u8]) -> NumericString {

@@ -1,6 +1,6 @@
 # Performance Internal Function Dispatch Cache
 
-Work item adds a request-local VM cache for generic internal builtin dispatch
+The performance layer provides a request-local VM cache for generic internal builtin dispatch
 metadata. The cache stores the runtime builtin registry entry for hot standard
 library names after the first lookup:
 

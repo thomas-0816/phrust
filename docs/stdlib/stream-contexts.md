@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds Composer-facing stream metadata, stream copy/content helpers,
+The standard library provides Composer-facing stream metadata, stream copy/content helpers,
 stream contexts, include-path resolution, and local/TTY probes.
 
 ## Implemented Functions

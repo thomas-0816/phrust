@@ -1,26 +1,26 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "ftp",
-  "priority": "Loopback-gated FTP control-channel subset",
+  "priority": "Maintained suppaftp-backed FTP client with hermetic loopback coverage",
   "selected_manifest": "tests/phpt/manifests/modules/ftp.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
   "pass_count": 1,
-  "skip_count": 0,
+  "skip_count": 1,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
   "scope": [
     "Default-disabled ftp_connect and ftp_ssl_connect behavior",
     "Registered FTP\\Connection class and PHP-src FTP constants",
-    "Loopback-only ftp_connect, ftp_login, ftp_pwd, ftp_chdir, ftp_raw, ftp_close, and ftp_quit covered by Rust fake-server tests",
-    "Loopback passive ftp_nlist, ftp_rawlist, and ftp_mlsd data-channel reads",
-    "Loopback passive ftp_get, ftp_put, ftp_append, ftp_nb_get, and ftp_nb_put local filename transfers",
+    "suppaftp-backed ftp_connect, ftp_login, ftp_pwd, ftp_chdir, ftp_raw, ftp_close, and ftp_quit covered by hermetic loopback server tests",
+    "suppaftp-backed passive ftp_nlist, ftp_rawlist, and ftp_mlsd data-channel reads",
+    "suppaftp-backed passive ftp_get, ftp_put, ftp_append, ftp_nb_get, and ftp_nb_put local filename transfers",
     "Control-channel directory, metadata, SITE, ALLO, chmod, rename, delete, and option APIs",
+    "Opt-in live endpoint smoke gated by PHRUST_NET_TESTS and PHRUST_FTP_LIVE_* environment variables",
     "Stream-resource transfer functions registered with deterministic gap results"
   ],
   "non_scope": [
-    "External network FTP",
     "TLS/SSL FTP",
     "Active data channels, local stream resource transfers, and true async transfer progress"
   ],
@@ -28,5 +28,5 @@
     "cargo test -p php_runtime ftp --no-fail-fast",
     "just phpt-dev-module MODULE=ftp"
   ],
-  "next_step": "Bridge PHP stream resources into ftp_fget and ftp_fput before promoting stream-transfer PHPTs."
+  "next_step": "Bridge PHP stream resources into ftp_fget and ftp_fput before promoting stream-transfer PHPTs; enable FTPS only after choosing a TLS backend."
 }

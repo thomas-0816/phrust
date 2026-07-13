@@ -1,10 +1,8 @@
 # Cranelift Helper Symbol Registry
 
-Date: 2026-06-23.
-
-Work item.06 defines the stable helper-symbol registry used by later
-Cranelift lowering work items. Work item.13 makes the checked integer add/mul
-helpers executable from Cranelift-generated code. Work item.17 supersedes
+A later stage defines the stable helper-symbol registry used by later
+Cranelift lowering work items. a later stage makes the checked integer add/mul
+helpers executable from Cranelift-generated code. a later stage supersedes
 the executable add/mul helper path for eligible int-only arithmetic with inline
 checked Cranelift operations, while keeping these helper symbols available for
 fallback and future non-inline paths.
@@ -47,7 +45,7 @@ The registry lives in `crates/php_jit/src/helpers.rs` and exports:
 - Any registry shape or meaning change updates `JIT_HELPER_REGISTRY_ABI_HASH`,
   tests, and this document in the same work item.
 
-## Work item.13 Checked Integer Helper ABI
+## Checked Integer Helper ABI
 
 The add/mul helpers receive two `i64` operands plus an output pointer encoded in
 the registry as `U64`, then return a `Status` code:
@@ -60,15 +58,15 @@ Overflow uses status `1`. The native Cranelift caller checks this status
 immediately after every helper call and returns non-zero status through the
 native entry ABI instead of using inline raw integer arithmetic.
 
-Work item.17 adds status `2` for inline integer overflow exits. Eligible
+A later stage adds status `2` for inline integer overflow exits. Eligible
 int-only add/sub/mul no longer calls the add/mul helpers in native rows; it
 branches on Cranelift overflow flags and returns status `2` to the VM when the
 interpreter must resume. Helper-call rows and future helper-backed operations
 still use the registry ABI above.
 
-## Work item.20 Packed Array Helper ABI
+## Packed Array Helper ABI
 
-Work item.20 adds the read-only packed-array helper symbols used by later
+A later stage adds the read-only packed-array helper symbols used by later
 packed-array fast paths:
 
 | ID | Symbol | Purpose |
@@ -83,7 +81,7 @@ metadata only. These helpers are read-only, accept shared COW storage for
 read-only fetches, reject reference elements, and require interpreter fallback
 for non-packed arrays.
 
-Work item.21 makes `php_jit_array_fetch_int_slow` executable from the
+A later stage makes `php_jit_array_fetch_int_slow` executable from the
 Cranelift packed-array int-index fetch path. Native code passes the runtime
 array value pointer, the integer index, and an output pointer, then returns the
 helper status through the normal native status ABI:
@@ -95,9 +93,9 @@ helper status through the normal native status ABI:
 
 Status `1` remains the generic fallback status for non-executable helper uses.
 
-## Work item.26 Property Load Helper ABI
+## Property Load Helper ABI
 
-Work item.26 adds `php_jit_property_load_monomorphic_fast`, a VM-owned
+A later stage adds `php_jit_property_load_monomorphic_fast`, a VM-owned
 helper for the narrow monomorphic property-load fast path. Native code passes
 the runtime object value pointer, a pointer to handle-owned
 `JitPropertyLoadMetadata`, and an output pointer. The helper returns status

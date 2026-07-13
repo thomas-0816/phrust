@@ -52,11 +52,11 @@ pub struct GeneratedConstantMetadata {
     pub value: &'static str,
 }
 
-pub const GENERATED_ARGINFO_FUNCTION_COUNT: usize = 2324;
+pub const GENERATED_ARGINFO_FUNCTION_COUNT: usize = 2325;
 pub const GENERATED_ARGINFO_CLASS_COUNT: usize = 376;
 pub const GENERATED_ARGINFO_METHOD_COUNT: usize = 2252;
-pub const GENERATED_ARGINFO_CONSTANT_COUNT: usize = 4776;
-pub const GENERATED_ARGINFO_OVERRIDE_COUNT: usize = 1;
+pub const GENERATED_ARGINFO_CONSTANT_COUNT: usize = 4775;
+pub const GENERATED_ARGINFO_OVERRIDE_COUNT: usize = 2;
 
 pub const GENERATED_ARGINFO_EXTRACTOR_GAPS: &[&str] = &[];
 
@@ -39498,6 +39498,46 @@ pub const GENERATED_FUNCTIONS: &[GeneratedFunctionMetadata] = &[
             by_ref: false,
             variadic: false,
         }],
+    },
+    GeneratedFunctionMetadata {
+        name: "read_exif_data",
+        extension: "exif",
+        source: "ext/exif/exif.stub.php",
+        return_type: "array|false",
+        params: &[
+            GeneratedParamMetadata {
+                name: "file",
+                type_decl: "mixed",
+                default_value: None,
+                optional: false,
+                by_ref: false,
+                variadic: false,
+            },
+            GeneratedParamMetadata {
+                name: "required_sections",
+                type_decl: "?string",
+                default_value: Some("null"),
+                optional: true,
+                by_ref: false,
+                variadic: false,
+            },
+            GeneratedParamMetadata {
+                name: "as_arrays",
+                type_decl: "bool",
+                default_value: Some("false"),
+                optional: true,
+                by_ref: false,
+                variadic: false,
+            },
+            GeneratedParamMetadata {
+                name: "read_thumbnail",
+                type_decl: "bool",
+                default_value: Some("false"),
+                optional: true,
+                by_ref: false,
+                variadic: false,
+            },
+        ],
     },
     GeneratedFunctionMetadata {
         name: "readdir",
@@ -101929,14 +101969,6 @@ pub const GENERATED_CONSTANTS: &[GeneratedConstantMetadata] = &[
     GeneratedConstantMetadata {
         owner: None,
         name: "IMAGETYPE_PSD",
-        extension: "standard",
-        source: "ext/standard/basic_functions.stub.php",
-        type_decl: "mixed",
-        value: "UNKNOWN",
-    },
-    GeneratedConstantMetadata {
-        owner: None,
-        name: "IMAGETYPE_SVG",
         extension: "standard",
         source: "ext/standard/basic_functions.stub.php",
         type_decl: "mixed",

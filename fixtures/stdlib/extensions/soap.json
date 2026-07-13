@@ -1,0 +1,747 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SoapClient"
+    },
+    {
+      "kind": "class",
+      "name": "SoapFault"
+    },
+    {
+      "kind": "class",
+      "name": "SoapHeader"
+    },
+    {
+      "kind": "class",
+      "name": "SoapParam"
+    },
+    {
+      "kind": "class",
+      "name": "SoapServer"
+    },
+    {
+      "kind": "class",
+      "name": "SoapVar"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\Sdl"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\SoapClient"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\SoapFault"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\SoapHeader"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\SoapParam"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\SoapServer"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\SoapVar"
+    },
+    {
+      "kind": "class",
+      "name": "Soap\\Url"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "SOAP_1_1",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_1_2",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_PERSISTENCE_SESSION",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_PERSISTENCE_REQUEST",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_FUNCTIONS_ALL",
+      "value": {
+        "kind": "int",
+        "value": 999
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_ENCODED",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_LITERAL",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_RPC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_DOCUMENT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_ACTOR_NEXT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_ACTOR_NONE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_ACTOR_UNLIMATERECEIVER",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_COMPRESSION_ACCEPT",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_COMPRESSION_GZIP",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_COMPRESSION_DEFLATE",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_AUTHENTICATION_BASIC",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_AUTHENTICATION_DIGEST",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "UNKNOWN_TYPE",
+      "value": {
+        "kind": "int",
+        "value": 999998
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_STRING",
+      "value": {
+        "kind": "int",
+        "value": 101
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_BOOLEAN",
+      "value": {
+        "kind": "int",
+        "value": 102
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_DECIMAL",
+      "value": {
+        "kind": "int",
+        "value": 103
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_FLOAT",
+      "value": {
+        "kind": "int",
+        "value": 104
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_DOUBLE",
+      "value": {
+        "kind": "int",
+        "value": 105
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_DURATION",
+      "value": {
+        "kind": "int",
+        "value": 106
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_DATETIME",
+      "value": {
+        "kind": "int",
+        "value": 107
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_TIME",
+      "value": {
+        "kind": "int",
+        "value": 108
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_DATE",
+      "value": {
+        "kind": "int",
+        "value": 109
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_GYEARMONTH",
+      "value": {
+        "kind": "int",
+        "value": 110
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_GYEAR",
+      "value": {
+        "kind": "int",
+        "value": 111
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_GMONTHDAY",
+      "value": {
+        "kind": "int",
+        "value": 112
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_GDAY",
+      "value": {
+        "kind": "int",
+        "value": 113
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_GMONTH",
+      "value": {
+        "kind": "int",
+        "value": 114
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_HEXBINARY",
+      "value": {
+        "kind": "int",
+        "value": 115
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_BASE64BINARY",
+      "value": {
+        "kind": "int",
+        "value": 116
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_ANYURI",
+      "value": {
+        "kind": "int",
+        "value": 117
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_QNAME",
+      "value": {
+        "kind": "int",
+        "value": 118
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NOTATION",
+      "value": {
+        "kind": "int",
+        "value": 119
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NORMALIZEDSTRING",
+      "value": {
+        "kind": "int",
+        "value": 120
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_TOKEN",
+      "value": {
+        "kind": "int",
+        "value": 121
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_LANGUAGE",
+      "value": {
+        "kind": "int",
+        "value": 122
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NMTOKEN",
+      "value": {
+        "kind": "int",
+        "value": 123
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NAME",
+      "value": {
+        "kind": "int",
+        "value": 124
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NCNAME",
+      "value": {
+        "kind": "int",
+        "value": 125
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_ID",
+      "value": {
+        "kind": "int",
+        "value": 126
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_IDREF",
+      "value": {
+        "kind": "int",
+        "value": 127
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_IDREFS",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_ENTITY",
+      "value": {
+        "kind": "int",
+        "value": 129
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_ENTITIES",
+      "value": {
+        "kind": "int",
+        "value": 130
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_INTEGER",
+      "value": {
+        "kind": "int",
+        "value": 131
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NONPOSITIVEINTEGER",
+      "value": {
+        "kind": "int",
+        "value": 132
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NEGATIVEINTEGER",
+      "value": {
+        "kind": "int",
+        "value": 133
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_LONG",
+      "value": {
+        "kind": "int",
+        "value": 134
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_INT",
+      "value": {
+        "kind": "int",
+        "value": 135
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_SHORT",
+      "value": {
+        "kind": "int",
+        "value": 136
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_BYTE",
+      "value": {
+        "kind": "int",
+        "value": 137
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NONNEGATIVEINTEGER",
+      "value": {
+        "kind": "int",
+        "value": 138
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_UNSIGNEDLONG",
+      "value": {
+        "kind": "int",
+        "value": 139
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_UNSIGNEDINT",
+      "value": {
+        "kind": "int",
+        "value": 140
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_UNSIGNEDSHORT",
+      "value": {
+        "kind": "int",
+        "value": 141
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_UNSIGNEDBYTE",
+      "value": {
+        "kind": "int",
+        "value": 142
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_POSITIVEINTEGER",
+      "value": {
+        "kind": "int",
+        "value": 143
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NMTOKENS",
+      "value": {
+        "kind": "int",
+        "value": 144
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_ANYTYPE",
+      "value": {
+        "kind": "int",
+        "value": 145
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_ANYXML",
+      "value": {
+        "kind": "int",
+        "value": 147
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "APACHE_MAP",
+      "value": {
+        "kind": "int",
+        "value": 200
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_ENC_OBJECT",
+      "value": {
+        "kind": "int",
+        "value": 301
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_ENC_ARRAY",
+      "value": {
+        "kind": "int",
+        "value": 300
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_1999_TIMEINSTANT",
+      "value": {
+        "kind": "int",
+        "value": 401
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_SINGLE_ELEMENT_ARRAYS",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_WAIT_ONE_WAY_CALLS",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_USE_XSI_ARRAY_TYPE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "WSDL_CACHE_NONE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "WSDL_CACHE_DISK",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "WSDL_CACHE_MEMORY",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "WSDL_CACHE_BOTH",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_SSL_METHOD_TLS",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_SSL_METHOD_SSLv2",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_SSL_METHOD_SSLv3",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOAP_SSL_METHOD_SSLv23",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_NAMESPACE",
+      "value": {
+        "kind": "string",
+        "value": "http://www.w3.org/2001/XMLSchema"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSD_1999_NAMESPACE",
+      "value": {
+        "kind": "string",
+        "value": "http://www.w3.org/1999/XMLSchema"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "soap",
+        "source": "ext/soap/soap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "soap"
+        }
+      ],
+      "name": "is_soap_fault",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "soap",
+        "source": "ext/soap/soap.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "soap"
+        }
+      ],
+      "name": "use_soap_error_handler",
+      "visibility": "php"
+    }
+  ],
+  "name": "soap",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

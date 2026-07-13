@@ -1,11 +1,14 @@
-//! Deterministic SSH2 facade with explicit no-backend behavior.
+//! Deterministic SSH2 facade with opt-in libssh2 backend behavior.
 
 use super::core::{argument_type_error, arity_error, int_arg, string_arg};
-use crate::builtins::{BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult};
-use crate::{
-    ArrayKey, BuiltinError, ClassEntry, ClassFlags, ObjectRef, PhpArray, RuntimeSourceSpan, Value,
-    normalize_class_name,
+use crate::builtins::{
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, Ssh2FingerprintHash,
 };
+use crate::{
+    ArrayKey, BuiltinError, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString,
+    RuntimeSourceSpan, StreamFlags, StreamMetadata, Value, normalize_class_name,
+};
+use std::path::PathBuf;
 
 const SSH2_SESSION_CLASS: &str = "SSH2\\Session";
 const SSH2_SFTP_CLASS: &str = "SSH2\\Sftp";
@@ -187,6 +190,12 @@ fn builtin_ssh2_connect(
         ));
     }
     let id = context.ssh2_state().connect(host, port);
+    if live_ssh2_endpoint_enabled(context, &ssh2_endpoint(&args[0], port)?)
+        && !context.ssh2_state().connect_backend(id)
+    {
+        let _ = context.ssh2_state().close(id);
+        return Ok(Value::Bool(false));
+    }
     Ok(Value::Object(ssh2_session_object(id)))
 }
 
@@ -208,8 +217,18 @@ fn builtin_ssh2_auth_password(
         return Err(arity_error("ssh2_auth_password", "exactly three arguments"));
     }
     let id = ssh2_session_id_arg("ssh2_auth_password", &args[0])?;
-    let _username = string_arg("ssh2_auth_password", &args[1])?;
-    let _password = string_arg("ssh2_auth_password", &args[2])?;
+    let username = string_arg("ssh2_auth_password", &args[1])?
+        .to_string_lossy()
+        .to_owned();
+    let password = string_arg("ssh2_auth_password", &args[2])?
+        .to_string_lossy()
+        .to_owned();
+    if let Some(authenticated) = context
+        .ssh2_state()
+        .auth_password_backend(id, &username, &password)
+    {
+        return Ok(Value::Bool(authenticated));
+    }
     context.ssh2_state().set_error(id, SSH2_BACKEND_ERROR);
     Ok(Value::Bool(false))
 }
@@ -226,8 +245,35 @@ fn builtin_ssh2_auth_pubkey_file(
         ));
     }
     let id = ssh2_session_id_arg("ssh2_auth_pubkey_file", &args[0])?;
-    for value in args.iter().skip(1) {
-        let _ = string_arg("ssh2_auth_pubkey_file", value)?;
+    let username = string_arg("ssh2_auth_pubkey_file", &args[1])?
+        .to_string_lossy()
+        .to_owned();
+    let pubkey = PathBuf::from(
+        string_arg("ssh2_auth_pubkey_file", &args[2])?
+            .to_string_lossy()
+            .to_owned(),
+    );
+    let privatekey = PathBuf::from(
+        string_arg("ssh2_auth_pubkey_file", &args[3])?
+            .to_string_lossy()
+            .to_owned(),
+    );
+    let passphrase = match args.get(4) {
+        Some(value) => Some(
+            string_arg("ssh2_auth_pubkey_file", value)?
+                .to_string_lossy()
+                .to_owned(),
+        ),
+        None => None,
+    };
+    if let Some(authenticated) = context.ssh2_state().auth_pubkey_file_backend(
+        id,
+        &username,
+        &pubkey,
+        &privatekey,
+        passphrase.as_deref(),
+    ) {
+        return Ok(Value::Bool(authenticated));
     }
     context.ssh2_state().set_error(id, SSH2_BACKEND_ERROR);
     Ok(Value::Bool(false))
@@ -278,8 +324,16 @@ fn builtin_ssh2_exec(
         return Err(arity_error("ssh2_exec", "two to six arguments"));
     }
     let id = ssh2_session_id_arg("ssh2_exec", &args[0])?;
-    let _command = string_arg("ssh2_exec", &args[1])?;
+    let command = string_arg("ssh2_exec", &args[1])?
+        .to_string_lossy()
+        .to_owned();
     validate_optional_strings("ssh2_exec", &args[2..])?;
+    if context.ssh2_state().has_backend(id) {
+        let Some(output) = context.ssh2_state().exec_backend(id, &command) else {
+            return Ok(Value::Bool(false));
+        };
+        return ssh2_stream_resource(context, id, output);
+    }
     context.ssh2_state().set_error(id, SSH2_BACKEND_ERROR);
     Ok(Value::Bool(false))
 }
@@ -390,8 +444,19 @@ fn builtin_ssh2_scp_recv(
         return Err(arity_error("ssh2_scp_recv", "exactly three arguments"));
     }
     let id = ssh2_session_id_arg("ssh2_scp_recv", &args[0])?;
-    let _remote = string_arg("ssh2_scp_recv", &args[1])?;
-    let _local = string_arg("ssh2_scp_recv", &args[2])?;
+    let remote = PathBuf::from(
+        string_arg("ssh2_scp_recv", &args[1])?
+            .to_string_lossy()
+            .to_owned(),
+    );
+    let local = PathBuf::from(
+        string_arg("ssh2_scp_recv", &args[2])?
+            .to_string_lossy()
+            .to_owned(),
+    );
+    if let Some(copied) = context.ssh2_state().scp_recv_backend(id, &remote, &local) {
+        return Ok(Value::Bool(copied));
+    }
     context.ssh2_state().set_error(id, SSH2_BACKEND_ERROR);
     Ok(Value::Bool(false))
 }
@@ -405,10 +470,28 @@ fn builtin_ssh2_scp_send(
         return Err(arity_error("ssh2_scp_send", "three to five arguments"));
     }
     let id = ssh2_session_id_arg("ssh2_scp_send", &args[0])?;
-    let _local = string_arg("ssh2_scp_send", &args[1])?;
-    let _remote = string_arg("ssh2_scp_send", &args[2])?;
-    for value in args.iter().skip(3) {
+    let local = PathBuf::from(
+        string_arg("ssh2_scp_send", &args[1])?
+            .to_string_lossy()
+            .to_owned(),
+    );
+    let remote = PathBuf::from(
+        string_arg("ssh2_scp_send", &args[2])?
+            .to_string_lossy()
+            .to_owned(),
+    );
+    let mode = match args.get(3) {
+        Some(value) => i32::try_from(int_arg("ssh2_scp_send", value)?).unwrap_or(0o644),
+        None => 0o644,
+    };
+    if let Some(value) = args.get(4) {
         let _ = int_arg("ssh2_scp_send", value)?;
+    }
+    if let Some(copied) = context
+        .ssh2_state()
+        .scp_send_backend(id, &local, &remote, mode)
+    {
+        return Ok(Value::Bool(copied));
     }
     context.ssh2_state().set_error(id, SSH2_BACKEND_ERROR);
     Ok(Value::Bool(false))
@@ -423,9 +506,20 @@ fn builtin_ssh2_fingerprint(
         return Err(arity_error("ssh2_fingerprint", "one or two arguments"));
     }
     let id = ssh2_session_id_arg("ssh2_fingerprint", &args[0])?;
-    optional_int("ssh2_fingerprint", args.get(1), 0)?;
+    let flags = optional_int("ssh2_fingerprint", args.get(1), 0)?;
     if !context.ssh2_state().is_open(id) {
         return Ok(Value::Bool(false));
+    }
+    let hash = if flags & 1 == 1 {
+        Ssh2FingerprintHash::Sha1
+    } else {
+        Ssh2FingerprintHash::Md5
+    };
+    if let Some(bytes) = context.ssh2_state().fingerprint_backend(id, hash) {
+        if flags & 2 == 2 {
+            return Ok(Value::String(PhpString::from_bytes(bytes)));
+        }
+        return Ok(Value::string(hex_bytes(&bytes)));
     }
     Ok(Value::string(""))
 }
@@ -580,6 +674,56 @@ fn validate_optional_strings(function: &'static str, values: &[Value]) -> Result
     Ok(())
 }
 
+fn ssh2_endpoint(host_value: &Value, port: i64) -> Result<String, BuiltinError> {
+    let host = string_arg("ssh2_connect", host_value)?
+        .to_string_lossy()
+        .to_owned();
+    Ok(format!("{host}:{port}"))
+}
+
+fn live_ssh2_endpoint_enabled(context: &BuiltinContext<'_>, endpoint: &str) -> bool {
+    context.network_requests_enabled()
+        && context
+            .env_value("PHRUST_SSH2_LIVE_ENDPOINT")
+            .is_some_and(|expected| expected == endpoint)
+}
+
+fn ssh2_stream_resource(
+    context: &mut BuiltinContext<'_>,
+    session_id: i64,
+    output: Vec<u8>,
+) -> BuiltinResult {
+    let Some(resources) = context.resources() else {
+        context
+            .ssh2_state()
+            .set_error(session_id, "SSH2 stream resource table is unavailable");
+        return Ok(Value::Bool(false));
+    };
+    let resource = resources.register_stream(
+        StreamFlags::new(true, true, true),
+        StreamMetadata::new("ssh2", "stream", "r+", format!("ssh2.exec://{session_id}")),
+    );
+    if let Err(error) = resource.write_bytes(&output) {
+        context.ssh2_state().set_error(session_id, error.message());
+        return Ok(Value::Bool(false));
+    }
+    if let Err(error) = resource.rewind() {
+        context.ssh2_state().set_error(session_id, error.message());
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Resource(resource))
+}
+
+fn hex_bytes(bytes: &[u8]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize]);
+        out.push(HEX[(byte & 0x0f) as usize]);
+    }
+    out
+}
+
 fn ssh2_session_id_arg(function: &'static str, value: &Value) -> Result<i64, BuiltinError> {
     let Value::Object(object) = value else {
         return Err(argument_type_error(
@@ -625,7 +769,7 @@ fn ssh2_sftp_object(id: i64) -> ObjectRef {
 
 fn runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

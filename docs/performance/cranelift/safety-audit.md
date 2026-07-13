@@ -1,6 +1,6 @@
 # Performance Cranelift Safety Audit
 
-Work item.33 audits the default-off Cranelift native execution experiment.
+that stage audits the default-off Cranelift native execution experiment.
 The audited surface is compiled only with the `jit-cranelift` feature and still
 requires a runtime opt-in before native code is entered.
 
@@ -90,7 +90,7 @@ the backend refuses native entries when the caller does not pass
 
 ## Validation
 
-Work item.33 validation commands:
+that stage validation commands:
 
 ```bash
 nix develop -c cargo test --workspace --features jit-cranelift

@@ -9,6 +9,7 @@ use crate::builtins::{
     MbSubstituteCharacter, RuntimeSourceSpan,
 };
 use encoding_rs::{EUC_JP, Encoding, ISO_2022_JP, SHIFT_JIS, WINDOWS_1252};
+use unicode_width::UnicodeWidthChar;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
@@ -71,6 +72,31 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("mb_substr", builtin_mb_substr, BuiltinCompatibility::Php),
+    BuiltinEntry::new("mb_strcut", builtin_mb_strcut, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "mb_strwidth",
+        builtin_mb_strwidth,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mb_strimwidth",
+        builtin_mb_strimwidth,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mb_convert_case",
+        builtin_mb_convert_case,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new("mb_ucfirst", builtin_mb_ucfirst, BuiltinCompatibility::Php),
+    BuiltinEntry::new("mb_lcfirst", builtin_mb_lcfirst, BuiltinCompatibility::Php),
+    BuiltinEntry::new("mb_ord", builtin_mb_ord, BuiltinCompatibility::Php),
+    BuiltinEntry::new("mb_chr", builtin_mb_chr, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "mb_parse_str",
+        builtin_mb_parse_str,
+        BuiltinCompatibility::Php,
+    ),
 ];
 
 fn builtin_mb_detect_encoding(
@@ -93,7 +119,10 @@ fn builtin_mb_detect_encoding(
     let _strict = args.get(2);
     for encoding in encodings {
         let Some(canonical) = canonical_encoding(&encoding) else {
-            continue;
+            return Err(detect_invalid_encoding_error(
+                "mb_detect_encoding",
+                &encoding,
+            ));
         };
         if bytes_match_encoding(string.as_bytes(), canonical) {
             return Ok(Value::string(canonical));
@@ -116,7 +145,11 @@ fn builtin_mb_check_encoding(
         .transpose()?
         .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
     let Some(canonical) = canonical_encoding(&encoding) else {
-        return Ok(Value::Bool(false));
+        return Err(unsupported_encoding_error(
+            "mb_check_encoding",
+            "#2 ($encoding)",
+            &encoding,
+        ));
     };
     let Some(value) = args.first() else {
         return Ok(Value::Bool(true));
@@ -174,7 +207,11 @@ fn builtin_mb_internal_encoding(
     };
     let encoding = encoding_arg("mb_internal_encoding", value)?;
     let Some(canonical) = canonical_encoding(&encoding) else {
-        return Ok(Value::Bool(false));
+        return Err(unsupported_encoding_error(
+            "mb_internal_encoding",
+            "#1 ($encoding)",
+            &encoding,
+        ));
     };
     context.set_mb_internal_encoding(canonical);
     Ok(Value::Bool(true))
@@ -189,9 +226,9 @@ fn builtin_mb_list_encodings(
         return Err(arity_error("mb_list_encodings", "zero arguments"));
     }
     Ok(Value::packed_array(
-        SUPPORTED_ENCODINGS
+        ENCODING_REGISTRY
             .iter()
-            .copied()
+            .map(|spec| spec.list_name)
             .map(Value::string)
             .collect(),
     ))
@@ -348,6 +385,135 @@ fn builtin_mb_substr(
     Ok(Value::string(output))
 }
 
+fn builtin_mb_strcut(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=4).contains(&args.len()) {
+        return Err(arity_error("mb_strcut", "two to four argument(s)"));
+    }
+    let string = string_arg("mb_strcut", &args[0])?;
+    let start = int_arg("mb_strcut", &args[1])?;
+    let length = match args.get(2).map(deref_value) {
+        Some(Value::Null) | None => None,
+        Some(value) => Some(int_arg("mb_strcut", &value)?),
+    };
+    let encoding = args
+        .get(3)
+        .map(|value| encoding_arg("mb_strcut", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_strcut",
+            "#4 ($encoding)",
+            &encoding,
+        ));
+    };
+    if canonical == "8BIT" {
+        return Ok(Value::string(byte_substring(
+            string.as_bytes(),
+            start,
+            length,
+        )));
+    }
+    let text = decode_bytes("mb_strcut", string.as_bytes(), canonical)?;
+    let total = string.len();
+    let byte_start = normalize_character_offset(total, start);
+    let byte_end = length
+        .map(|length| {
+            if length < 0 {
+                total.saturating_sub(length.unsigned_abs() as usize)
+            } else {
+                byte_start.saturating_add(length as usize).min(total)
+            }
+        })
+        .unwrap_or(total)
+        .min(total);
+    let mut output = String::new();
+    let mut cursor = 0usize;
+    for character in text.chars() {
+        let encoded = encode_text("mb_strcut", &character.to_string(), canonical)?;
+        let next = cursor + encoded.len();
+        if cursor >= byte_start && next <= byte_end {
+            output.push(character);
+        }
+        cursor = next;
+    }
+    Ok(Value::string(encode_text("mb_strcut", &output, canonical)?))
+}
+
+fn builtin_mb_strwidth(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity_error("mb_strwidth", "one or two argument(s)"));
+    }
+    let string = string_arg("mb_strwidth", &args[0])?;
+    let encoding = args
+        .get(1)
+        .map(|value| encoding_arg("mb_strwidth", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_strwidth",
+            "#2 ($encoding)",
+            &encoding,
+        ));
+    };
+    let text = decode_bytes("mb_strwidth", string.as_bytes(), canonical)?;
+    Ok(Value::Int(display_width(&text) as i64))
+}
+
+fn builtin_mb_strimwidth(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(3..=5).contains(&args.len()) {
+        return Err(arity_error("mb_strimwidth", "three to five argument(s)"));
+    }
+    let string = string_arg("mb_strimwidth", &args[0])?;
+    let start = int_arg("mb_strimwidth", &args[1])?;
+    let width = int_arg("mb_strimwidth", &args[2])?;
+    let trim_marker = args
+        .get(3)
+        .map(|value| string_arg("mb_strimwidth", value))
+        .transpose()?
+        .unwrap_or_else(|| "".into());
+    let encoding = args
+        .get(4)
+        .map(|value| encoding_arg("mb_strimwidth", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_strimwidth",
+            "#5 ($encoding)",
+            &encoding,
+        ));
+    };
+    if width < 0 {
+        return Err(argument_value_error(
+            "mb_strimwidth",
+            "#3 ($width)",
+            "must be greater than or equal to 0",
+        ));
+    }
+    let text = decode_bytes("mb_strimwidth", string.as_bytes(), canonical)?;
+    let marker = decode_bytes("mb_strimwidth", trim_marker.as_bytes(), canonical)?;
+    let output = trim_to_display_width(&text, start, width as usize, &marker);
+    Ok(Value::string(encode_text(
+        "mb_strimwidth",
+        &output,
+        canonical,
+    )?))
+}
+
 fn builtin_mb_strpos(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -419,6 +585,148 @@ fn builtin_mb_substr_count(
     Ok(Value::Int(
         non_overlapping_text_count(&haystack, &needle) as i64
     ))
+}
+
+const MB_CASE_UPPER: i64 = 0;
+const MB_CASE_LOWER: i64 = 1;
+const MB_CASE_TITLE: i64 = 2;
+const MB_CASE_FOLD: i64 = 3;
+const MB_CASE_UPPER_SIMPLE: i64 = 4;
+const MB_CASE_LOWER_SIMPLE: i64 = 5;
+const MB_CASE_TITLE_SIMPLE: i64 = 6;
+const MB_CASE_FOLD_SIMPLE: i64 = 7;
+
+fn builtin_mb_convert_case(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=3).contains(&args.len()) {
+        return Err(arity_error("mb_convert_case", "two or three argument(s)"));
+    }
+    let string = string_arg("mb_convert_case", &args[0])?;
+    let mode = int_arg("mb_convert_case", &args[1])?;
+    let encoding = args
+        .get(2)
+        .map(|value| encoding_arg("mb_convert_case", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_convert_case",
+            "#3 ($encoding)",
+            &encoding,
+        ));
+    };
+    let text = decode_bytes("mb_convert_case", string.as_bytes(), canonical)?;
+    let output = match mode {
+        MB_CASE_UPPER | MB_CASE_UPPER_SIMPLE => text
+            .chars()
+            .flat_map(char::to_uppercase)
+            .collect::<String>(),
+        MB_CASE_LOWER | MB_CASE_LOWER_SIMPLE | MB_CASE_FOLD | MB_CASE_FOLD_SIMPLE => {
+            lowercase(&text)
+        }
+        MB_CASE_TITLE | MB_CASE_TITLE_SIMPLE => titlecase(&text),
+        _ => {
+            return Err(argument_value_error(
+                "mb_convert_case",
+                "#2 ($mode)",
+                "must be one of the MB_CASE_* constants",
+            ));
+        }
+    };
+    Ok(Value::string(encode_text(
+        "mb_convert_case",
+        &output,
+        canonical,
+    )?))
+}
+
+fn builtin_mb_ucfirst(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    first_char_case_builtin(context, "mb_ucfirst", args, true)
+}
+
+fn builtin_mb_lcfirst(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    first_char_case_builtin(context, "mb_lcfirst", args, false)
+}
+
+fn builtin_mb_ord(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity_error("mb_ord", "one or two argument(s)"));
+    }
+    let string = string_arg("mb_ord", &args[0])?;
+    let encoding = args
+        .get(1)
+        .map(|value| encoding_arg("mb_ord", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_ord",
+            "#2 ($encoding)",
+            &encoding,
+        ));
+    };
+    let text = decode_bytes("mb_ord", string.as_bytes(), canonical)?;
+    Ok(text.chars().next().map_or(Value::Bool(false), |character| {
+        Value::Int(character as u32 as i64)
+    }))
+}
+
+fn builtin_mb_chr(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity_error("mb_chr", "one or two argument(s)"));
+    }
+    let codepoint = int_arg("mb_chr", &args[0])?;
+    let Some(character) = char::from_u32(codepoint as u32) else {
+        return Err(argument_value_error(
+            "mb_chr",
+            "#1 ($codepoint)",
+            "must be a valid codepoint",
+        ));
+    };
+    let encoding = args
+        .get(1)
+        .map(|value| encoding_arg("mb_chr", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_chr",
+            "#2 ($encoding)",
+            &encoding,
+        ));
+    };
+    Ok(Value::string(encode_text(
+        "mb_chr",
+        &character.to_string(),
+        canonical,
+    )?))
+}
+
+fn builtin_mb_parse_str(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    super::strings::builtin_parse_str(context, args, span).map(|_| Value::Bool(true))
 }
 
 fn string_position_builtin(
@@ -590,6 +898,105 @@ fn convert_case_builtin(
     Ok(Value::string(encode_text(name, &output, canonical)?))
 }
 
+fn first_char_case_builtin(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    args: Vec<Value>,
+    uppercase: bool,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity_error(name, "one or two argument(s)"));
+    }
+    let string = string_arg(name, &args[0])?;
+    let encoding = args
+        .get(1)
+        .map(|value| encoding_arg(name, value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            name,
+            "#2 ($encoding)",
+            &encoding,
+        ));
+    };
+    let text = decode_bytes(name, string.as_bytes(), canonical)?;
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return Ok(Value::string(Vec::new()));
+    };
+    let mut output = String::new();
+    if uppercase {
+        output.extend(first.to_uppercase());
+    } else {
+        output.extend(first.to_lowercase());
+    }
+    output.push_str(chars.as_str());
+    Ok(Value::string(encode_text(name, &output, canonical)?))
+}
+
+fn titlecase(value: &str) -> String {
+    let mut output = String::new();
+    let mut word_start = true;
+    for character in value.chars() {
+        if character.is_alphanumeric() {
+            if word_start {
+                output.extend(character.to_uppercase());
+            } else {
+                output.extend(character.to_lowercase());
+            }
+            word_start = false;
+        } else {
+            output.push(character);
+            word_start = true;
+        }
+    }
+    output
+}
+
+fn display_width(value: &str) -> usize {
+    value
+        .chars()
+        .map(|character| UnicodeWidthChar::width(character).unwrap_or(0))
+        .sum()
+}
+
+fn trim_to_display_width(value: &str, start: i64, width: usize, marker: &str) -> String {
+    let total_width = display_width(value);
+    let start = if start < 0 {
+        total_width.saturating_sub(start.unsigned_abs() as usize)
+    } else {
+        start as usize
+    };
+    let mut skipped = 0usize;
+    let mut tail = String::new();
+    for character in value.chars() {
+        let char_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if skipped + char_width <= start {
+            skipped += char_width;
+            continue;
+        }
+        tail.push(character);
+    }
+    if display_width(&tail) <= width {
+        return tail;
+    }
+    let marker_width = display_width(marker);
+    let body_width = width.saturating_sub(marker_width);
+    let mut output = String::new();
+    let mut used = 0usize;
+    for character in tail.chars() {
+        let char_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + char_width > body_width {
+            break;
+        }
+        output.push(character);
+        used += char_width;
+    }
+    output.push_str(marker);
+    output
+}
+
 fn encoding_arg(name: &str, value: &Value) -> Result<String, BuiltinError> {
     Ok(string_arg(name, value)?.to_string_lossy())
 }
@@ -617,40 +1024,51 @@ fn encoding_candidates(name: &str, value: &Value) -> Result<Vec<String>, Builtin
 }
 
 fn canonical_encoding(encoding: &str) -> Option<&'static str> {
-    let normalized = encoding
-        .trim()
-        .chars()
-        .filter(|character| *character != '-' && *character != '_')
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
-    match normalized.as_str() {
-        "" | "utf8" => Some("UTF-8"),
-        "ascii" | "usascii" => Some("ASCII"),
-        "8bit" | "binary" => Some("8BIT"),
-        "iso88591" | "latin1" => Some("ISO-8859-1"),
-        "windows1252" | "cp1252" => Some("Windows-1252"),
-        "sjis" | "shiftjis" | "shiftjisx0213" | "sjiswin" | "cp932" => Some("SJIS"),
-        "eucjp" | "ujis" => Some("EUC-JP"),
-        "iso2022jp" | "jis" => Some("ISO-2022-JP"),
-        _ => None,
-    }
+    encoding_spec(encoding).map(|spec| spec.canonical)
 }
 
-const SUPPORTED_ENCODINGS: &[&str] = &[
-    "UTF-8",
-    "ASCII",
-    "8bit",
-    "ISO-8859-1",
-    "Windows-1252",
-    "SJIS",
-    "EUC-JP",
-    "ISO-2022-JP",
-];
+#[derive(Clone, Copy)]
+enum EncodingBackend {
+    Utf8,
+    Binary,
+    Ascii,
+    Latin1,
+    EncodingRs(&'static Encoding),
+}
 
-fn encoding_aliases(encoding: &str) -> &'static [&'static str] {
-    match encoding {
-        "UTF-8" => &["utf8"],
-        "ASCII" => &[
+struct EncodingSpec {
+    canonical: &'static str,
+    list_name: &'static str,
+    aliases: &'static [&'static str],
+    backend: EncodingBackend,
+    supports_encode: bool,
+    supports_decode: bool,
+    supports_detect: bool,
+}
+
+const ENCODING_REGISTRY: &[EncodingSpec] = &[
+    EncodingSpec {
+        canonical: "UTF-8",
+        list_name: "UTF-8",
+        aliases: &["utf8"],
+        backend: EncodingBackend::Utf8,
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+    EncodingSpec {
+        canonical: "8BIT",
+        list_name: "8bit",
+        aliases: &["binary"],
+        backend: EncodingBackend::Binary,
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: false,
+    },
+    EncodingSpec {
+        canonical: "ASCII",
+        list_name: "ASCII",
+        aliases: &[
             "ANSI_X3.4-1968",
             "iso-ir-6",
             "ANSI_X3.4-1986",
@@ -663,23 +1081,144 @@ fn encoding_aliases(encoding: &str) -> &'static [&'static str] {
             "cp367",
             "csASCII",
         ],
-        "8BIT" => &["binary"],
-        "ISO-8859-1" => &["ISO8859-1", "latin1"],
-        "Windows-1252" => &["cp1252"],
-        "SJIS" => &["x-sjis", "SHIFT-JIS"],
-        "EUC-JP" => &["EUC", "EUC_JP", "eucJP", "x-euc-jp"],
-        "ISO-2022-JP" => &[],
-        _ => &[],
+        backend: EncodingBackend::Ascii,
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+    EncodingSpec {
+        canonical: "7bit",
+        list_name: "7bit",
+        aliases: &[],
+        backend: EncodingBackend::Ascii,
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: false,
+    },
+    EncodingSpec {
+        canonical: "HTML-ENTITIES",
+        list_name: "HTML-ENTITIES",
+        aliases: &["HTML", "html"],
+        backend: EncodingBackend::Utf8,
+        supports_encode: false,
+        supports_decode: false,
+        supports_detect: false,
+    },
+    EncodingSpec {
+        canonical: "ISO-8859-1",
+        list_name: "ISO-8859-1",
+        aliases: &["ISO8859-1", "latin1"],
+        backend: EncodingBackend::Latin1,
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+    EncodingSpec {
+        canonical: "Windows-1252",
+        list_name: "Windows-1252",
+        aliases: &["cp1252"],
+        backend: EncodingBackend::EncodingRs(WINDOWS_1252),
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+    EncodingSpec {
+        canonical: "SJIS",
+        list_name: "SJIS",
+        aliases: &["x-sjis", "SHIFT-JIS"],
+        backend: EncodingBackend::EncodingRs(SHIFT_JIS),
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+    EncodingSpec {
+        canonical: "EUC-JP",
+        list_name: "EUC-JP",
+        aliases: &["EUC", "EUC_JP", "eucJP", "x-euc-jp"],
+        backend: EncodingBackend::EncodingRs(EUC_JP),
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+    EncodingSpec {
+        canonical: "ISO-2022-JP",
+        list_name: "ISO-2022-JP",
+        aliases: &[],
+        backend: EncodingBackend::EncodingRs(ISO_2022_JP),
+        supports_encode: true,
+        supports_decode: true,
+        supports_detect: true,
+    },
+];
+
+fn encoding_spec(encoding: &str) -> Option<&'static EncodingSpec> {
+    let normalized = encoding
+        .trim()
+        .chars()
+        .filter(|character| *character != '-' && *character != '_')
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    if normalized.is_empty() {
+        return encoding_by_canonical("UTF-8");
     }
+    ENCODING_REGISTRY.iter().find(|spec| {
+        normalized_encoding_key(spec.canonical) == normalized
+            || normalized_encoding_key(spec.list_name) == normalized
+            || spec
+                .aliases
+                .iter()
+                .any(|alias| normalized_encoding_key(alias) == normalized)
+            || legacy_encoding_alias_matches(&normalized, spec.canonical)
+    })
+}
+
+fn encoding_by_canonical(canonical: &str) -> Option<&'static EncodingSpec> {
+    ENCODING_REGISTRY
+        .iter()
+        .find(|spec| spec.canonical == canonical)
+}
+
+fn normalized_encoding_key(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|character| *character != '-' && *character != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn legacy_encoding_alias_matches(normalized: &str, canonical: &str) -> bool {
+    matches!(
+        (normalized, canonical),
+        ("shiftjisx0213", "SJIS")
+            | ("sjiswin", "SJIS")
+            | ("cp932", "SJIS")
+            | ("ujis", "EUC-JP")
+            | ("jis", "ISO-2022-JP")
+    )
+}
+
+fn encoding_aliases(encoding: &str) -> &'static [&'static str] {
+    encoding_by_canonical(encoding).map_or(&[], |spec| spec.aliases)
 }
 
 fn bytes_match_encoding(bytes: &[u8], encoding: &str) -> bool {
-    decode_bytes("mb_detect_encoding", bytes, encoding).is_ok()
+    let Some(spec) = encoding_by_canonical(encoding) else {
+        return false;
+    };
+    if spec.canonical == "ASCII" && bytes.contains(&0x1b) {
+        return false;
+    }
+    spec.supports_detect && decode_bytes("mb_detect_encoding", bytes, encoding).is_ok()
+}
+
+fn bytes_are_valid_for_encoding(bytes: &[u8], encoding: &str) -> bool {
+    decode_bytes("mb_check_encoding", bytes, encoding).is_ok()
 }
 
 fn value_matches_encoding(value: &Value, encoding: &str) -> Result<bool, BuiltinError> {
     match deref_value(value) {
-        Value::String(string) => Ok(bytes_match_encoding(string.as_bytes(), encoding)),
+        Value::String(string) => Ok(bytes_are_valid_for_encoding(string.as_bytes(), encoding)),
         Value::Array(array) => {
             for (_, value) in array.iter() {
                 if !value_matches_encoding(value, encoding)? {
@@ -689,7 +1228,7 @@ fn value_matches_encoding(value: &Value, encoding: &str) -> Result<bool, Builtin
             Ok(true)
         }
         Value::Null => Ok(true),
-        other => Ok(bytes_match_encoding(
+        other => Ok(bytes_are_valid_for_encoding(
             string_arg("mb_check_encoding", &other)?.as_bytes(),
             encoding,
         )),
@@ -702,14 +1241,21 @@ fn validate_utf8<'a>(name: &str, bytes: &'a [u8]) -> Result<&'a str, BuiltinErro
 }
 
 fn decode_bytes(name: &str, bytes: &[u8], encoding: &str) -> Result<String, BuiltinError> {
-    match encoding {
-        "8BIT" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
-        "ASCII" if bytes.is_ascii() => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
-        "ASCII" => Err(invalid_encoding_value_error(name, encoding)),
-        "UTF-8" => validate_utf8(name, bytes).map(ToOwned::to_owned),
-        "ISO-8859-1" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
-        "Windows-1252" | "SJIS" | "EUC-JP" | "ISO-2022-JP" => {
-            let encoding = encoding_rs_encoding(encoding);
+    let Some(spec) = encoding_by_canonical(encoding) else {
+        return Err(unsupported_encoding_error(name, "encoding", encoding));
+    };
+    if !spec.supports_decode {
+        return Err(unsupported_encoding_error(name, "encoding", encoding));
+    }
+    match spec.backend {
+        EncodingBackend::Binary => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        EncodingBackend::Ascii if bytes.is_ascii() => {
+            Ok(bytes.iter().map(|byte| char::from(*byte)).collect())
+        }
+        EncodingBackend::Ascii => Err(invalid_encoding_value_error(name, encoding)),
+        EncodingBackend::Utf8 => validate_utf8(name, bytes).map(ToOwned::to_owned),
+        EncodingBackend::Latin1 => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        EncodingBackend::EncodingRs(encoding) => {
             let (text, had_errors) = encoding.decode_without_bom_handling(bytes);
             if had_errors {
                 Err(invalid_encoding_value_error(name, encoding.name()))
@@ -717,23 +1263,28 @@ fn decode_bytes(name: &str, bytes: &[u8], encoding: &str) -> Result<String, Buil
                 Ok(text.into_owned())
             }
         }
-        _ => Err(unsupported_encoding_error(name, "encoding", encoding)),
     }
 }
 
 fn encode_text(name: &str, text: &str, encoding: &str) -> Result<Vec<u8>, BuiltinError> {
-    match encoding {
-        "8BIT" | "UTF-8" => Ok(text.as_bytes().to_vec()),
-        "ASCII" => {
+    let Some(spec) = encoding_by_canonical(encoding) else {
+        return Err(unsupported_encoding_error(name, "encoding", encoding));
+    };
+    if !spec.supports_encode {
+        return Err(unsupported_encoding_error(name, "encoding", encoding));
+    }
+    match spec.backend {
+        EncodingBackend::Utf8 => Ok(text.as_bytes().to_vec()),
+        EncodingBackend::Binary => encode_latin1(name, text),
+        EncodingBackend::Ascii => {
             if text.is_ascii() {
                 Ok(text.as_bytes().to_vec())
             } else {
                 Err(invalid_encoding_value_error(name, encoding))
             }
         }
-        "ISO-8859-1" => encode_latin1(name, text),
-        "Windows-1252" | "SJIS" | "EUC-JP" | "ISO-2022-JP" => {
-            let encoding = encoding_rs_encoding(encoding);
+        EncodingBackend::Latin1 => encode_latin1(name, text),
+        EncodingBackend::EncodingRs(encoding) => {
             let (bytes, _encoding, had_errors) = encoding.encode(text);
             if had_errors {
                 Err(invalid_encoding_value_error(name, encoding.name()))
@@ -741,7 +1292,6 @@ fn encode_text(name: &str, text: &str, encoding: &str) -> Result<Vec<u8>, Builti
                 Ok(bytes.into_owned())
             }
         }
-        _ => Err(unsupported_encoding_error(name, "encoding", encoding)),
     }
 }
 
@@ -755,16 +1305,6 @@ fn encode_latin1(name: &str, text: &str) -> Result<Vec<u8>, BuiltinError> {
         output.push(value as u8);
     }
     Ok(output)
-}
-
-fn encoding_rs_encoding(encoding: &str) -> &'static Encoding {
-    match encoding {
-        "Windows-1252" => WINDOWS_1252,
-        "SJIS" => SHIFT_JIS,
-        "EUC-JP" => EUC_JP,
-        "ISO-2022-JP" => ISO_2022_JP,
-        _ => Encoding::for_label(encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
-    }
 }
 
 fn invalid_encoding_value_error(name: &str, encoding: &str) -> BuiltinError {
@@ -915,6 +1455,14 @@ fn unsupported_encoding_error(name: &str, argument: &str, encoding: &str) -> Bui
         name,
         argument,
         &format!("must be a valid encoding, {encoding:?} given"),
+    )
+}
+
+fn detect_invalid_encoding_error(name: &str, encoding: &str) -> BuiltinError {
+    argument_value_error(
+        name,
+        "#2 ($encodings)",
+        &format!("contains invalid encoding {encoding:?}"),
     )
 }
 

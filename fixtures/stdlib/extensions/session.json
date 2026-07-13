@@ -1,0 +1,360 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "PHP_SESSION_DISABLED",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_SESSION_NONE",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_SESSION_ACTIVE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_abort",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_cache_expire",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_cache_limiter",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_commit",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_create_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_destroy",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_encode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_gc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_get_cookie_params",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_module_name",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_name",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_regenerate_id",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_register_shutdown",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_reset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_save_path",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_set_cookie_params",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_set_save_handler",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_start",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_status",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_unset",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "session",
+        "source": "ext/session/session.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "session"
+        }
+      ],
+      "name": "session_write_close",
+      "visibility": "php"
+    }
+  ],
+  "name": "session",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

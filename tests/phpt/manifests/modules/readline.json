@@ -10,8 +10,8 @@
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":1,
-  "scope":["extension visibility","READLINE_LIB constant","nonblocking readline false result","request-local history","history file read/write","readline_info defaults, ordering, get/set, and normalization","completion callback registration and invalid callback diagnostics","callback handler install/remove lifecycle","callback read/redisplay/new-line no-op safety","open_basedir history checks"],
-  "non_scope":["interactive terminal input","system readline/libedit binding","real completion invocation","callback dispatch on input","global readline process state","libedit-specific behavior"],
+  "scope":["extension visibility","READLINE_LIB constant","small backend boundary with non-TTY false result and TTY rustyline adapter","request-local history","history file read/write","readline_info defaults, ordering, get/set, and normalization","completion callback registration and invalid callback diagnostics","callback handler install/remove lifecycle","callback read/redisplay/new-line no-op safety","open_basedir history checks"],
+  "non_scope":["php-src interactive PHPT promotion","system readline/libedit binding","real completion invocation","callback dispatch on input","global readline process state","libedit-specific behavior"],
   "target_gates":["nix develop -c cargo test -p php_runtime readline -- --nocapture","nix develop -c cargo test -p php_std readline -- --nocapture","nix develop -c just phpt-dev-module MODULE=readline"],
-  "next_step":"A terminal-backed, nonblocking readline adapter is needed before promoting ext/readline/tests/readline_basic.phpt."
+  "next_step":"PHP/libedit-compatible interactive callback dispatch and terminal redisplay are needed before promoting ext/readline/tests/readline_basic.phpt."
 }

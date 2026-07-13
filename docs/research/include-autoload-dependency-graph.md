@@ -22,27 +22,25 @@ configuration input before it can affect execution.
 - `include expression -> likely target set`: include-path cache keys record the
   literal requested path, `include_path`, request current working directory, and
   calling file directory.
-- `file -> inode/mtime/content hash/version`: the runtime `IncludePathFileFingerprint`
-  now records length, modified timestamp in Unix nanos when available, readonly
-  bit, and — where the platform exposes it (Unix) — `inode` and `device`. The
-  whole struct is compared by equality, so an atomic replace or symlink swap
-  that preserves length+mtime still invalidates the cached resolution. On
-  platforms without filesystem identity both fields are `None`, which only
-  matches another `None` and never widens reuse (fail-closed). Content identity
-  exists at the compile-cache layer: `CompiledIncludeKey` carries a stable
-  FNV-1a `source_content_hash` computed from the source already in memory at
-  compile time (zero extra I/O). Probe-time (stat-based) fingerprints never
-  carry a content hash, so any future content-validated reuse treats their
-  absence as blocking — conservative by construction.
+- `file -> inode/mtime/content hash/version`: the runtime
+  `IncludePathFileFingerprint` records length, modified timestamp, readonly bit,
+  and, where available, inode, device, and change time. Resolution entries also
+  retain the selected candidate path and re-canonicalize it, so same-metadata
+  atomic replacements and symlink swaps invalidate the cached target. The
+  compile cache uses a separate opened-source identity: metadata is sampled from
+  one file handle before and after reading, and a stable FNV-1a hash covers the
+  exact bytes compiled. Mutable hits validate content for primary and dependency
+  files. Platforms without reliable generation identity fail closed to content
+  validation; they cannot opt into metadata-only reuse accidentally.
 - `directory -> version`: `IncludeDirectoryVersion` (mtime nanos + Unix
   inode/device, `None` fields only match `None`) is captured for the resolved
   file's parent directory on every resolution — in both the request-local
   include-path IC and the shared process include cache. Revalidation compares
   it and reports `directory_version_hits`/`directory_version_misses`,
-  counters only on the positive path: the comparison never affects whether a
-  positive hit is accepted. Phar entries carry no directory version (always a
-  miss). Directory versions are **consumed** by the shared cache's negative
-  include-path entries (below).
+  counters on the positive path. An immutable-mode compiled hit also consumes
+  the parent version as part of its metadata-only guard. Phar entries carry no
+  directory version (always a miss). Directory versions are also **consumed**
+  by the shared cache's negative include-path entries (below).
 - `missing include -> negative cache`: the shared include cache caches
   `E_PHP_VM_INCLUDE_MISSING` failures keyed by the full resolution key
   (path, include_path, request cwd, calling-file directory, allowed roots),
@@ -84,10 +82,11 @@ configuration input before it can affect execution.
   startup, operator-declared mode) into the shared include cache. The mode
   comes from `--deployment-mode dev|immutable` (config key
   `deployment_mode`), defaulting to `dev` = mutable, which keeps every
-  fingerprint-gated persistent reuse blocked. Metrics scrapes re-observe the
-  root and report `deployment_fingerprint_present/missing/stale` via
-  `phrust_server_deployment_fingerprint_*`. Metadata and counters only — no
-  cache decision consumes it yet.
+  fingerprint-gated metadata-only reuse blocked. An `immutable` declaration may
+  enable identity-only compiled hits while the root, resolved parent, and file
+  generation all remain current. Metrics scrapes re-observe the root and report
+  `deployment_fingerprint_present/missing/stale` via
+  `phrust_server_deployment_fingerprint_*`.
 - `failed lookup -> negative cache`: negative class-like lookup entries are
   cached only when no visible autoload side effects can be skipped: autoload is
   disabled, or autoload is enabled with an empty autoload callback registry.

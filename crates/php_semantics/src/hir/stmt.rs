@@ -95,7 +95,7 @@ pub enum HirStmtKind {
     /// Global statement.
     Global { variables: Vec<ExprId> },
     /// Static local statement.
-    Static { variables: Vec<ExprId> },
+    Static { locals: Vec<HirStaticLocal> },
     /// Unset statement.
     Unset { expressions: Vec<ExprId> },
     /// Echo statement.
@@ -139,6 +139,15 @@ pub struct HirCatchClause {
     pub variable: Option<String>,
     /// Catch body.
     pub body: Vec<StmtId>,
+}
+
+/// One static-local declaration with its optional initializer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HirStaticLocal {
+    /// Declared variable expression.
+    pub variable: ExprId,
+    /// Initializer expression after `=`, when present.
+    pub initializer: Option<ExprId>,
 }
 
 impl HirStmtKind {

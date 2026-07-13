@@ -51,6 +51,14 @@ var_dump($prepared !== false);
 $executed = pg_execute($conn, "phrust_pgsql_live", [4]);
 var_dump(pg_fetch_result($executed, 0, 0));
 
+$paramed = pg_query_params($conn, 'SELECT $1::bigint AS five, $2::text AS label', [5, "five"]);
+var_dump(pg_fetch_assoc($paramed));
+var_dump(pg_result_error($paramed));
+
+$pconn = pg_pconnect($conninfo);
+var_dump($pconn !== false);
+var_dump(pg_close($pconn));
+
 var_dump(pg_escape_string($conn, "a'b"));
 var_dump(pg_escape_literal($conn, "a'b"));
 var_dump(pg_escape_identifier($conn, 'a"b'));
@@ -69,6 +77,15 @@ array(2) {
 int(3)
 bool(true)
 int(4)
+array(2) {
+  ["five"]=>
+  int(5)
+  ["label"]=>
+  string(4) "five"
+}
+string(0) ""
+bool(true)
+bool(true)
 string(4) "a''b"
 string(6) "'a''b'"
 string(6) ""a""b""

@@ -4,7 +4,7 @@ Current focused coverage:
 
 - `sysvshm` extension visibility, `SysvSharedMemory` class visibility, and
   function registration.
-- Request-local shared variable segments from `shm_attach()`.
+- Host System V shared memory segments from `shm_attach()`.
 - Variable key behavior for `shm_has_var()`, `shm_put_var()`,
   `shm_get_var()`, and `shm_remove_var()`.
 - `shm_attach()` argument validation, object display, storage capacity warnings,
@@ -26,9 +26,11 @@ PHP 8.5.7 rows:
 - `ext/sysvshm/tests/serialize_exception.phpt`
 - `ext/sysvshm/tests/shutdown_crash_0.phpt`
 
-This slice uses deterministic request-local storage for isolated tests.
-The current full upstream target sweep is 10 PASS / 0 FAIL / 2 SKIP. Host-local
-skips are `bug72858.phpt` and `shm_get_var_leak.phpt`.
+This slice uses host System V shared memory through `shmget()`, `shmat()`,
+`shmdt()`, and `shmctl(IPC_RMID)` with a phrust-owned serialized variable table
+inside the mapped segment. The current full upstream target sweep is 10 PASS /
+0 FAIL / 2 SKIP. Host-local skips are `bug72858.phpt` and
+`shm_get_var_leak.phpt`.
 
 Focused gate:
 

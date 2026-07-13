@@ -1,6 +1,6 @@
 # Performance Numeric-String Classification Cache
 
-Work item adds a conservative runtime cache under the existing
+The performance layer provides a conservative runtime cache under the existing
 numeric-string classifier. The raw classifier remains the source of truth; the
 cache stores only classification results, never diagnostics or converted
 operation results.

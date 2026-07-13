@@ -278,6 +278,14 @@ impl SqliteState {
         }
     }
 
+    /// Reports whether SQLite currently has an open transaction.
+    #[must_use]
+    pub fn in_transaction(&self, id: i64) -> Option<bool> {
+        self.connections
+            .get(&id)
+            .map(|connection| !connection.connection.is_autocommit())
+    }
+
     /// Fetches one row from a materialized result set.
     pub fn fetch_array(&mut self, id: i64, mode: i64) -> Value {
         let Some(result) = self.results.get_mut(&id) else {
@@ -470,7 +478,26 @@ mod tests {
         assert_eq!(state.last_insert_rowid(db), Some(1));
         assert_eq!(state.changes(db), Some(1));
         assert!(state.busy_timeout(db, 25));
+        assert_eq!(state.in_transaction(db), Some(false));
+        assert!(state.exec(db, "BEGIN"));
+        assert_eq!(state.in_transaction(db), Some(true));
+        assert!(state.exec(db, "ROLLBACK"));
+        assert_eq!(state.in_transaction(db), Some(false));
         assert_eq!(super::escape_string("can't"), "can''t");
         assert!(state.close(db));
+    }
+
+    #[test]
+    fn pdo_sqlite_state_tracks_transactions() {
+        let mut state = SqliteState::default();
+        let db = state
+            .open(":memory:", SQLITE3_OPEN_READWRITE | SQLITE3_OPEN_CREATE)
+            .expect("open");
+
+        assert_eq!(state.in_transaction(db), Some(false));
+        assert!(state.exec(db, "BEGIN"));
+        assert_eq!(state.in_transaction(db), Some(true));
+        assert!(state.exec(db, "COMMIT"));
+        assert_eq!(state.in_transaction(db), Some(false));
     }
 }

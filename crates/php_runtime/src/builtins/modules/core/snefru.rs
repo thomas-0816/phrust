@@ -42,8 +42,9 @@ impl SnefruContext {
         }
 
         while input.len() >= SNEFRU_BLOCK_SIZE {
-            let block = input[..SNEFRU_BLOCK_SIZE].try_into().expect("block sized");
-            self.transform(block);
+            let mut block = [0_u8; SNEFRU_BLOCK_SIZE];
+            block.copy_from_slice(&input[..SNEFRU_BLOCK_SIZE]);
+            self.transform(&block);
             input = &input[SNEFRU_BLOCK_SIZE..];
         }
 
@@ -71,7 +72,9 @@ impl SnefruContext {
 
     fn transform(&mut self, input: &[u8; SNEFRU_BLOCK_SIZE]) {
         for (slot, chunk) in self.state[8..].iter_mut().zip(input.chunks_exact(4)) {
-            *slot = u32::from_be_bytes(chunk.try_into().expect("u32 sized"));
+            let mut bytes = [0_u8; 4];
+            bytes.copy_from_slice(chunk);
+            *slot = u32::from_be_bytes(bytes);
         }
         snefru_rounds(&mut self.state);
         self.state[8..].fill(0);

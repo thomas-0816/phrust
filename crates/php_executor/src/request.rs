@@ -1,8 +1,10 @@
+use crate::composer_metadata::AutoloadCompilationResolver;
 use crate::engine_compat::EngineInput;
 use crate::input::PhpRequestExecutionInput;
 use php_runtime::api::{ErrorReporting, FilesystemCapabilities, RuntimeContext};
 use php_vm::api::IncludeLoader;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) fn include_loader_for(input: &EngineInput) -> Result<Option<IncludeLoader>, String> {
     let mut roots = Vec::new();
@@ -24,6 +26,9 @@ pub(crate) fn include_loader_for(input: &EngineInput) -> Result<Option<IncludeLo
         return Ok(None);
     }
     IncludeLoader::new(roots)
+        .map(|loader| {
+            loader.with_compilation_dependency_resolver(Arc::new(AutoloadCompilationResolver))
+        })
         .map(Some)
         .map_err(|error| error.render_message())
 }
@@ -48,6 +53,9 @@ pub(crate) fn include_loader_for_request(
         return Ok(None);
     }
     IncludeLoader::new(roots)
+        .map(|loader| {
+            loader.with_compilation_dependency_resolver(Arc::new(AutoloadCompilationResolver))
+        })
         .map(Some)
         .map_err(|error| error.render_message())
 }

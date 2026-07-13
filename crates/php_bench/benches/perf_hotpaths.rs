@@ -1,13 +1,33 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use php_executor::{ExecutorIncludeCompiler, PhpCompileInput, PhpExecutor};
+use php_ir::ids::{BlockId, ClassId, FileId, FunctionId, InstrId};
 use php_ir::{LoweringOptions, lower_frontend_result};
 use php_lexer::{LexerConfig, lex_all};
-use php_runtime::api::{ArrayKey, PhpArray, PhpString, Value};
-use php_runtime::builtins::string_intrinsics;
+use php_optimizer::OptimizationLevel;
+use php_runtime::api::{
+    ArrayKey, BuiltinContext, BuiltinRegistry, OutputBuffer, PhpArray, PhpString,
+    RuntimeSourceSpan, Value,
+};
+use php_runtime::experimental::builtin_intrinsics::string_intrinsics;
 use php_semantics::analyze_source;
 use php_source::byte_kernel;
 use php_syntax::parse_source_file;
-use php_vm::api::{CompiledUnit, InlineCacheMode, QuickeningMode, Vm, VmOptions};
-use std::time::Duration;
+use php_vm::api::{
+    CompiledUnit, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache, IncludeLoader,
+    InlineCacheMode, QuickeningMode, Vm, VmOptions,
+};
+use php_vm::experimental::{
+    CallReferenceMask, FunctionCallCacheTarget, FunctionCallShape, InlineCacheKind,
+    InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget, MethodCallGuardMetadata,
+    MethodCallResolvedTarget, MethodCallShape, PropertyAssignCacheTarget,
+    PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget, PropertyFetchCacheTarget,
+    PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
+};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const FRONTEND_SOURCE: &str = r#"<?php
 function perf_add($a, $b) {
@@ -67,6 +87,18 @@ for ($i = 0; $i < 48; $i++) {
 echo $sum;
 "#;
 
+const VM_BUILTIN_MIX_SOURCE: &str = r#"<?php
+$sum = 0;
+for ($i = 0; $i < 64; $i++) {
+    $text = trim(strtolower('  WordPress-Plugin-Route  '));
+    $parts = explode('-', $text);
+    $sum += strlen($text) + count($parts);
+    $sum += function_exists('strlen') ? 1 : 0;
+    $sum += defined('PHP_VERSION') ? 1 : 0;
+}
+echo $sum;
+"#;
+
 fn configured_criterion() -> Criterion {
     Criterion::default()
         .sample_size(10)
@@ -107,6 +139,139 @@ fn execute_unit(unit: &CompiledUnit) {
     black_box(result.output);
 }
 
+struct IncludeBenchmarkFixture {
+    root: PathBuf,
+}
+
+impl IncludeBenchmarkFixture {
+    fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "phrust-include-bench-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos()),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create include benchmark root");
+        std::fs::write(
+            root.join("lib.php"),
+            "<?php function include_benchmark_target($value) { return $value + 1; }\n",
+        )
+        .expect("write include benchmark source");
+        std::fs::write(
+            root.join("Registry.php"),
+            "<?php namespace Bench; use Bench\\Traits\\SharedTrait; class Registry { use SharedTrait; }\n",
+        )
+        .expect("write multi-file include benchmark root");
+        std::fs::create_dir_all(root.join("Traits"))
+            .expect("create multi-file include benchmark dependency directory");
+        std::fs::write(
+            root.join("Traits/SharedTrait.php"),
+            "<?php namespace Bench\\Traits; trait SharedTrait { private $value = 1; }\n",
+        )
+        .expect("write multi-file include benchmark dependency");
+        Self { root }
+    }
+}
+
+impl Drop for IncludeBenchmarkFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn bench_include_cache_identity(c: &mut Criterion) {
+    let fixture = IncludeBenchmarkFixture::new();
+    let loader = IncludeLoader::for_root(&fixture.root).expect("include loader");
+    let compiler = ExecutorIncludeCompiler::new(OptimizationLevel::O0);
+
+    let mutable_cache = IncludeCache::new(4);
+    let mutable_resolved = mutable_cache
+        .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+        .expect("resolve mutable include");
+    mutable_cache
+        .get_or_compile_include(&loader, &mutable_resolved, &compiler)
+        .expect("warm mutable include");
+    c.bench_function("performance/include_cache_hit_mutable_content", |b| {
+        b.iter(|| {
+            black_box(
+                mutable_cache
+                    .get_or_compile_include(
+                        black_box(&loader),
+                        black_box(&mutable_resolved),
+                        &compiler,
+                    )
+                    .expect("mutable include hit"),
+            );
+        });
+    });
+    let mutable_stats = mutable_cache.cache_stats();
+
+    let immutable_cache = IncludeCache::new(4);
+    immutable_cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+        &fixture.root,
+        DeploymentRootMode::ImmutableDeclared,
+    ));
+    let immutable_resolved = immutable_cache
+        .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+        .expect("resolve immutable include");
+    immutable_cache
+        .get_or_compile_include(&loader, &immutable_resolved, &compiler)
+        .expect("warm immutable include");
+    c.bench_function("performance/include_cache_hit_immutable_identity", |b| {
+        b.iter(|| {
+            black_box(
+                immutable_cache
+                    .get_or_compile_include(
+                        black_box(&loader),
+                        black_box(&immutable_resolved),
+                        &compiler,
+                    )
+                    .expect("immutable include hit"),
+            );
+        });
+    });
+    let immutable_stats = immutable_cache.cache_stats();
+
+    eprintln!(
+        "include-cache counters: mutable validations={} bytes_hashed={} identity_hits={}; immutable validations={} bytes_hashed={} identity_hits={}",
+        mutable_stats.content_validations,
+        mutable_stats.source_bytes_hashed,
+        mutable_stats.identity_only_hits,
+        immutable_stats.content_validations,
+        immutable_stats.source_bytes_hashed,
+        immutable_stats.identity_only_hits,
+    );
+}
+
+fn bench_multi_file_include_compile(c: &mut Criterion) {
+    let fixture = IncludeBenchmarkFixture::new();
+    let loader = IncludeLoader::for_root(&fixture.root)
+        .expect("include loader")
+        .with_compilation_dependency("Bench\\Traits\\SharedTrait", "Traits/SharedTrait.php");
+    let resolved = IncludeCache::new(1)
+        .resolve_with_include_path(&loader, None, "Registry.php", &[], Some(&fixture.root))
+        .expect("resolve multi-file include");
+    let compiler = ExecutorIncludeCompiler::new(OptimizationLevel::O0);
+
+    c.bench_function("performance/multi_file_trait_compile", |b| {
+        b.iter(|| {
+            let cache = IncludeCache::new(1);
+            black_box(
+                cache
+                    .get_or_compile_include(
+                        black_box(&loader),
+                        black_box(&resolved),
+                        &compiler,
+                    )
+                    .expect("compile multi-file include"),
+            );
+        });
+    });
+}
+
 fn bench_frontend(c: &mut Criterion) {
     let parser_source = FRONTEND_SOURCE.repeat(16);
     c.bench_function("performance/lexer_parser_smoke", |b| {
@@ -133,10 +298,89 @@ fn bench_frontend(c: &mut Criterion) {
     });
 }
 
+fn bench_executor_compile_timing_collector(c: &mut Criterion) {
+    let executor = PhpExecutor::new();
+    let input = PhpCompileInput {
+        source: FRONTEND_SOURCE.to_owned(),
+        source_path: "compile-timing-benchmark.php".to_owned(),
+        optimization_level: Some(OptimizationLevel::O2),
+    };
+    let mut group = c.benchmark_group("performance/executor_compile_timing");
+    group.bench_function("disabled", |b| {
+        b.iter(|| {
+            black_box(
+                executor
+                    .compile_source(black_box(input.clone()))
+                    .expect("untimed benchmark compilation"),
+            );
+        });
+    });
+    group.bench_function("enabled", |b| {
+        b.iter(|| {
+            black_box(
+                executor
+                    .compile_source_with_timings(black_box(input.clone()))
+                    .expect("timed benchmark compilation"),
+            );
+        });
+    });
+    group.finish();
+}
+
+fn bench_compiled_unit_artifact(c: &mut Criterion) {
+    let frontend = analyze_source(FRONTEND_SOURCE);
+    let lowered = lower_frontend_result(
+        &frontend,
+        LoweringOptions {
+            source_text: Some(FRONTEND_SOURCE.to_owned()),
+            ..LoweringOptions::default()
+        },
+    );
+    let retained_source = Arc::<str>::from(FRONTEND_SOURCE);
+    let compiled = CompiledUnit::try_with_sources(
+        lowered.unit.clone(),
+        [(FileId::new(0), Arc::clone(&retained_source))],
+    )
+    .expect("benchmark source file ID");
+    let stats = compiled.layout_stats();
+    eprintln!(
+        "compiled-unit ownership: source_files={} retained_source_bytes={} canonical_classes={} duplicated_classes={} indexed_symbols={} duplicated_symbol_name_bytes={}",
+        stats.retained_source_files,
+        stats.retained_source_bytes,
+        stats.canonical_classes,
+        stats.duplicated_classes,
+        stats.indexed_symbols,
+        stats.duplicated_symbol_name_bytes,
+    );
+
+    c.bench_function("performance/compiled_unit_construction", |b| {
+        b.iter_batched(
+            || lowered.unit.clone(),
+            |unit| {
+                black_box(
+                    CompiledUnit::try_with_sources(
+                        unit,
+                        [(FileId::new(0), Arc::clone(&retained_source))],
+                    )
+                    .expect("benchmark source file ID"),
+                );
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    c.bench_function("performance/compiled_unit_warmed_symbol_lookup", |b| {
+        b.iter(|| {
+            black_box(compiled.lookup_function(black_box("perf_add")));
+            black_box(compiled.lookup_class(black_box("perfbox")));
+        });
+    });
+}
+
 fn bench_vm(c: &mut Criterion) {
     let loop_unit = compile_unit(VM_LOOP_SOURCE);
     let call_unit = compile_unit(VM_CALL_SOURCE);
     let property_unit = compile_unit(VM_PROPERTY_SOURCE);
+    let builtin_mix_unit = compile_unit(VM_BUILTIN_MIX_SOURCE);
 
     c.bench_function("performance/vm_dispatch_micro_loop", |b| {
         b.iter(|| execute_unit(black_box(&loop_unit)));
@@ -147,9 +391,304 @@ fn bench_vm(c: &mut Criterion) {
     c.bench_function("performance/property_lookup", |b| {
         b.iter(|| execute_unit(black_box(&property_unit)));
     });
+    c.bench_function("performance/builtin_context_arginfo_mix", |b| {
+        b.iter(|| execute_unit(black_box(&builtin_mix_unit)));
+    });
+}
+
+fn bench_inline_cache_lookup(c: &mut Criterion) {
+    let name = PhpString::intern(b"perf_target");
+    let shape = FunctionCallShape {
+        arity: 2,
+        named_arguments: Vec::new(),
+        by_ref_arguments: CallReferenceMask::default(),
+    };
+    let target = FunctionCallCacheTarget::CurrentUnit {
+        unit_identity: 7,
+        function: FunctionId::new(7),
+    };
+    let epoch = InvalidationEpoch::new(3);
+    let function = FunctionId::new(1);
+    let block = BlockId::new(2);
+    let instruction = InstrId::new(3);
+
+    let mut dense_table = InlineCacheTable::default();
+    let (id, _) = dense_table.bind_slot(
+        11,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::FunctionCall,
+    );
+    dense_table.install_function_call_by_id(
+        id,
+        &name,
+        epoch,
+        shape.clone(),
+        None,
+        target.clone(),
+    );
+    c.bench_function("performance/inline_cache_function_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(dense_table.lookup_function_call_by_id(
+                black_box(id),
+                black_box(&name),
+                black_box(epoch),
+                black_box(&shape),
+                None,
+            ));
+        });
+    });
+
+    let mut coordinate_table = InlineCacheTable::default();
+    coordinate_table.observe_slot(
+        11,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::FunctionCall,
+    );
+    coordinate_table.install_function_call(
+        11,
+        function,
+        block,
+        instruction,
+        &name,
+        epoch,
+        shape.clone(),
+        None,
+        target,
+    );
+    c.bench_function("performance/inline_cache_function_hit_coordinate", |b| {
+        b.iter(|| {
+            black_box(coordinate_table.lookup_function_call(
+                black_box(11),
+                black_box(function),
+                black_box(block),
+                black_box(instruction),
+                black_box(&name),
+                black_box(epoch),
+                black_box(&shape),
+                None,
+            ));
+        });
+    });
+
+    let mut method_table = InlineCacheTable::default();
+    let (method_id, _) = method_table.bind_slot(
+        12,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::MethodCall,
+    );
+    method_table.install_method_call_by_id(
+        method_id,
+        "run",
+        "perfbox",
+        None,
+        epoch,
+        MethodCallCacheTarget::CurrentUnit {
+            target: Rc::new(MethodCallResolvedTarget {
+                declaring_class: "PerfBox".to_owned(),
+                function: FunctionId::new(8),
+                guard: MethodCallGuardMetadata {
+                    receiver_class_id: ClassId::new(1),
+                    class_layout_epoch: epoch.raw(),
+                    method_table_epoch: epoch.raw(),
+                    method_slot_index: Some(0),
+                    method_is_final: false,
+                    method_is_private: false,
+                    method_is_static: false,
+                    receiver_has_override: false,
+                    argument_shape: MethodCallShape {
+                        arity: 0,
+                        named_arguments: Vec::new(),
+                        by_ref_arguments: CallReferenceMask::default(),
+                    },
+                    by_ref_compatible: true,
+                    has_magic_call: false,
+                },
+                route: None,
+            }),
+        },
+    );
+    c.bench_function("performance/inline_cache_method_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(method_table.lookup_method_call_by_id(
+                black_box(method_id),
+                black_box("run"),
+                black_box("perfbox"),
+                None,
+                black_box(epoch),
+            ));
+        });
+    });
+
+    let mut property_fetch_table = InlineCacheTable::default();
+    let (property_fetch_id, _) = property_fetch_table.bind_slot(
+        13,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::PropertyFetch,
+    );
+    property_fetch_table.install_property_fetch_by_id(
+        property_fetch_id,
+        "value",
+        "perfbox",
+        None,
+        epoch,
+        PropertyFetchCacheTarget::CurrentUnit {
+            target: Arc::new(PropertyFetchResolvedTarget {
+                receiver_class: "perfbox".to_owned(),
+                declaring_class: "PerfBox".to_owned(),
+                property: "value".to_owned(),
+                storage_name: "value".to_owned(),
+                layout: PropertyFetchLayoutMetadata {
+                    class_id: 1,
+                    layout_version: epoch.raw(),
+                    property_slot_index: Some(0),
+                    visibility_context: None,
+                    typed_property_initialized: true,
+                    has_property_hooks: false,
+                    has_magic_get: false,
+                    dynamic_property_fallback: false,
+                },
+                object_layout_epoch: 1,
+                declared_slot: Some(0),
+            }),
+        },
+    );
+    c.bench_function("performance/inline_cache_property_fetch_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(property_fetch_table.lookup_property_fetch_by_id(
+                black_box(property_fetch_id),
+                black_box("value"),
+                black_box("perfbox"),
+                None,
+                black_box(epoch),
+            ));
+        });
+    });
+
+    let mut property_assign_table = InlineCacheTable::default();
+    let (property_assign_id, _) = property_assign_table.bind_slot(
+        14,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::PropertyAssign,
+    );
+    property_assign_table.install_property_assign_by_id(
+        property_assign_id,
+        "value",
+        "perfbox",
+        None,
+        epoch,
+        PropertyAssignCacheTarget::CurrentUnit {
+            target: Arc::new(PropertyAssignResolvedTarget {
+                receiver_class: "perfbox".to_owned(),
+                declaring_class: "PerfBox".to_owned(),
+                property: "value".to_owned(),
+                storage_name: "value".to_owned(),
+                layout: PropertyAssignLayoutMetadata {
+                    class_id: 1,
+                    layout_version: epoch.raw(),
+                    property_slot_index: Some(0),
+                    visibility_context: None,
+                    typed_property: false,
+                    readonly_or_init_only: false,
+                    reference_slot: false,
+                    has_property_hooks: false,
+                    has_magic_set: false,
+                    dynamic_property_fallback: false,
+                },
+                object_layout_epoch: 1,
+                declared_slot: Some(0),
+                slot_write_eligible: true,
+            }),
+        },
+    );
+    c.bench_function("performance/inline_cache_property_assign_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(property_assign_table.lookup_property_assign_by_id(
+                black_box(property_assign_id),
+                black_box("value"),
+                black_box("perfbox"),
+                None,
+                black_box(epoch),
+            ));
+        });
+    });
+}
+
+fn dynamic_symbol_source(symbols: usize) -> String {
+    let mut source = String::from("<?php\nif (true) {\n");
+    for index in 0..symbols {
+        source.push_str(&format!("function dynamic_symbol_{index}() {{ return {index}; }}\n"));
+    }
+    source.push_str(&format!(
+        "}}\necho dynamic_symbol_0() + dynamic_symbol_{}();\n",
+        symbols - 1
+    ));
+    source
+}
+
+fn bench_dynamic_symbols(c: &mut Criterion) {
+    let units = [128usize, 1_024, 4_096]
+        .into_iter()
+        .map(|symbols| (symbols, compile_unit(&dynamic_symbol_source(symbols))))
+        .collect::<Vec<_>>();
+    let mut group = c.benchmark_group("performance/dynamic_symbol_registration_lookup");
+    for (symbols, unit) in &units {
+        group.bench_with_input(BenchmarkId::from_parameter(symbols), unit, |b, unit| {
+            b.iter(|| execute_unit(black_box(unit)));
+        });
+    }
+    group.finish();
+}
+
+fn mixed_string_array(size: i64) -> PhpArray {
+    let mut array = PhpArray::new();
+    for index in 0..size {
+        array.insert(
+            ArrayKey::String(PhpString::from_bytes(format!("key-{index}").into_bytes())),
+            Value::Int(index),
+        );
+    }
+    array
+}
+
+fn mixed_key(index: i64) -> ArrayKey {
+    ArrayKey::String(PhpString::from_bytes(
+        format!("key-{index}").into_bytes(),
+    ))
 }
 
 fn bench_runtime(c: &mut Criterion) {
+    let registry = BuiltinRegistry::new();
+    let json_last_error = registry
+        .get("json_last_error")
+        .expect("JSON builtin is registered");
+    c.bench_function("performance/builtin_registry_lookup_hit", |b| {
+        b.iter(|| black_box(registry.get(black_box("json_last_error"))));
+    });
+    c.bench_function("performance/builtin_registry_lookup_miss", |b| {
+        b.iter(|| black_box(registry.get(black_box("not_a_php_builtin"))));
+    });
+    let mut output = OutputBuffer::new();
+    let mut context = BuiltinContext::new(&mut output);
+    c.bench_function("performance/request_state_json_dispatch", |b| {
+        b.iter(|| {
+            black_box((json_last_error.function())(
+                black_box(&mut context),
+                Vec::new(),
+                RuntimeSourceSpan::default(),
+            ))
+        });
+    });
+
     let packed = PhpArray::from_packed((0..128).map(Value::Int).collect());
     c.bench_function("performance/packed_array_access", |b| {
         b.iter(|| {
@@ -162,6 +701,9 @@ fn bench_runtime(c: &mut Criterion) {
             black_box(sum);
         });
     });
+    c.bench_function("performance/packed_array_iteration", |b| {
+        b.iter(|| black_box(packed.iter().count()));
+    });
 
     let mut mixed = PhpArray::new();
     for index in 0..64 {
@@ -171,21 +713,87 @@ fn bench_runtime(c: &mut Criterion) {
             Value::Int(index),
         );
     }
-    let mixed_key = ArrayKey::String(PhpString::from("key37"));
+    let mixed_access_key = ArrayKey::String(PhpString::from("key37"));
     c.bench_function("performance/mixed_array_access", |b| {
         b.iter(|| {
             let int_value = mixed.get(black_box(&ArrayKey::Int(37)));
-            let string_value = mixed.get(black_box(&mixed_key));
+            let string_value = mixed.get(black_box(&mixed_access_key));
             black_box((int_value, string_value));
         });
     });
 
+    let mut delete_group = c.benchmark_group("performance/mixed_array_delete");
+    for size in [128i64, 1_024, 4_096] {
+        delete_group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+            b.iter_batched(
+                || mixed_string_array(*size),
+                |mut array| {
+                    for step in 0..(*size / 2) {
+                        let index = (step * 73) % *size;
+                        black_box(array.remove(&mixed_key(index)));
+                    }
+                    black_box(array);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    delete_group.finish();
+
+    let mut reinsert_group = c.benchmark_group("performance/mixed_array_delete_reinsert");
+    for size in [128i64, 1_024, 4_096] {
+        reinsert_group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+            b.iter_batched(
+                || mixed_string_array(*size),
+                |mut array| {
+                    for step in 0..(*size / 4) {
+                        let index = (step * 73) % *size;
+                        let key = mixed_key(index);
+                        black_box(array.remove(&key));
+                        array.insert(key, Value::Int(index + *size));
+                    }
+                    black_box(array);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    reinsert_group.finish();
+
+    c.bench_function("performance/mixed_array_compaction_threshold", |b| {
+        b.iter_batched(
+            || {
+                let mut array = mixed_string_array(4_096);
+                for step in 0..2_047 {
+                    array.remove(&mixed_key((step * 73) % 4_096));
+                }
+                array
+            },
+            |mut array| {
+                black_box(array.remove(&mixed_key((2_047 * 73) % 4_096)));
+                black_box(array);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let mut tombstones = mixed_string_array(4_096);
+    for index in (0..4_096).step_by(3) {
+        tombstones.remove(&mixed_key(index));
+    }
+    c.bench_function("performance/mixed_array_iterate_tombstones", |b| {
+        b.iter(|| black_box(tombstones.iter().count()));
+    });
+
     c.bench_function("performance/string_concat_builder", |b| {
         b.iter(|| {
-            let mut value = PhpString::from_bytes(Vec::with_capacity(384));
+            // Storage is fixed-length now; growth accumulates in a Vec and
+            // builds the string once, matching how the engine concatenates.
+            let mut builder = Vec::with_capacity(384);
             for _ in 0..64 {
-                value.bytes_mut().extend_from_slice(black_box(b"abc"));
+                builder.extend_from_slice(black_box(b"abc"));
             }
+            let value = PhpString::from_bytes(builder);
             black_box(value.len());
         });
     });
@@ -336,6 +944,6 @@ fn bench_string_intrinsics(c: &mut Criterion) {
 criterion_group! {
     name = perf_hotpaths;
     config = configured_criterion();
-    targets = bench_frontend, bench_vm, bench_runtime, bench_byte_kernels, bench_string_intrinsics
+    targets = bench_frontend, bench_executor_compile_timing_collector, bench_compiled_unit_artifact, bench_vm, bench_inline_cache_lookup, bench_dynamic_symbols, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
 }
 criterion_main!(perf_hotpaths);

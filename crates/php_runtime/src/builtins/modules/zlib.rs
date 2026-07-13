@@ -742,7 +742,7 @@ fn zlib_context_object(class_name: &str, encoding: i64) -> ObjectRef {
 
 fn zlib_context_class(class_name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(class_name),
+        name: normalize_class_name(class_name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

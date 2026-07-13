@@ -1,0 +1,21 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "PDO_PGSql_Ext"
+    },
+    {
+      "kind": "class",
+      "name": "Pdo\\Pgsql"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "pdo_pgsql",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

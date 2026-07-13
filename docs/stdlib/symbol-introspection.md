@@ -2,12 +2,12 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds VM-backed symbol introspection for framework and Composer
+The standard library provides VM-backed symbol introspection for framework and Composer
 checks. The non-VM builtin registry advertises the functions, but execution is
 routed through the VM because these APIs need user function tables, class
 tables, constants, object metadata, and SPL autoload state.
 
-Work item extends the same VM-owned surface with object/class inspection,
+The standard library extends the same VM-owned surface with object/class inspection,
 callable invocation helpers, and current-call argument access.
 
 Implemented functions:

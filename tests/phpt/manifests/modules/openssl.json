@@ -3,15 +3,15 @@
   "module":"openssl",
   "priority":"application crypto/TLS helper MVP",
   "selected_manifest":"tests/phpt/manifests/modules/openssl.selected.jsonl",
-  "corpus_count":208,
-  "selected_count":12,
-  "pass_count":12,
+  "corpus_count":210,
+  "selected_count":14,
+  "pass_count":14,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":196,
-  "scope":["openssl extension visibility","openssl_random_pseudo_bytes","openssl_digest backed by OpenSSL MessageDigest","openssl_get_md_methods","openssl_get_cipher_methods","openssl_cipher_iv_length","openssl_cipher_key_length","selected openssl_encrypt/decrypt AES-CBC behavior","AES-128-CBC aes128 alias","selected named argument handling for openssl_decrypt tag","selected openssl_encrypt warning and error queue behavior","selected openssl_error_string queue drain behavior","selected openssl_verify RSA/SHA256 PEM public-key behavior","OPENSSL_ALGO_MD5","OPENSSL_ALGO_SHA1","OPENSSL_ALGO_SHA224","OPENSSL_ALGO_SHA256","OPENSSL_ALGO_SHA384","OPENSSL_ALGO_SHA512","OPENSSL_RAW_DATA","OPENSSL_ZERO_PADDING","OPENSSL_DONT_ZERO_PAD_KEY"],
-  "non_scope":["certificate/key object model","AEAD cipher modes","OPENSSL_DONT_ZERO_PAD_KEY behavior beyond explicit false result and warning","signature generation parity","PSS padding verification","TLS stream transport","host OpenSSL configuration"],
+  "scope":["openssl extension visibility","openssl_random_pseudo_bytes","openssl_digest backed by OpenSSL MessageDigest","openssl_get_md_methods","openssl_get_cipher_methods","openssl_cipher_iv_length","openssl_cipher_key_length","selected openssl_encrypt/decrypt AES-CBC behavior","AES-128-CBC aes128 alias","selected named argument handling for openssl_decrypt tag","selected openssl_encrypt warning and error queue behavior","selected openssl_error_string queue drain behavior","selected openssl_verify RSA/SHA256 PEM public-key behavior","string-backed openssl_pkey_get_public and openssl_pkey_get_private behavior","openssl_pkey_new RSA key generation","openssl_pkey_export by-reference output","openssl_pkey_get_details selected bits/type/key fields","openssl_sign RSA/SHA256 behavior","selected AES-GCM encrypt/decrypt tag and AAD behavior","string-backed openssl_x509_read, openssl_x509_parse, openssl_x509_check_private_key, and openssl_x509_verify runtime coverage","OPENSSL_ALGO_MD5","OPENSSL_ALGO_SHA1","OPENSSL_ALGO_SHA224","OPENSSL_ALGO_SHA256","OPENSSL_ALGO_SHA384","OPENSSL_ALGO_SHA512","OPENSSL_RAW_DATA","OPENSSL_ZERO_PADDING","OPENSSL_DONT_ZERO_PAD_KEY"],
+  "non_scope":["full OpenSSLAsymmetricKey/OpenSSLCertificate object model","PKCS7/CMS/CSR APIs","OPENSSL_DONT_ZERO_PAD_KEY behavior beyond explicit false result and warning","signature generation parity beyond selected RSA digest behavior","PSS padding verification","TLS stream transport","host OpenSSL configuration"],
   "target_gates":["nix develop -c cargo test -p php_runtime openssl","nix develop -c just phpt-dev-module MODULE=openssl","nix develop -c just phpt-dev-module MODULE=closure.extensions"],
-  "next_step":"Promote certificate/key helpers, AEAD cipher modes, and key/signature parsing only with dependency-backed deterministic fixtures."
+  "next_step":"Promote PKCS7/CMS/CSR APIs and object-model parity only with dependency-backed deterministic fixtures."
 }

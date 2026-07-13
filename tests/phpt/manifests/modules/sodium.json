@@ -4,14 +4,14 @@
   "priority": "Real crypto sodium MVP",
   "selected_manifest": "tests/phpt/manifests/modules/sodium.selected.jsonl",
   "corpus_count": 30,
-  "selected_count": 4,
-  "pass_count": 4,
+  "selected_count": 6,
+  "pass_count": 6,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 26,
-  "scope": ["extension visibility", "SODIUM_LIBRARY_* version constants", "BLAKE2b generichash", "Ed25519 detached signatures", "hex/base64", "random key generation"],
-  "non_scope": ["libsodium FFI backend replacement", "Secretbox", "password hashing", "AEAD", "key exchange", "secure memory helpers", "increment/add/compare helpers", "stream APIs"],
+  "known_failure_count": 25,
+  "scope": ["extension visibility", "SODIUM_LIBRARY_* version constants", "BLAKE2b generichash", "Ed25519 detached signatures", "hex/base64", "libsodium initialization", "sodium utility helpers", "libsodium-backed key generation", "secretbox encryption/decryption", "box keypairs and sealed boxes", "AEAD encryption/decryption", "KDF derivation", "Argon2 password hashing", "scrypt password hashing"],
+  "non_scope": ["key exchange", "stream APIs"],
   "target_gates": ["nix develop -c cargo test -p php_runtime sodium", "nix develop -c cargo build -p php_vm_cli --bin phrust-php", "nix develop -c just phpt-dev-module MODULE=sodium", "nix develop -c just phpt-dev-module MODULE=closure.extensions"],
-  "next_step": "Replace the pure-Rust subset with a libsodium-backed implementation before promoting secretbox, pwhash, AEAD, kx, and memory-helper rows."
+  "next_step": "Continue libsodium-backed expansion with key exchange and stream APIs before promoting those upstream rows."
 }

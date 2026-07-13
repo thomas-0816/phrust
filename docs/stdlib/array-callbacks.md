@@ -1,6 +1,6 @@
 # Standard library Array Callback Functions
 
-Work item implements the PHP-visible array callback helper MVP on top of the
+The standard library implements the PHP-visible array callback helper MVP on top of the
 existing VM callable dispatch path:
 
 - `array_map`

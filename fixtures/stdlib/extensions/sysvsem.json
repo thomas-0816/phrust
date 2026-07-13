@@ -1,0 +1,74 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "SysvSemaphore"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "sysvsem",
+        "source": "ext/sysvsem/sysvsem.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvsem"
+        }
+      ],
+      "name": "sem_acquire",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvsem",
+        "source": "ext/sysvsem/sysvsem.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvsem"
+        }
+      ],
+      "name": "sem_get",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvsem",
+        "source": "ext/sysvsem/sysvsem.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvsem"
+        }
+      ],
+      "name": "sem_release",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sysvsem",
+        "source": "ext/sysvsem/sysvsem.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sysvsem"
+        }
+      ],
+      "name": "sem_remove",
+      "visibility": "php"
+    }
+  ],
+  "name": "sysvsem",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

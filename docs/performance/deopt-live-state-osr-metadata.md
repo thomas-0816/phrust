@@ -1,7 +1,5 @@
 # Deopt, Live-State, and OSR Metadata Foundation
 
-Date: 2026-06-28.
-
 This document records the FPE-16 metadata foundation for optimized exits. It is
 report-only: it does not enable OSR, trace JIT execution, broad Cranelift
 execution, or a baseline-native runtime switch.

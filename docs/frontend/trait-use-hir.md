@@ -1,6 +1,6 @@
 # Trait Use HIR
 
-Work item adds a semantic HIR view for trait-use declarations and adaptation
+The semantic frontend provides a semantic HIR view for trait-use declarations and adaptation
 blocks without executing trait composition.
 
 `HirTraitUse` records:

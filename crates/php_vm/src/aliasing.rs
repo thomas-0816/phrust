@@ -1,6 +1,6 @@
 //! Reference alias-state classification for conservative optimization guards.
 
-use php_runtime::{Slot, Value};
+use php_runtime::api::{Slot, Value};
 
 /// Coarse PHP reference/aliasing state used to poison only unsafe fast paths.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -76,7 +76,7 @@ pub fn value_alias_state(value: &Value) -> AliasState {
 
 #[cfg(test)]
 mod tests {
-    use php_runtime::{PhpArray, ReferenceCell, Slot, Value};
+    use php_runtime::api::{PhpArray, ReferenceCell, Slot, Value};
 
     use super::{AliasState, alias_transition_key, slot_alias_state, value_alias_state};
 
@@ -99,7 +99,7 @@ mod tests {
 
         let mut array = PhpArray::new();
         array.insert(
-            php_runtime::ArrayKey::Int(0),
+            php_runtime::api::ArrayKey::Int(0),
             Value::Reference(cell.clone()),
         );
         assert_eq!(

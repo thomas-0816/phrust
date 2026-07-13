@@ -1,7 +1,7 @@
 //! Deterministic builtin registry assembled from module slices.
 
-use super::modules;
 use super::signatures::InternalFunction;
+use super::{generated, modules};
 use std::sync::OnceLock;
 
 /// Registered builtin entry.
@@ -13,7 +13,7 @@ pub struct BuiltinEntry {
 }
 
 impl BuiltinEntry {
-    pub(in crate::builtins) const fn new(
+    pub const fn new(
         name: &'static str,
         function: InternalFunction,
         compatibility: BuiltinCompatibility,
@@ -90,61 +90,59 @@ impl BuiltinRegistry {
     }
 }
 
-const MODULE_SLICES: &[&[BuiltinEntry]] = &[
-    modules::core::ENTRIES,
-    modules::arrays::ENTRIES,
-    modules::strings::ENTRIES,
-    modules::hash::ENTRIES,
-    modules::ctype::ENTRIES,
-    modules::calendar::ENTRIES,
-    modules::filter::ENTRIES,
-    modules::iconv::ENTRIES,
-    modules::sodium::ENTRIES,
-    modules::bcmath::ENTRIES,
-    modules::gmp::ENTRIES,
-    modules::apcu::ENTRIES,
-    modules::redis::ENTRIES,
-    modules::memcached::ENTRIES,
-    modules::igbinary::ENTRIES,
-    modules::msgpack::ENTRIES,
-    modules::soap::ENTRIES,
-    modules::ftp::ENTRIES,
-    modules::imap::ENTRIES,
-    modules::ldap::ENTRIES,
-    modules::ssh2::ENTRIES,
-    modules::sockets::ENTRIES,
-    modules::zip::ENTRIES,
-    modules::zlib::ENTRIES,
-    modules::fileinfo::ENTRIES,
-    modules::exif::ENTRIES,
-    modules::gd::ENTRIES,
-    modules::gettext::ENTRIES,
-    modules::math::ENTRIES,
-    modules::filesystem::ENTRIES,
-    modules::streams::ENTRIES,
-    modules::json::ENTRIES,
-    modules::mbstring::ENTRIES,
-    modules::intl::ENTRIES,
-    modules::xml::ENTRIES,
-    modules::simplexml::ENTRIES,
-    modules::curl::ENTRIES,
-    modules::openssl::ENTRIES,
-    modules::pcre::ENTRIES,
-    modules::pdo::ENTRIES,
-    modules::pgsql::ENTRIES,
-    modules::pcntl::ENTRIES,
-    modules::posix::ENTRIES,
-    modules::readline::ENTRIES,
-    modules::shmop::ENTRIES,
-    modules::sysvmsg::ENTRIES,
-    modules::sysvsem::ENTRIES,
-    modules::sysvshm::ENTRIES,
-    modules::mysqli::ENTRIES,
-    modules::opcache::ENTRIES,
-    modules::date::ENTRIES,
-    modules::session::ENTRIES,
-    modules::spl::ENTRIES,
-    modules::reflection::ENTRIES,
+const MODULE_SLICES: &[(&str, &[BuiltinEntry])] = &[
+    ("core", modules::core::ENTRIES),
+    ("arrays", modules::arrays::ENTRIES),
+    ("strings", modules::strings::ENTRIES),
+    ("hash", modules::hash::ENTRIES),
+    ("calendar", modules::calendar::ENTRIES),
+    ("filter", modules::filter::ENTRIES),
+    ("iconv", modules::iconv::ENTRIES),
+    ("sodium", modules::sodium::ENTRIES),
+    ("bcmath", modules::bcmath::ENTRIES),
+    ("gmp", modules::gmp::ENTRIES),
+    ("redis", modules::redis::ENTRIES),
+    ("memcached", modules::memcached::ENTRIES),
+    ("igbinary", modules::igbinary::ENTRIES),
+    ("msgpack", modules::msgpack::ENTRIES),
+    ("soap", modules::soap::ENTRIES),
+    ("ftp", modules::ftp::ENTRIES),
+    ("imap", modules::imap::ENTRIES),
+    ("ldap", modules::ldap::ENTRIES),
+    ("ssh2", modules::ssh2::ENTRIES),
+    ("sockets", modules::sockets::ENTRIES),
+    ("zip", modules::zip::ENTRIES),
+    ("zlib", modules::zlib::ENTRIES),
+    ("fileinfo", modules::fileinfo::ENTRIES),
+    ("exif", modules::exif::ENTRIES),
+    ("gd", modules::gd::ENTRIES),
+    ("gettext", modules::gettext::ENTRIES),
+    ("math", modules::math::ENTRIES),
+    ("filesystem", modules::filesystem::ENTRIES),
+    ("streams", modules::streams::ENTRIES),
+    ("json", modules::json::ENTRIES),
+    ("mbstring", modules::mbstring::ENTRIES),
+    ("intl", modules::intl::ENTRIES),
+    ("xml", modules::xml::ENTRIES),
+    ("simplexml", modules::simplexml::ENTRIES),
+    ("curl", modules::curl::ENTRIES),
+    ("openssl", modules::openssl::ENTRIES),
+    ("pcre", modules::pcre::ENTRIES),
+    ("pdo", modules::pdo::ENTRIES),
+    ("pgsql", modules::pgsql::ENTRIES),
+    ("pcntl", modules::pcntl::ENTRIES),
+    ("posix", modules::posix::ENTRIES),
+    ("readline", modules::readline::ENTRIES),
+    ("shmop", modules::shmop::ENTRIES),
+    ("sysvmsg", modules::sysvmsg::ENTRIES),
+    ("sysvsem", modules::sysvsem::ENTRIES),
+    ("sysvshm", modules::sysvshm::ENTRIES),
+    ("mysqli", modules::mysqli::ENTRIES),
+    ("opcache", modules::opcache::ENTRIES),
+    ("date", modules::date::ENTRIES),
+    ("session", modules::session::ENTRIES),
+    ("spl", modules::spl::ENTRIES),
+    ("reflection", modules::reflection::ENTRIES),
 ];
 
 static BUILTINS: OnceLock<Vec<BuiltinEntry>> = OnceLock::new();
@@ -152,9 +150,30 @@ static BUILTINS: OnceLock<Vec<BuiltinEntry>> = OnceLock::new();
 fn entries() -> &'static [BuiltinEntry] {
     BUILTINS
         .get_or_init(|| {
+            assert_eq!(
+                MODULE_SLICES.len(),
+                generated::MODULES.len(),
+                "generated builtin module count must match explicit pointer mappings"
+            );
+            for ((module_name, entries), generated_module) in
+                MODULE_SLICES.iter().zip(generated::MODULES)
+            {
+                assert_eq!(*module_name, generated_module.name);
+                let mut actual_names = entries.iter().map(|entry| entry.name).collect::<Vec<_>>();
+                actual_names.sort_unstable();
+                let expected_names = generated_module
+                    .functions
+                    .iter()
+                    .map(|entry| entry.name)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    actual_names, expected_names,
+                    "generated builtin descriptors must match explicit function pointers for {module_name}"
+                );
+            }
             let mut entries = MODULE_SLICES
                 .iter()
-                .flat_map(|entries| entries.iter().copied())
+                .flat_map(|(_, entries)| entries.iter().copied())
                 .collect::<Vec<_>>();
             entries.sort_unstable_by_key(|entry| entry.name);
             debug_assert!(
@@ -164,4 +183,28 @@ fn entries() -> &'static [BuiltinEntry] {
             entries
         })
         .as_slice()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generated;
+
+    #[test]
+    fn generated_registry_carries_representative_arginfo_signatures() {
+        let json = generated::MODULES
+            .iter()
+            .find(|module| module.name == "json")
+            .expect("json module is generated");
+        let encode = json
+            .functions
+            .iter()
+            .find(|function| function.name == "json_encode")
+            .expect("json_encode descriptor is generated");
+
+        assert_eq!(encode.extension, "json");
+        assert_eq!(encode.return_type, Some("string|false"));
+        assert_eq!(encode.required_parameters, 1);
+        assert_eq!(encode.total_parameters, 3);
+        assert!(!encode.variadic);
+    }
 }

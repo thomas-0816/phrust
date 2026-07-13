@@ -1,6 +1,6 @@
 # Performance Typecheck Fast Paths
 
-Work item adds conservative fast paths for runtime parameter, return, and
+The performance layer provides conservative fast paths for runtime parameter, return, and
 property type checks.
 
 ## Covered Checks

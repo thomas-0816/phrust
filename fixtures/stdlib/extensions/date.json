@@ -1,0 +1,357 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "DateInterval"
+    },
+    {
+      "kind": "class",
+      "name": "DateTime"
+    },
+    {
+      "kind": "class",
+      "name": "DateTimeImmutable"
+    },
+    {
+      "kind": "interface",
+      "name": "DateTimeInterface"
+    },
+    {
+      "kind": "class",
+      "name": "DateTimeZone"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "DATE_ATOM",
+      "value": {
+        "kind": "string",
+        "value": "Y-m-d\\TH:i:sP"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_COOKIE",
+      "value": {
+        "kind": "string",
+        "value": "l, d-M-Y H:i:s T"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_ISO8601",
+      "value": {
+        "kind": "string",
+        "value": "Y-m-d\\TH:i:sO"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_ISO8601_EXPANDED",
+      "value": {
+        "kind": "string",
+        "value": "X-m-d\\TH:i:sP"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC1036",
+      "value": {
+        "kind": "string",
+        "value": "D, d M y H:i:s O"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC1123",
+      "value": {
+        "kind": "string",
+        "value": "D, d M Y H:i:s O"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC2822",
+      "value": {
+        "kind": "string",
+        "value": "D, d M Y H:i:s O"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC3339",
+      "value": {
+        "kind": "string",
+        "value": "Y-m-d\\TH:i:sP"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC3339_EXTENDED",
+      "value": {
+        "kind": "string",
+        "value": "Y-m-d\\TH:i:s.vP"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC7231",
+      "value": {
+        "kind": "string",
+        "value": "D, d M Y H:i:s \\G\\M\\T"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC822",
+      "value": {
+        "kind": "string",
+        "value": "D, d M y H:i:s O"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RFC850",
+      "value": {
+        "kind": "string",
+        "value": "l, d-M-y H:i:s T"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_RSS",
+      "value": {
+        "kind": "string",
+        "value": "D, d M Y H:i:s O"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "DATE_W3C",
+      "value": {
+        "kind": "string",
+        "value": "Y-m-d\\TH:i:sP"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "checkdate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_create",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_create_immutable_from_format",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_default_timezone_get",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_default_timezone_set",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_diff",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_format",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "date_interval_format",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "gmdate",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "strtotime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "time",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "timezone_identifiers_list",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "timezone_name_get",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "timezone_open",
+      "visibility": "php"
+    }
+  ],
+  "name": "date",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

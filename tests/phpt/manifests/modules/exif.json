@@ -10,10 +10,10 @@
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":70,
-  "scope":["exif_imagetype","getimagesize","getimagesizefromstring","exif_read_data minimal JPEG/TIFF tags","exif_tagname selected IFD tag lookup","exif_thumbnail JPEG EXIF IFD1 stream extraction","empty and null-byte filename ValueError behavior","selected EXIF parser stability and crash/leak regression rows","multibyte exif_imagetype filename coverage"],
-  "non_scope":["mature EXIF/TIFF parser bridge","MakerNote parsing","GPS tag matrix","EXIF writing","full TIFF matrix","full corrupt-image warning parity","HEIF EXIF metadata","full EXIF FILE/COMPUTED/IFD section shape parity","full data wrapper support in exif_read_data"],
+  "scope":["exif_imagetype","getimagesize","getimagesizefromstring","exif_read_data/read_exif_data common metadata through kamadak-exif","exif_tagname selected IFD tag lookup","exif_thumbnail JPEG EXIF IFD1 stream extraction","empty and null-byte filename ValueError behavior","selected EXIF parser stability and crash/leak regression rows","multibyte exif_imagetype filename coverage"],
+  "non_scope":["full PHP EXIF FILE/COMPUTED/IFD section shape parity","MakerNote parsing","GPS tag matrix","EXIF writing","full TIFF matrix","full corrupt-image warning parity","full data wrapper support in exif_read_data"],
   "last_full_target_gate":"/private/tmp/phrust-phpt-exif-full-target-image-helpers",
   "last_full_target_summary":"93 upstream exif rows: PASS 22 / SKIP 1 / FAIL 70; selected manifest also includes one generated WordPress-facing metadata row and one local stream thumbnail row",
   "target_gates":["nix develop -c cargo test -p php_runtime exif","nix develop -c cargo build -p php_vm_cli --bin phrust-php","nix develop -c just phpt-dev-module MODULE=exif","nix develop -c just verify-stdlib"],
-  "next_step":"Replace the bounded hand parser with a mature EXIF/TIFF parser or libexif bridge, then promote the broader exif00x, GPS, corrupt-image, HEIF, data wrapper, and remaining thumbnail bug PHPT rows."
+  "next_step":"Widen the PHP array-shape layer on top of the parser backend, then promote broader exif00x, GPS, corrupt-image, data wrapper, and remaining thumbnail bug PHPT rows."
 }

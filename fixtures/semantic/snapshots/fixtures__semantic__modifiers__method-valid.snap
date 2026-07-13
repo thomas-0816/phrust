@@ -7,7 +7,7 @@ symbols:
   - class MethodValid
 hir_summary:
   statements: 5
-  expressions: 5
+  expressions: 6
   types: 3
   const_exprs: 1
   class_likes: 1

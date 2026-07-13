@@ -1,4 +1,4 @@
-//! Deterministic System V shared variable compatibility slice.
+//! System V shared variable compatibility slice.
 
 use super::core::{argument_type_error, argument_value_error, arity_error, int_arg};
 use crate::builtins::{
@@ -54,7 +54,20 @@ fn builtin_shm_attach(
         ));
     }
     let permissions = optional_int("shm_attach", &args, 2, 0o666)?;
-    let id = context.sysvshm_state().attach(key, size, permissions);
+    let id = match context.sysvshm_state().attach(key, size, permissions) {
+        Ok(id) => id,
+        Err(errno) => {
+            context.php_warning(
+                "E_PHP_RUNTIME_SYSVSHM_ATTACH",
+                format!(
+                    "shm_attach(): failed for key 0x{key:x}: {}",
+                    std::io::Error::from_raw_os_error(errno)
+                ),
+                _span,
+            );
+            return Ok(Value::Bool(false));
+        }
+    };
     let object = shm_object();
     context.sysvshm_state().bind_object(object.id(), id);
     Ok(Value::Object(object))
@@ -95,7 +108,8 @@ fn builtin_shm_put_var(
     expect_exact("shm_put_var", &args, 3)?;
     let shm_id = shm_handle(context, "shm_put_var", &args[0])?.segment_id;
     let key = int_arg("shm_put_var", &args[1])?;
-    let stored_size = serialized_value_size(&args[2])?;
+    let serialized = serialized_value(&args[2])?;
+    let stored_size = serialized.len();
     let Some(segment) = context.sysvshm_state().segment_mut(shm_id) else {
         return Ok(Value::Bool(false));
     };
@@ -107,8 +121,7 @@ fn builtin_shm_put_var(
         );
         return Ok(Value::Bool(false));
     }
-    segment.put(key, args[2].clone(), stored_size);
-    Ok(Value::Bool(true))
+    Ok(Value::Bool(segment.put_serialized(key, serialized)))
 }
 
 fn builtin_shm_get_var(
@@ -263,15 +276,15 @@ fn shm_object() -> ObjectRef {
     ObjectRef::new_with_display_name(&runtime_class(SHM_CLASS), SHM_CLASS)
 }
 
-fn serialized_value_size(value: &Value) -> Result<usize, BuiltinError> {
+fn serialized_value(value: &Value) -> Result<Vec<u8>, BuiltinError> {
     crate::serialize(value)
-        .map(|serialized| serialized.len())
+        .map(|serialized| serialized.as_bytes().to_vec())
         .map_err(|error| BuiltinError::new("E_PHP_RUNTIME_SYSVSHM_SERIALIZE", error.message()))
 }
 
 fn runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -290,13 +303,34 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
+    /// Reuses a bounded test-key namespace and removes any segment a crashed
+    /// previous run left behind. Process-derived keys leak one segment per
+    /// killed run and can exhaust the host's global shared-memory limit.
+    fn unique_sysvshm_key(offset: i64) -> i64 {
+        let key = 0x54ff_ff00_i64 | (offset & 0xff);
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        if let Ok(shm) = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(key)],
+            RuntimeSourceSpan::default(),
+        ) {
+            let _ = builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default());
+        }
+        key
+    }
+
     #[test]
     fn shared_memory_stores_variables_by_key_and_removes_segment() {
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
         let shm = builtin_shm_attach(
             &mut context,
-            vec![Value::Int(456), Value::Int(1024), Value::Int(0o600)],
+            vec![
+                Value::Int(unique_sysvshm_key(1)),
+                Value::Int(1024),
+                Value::Int(0o600),
+            ],
             RuntimeSourceSpan::default(),
         )
         .expect("attach");
@@ -341,15 +375,16 @@ mod tests {
         let mut context = BuiltinContext::new(&mut output);
         let shm = builtin_shm_attach(
             &mut context,
-            vec![Value::Int(111), Value::Int(1024)],
+            vec![Value::Int(unique_sysvshm_key(2)), Value::Int(1024)],
             RuntimeSourceSpan::default(),
         )
         .expect("attach");
-        let Value::Object(shm) = shm else {
+        let Value::Object(object) = &shm else {
             panic!("expected shared-memory object");
         };
 
-        assert_eq!(shm.get_property("__sysvshm_id"), None);
+        assert_eq!(object.get_property("__sysvshm_id"), None);
+        let _ = builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default());
     }
 
     #[test]
@@ -358,7 +393,7 @@ mod tests {
         let mut context = BuiltinContext::new(&mut output);
         let shm = builtin_shm_attach(
             &mut context,
-            vec![Value::Int(222), Value::Int(1024)],
+            vec![Value::Int(unique_sysvshm_key(3)), Value::Int(1024)],
             RuntimeSourceSpan::default(),
         )
         .expect("attach");
@@ -375,12 +410,13 @@ mod tests {
         assert_eq!(
             builtin_shm_remove_var(
                 &mut context,
-                vec![shm, Value::Int(99)],
+                vec![shm.clone(), Value::Int(99)],
                 RuntimeSourceSpan::default(),
             )
             .expect("remove var"),
             Value::Bool(false)
         );
+        let _ = builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default());
         let output = output.to_string_lossy();
         assert!(output.contains("shm_get_var(): Variable key 99 doesn't exist"));
         assert!(output.contains("shm_remove_var(): Variable key 99 doesn't exist"));
@@ -392,7 +428,7 @@ mod tests {
         let mut context = BuiltinContext::new(&mut output);
         let shm = builtin_shm_attach(
             &mut context,
-            vec![Value::Int(333), Value::Int(16)],
+            vec![Value::Int(unique_sysvshm_key(4)), Value::Int(16)],
             RuntimeSourceSpan::default(),
         )
         .expect("attach");
@@ -400,12 +436,17 @@ mod tests {
         assert_eq!(
             builtin_shm_put_var(
                 &mut context,
-                vec![shm, Value::Int(1), Value::string("this value is too large")],
+                vec![
+                    shm.clone(),
+                    Value::Int(1),
+                    Value::string("this value is too large"),
+                ],
                 RuntimeSourceSpan::default(),
             )
             .expect("put"),
             Value::Bool(false)
         );
+        let _ = builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default());
         assert!(
             output
                 .to_string_lossy()
@@ -419,10 +460,19 @@ mod tests {
         let mut context = BuiltinContext::new(&mut output);
         let shm = builtin_shm_attach(
             &mut context,
-            vec![Value::Int(444), Value::Int(1024)],
+            vec![Value::Int(unique_sysvshm_key(5)), Value::Int(1024)],
             RuntimeSourceSpan::default(),
         )
         .expect("attach");
+        assert_eq!(
+            builtin_shm_remove(
+                &mut context,
+                vec![shm.clone()],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("remove"),
+            Value::Bool(true)
+        );
         assert_eq!(
             builtin_shm_detach(
                 &mut context,
@@ -447,7 +497,7 @@ mod tests {
         let mut context = BuiltinContext::new(&mut output);
         let shm = builtin_shm_attach(
             &mut context,
-            vec![Value::Int(555), Value::Int(1024)],
+            vec![Value::Int(unique_sysvshm_key(6)), Value::Int(1024)],
             RuntimeSourceSpan::default(),
         )
         .expect("attach");

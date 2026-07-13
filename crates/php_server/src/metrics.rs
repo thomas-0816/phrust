@@ -12,6 +12,12 @@ pub(crate) struct ServerMetrics {
     pub(crate) five_xx: AtomicU64,
     pub(crate) body_too_large: AtomicU64,
     pub(crate) overload: AtomicU64,
+    pub(crate) cpu_execution_admitted: AtomicU64,
+    pub(crate) cpu_execution_queued: AtomicU64,
+    pub(crate) cpu_execution_saturated: AtomicU64,
+    pub(crate) cpu_execution_rejected: AtomicU64,
+    pub(crate) cpu_execution_cancelled: AtomicU64,
+    pub(crate) cpu_execution_timeouts: AtomicU64,
     pub(crate) uploads_total: AtomicU64,
     pub(crate) upload_parse_errors: AtomicU64,
     pub(crate) upload_bytes_accepted: AtomicU64,
@@ -36,6 +42,7 @@ pub(crate) struct ServerMetrics {
     pub(crate) session_seed_attempts: AtomicU64,
     pub(crate) session_store_loads: AtomicU64,
     pub(crate) session_lazy_loads: AtomicU64,
+    pub(crate) session_id_generations: AtomicU64,
     pub(crate) session_finalizations: AtomicU64,
     pub(crate) session_store_writes: AtomicU64,
     pub(crate) session_store_deletes: AtomicU64,
@@ -45,6 +52,8 @@ pub(crate) struct ServerMetrics {
     pub(crate) request_headers_skipped_direct: AtomicU64,
     pub(crate) phase_admission_wait_count: AtomicU64,
     pub(crate) phase_admission_wait_nanos: AtomicU64,
+    pub(crate) phase_cpu_queue_count: AtomicU64,
+    pub(crate) phase_cpu_queue_nanos: AtomicU64,
     pub(crate) phase_route_resolution_count: AtomicU64,
     pub(crate) phase_route_resolution_nanos: AtomicU64,
     pub(crate) phase_body_read_count: AtomicU64,
@@ -71,6 +80,7 @@ impl ServerMetrics {
                 &self.phase_admission_wait_count,
                 &self.phase_admission_wait_nanos,
             ),
+            RequestPhase::CpuQueue => (&self.phase_cpu_queue_count, &self.phase_cpu_queue_nanos),
             RequestPhase::RouteResolution => (
                 &self.phase_route_resolution_count,
                 &self.phase_route_resolution_nanos,
@@ -116,6 +126,7 @@ impl ServerMetrics {
     pub(crate) fn render(
         &self,
         in_flight: u64,
+        cpu_executing: u64,
         cache: php_executor::CompiledScriptCacheStats,
         include_cache: IncludeCacheStats,
         persistent_metadata: PersistentMetadataStats,
@@ -136,6 +147,13 @@ phrust_server_php_responses_total {}\n\
 phrust_server_4xx_total {}\n\
 phrust_server_5xx_total {}\n\
 phrust_server_in_flight {}\n\
+phrust_server_cpu_execution_current {}\n\
+phrust_server_cpu_execution_admitted_total {}\n\
+phrust_server_cpu_execution_queued_total {}\n\
+phrust_server_cpu_execution_saturated_total {}\n\
+phrust_server_cpu_execution_rejected_total {}\n\
+phrust_server_cpu_execution_cancelled_total {}\n\
+phrust_server_cpu_execution_timeouts_total {}\n\
 phrust_server_body_too_large_total {}\n\
 phrust_server_overload_total {}\n\
 phrust_server_uploads_total {}\n\
@@ -167,6 +185,11 @@ phrust_server_include_resolution_misses_total {}\n\
 phrust_server_include_compile_hits_total {}\n\
 phrust_server_include_compile_misses_total {}\n\
 phrust_server_include_source_reads_total {}\n\
+phrust_server_include_source_bytes_hashed_total {}\n\
+phrust_server_include_content_validations_total {}\n\
+phrust_server_include_identity_only_hits_total {}\n\
+phrust_server_include_content_mismatches_total {}\n\
+phrust_server_include_conservative_misses_total {}\n\
 phrust_server_include_dependency_metadata_validations_total {}\n\
 phrust_server_include_stale_invalidations_total {}\n\
 phrust_server_include_stale_dependency_invalidations_total {}\n\
@@ -182,13 +205,14 @@ phrust_server_composer_fingerprint_stale_total {}\n\
 phrust_server_deployment_fingerprint_present_total {}\n\
 phrust_server_deployment_fingerprint_missing_total {}\n\
 phrust_server_deployment_fingerprint_stale_total {}\n\
+phrust_server_immutable_release_cache_hits_total {}\n\
 phrust_server_entry_script_source_reads_total {}\n\
-phrust_server_include_source_reads_total {}\n\
 phrust_server_response_output_bytes_total {}\n\
 phrust_server_runtime_diagnostics_total {}\n\
 phrust_server_session_seed_attempts_total {}\n\
 phrust_server_session_store_loads_total {}\n\
 phrust_server_session_lazy_loads_total {}\n\
+phrust_server_session_id_generations_total {}\n\
 phrust_server_session_finalizations_total {}\n\
 phrust_server_session_store_writes_total {}\n\
 phrust_server_session_store_deletes_total {}\n\
@@ -198,6 +222,8 @@ phrust_server_request_headers_materialized_total {}\n\
 phrust_server_request_headers_skipped_direct_total {}\n\
 phrust_server_request_phase_count{{phase=\"admission_wait\"}} {}\n\
 phrust_server_request_phase_nanos_total{{phase=\"admission_wait\"}} {}\n\
+phrust_server_request_phase_count{{phase=\"cpu_queue\"}} {}\n\
+phrust_server_request_phase_nanos_total{{phase=\"cpu_queue\"}} {}\n\
 phrust_server_request_phase_count{{phase=\"route_resolution\"}} {}\n\
 phrust_server_request_phase_nanos_total{{phase=\"route_resolution\"}} {}\n\
 phrust_server_request_phase_count{{phase=\"body_read\"}} {}\n\
@@ -228,6 +254,13 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             self.four_xx.load(Ordering::Relaxed),
             self.five_xx.load(Ordering::Relaxed),
             in_flight,
+            cpu_executing,
+            self.cpu_execution_admitted.load(Ordering::Relaxed),
+            self.cpu_execution_queued.load(Ordering::Relaxed),
+            self.cpu_execution_saturated.load(Ordering::Relaxed),
+            self.cpu_execution_rejected.load(Ordering::Relaxed),
+            self.cpu_execution_cancelled.load(Ordering::Relaxed),
+            self.cpu_execution_timeouts.load(Ordering::Relaxed),
             self.body_too_large.load(Ordering::Relaxed),
             self.overload.load(Ordering::Relaxed),
             self.uploads_total.load(Ordering::Relaxed),
@@ -259,6 +292,11 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             include_cache.compile_hits,
             include_cache.compile_misses,
             include_cache.source_reads,
+            include_cache.source_bytes_hashed,
+            include_cache.content_validations,
+            include_cache.identity_only_hits,
+            include_cache.content_mismatches,
+            include_cache.conservative_misses,
             include_cache.dependency_metadata_validations,
             include_cache.stale_invalidations,
             include_cache.stale_dependency_invalidations,
@@ -274,13 +312,14 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             include_cache.deployment_fingerprint_present,
             include_cache.deployment_fingerprint_missing,
             include_cache.deployment_fingerprint_stale,
+            include_cache.immutable_release_hits,
             cache.source_reads,
-            include_cache.source_reads,
             self.response_output_bytes.load(Ordering::Relaxed),
             self.runtime_diagnostics.load(Ordering::Relaxed),
             self.session_seed_attempts.load(Ordering::Relaxed),
             self.session_store_loads.load(Ordering::Relaxed),
             self.session_lazy_loads.load(Ordering::Relaxed),
+            self.session_id_generations.load(Ordering::Relaxed),
             self.session_finalizations.load(Ordering::Relaxed),
             self.session_store_writes.load(Ordering::Relaxed),
             self.session_store_deletes.load(Ordering::Relaxed),
@@ -291,6 +330,8 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             self.request_headers_skipped_direct.load(Ordering::Relaxed),
             self.phase_admission_wait_count.load(Ordering::Relaxed),
             self.phase_admission_wait_nanos.load(Ordering::Relaxed),
+            self.phase_cpu_queue_count.load(Ordering::Relaxed),
+            self.phase_cpu_queue_nanos.load(Ordering::Relaxed),
             self.phase_route_resolution_count.load(Ordering::Relaxed),
             self.phase_route_resolution_nanos.load(Ordering::Relaxed),
             self.phase_body_read_count.load(Ordering::Relaxed),
@@ -327,6 +368,7 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RequestPhase {
     AdmissionWait,
+    CpuQueue,
     RouteResolution,
     BodyRead,
     RequestContext,
@@ -345,7 +387,7 @@ use hyper::{
 };
 
 pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<ResponseBody> {
-    if let Some(token) = &state.metrics_token
+    if let Some(token) = &state.observability.metrics_token
         && !metrics_token_authorized(&parts.headers, token)
     {
         return response::text(HttpStatusCode::FORBIDDEN, "forbidden\n");
@@ -353,16 +395,26 @@ pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<Resp
     // Re-observe the deployment root's directory version per scrape so
     // `deployment_fingerprint_stale` attributes root mutations. One stat call;
     // metadata only.
-    state.engine.include_cache.revalidate_deployment_root();
+    state
+        .services
+        .engine
+        .include_cache
+        .revalidate_deployment_root();
     response::text_dynamic(
         HttpStatusCode::OK,
-        state.metrics.render(
+        state.services.metrics.render(
             state
+                .concurrency
                 .max_in_flight
-                .saturating_sub(state.in_flight.available_permits()) as u64,
-            state.engine.script_cache.cache_stats(),
-            state.engine.include_cache.cache_stats(),
-            state.engine.persistent_metadata_stats(),
+                .saturating_sub(state.concurrency.in_flight.available_permits()) as u64,
+            state
+                .concurrency
+                .cpu_execution_limit
+                .saturating_sub(state.concurrency.cpu_execution.available_permits())
+                as u64,
+            state.services.engine.script_cache.cache_stats(),
+            state.services.engine.include_cache.cache_stats(),
+            state.services.engine.persistent_metadata_stats(),
         ),
         "text/plain; charset=UTF-8",
     )
@@ -404,5 +456,35 @@ mod tests {
             HeaderValue::from_static("Bearer wrong"),
         );
         assert!(metrics_token_authorized(&headers, "secret"));
+    }
+
+    #[test]
+    fn include_identity_metrics_are_rendered_once() {
+        let include_cache = IncludeCacheStats {
+            source_reads: 11,
+            source_bytes_hashed: 12,
+            content_validations: 13,
+            identity_only_hits: 14,
+            content_mismatches: 15,
+            conservative_misses: 16,
+            ..IncludeCacheStats::default()
+        };
+        let rendered = ServerMetrics::default().render(
+            0,
+            0,
+            php_executor::CompiledScriptCacheStats::default(),
+            include_cache,
+            PersistentMetadataStats::default(),
+        );
+        for expected in [
+            "phrust_server_include_source_reads_total 11\n",
+            "phrust_server_include_source_bytes_hashed_total 12\n",
+            "phrust_server_include_content_validations_total 13\n",
+            "phrust_server_include_identity_only_hits_total 14\n",
+            "phrust_server_include_content_mismatches_total 15\n",
+            "phrust_server_include_conservative_misses_total 16\n",
+        ] {
+            assert_eq!(rendered.matches(expected).count(), 1, "{expected}");
+        }
     }
 }

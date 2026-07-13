@@ -1,0 +1,631 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "IMAP\\Connection"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "NIL",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OP_DEBUG",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OP_READONLY",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OP_ANONYMOUS",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OP_HALFOPEN",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "OP_EXPUNGE",
+      "value": {
+        "kind": "int",
+        "value": 32768
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CL_EXPUNGE",
+      "value": {
+        "kind": "int",
+        "value": 32768
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FT_UID",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FT_PEEK",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FT_INTERNAL",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FT_PREFETCHTEXT",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ST_UID",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CP_UID",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SE_UID",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SA_MESSAGES",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SA_RECENT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SA_UNSEEN",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SA_UIDNEXT",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SA_UIDVALIDITY",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SA_ALL",
+      "value": {
+        "kind": "int",
+        "value": 31
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTDATE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTARRIVAL",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTFROM",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTSUBJECT",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTTO",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTCC",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SORTSIZE",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_8bit",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_alerts",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_append",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_base64",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_binary",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_check",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_close",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_delete",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_errors",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_expunge",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_fetch_overview",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_fetchbody",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_fetchheader",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_fetchstructure",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_gc",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_headerinfo",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_headers",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_last_error",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_list",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_listscan",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_mail_copy",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_mail_move",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_mailboxmsginfo",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_num_msg",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_num_recent",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_open",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_ping",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_qprint",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_reopen",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_search",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_sort",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_status",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_undelete",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_utf7_decode",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_utf7_encode",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "imap"
+        }
+      ],
+      "name": "imap_utf8",
+      "signature_gap": "IMAP is an optional external compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    }
+  ],
+  "name": "imap",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

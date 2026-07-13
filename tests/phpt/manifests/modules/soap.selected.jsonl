@@ -1,2 +1,3 @@
 {"path":"tests/phpt/generated/soap/platform-checks.phpt"}
 {"path":"tests/phpt/generated/soap/value-objects-constants.phpt"}
+{"path":"tests/phpt/generated/soap/client-wsdl-basic.phpt"}

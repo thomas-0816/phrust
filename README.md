@@ -295,3 +295,7 @@ Do not commit:
 
 Stage only files intentionally changed for the current task, especially in a
 dirty worktree.
+
+## Additional References
+
+- [Phrust Error Classes Found During WordPress Bring-Up](error_classes.md)

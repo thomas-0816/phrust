@@ -25,7 +25,7 @@ checks and enough environment detail to reproduce the run.
 Linux-only tools are added with Nix conditionals so Darwin shells and `nix
 flake check` do not evaluate them as required Darwin packages. The default
 Darwin shell uses `mkShellNoCC` plus a lightweight Nix tool surface for `just`,
-`jq`, `hyperfine`, `ripgrep`, `fd`, `python3`, `ccache`, and `sccache`, while
+`jq`, `hyperfine`, `ripgrep`, `fd`, `python3`, and `sccache`, while
 keeping the existing host Rust toolchain stable. Darwin shells intentionally do
 not pull `shellcheck` from Nix because that requires a large Haskell closure on
 current nixpkgs; script linting remains an optional host-tool check there.
@@ -89,7 +89,7 @@ nix develop -c just jit-smoke
 nix develop -c just safety-audit-smoke
 ```
 
-Work item validates the shell surface with:
+The performance layer validates the shell surface with:
 
 ```bash
 nix develop -c just --list
@@ -150,12 +150,13 @@ regressions to failures. Raw ratchet artifacts remain under
 
 ## Optional Callgrind Smoke
 
-Work item adds `just callgrind-smoke` for instruction-count
+The performance layer provides `just callgrind-smoke` for instruction-count
 smoke measurements. The gate is intentionally optional:
 
 - non-Linux hosts skip with a recorded reason in
   `target/performance/callgrind/summary.json`;
-- Linux hosts without `valgrind` in `PATH` also skip cleanly;
+- Linux hosts without `valgrind` in `PATH`, or where Valgrind cannot launch the
+  VM's configured runtime thread, also skip cleanly with the tool diagnostic;
 - Linux hosts with Valgrind run three small CLI scenarios from
   `tests/fixtures/performance/perf_smoke/` under `--tool=callgrind`;
 - outputs are still compared to fixture expectations before instruction counts
@@ -168,7 +169,7 @@ not committed.
 
 ## Criterion Rust Hot-Path Benchmarks
 
-Work item adds a benchmark-only in-repository package, `php_bench`, with
+The performance layer provides a benchmark-only in-repository package, `php_bench`, with
 Criterion as a dev-dependency. It is excluded from the main workspace so
 `cargo test --workspace` and `verify-performance` do not compile Criterion.
 Engine/runtime crates do not depend on Criterion. The `just rust-hotpath-bench`
@@ -189,7 +190,7 @@ correctness gate before optimization claims are accepted.
 
 ## Performance Report
 
-Work item adds `just perf-report`, which renders
+The performance layer provides `just perf-report`, which renders
 `target/performance/perf-report.md` and `target/performance/perf-report.json` from the
 latest benchmark JSON, usually `target/performance/benchmark-smoke.json`. The
 report includes environment metadata, commit/version, optimization flags,
@@ -233,7 +234,7 @@ a missing-data section and the commands needed to create inputs.
 
 ## Performance JSON Format
 
-Work item adds `crates/php_perf`, a data-model crate for normalized Performance
+The performance layer provides `crates/php_perf`, a data-model crate for normalized Performance
 performance JSON. The crate does not execute benchmarks. It defines:
 
 - `PerfRunId`: stable run identifier.
@@ -323,7 +324,7 @@ cost, and rewriting the final report.
 
 ## Benchmark Runner
 
-Work item adds `scripts/performance/bench_matrix.py`. The runner discovers only
+The performance layer provides `scripts/performance/bench_matrix.py`. The runner discovers only
 top-level `*.php` files in `tests/fixtures/performance/perf_smoke`, reads the matching
 `*.php.out` expected output, and invokes engines with argument vectors rather
 than interpolated shell commands. Fixture names are therefore not shell input.
@@ -356,7 +357,7 @@ sidecars are preserved as `timing_warnings`.
 
 ## VM/Runtime Counters
 
-Work item adds optional VM counters behind `VmOptions::collect_counters` and
+The performance layer provides optional VM counters behind `VmOptions::collect_counters` and
 the CLI flag:
 
 ```bash
@@ -431,7 +432,7 @@ before/after benchmark JSON before making any release-build claim.
 
 ## Framework Micro-Smokes
 
-Work item adds offline framework-like smokes in
+The performance layer provides offline framework-like smokes in
 `tests/fixtures/performance/framework_smoke/`:
 
 - router dispatch;

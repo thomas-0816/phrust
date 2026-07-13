@@ -1,0 +1,25 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "Phar"
+    },
+    {
+      "kind": "class",
+      "name": "PharData"
+    },
+    {
+      "kind": "class",
+      "name": "PharFileInfo"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "phar",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

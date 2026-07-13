@@ -18,5 +18,6 @@
 {"path":"ext/reflection/tests/ReflectionEnum_isBacked.phpt","module":"reflection.enums","kind":"upstream","reason":"upstream ReflectionEnum backed flag coverage fits frontend enum backing metadata"}
 {"path":"ext/reflection/tests/ReflectionEnum_hasCase.phpt","module":"reflection.enums","kind":"upstream","reason":"upstream ReflectionEnum case-existence coverage fits runtime enum case metadata"}
 {"path":"tests/phpt/generated/reflection.extensions/extension-symbols.phpt"}
+{"path":"tests/phpt/generated/reflection.extensions/app-extension-surfaces.phpt"}
 {"path":"ext/reflection/tests/ReflectionExtension_getName_basic.phpt","module":"reflection.extensions","kind":"upstream","reason":"upstream ReflectionExtension canonical name coverage fits registry-backed Reflection extension metadata"}
 {"path":"ext/reflection/tests/ReflectionExtension_getClassNames_variation1.phpt","module":"reflection.extensions","kind":"upstream","reason":"upstream ReflectionExtension class-name listing coverage fits generated arginfo class ownership metadata"}

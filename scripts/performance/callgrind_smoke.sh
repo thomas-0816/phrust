@@ -84,6 +84,7 @@ for scenario in "${SCENARIOS[@]}"; do
         exit 1
     fi
 
+    set +e
     valgrind \
         --tool=callgrind \
         --quiet \
@@ -95,6 +96,20 @@ for scenario in "${SCENARIOS[@]}"; do
         "$fixture" \
         > "$stdout" \
         2> "$stderr"
+    valgrind_status=$?
+    set -e
+
+    if [ "$valgrind_status" -ne 0 ]; then
+        if grep -Fq 'E_PHRUST_CLI_THREAD_SPAWN_FAILED' "$stderr" \
+            && grep -Fq 'Bad address (os error 14)' "$stderr"; then
+            write_skip "$(valgrind --version) cannot launch the php-vm runtime thread on this host: $(head -n 1 "$stderr")"
+            exit 0
+        fi
+        printf '[fail] callgrind execution failed for %s with status %s\n' \
+            "$fixture" "$valgrind_status" >&2
+        sed -n '1,20p' "$stderr" >&2
+        exit 1
+    fi
 
     if ! cmp -s "$expected" "$stdout"; then
         printf '[fail] callgrind smoke stdout mismatch for %s\n' "$fixture" >&2

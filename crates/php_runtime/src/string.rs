@@ -8,10 +8,9 @@
 //! stays byte-exact: symbol identity and the cached hash are shortcuts,
 //! never the definition.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
 
 /// Thread-local interned identity for a name or literal byte sequence.
 ///
@@ -39,32 +38,6 @@ fn stable_hash_bytes(bytes: &[u8]) -> u64 {
     if hash == 0 { 1 } else { hash }
 }
 
-struct StringStorage {
-    bytes: Vec<u8>,
-    /// Cached [`stable_hash_bytes`] of `bytes`; `0` means "not computed".
-    hash: Cell<u64>,
-    /// Interned identity; dropped whenever the bytes become mutable.
-    symbol: Cell<Option<SymbolId>>,
-}
-
-impl StringStorage {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self {
-            bytes,
-            hash: Cell::new(0),
-            symbol: Cell::new(None),
-        }
-    }
-}
-
-/// `Rc::make_mut` separation clone: the copy is about to be mutated, so it
-/// must not inherit the hash or the interned identity of the original.
-impl Clone for StringStorage {
-    fn clone(&self) -> Self {
-        Self::new(self.bytes.clone())
-    }
-}
-
 thread_local! {
     static SYMBOL_INTERNER: RefCell<SymbolInterner> = RefCell::new(SymbolInterner::default());
 }
@@ -88,7 +61,7 @@ impl SymbolInterner {
         let symbol = SymbolId(self.next);
         self.next = self.next.wrapping_add(1);
         let string = PhpString::from_bytes(bytes.to_vec());
-        string.storage.symbol.set(Some(symbol));
+        string.storage.set_symbol(Some(u64::from(symbol.0)));
         self.total_bytes = self.total_bytes.saturating_add(bytes.len() as u64);
         self.map.insert(bytes.to_vec(), string.clone());
         string
@@ -114,13 +87,13 @@ pub fn symbol_interner_footprint() -> (u64, u64) {
 
 /// PHP string bytes without an implicit UTF-8 invariant.
 pub struct PhpString {
-    storage: Rc<StringStorage>,
+    storage: crate::runtime_memory::CompactBytes,
 }
 
 impl Default for PhpString {
     fn default() -> Self {
         Self {
-            storage: Rc::new(StringStorage::new(Vec::new())),
+            storage: crate::runtime_memory::CompactBytes::from_slice(&[]),
         }
     }
 }
@@ -128,7 +101,7 @@ impl Default for PhpString {
 impl Clone for PhpString {
     fn clone(&self) -> Self {
         Self {
-            storage: Rc::clone(&self.storage),
+            storage: self.storage.clone(),
         }
     }
 }
@@ -137,7 +110,7 @@ impl Clone for PhpString {
 /// symbol ids decide without touching the bytes.
 impl PartialEq for PhpString {
     fn eq(&self, other: &Self) -> bool {
-        if Rc::ptr_eq(&self.storage, &other.storage) {
+        if crate::runtime_memory::CompactBytes::ptr_eq(&self.storage, &other.storage) {
             return true;
         }
         if let (Some(lhs), Some(rhs)) = (self.symbol_id(), other.symbol_id()) {
@@ -145,7 +118,7 @@ impl PartialEq for PhpString {
             return lhs == rhs;
         }
         crate::layout_stats::record_symbol_eq_byte_fallback();
-        self.storage.bytes == other.storage.bytes
+        self.storage.as_bytes() == other.storage.as_bytes()
     }
 }
 
@@ -165,7 +138,19 @@ impl PhpString {
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         crate::layout_stats::record_string_allocation();
         Self {
-            storage: Rc::new(StringStorage::new(bytes.into())),
+            storage: crate::runtime_memory::CompactBytes::from_slice(&bytes.into()),
+        }
+    }
+
+    /// Creates a PHP string holding the concatenation of `parts` in a
+    /// single allocation, with no intermediate growable buffer. This is
+    /// the concatenation fast path: the joined length is known up front,
+    /// so each part is copied straight into its final position.
+    #[must_use]
+    pub fn from_parts(parts: &[&[u8]]) -> Self {
+        crate::layout_stats::record_string_allocation();
+        Self {
+            storage: crate::runtime_memory::CompactBytes::from_parts(parts),
         }
     }
 
@@ -186,14 +171,14 @@ impl PhpString {
     /// Returns the exact underlying bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.storage.bytes
+        self.storage.as_bytes()
     }
 
     /// Returns the interned identity, when this storage was interned and
     /// has not been separated for mutation since.
     #[must_use]
     pub fn symbol_id(&self) -> Option<SymbolId> {
-        self.storage.symbol.get()
+        self.storage.symbol().map(|raw| SymbolId(raw as u32))
     }
 
     /// Cheap equality: paired symbols or shared storage decide instantly;
@@ -206,27 +191,27 @@ impl PhpString {
     /// Returns the cached stable hash, computing it on first use.
     #[must_use]
     pub fn stable_hash(&self) -> u64 {
-        let cached = self.storage.hash.get();
+        let cached = self.storage.hash();
         if cached != 0 {
             crate::layout_stats::record_string_hash_cache_hit();
             return cached;
         }
         crate::layout_stats::record_string_hash_cache_miss();
-        let hash = stable_hash_bytes(&self.storage.bytes);
-        self.storage.hash.set(hash);
+        let hash = stable_hash_bytes(self.storage.as_bytes());
+        self.storage.set_hash(hash);
         hash
     }
 
     /// Returns true when this string shares storage with at least one clone.
     #[must_use]
     pub fn is_shared(&self) -> bool {
-        Rc::strong_count(&self.storage) > 1
+        !self.storage.is_unique()
     }
 
     /// Returns true when two PHP strings share the same byte storage.
     #[must_use]
     pub fn shares_storage_with(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.storage, &other.storage)
+        crate::runtime_memory::CompactBytes::ptr_eq(&self.storage, &other.storage)
     }
 
     /// Ensures this string has unique storage before byte mutation.
@@ -238,36 +223,36 @@ impl PhpString {
     pub fn separate_for_write(&mut self) {
         if self.is_shared() {
             crate::layout_stats::record_cow_separation();
+            self.storage = crate::runtime_memory::CompactBytes::from_slice(self.storage.as_bytes());
         }
-        let storage = Rc::make_mut(&mut self.storage);
-        storage.hash.set(0);
-        storage.symbol.set(None);
+        self.storage.set_hash(0);
+        self.storage.set_symbol(None);
     }
 
-    /// Returns mutable bytes after applying copy-on-write separation.
-    pub fn bytes_mut(&mut self) -> &mut Vec<u8> {
+    /// Returns mutable, fixed-length bytes after copy-on-write separation.
+    /// Growth happens by rebuilding through [`PhpString::into_bytes`] and
+    /// [`PhpString::from_bytes`]; storage length is immutable.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
         self.separate_for_write();
-        &mut Rc::get_mut(&mut self.storage)
-            .expect("separate_for_write leaves unique storage")
-            .bytes
+        self.storage.unique_bytes_mut()
     }
 
     /// Consumes the string and returns the exact bytes.
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
-        self.storage.bytes.clone()
+        self.storage.as_bytes().to_vec()
     }
 
     /// Returns true when the string has no bytes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.storage.bytes.is_empty()
+        self.storage.is_empty()
     }
 
     /// Returns the byte length.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.storage.bytes.len()
+        self.storage.len()
     }
 
     /// Returns a process-local identity for the shared byte storage.
@@ -276,13 +261,13 @@ impl PhpString {
     /// current bytes. It is not a PHP-visible identity.
     #[must_use]
     pub(crate) fn storage_id(&self) -> usize {
-        Rc::as_ptr(&self.storage).cast::<()>() as usize
+        self.storage.addr()
     }
 
     /// Test/debug convenience for non-runtime display.
     #[must_use]
     pub fn to_string_lossy(&self) -> String {
-        String::from_utf8_lossy(&self.storage.bytes).into_owned()
+        String::from_utf8_lossy(self.storage.as_bytes()).into_owned()
     }
 }
 
@@ -307,7 +292,7 @@ impl From<&str> for PhpString {
 impl fmt::Debug for PhpString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PhpString")
-            .field("bytes", &self.storage.bytes)
+            .field("bytes", &self.storage.as_bytes())
             .field("lossy", &self.to_string_lossy())
             .finish()
     }
@@ -415,7 +400,11 @@ mod tests {
         let interned = PhpString::intern(b"mutation_drops_identity");
         let hash_before = interned.stable_hash();
         let mut copy = interned.clone();
-        copy.bytes_mut().push(b'!');
+        // Growth rebuilds the storage; identity semantics match in-place
+        // mutation (hash and symbol drop with the bytes change).
+        let mut grown = copy.into_bytes();
+        grown.push(b'!');
+        copy = PhpString::from_bytes(grown);
 
         assert!(copy.symbol_id().is_none(), "mutated copy keeps no symbol");
         assert_eq!(
@@ -431,7 +420,7 @@ mod tests {
         let mut unique = PhpString::intern(b"mutation_unique_case").clone();
         // Drop the interner's handle from the equation: the storage is still
         // shared with the interner map, so separation occurs.
-        unique.bytes_mut().pop();
+        unique.bytes_mut()[0] = b'M';
         assert!(unique.symbol_id().is_none());
     }
 

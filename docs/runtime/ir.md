@@ -197,7 +197,7 @@ Lowering starts by interning the `Null` return constant for top-level code.
 Subsequent literal constants reuse existing IDs when the IR constant payload is
 identical.
 
-Work item lowering recognizes Semantic frontend HIR literals for `null`, booleans,
+The lowering recognizes Semantic frontend HIR literals for `null`, booleans,
 integers, floats, and quoted strings, plus simple top-level `echo` expression
 trees using unary `+`, `-`, `!`, `~`, arithmetic `+`, `-`, `*`, `/`, `%`, `**`,
 concatenation `.`, comparisons, and scalar casts. It emits register-based
@@ -267,7 +267,7 @@ This crate does not contain:
 Runtime values and dispatch live in `php_runtime` and `php_vm`; they consume
 this IR contract but do not redefine it.
 
-Work item adds `Include { dst, kind, path }`, where `kind` is one of
+The runtime provides `Include { dst, kind, path }`, where `kind` is one of
 `include`, `include_once`, `require`, or `require_once`. The path operand is a
 normal evaluated expression result. The VM resolves that path against the
 currently executing file through a root-constrained local loader, compiles the
@@ -279,20 +279,20 @@ semantics are tracked by canonical path in the VM execution state.
 ## Lowering Skeleton
 
 `php_ir::lower_frontend_result()` consumes a Semantic frontend `FrontendResult` and
-produces a minimal top-level `IrFunction`. Work item lowers top-level scalar
+produces a minimal top-level `IrFunction`. The runtime lowers top-level scalar
 `echo` statements into `LoadConst`, `Unary`, `Binary`, `Compare`, `Cast`,
 `Discard`, and `Echo`, returns the interned `Null` constant from the synthetic
 top-level function, and emits machine-readable unsupported-feature diagnostics
 for HIR that the runtime layer cannot execute yet.
 
-Work item adds deterministic local slots to `IrFunction.locals`. Variable names
+The runtime provides deterministic local slots to `IrFunction.locals`. Variable names
 are interned without the leading `$` in first-use order, and `local_count` must
 match the local table length. Top-level scalar assignments and fetches lower to
 `StoreLocal` and `LoadLocal`; compound assignments lower through the same
 `Binary` operations used by scalar expressions; prefix and postfix inc/dec
 lower through local load, scalar add/subtract, and store instructions.
 
-Work item lowers executable top-level namespace statement items recursively
+The runtime lowers executable top-level namespace statement items recursively
 rather than iterating the whole HIR statement arena. `if`/`elseif`/`else`,
 `while`, `do while`, simple `for`, `break`, and `continue` produce explicit
 basic blocks with `Jump`, `JumpIfTrue`, and loop-stack targets. `JumpIfTrue`
@@ -301,7 +301,7 @@ fallthrough, which keeps nested control flow independent of enclosing block
 allocation order. `for` lowering covers the simple initializer/condition/update
 MVP; multiple expressions per header section remain a known gap.
 
-Work item adds explicit `JumpIf` terminators for control-flow forms where both
+The runtime provides explicit `JumpIf` terminators for control-flow forms where both
 branch targets must be deterministic independent of physical block order.
 `switch` lowers to a chain of loose `Equal` comparisons against the subject,
 case body blocks, an optional default fallback, and ordinary fallthrough from
@@ -318,13 +318,13 @@ shared destination register only along the selected branch. Top-level `return`
 terminates the current IR function with the returned value or `Null` when no
 expression is present.
 
-Work item lowers named function declarations into separate `IrFunction`s with
+The runtime lowers named function declarations into separate `IrFunction`s with
 parameter locals and body blocks. `IrUnit.function_table` stores deterministic
 normalized lookup names pointing at `FunctionId`s; dynamic calls are not folded
 into this table. Direct named calls lower to `CallFunction { name, args, dst }`
 after evaluating argument expressions left-to-right.
 
-Work item records required/optional parameters, folded constant defaults,
+The runtime records required/optional parameters, folded constant defaults,
 variadics, by-reference scaffolding, and return-type descriptors for `int`,
 `float`, `string`, `bool`, `null`, `void`, `mixed`, and class names. Class return
 types are represented in IR but remain a VM known gap until object storage
@@ -332,7 +332,7 @@ exists. Omitted optional parameters use only folded Semantic frontend constant-e
 data. Too-few and too-many positional calls are stable VM runtime diagnostics;
 named arguments and argument unpacking are still outside the MVP.
 
-Work item lowers closure and arrow-function expressions into synthesized
+The runtime lowers closure and arrow-function expressions into synthesized
 `IrFunction`s with `FunctionFlags::is_closure`, explicit `IrCapture` metadata,
 and a `MakeClosure` instruction at the expression site. Normal closures use
 Semantic frontend explicit `use ($x)` metadata. Arrow functions derive by-value captures
@@ -344,9 +344,9 @@ when the VM enters the closure frame.
 format. Runtime execution captures the source local's reference cell so later
 mutations and writes through the closure observe the same storage. Full
 `Closure::bind`, imported/function-alias callable edges, and wider
-invalid-callable edge cases remain outside this Work item MVP.
+invalid-callable edge cases remain outside this MVP.
 
-Work item supports first-class callable names in the actual Semantic frontend
+The runtime supports first-class callable names in the actual Semantic frontend
 HIR shape for pipe RHS (`HirExprKind::FirstClassCallable { callee: Name }`),
 closure values stored in variables, dynamic string calls, array method
 callables, static method callables, and invokable objects. Simple unqualified
@@ -395,7 +395,7 @@ without parsing the text snapshot format.
 
 ## Verifier Invariants
 
-`php_ir::verify_unit()` checks the Work item structural invariants:
+`php_ir::verify_unit()` checks the structural invariants:
 
 - supported `IR_VERSION`;
 - valid entry function;

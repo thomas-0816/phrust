@@ -2,8 +2,8 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds the runtime resource handle model used by later stream and
-filesystem work items. Work item adds the bounded wrapper registry for local
+The standard library provides the runtime resource handle model used by later stream and
+filesystem work items. The standard library provides the bounded wrapper registry for local
 file streams and PHP pseudo streams. The model lives in `php_runtime` so the VM
 and standard builtins can share one request-local representation without
 introducing another parser, lexer, or semantic layer.
@@ -74,7 +74,7 @@ rejected with `E_PHP_RUNTIME_STREAM_REMOTE_DISABLED`.
 
 ## Remaining Scope
 
-Work items 06.26 and 06.27 intentionally do not add PHP-visible `fopen`,
+The streams layer intentionally does not add PHP-visible `fopen`,
 `fread`, `fwrite`, directory handles, or stat/path functions. Those PHP-visible
 producers and operations are tracked as `STDLIB-GAP-STREAM-PRODUCERS` until the
 follow-up streams and filesystem work items implement them.

@@ -30,6 +30,16 @@ See [server functionality](server-functionality.md) for config keys,
 timeouts, access-log settings, metrics-token handling, cache options, and TLS
 options.
 
+HTTP admission and PHP CPU execution are bounded independently.
+`max_in_flight` limits accepted requests, while `cpu_execution_limit` (or
+`--cpu-execution-limit`) defaults to the host's available parallelism and
+limits CPU-bound PHP work. A saturated CPU gate queues for at most
+`request_timeout_ms`; that queue budget is separate from the cooperative
+`max_execution_ms` deadline, which starts when execution begins. Queue and
+execution state is request-local and permits are released on cancellation.
+The metrics endpoint exposes admitted, queued, current, saturated, rejected,
+cancelled, and queue-timeout totals plus the cumulative `cpu_queue` phase.
+
 Prefix request rewrites are a webserver-only routing feature. Configure them
 with `--rewrite-prefix-query /api=route` or
 `rewrite_prefix_query = "/api=route"` for `phrust-server`, or set
@@ -58,22 +68,22 @@ Per-request performance tracing is disabled by default. Enable it with
 `PHRUST_PERF_TRACE=1` writes JSONL to
 `target/performance/server/perf-trace.jsonl`.
 
-Each JSONL event records route resolution, body read, request-context
+Each JSONL event records route resolution, body read, CPU queue wait, request-context
 construction, entry-script cache lookup, VM execution, session seed/finalize,
 response build, response bytes, diagnostics count, and cache/source-read deltas.
 Failed PHP requests include the last failure phase that was reached.
 
 `/__phrust/metrics` exposes aggregate phase counts/timing plus source-read and
 cache-effectiveness counters for the entry script and include cache. It also
-reports session seed/lazy-load/finalize/store counters: requests that never
-activate a PHP session should increment seed/finalize counters without
-incrementing session-store load/write counters. Header materialization counters
+reports session seed/lazy-load/ID-generation/finalize/store counters: requests
+that never activate a PHP session should increment seed/finalize counters
+without incrementing ID-generation or session-store load/write counters. Header materialization counters
 show how many incoming headers were seen, carried into the runtime context, or
 skipped because an equivalent direct PHP server value already exists. The server
 snapshots process environment variables at startup for normal request contexts;
 restart the server to expose changed process environment values to PHP requests.
 Persistent-engine metrics distinguish immutable metadata reuse from request
-state. Script/include cache hits and quickening feedback templates may persist
+state. Script/include cache hits and worker-owned guarded adaptive state may persist
 across requests; PHP globals, request context, output buffers, sessions, and
 runtime values are reset per request. A request-local reset is therefore counted
 as a reset, not as rejected persistence.
@@ -106,19 +116,25 @@ For a real WordPress root request-profile JSON plus markdown summary, set
 nix develop -c just wordpress-root-profile
 ```
 
-For an optional root-page benchmark gate, either point at an already running
-Phrust WordPress server:
+For the clean root-page benchmark, first build the pinned PHP-FPM 8.5.7 image,
+then point the tool at a WordPress tree:
 
 ```bash
-PHRUST_WORDPRESS_URL=http://127.0.0.1:18080 \
+PHRUST_WORDPRESS_DIR=/path/to/wordpress \
+  nix develop -c just wordpress-reference-image
+PHRUST_WORDPRESS_DIR=/path/to/wordpress \
   nix develop -c just wordpress-root-benchmark
 ```
 
-or set `PHRUST_WORDPRESS_DIR`/`PHRUST_WORDPRESS_DOCROOT` and let the helper
-start `phrust-server`. Reports land under
-`target/performance/wordpress-root/` and include root latency, response hash
-stability, controls, metrics deltas, and request-profile attribution when
-available.
+The helper starts telemetry-free `release-lean` Phrust with an immutable
+deployment root and stock PHP-FPM with OPcache behind nginx. Reports land under
+`target/performance/wordpress-root/` and include p50/p95, throughput, CPU/RSS
+where supported, response equivalence, identities, and Phrust/PHP ratios. Use
+`just wordpress-root-benchmark-feedback-ab` for persistent-feedback A/B with a
+joint off/on ratio report and
+`just wordpress-root-benchmark-cranelift` for the explicit experimental-JIT
+arm. Use `just wordpress-root-diagnostics` for a separate instrumented Phrust
+pass; diagnostic samples are never mixed into clean timing.
 
 See [WordPress smoke workflow](contributor/wordpress-smoke.md) for the profile
 schema and how to interpret clone, fallback, dense/rich, array, object, builtin,

@@ -9,6 +9,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         object: Value,
         method: &str,
         args: Vec<CallArgument>,
@@ -20,21 +21,38 @@ impl Vm {
         let object = match callable_resolve_reference(object) {
             Value::Generator(generator) => {
                 self.record_counter_dense_call_fallback("generator_method_receiver");
-                let value = match self
-                    .call_generator_method(compiled, generator, method, args, output, stack, state)
-                {
+                let value = match self.call_generator_method(
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    generator,
+                    method,
+                    args,
+                ) {
                     Ok(value) => value,
-                    Err(result) => return result,
+                    Err(result) => return *result,
                 };
                 return VmResult::success_no_output(Some(value));
             }
             Value::Fiber(fiber) => {
                 self.record_counter_dense_call_fallback("fiber_method_receiver");
-                let value = match self
-                    .call_fiber_method(compiled, fiber, method, args, output, stack, state)
-                {
+                let value = match self.call_fiber_method(
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    fiber,
+                    method,
+                    args,
+                ) {
                     Ok(value) => value,
-                    Err(result) => return result,
+                    Err(result) => {
+                        if let Some(throwable) = state
+                            .pending_throw
+                            .take()
+                            .or_else(|| runtime_error_throwable(&result))
+                        {
+                            state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                            state.pending_throw = Some(throwable);
+                            return VmResult::propagating_exception(output.clone());
+                        }
+                        return *result;
+                    }
                 };
                 return VmResult::success_no_output(Some(value));
             }
@@ -86,7 +104,7 @@ impl Vm {
                 &object,
                 method,
                 args,
-                &mut state.mysql,
+                &mut state.builtins.mysql,
                 compiled,
                 stack,
             ) {
@@ -106,6 +124,7 @@ impl Vm {
                     || is_spl_file_runtime_class(&class)
             })
             || is_php_token_runtime_class(&receiver_class)
+            || is_date_time_runtime_class(&receiver_class)
             || internal_throwable_instanceof(&receiver_class, "throwable").is_some()
             || is_sqlite_runtime_class(&receiver_class)
             || is_pdo_runtime_class(&receiver_class)
@@ -121,7 +140,11 @@ impl Vm {
         {
             self.record_counter_dense_call_fallback("runtime_method_receiver");
             return self.call_object_method_callable(
-                compiled, object, method, args, call_span, output, stack, state,
+                ExecutionCursor::new(compiled, output, stack, state),
+                object,
+                method,
+                args,
+                call_span,
             );
         }
 
@@ -144,32 +167,59 @@ impl Vm {
                 Err(message) => return self.runtime_error(output, compiled, stack, message),
             };
 
-        self.observe_dense_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::MethodCall,
-        );
-        let (cached_target, observation) = self.lookup_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-        );
+        let (cached_target, observation) = if let Some(id) = cache_id {
+            self.lookup_dense_method_call_inline_cache(
+                DenseInlineCacheSite::new(id, function_id, instruction_id),
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        } else {
+            self.observe_dense_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                InlineCacheKind::MethodCall,
+            );
+            self.lookup_method_call_inline_cache(
+                IrInlineCacheSite::classic(compiled, function_id, block_id, instruction_id),
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        };
+        let had_cached_target = cached_target.is_some();
         if let Some(target) = cached_target {
             self.record_counter_dense_call_ic_hit();
-            self.record_counter_dense_method_call_hit();
-            return self.execute_method_call_target(
-                compiled, target, object, args, call_span, output, stack, state, &None, plan,
-            );
+            if !matches!(self.options.jit, JitMode::Cranelift)
+                || dense_method_direct_call_target_is_eligible(DenseMethodDirectCallEligibility {
+                    compiled,
+                    state,
+                    target: &target,
+                    class: &class,
+                    values: &args,
+                    has_magic_call,
+                    epoch,
+                })
+            {
+                self.record_counter_dense_method_call_hit();
+                if matches!(self.options.jit, JitMode::Cranelift) {
+                    self.record_counter_direct_call_hit();
+                }
+                return self.execute_method_call_target(
+                    compiled, target, object, args, call_span, output, stack, state, &None, plan,
+                );
+            }
+            self.record_counter_direct_call_fallback();
         }
         if observation.is_some() {
             self.record_counter_dense_call_ic_miss();
+        }
+        if matches!(self.options.jit, JitMode::Cranelift) && !had_cached_target {
+            self.record_counter_direct_call_fallback();
         }
 
         let resolved = match lookup_resolved_method_in_state(
@@ -183,15 +233,12 @@ impl Vm {
             Ok(None) => {
                 self.record_counter_dense_call_fallback("magic_call");
                 return match self.call_magic_instance_method(
-                    compiled,
+                    ExecutionCursor::new(compiled, output, stack, state),
                     object.clone(),
                     "__call",
                     method,
                     args,
                     call_span,
-                    output,
-                    stack,
-                    state,
                 ) {
                     Ok(Some(result)) => result,
                     Ok(None) => self.runtime_error(
@@ -204,7 +251,7 @@ impl Vm {
                             method
                         ),
                     ),
-                    Err(result) => result,
+                    Err(result) => *result,
                 };
             }
             Err(message) => return self.runtime_error(output, compiled, stack, message),
@@ -223,21 +270,18 @@ impl Vm {
         {
             self.record_counter_dense_call_fallback("visibility");
             return match self.call_magic_instance_method(
-                compiled,
+                ExecutionCursor::new(compiled, output, stack, state),
                 object.clone(),
                 "__call",
                 method,
                 args,
                 call_span,
-                output,
-                stack,
-                state,
             ) {
                 Ok(Some(result)) => result,
                 Ok(None) => self.runtime_error_at_optional_span(
                     compiled, output, stack, state, call_span, message,
                 ),
-                Err(result) => result,
+                Err(result) => *result,
             };
         }
         if let Err(message) = validate_method_callable_in_state_scope(
@@ -252,7 +296,12 @@ impl Vm {
             );
         }
 
-        let has_by_ref_argument = dense_call_has_by_ref_argument(&args);
+        let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
+        let has_by_ref_argument = class_owner
+            .unit()
+            .functions
+            .get(method_entry.function.index())
+            .is_some_and(|callee| callee.params.iter().any(|param| param.by_ref));
         let method_guard = method_call_guard_metadata(
             &args,
             &class,
@@ -263,11 +312,13 @@ impl Vm {
             has_magic_call,
             has_by_ref_argument,
         );
-        let method_target = Box::new(MethodCallResolvedTarget {
-            receiver_class: receiver_class.clone(),
+        let route =
+            self.method_dispatch_route(&class_owner, method_entry.function, declaring_class);
+        let method_target = Rc::new(MethodCallResolvedTarget {
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
             guard: method_guard,
+            route,
         });
         let declaring_dynamic_owner_index =
             dynamic_class_owner_index_in_state(state, &declaring_class.name);
@@ -280,28 +331,35 @@ impl Vm {
                 target: method_target,
             },
         };
-        self.install_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-            target,
-        );
+        if let Some(id) = cache_id {
+            self.install_dense_method_call_inline_cache(
+                id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        } else {
+            self.install_method_call_inline_cache(
+                IrInlineCacheSite::classic(compiled, function_id, block_id, instruction_id),
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        }
         self.record_counter_dense_method_call_hit();
-        let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         self.execute_function_with_dense_plan(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &class_owner,
             plan,
             method_entry.function,
             {
                 let declaring = self.class_name_handles(&declaring_class.name).normalized;
                 FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_call_site_strict_types(call_site_strictness(compiled, call_span))
                     .with_optional_call_span(call_span)
                     .with_this(object.clone())
                     .with_class_context_handles(
@@ -310,9 +368,6 @@ impl Vm {
                         declaring,
                     )
             },
-            output,
-            stack,
-            state,
         )
     }
 
@@ -324,6 +379,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         class_name: &str,
         method: &str,
         args: Vec<CallArgument>,
@@ -338,14 +394,22 @@ impl Vm {
         {
             self.record_counter_dense_call_fallback("runtime_static_method_receiver");
             return self.call_static_method_callable(
-                compiled, class_name, method, args, call_span, output, stack, state, false, None,
+                ExecutionCursor::new(compiled, output, stack, state),
+                StaticMethodCallableRequest {
+                    class_name,
+                    method,
+                    args,
+                    call_span,
+                    allow_by_ref_value_warnings: false,
+                    by_ref_warning_callable_name: None,
+                },
             );
         }
 
         // Match the rich-IR static-call arm: an unknown class must attempt
         // registered autoloaders before resolution fails.
         if let Err(result) = self.autoload_static_class_if_missing(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             class_name,
             call_span.unwrap_or_default(),
             Some((
@@ -354,11 +418,8 @@ impl Vm {
                 block_id,
                 instruction_id,
             )),
-            output,
-            stack,
-            state,
         ) {
-            return result;
+            return *result;
         }
 
         let class = match resolve_static_class_name(compiled, state, stack, class_name) {
@@ -399,7 +460,7 @@ impl Vm {
                 result.diagnostics,
                 trace_context.as_ref(),
             ) {
-                return result;
+                return *result;
             }
             return VmResult::success_no_output(Some(result.value));
         }
@@ -437,7 +498,7 @@ impl Vm {
                     state,
                 ) {
                     Ok(args) => args,
-                    Err(result) => return result,
+                    Err(result) => return *result,
                 }
             } else {
                 args
@@ -476,10 +537,14 @@ impl Vm {
                     && matches!(lowered_method.as_str(), "append" | "rewind" | "next")
                 {
                     return match self.call_spl_append_iterator_method(
-                        compiled, &object, method, args, output, stack, state, call_span,
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        &object,
+                        method,
+                        args,
+                        call_span,
                     ) {
                         Ok(value) => VmResult::success_no_output(Some(value)),
-                        Err(result) => result,
+                        Err(result) => *result,
                     };
                 }
                 if spl_class == "norewinditerator"
@@ -489,10 +554,13 @@ impl Vm {
                     )
                 {
                     return match self.call_spl_no_rewind_iterator_method(
-                        compiled, &object, method, args, output, stack, state,
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        &object,
+                        method,
+                        args,
                     ) {
                         Ok(value) => VmResult::success_no_output(Some(value)),
-                        Err(result) => result,
+                        Err(result) => *result,
                     };
                 }
                 if matches!(
@@ -510,10 +578,14 @@ impl Vm {
                         | "endchildren"
                 ) {
                     return match self.call_spl_recursive_iterator_iterator_method(
-                        compiled, object, method, args, call_span, output, stack, state,
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        object,
+                        method,
+                        args,
+                        call_span,
                     ) {
                         Ok(value) => VmResult::success_no_output(Some(value)),
-                        Err(result) => result,
+                        Err(result) => *result,
                     };
                 }
                 return match call_spl_iterator_method(
@@ -533,17 +605,24 @@ impl Vm {
             {
                 self.record_counter_dense_call_fallback("spl_runtime_parent_method");
                 return match self.call_spl_container_method_with_magic(
-                    compiled, object, method, args, call_span, output, stack, state,
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    object,
+                    method,
+                    args,
+                    call_span,
                 ) {
                     Ok(value) => VmResult::success_no_output(Some(value)),
-                    Err(result) => result,
+                    Err(result) => *result,
                 };
             }
             if is_spl_heap_runtime_class(&spl_class) && spl_heap_method_is_supported(method) {
                 self.record_counter_dense_call_fallback("spl_runtime_parent_method");
-                return match self
-                    .call_spl_heap_method(compiled, object, method, args, output, stack, state)
-                {
+                return match self.call_spl_heap_method(
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    object,
+                    method,
+                    args,
+                ) {
                     Ok(value) => VmResult::success_no_output(Some(value)),
                     Err(SplHeapMethodError::Message(message)) => self
                         .runtime_error_at_optional_span(
@@ -570,23 +649,30 @@ impl Vm {
             }
         }
 
-        self.observe_dense_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::MethodCall,
-        );
-        let (cached_target, observation) = self.lookup_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-        );
+        let (cached_target, observation) = if let Some(id) = cache_id {
+            self.lookup_dense_method_call_inline_cache(
+                DenseInlineCacheSite::new(id, function_id, instruction_id),
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        } else {
+            self.observe_dense_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                InlineCacheKind::MethodCall,
+            );
+            self.lookup_method_call_inline_cache(
+                IrInlineCacheSite::classic(compiled, function_id, block_id, instruction_id),
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        };
         if let Some(target) = cached_target {
             self.record_counter_dense_call_ic_hit();
             self.record_counter_dense_static_call_hit();
@@ -616,17 +702,30 @@ impl Vm {
             Ok(Some(method)) => method,
             Ok(None) => {
                 self.record_counter_dense_call_fallback("magic_static_call");
+                if let Some(object) = current_this_object(compiled, stack) {
+                    match self.call_magic_instance_method(
+                        ExecutionCursor::new(compiled, output, stack, state),
+                        object,
+                        "__call",
+                        method,
+                        args.clone(),
+                        call_span,
+                    ) {
+                        Ok(Some(result)) => return result,
+                        Ok(None) => {}
+                        Err(result) => return *result,
+                    }
+                }
                 return match self.call_magic_static_method(
-                    compiled,
-                    &class,
-                    "__callStatic",
-                    method,
-                    args,
-                    called_class,
-                    call_span,
-                    output,
-                    stack,
-                    state,
+                    ExecutionCursor::new(compiled, output, stack, state),
+                    MagicStaticCallRequest {
+                        class: &class,
+                        magic_method: "__callStatic",
+                        called_method: method,
+                        args,
+                        called_class,
+                        call_span,
+                    },
                 ) {
                     Ok(Some(result)) => result,
                     Ok(None) => self.runtime_error(
@@ -638,7 +737,7 @@ impl Vm {
                             class.name, method
                         ),
                     ),
-                    Err(result) => result,
+                    Err(result) => *result,
                 };
             }
             Err(message) => return self.runtime_error(output, compiled, stack, message),
@@ -671,16 +770,15 @@ impl Vm {
         {
             self.record_counter_dense_call_fallback("visibility");
             return match self.call_magic_static_method(
-                compiled,
-                &class,
-                "__callStatic",
-                method,
-                args,
-                called_class,
-                call_span,
-                output,
-                stack,
-                state,
+                ExecutionCursor::new(compiled, output, stack, state),
+                MagicStaticCallRequest {
+                    class: &class,
+                    magic_method: "__callStatic",
+                    called_method: method,
+                    args,
+                    called_class,
+                    call_span,
+                },
             ) {
                 Ok(Some(result)) => result,
                 Ok(None) => self.runtime_error_at_optional_span(
@@ -691,7 +789,7 @@ impl Vm {
                     call_span,
                     inaccessible,
                 ),
-                Err(result) => result,
+                Err(result) => *result,
             };
         }
         let visibility = if is_constructor_call {
@@ -732,11 +830,14 @@ impl Vm {
             has_magic_call,
             dense_call_has_by_ref_argument(&args),
         );
-        let method_target = Box::new(MethodCallResolvedTarget {
-            receiver_class: receiver_class.clone(),
+        let static_owner = class_owner_in_state(compiled, state, &declaring_class.name);
+        let route =
+            self.method_dispatch_route(&static_owner, method_entry.function, declaring_class);
+        let method_target = Rc::new(MethodCallResolvedTarget {
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
             guard: method_guard,
+            route,
         });
         let declaring_dynamic_owner_index =
             dynamic_class_owner_index_in_state(state, &declaring_class.name);
@@ -749,28 +850,36 @@ impl Vm {
                 target: method_target,
             },
         };
-        self.install_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-            target,
-        );
+        if let Some(id) = cache_id {
+            self.install_dense_method_call_inline_cache(
+                id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        } else {
+            self.install_method_call_inline_cache(
+                IrInlineCacheSite::classic(compiled, function_id, block_id, instruction_id),
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        }
         self.record_counter_dense_static_call_hit();
         let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         self.execute_function_with_dense_plan(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &class_owner,
             plan,
             method_entry.function,
             {
                 let declaring = self.class_name_handles(&declaring_class.name).normalized;
                 let mut call = FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_call_site_strict_types(call_site_strictness(compiled, call_span))
                     .with_class_context_handles(
                         declaring.clone(),
                         self.class_name_handles(&called_class).display,
@@ -782,9 +891,6 @@ impl Vm {
                 }
                 call
             },
-            output,
-            stack,
-            state,
         )
     }
 
@@ -883,14 +989,14 @@ impl Vm {
             );
         }
         self.execute_function_with_dense_plan(
-            compiled,
+            ExecutionCursor::new(compiled, output, stack, state),
             &owner,
             plan,
             method_entry.function,
             {
                 let declaring = self.class_name_handles(&declaring_class.name).normalized;
                 let mut call = FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_call_site_strict_types(call_site_strictness(compiled, call_span))
                     .with_optional_call_span(call_span)
                     .with_class_context_handles(
                         declaring.clone(),
@@ -902,9 +1008,6 @@ impl Vm {
                 }
                 call
             },
-            output,
-            stack,
-            state,
         )
     }
 
@@ -923,6 +1026,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         class_name: &str,
         display_class_name: &str,
         args: Vec<CallArgument>,
@@ -934,7 +1038,7 @@ impl Vm {
         // Autoloaders receive the source-case class name (the reference
         // engine passes the spelling at the new-expression site); the
         // normalized name would fail case-sensitive loader comparisons.
-        if let Err(result) = self.autoload_static_class_if_missing(
+        if let Err(result) = self.autoload_static_class_if_missing_at_slot(
             compiled,
             display_class_name,
             call_span.unwrap_or_default(),
@@ -944,11 +1048,12 @@ impl Vm {
                 block_id,
                 instruction_id,
             )),
+            cache_id,
             output,
             stack,
             state,
         ) {
-            return result;
+            return *result;
         }
         let Some(class) = self.cached_class_entry(compiled, state, class_name) else {
             return self.runtime_error(
@@ -961,7 +1066,7 @@ impl Vm {
         if let Err(result) =
             self.autoload_class_parents_if_missing(compiled, &class, output, stack, state)
         {
-            return result;
+            return *result;
         }
         let class_owner = class_owner_in_state(compiled, state, &class.name);
         let runtime_class = match self.cached_runtime_class_entry(&class_owner, state, &class) {
@@ -989,8 +1094,12 @@ impl Vm {
         // filter + `slot_by_name` hash-lookup loop the slow path runs. The
         // template is byte-identical to that loop's output and rebuilt on a
         // redefinition (epoch bump).
-        let slot_template =
-            self.cached_default_slot_template(state, &runtime_class, display_class_name);
+        let slot_template = self.cached_default_slot_template(
+            &class_owner,
+            state,
+            &runtime_class,
+            display_class_name,
+        );
         let object = ObjectRef::from_layout_slots(
             &runtime_class,
             display_class_name,
@@ -1031,14 +1140,14 @@ impl Vm {
             let class_owner = dynamic_class_owner_in_state(state, &constructor.class.name)
                 .unwrap_or_else(|| compiled.clone());
             let result = self.execute_function_with_dense_plan(
-                compiled,
+                ExecutionCursor::new(compiled, output, stack, state),
                 &class_owner,
                 plan,
                 constructor.method.function,
                 {
                     let declaring = self.class_name_handles(&constructor.class.name).normalized;
                     FunctionCall::new(args, Vec::new())
-                        .with_call_site_strict_types(compiled.unit().strict_types)
+                        .with_call_site_strict_types(call_site_strictness(compiled, call_span))
                         .with_optional_call_span(call_span)
                         .with_this(object.clone())
                         .with_class_context_handles(
@@ -1047,9 +1156,6 @@ impl Vm {
                             declaring,
                         )
                 },
-                output,
-                stack,
-                state,
             );
             if !result.status.is_success() {
                 return result;

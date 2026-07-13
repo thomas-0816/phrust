@@ -1,8 +1,10 @@
 //! Runtime shim for the built-in `Redis` class, extracted from the VM module.
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::result_large_err)]
 
 use super::prelude::*;
+use php_runtime::api::{
+    igbinary_serialize_value, igbinary_unserialize_value, msgpack_pack_value, msgpack_unpack_value,
+};
+use std::fmt;
 
 pub(super) fn is_redis_runtime_class(class_name: &str) -> bool {
     normalize_class_name(class_name) == "redis"
@@ -23,6 +25,66 @@ const REDIS_MODE_PROPERTY: &str = "__redis_mode";
 const REDIS_MODE_ATOMIC: i64 = 0;
 const REDIS_MODE_MULTI: i64 = 1;
 const REDIS_MODE_PIPELINE: i64 = 2;
+const REDIS_OPT_SERIALIZER: i64 = 1;
+const REDIS_SERIALIZER_NONE: i64 = 0;
+const REDIS_SERIALIZER_PHP: i64 = 1;
+const REDIS_SERIALIZER_IGBINARY: i64 = 2;
+const REDIS_SERIALIZER_MSGPACK: i64 = 3;
+
+#[derive(Default)]
+pub(super) struct RedisClientState {
+    connections: HashMap<u64, redis::Connection>,
+    last_errors: HashMap<u64, String>,
+}
+
+impl fmt::Debug for RedisClientState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedisClientState")
+            .field("connections", &self.connections.keys().collect::<Vec<_>>())
+            .field("last_errors", &self.last_errors)
+            .finish()
+    }
+}
+
+impl RedisClientState {
+    fn connect(&mut self, object: &ObjectRef, host: &str, port: i64, timeout: Duration) -> bool {
+        let url = format!("redis://{host}:{port}/");
+        let result = redis::Client::open(url.as_str())
+            .and_then(|client| client.get_connection_with_timeout(timeout))
+            .and_then(|connection| {
+                connection.set_read_timeout(Some(timeout))?;
+                connection.set_write_timeout(Some(timeout))?;
+                Ok(connection)
+            });
+        match result {
+            Ok(connection) => {
+                self.connections.insert(object.id(), connection);
+                self.last_errors.remove(&object.id());
+                object.set_property(REDIS_CONNECTED_PROPERTY, Value::Bool(true));
+                true
+            }
+            Err(error) => {
+                self.connections.remove(&object.id());
+                self.last_errors.insert(object.id(), error.to_string());
+                object.set_property(REDIS_CONNECTED_PROPERTY, Value::Bool(false));
+                false
+            }
+        }
+    }
+
+    fn disconnect(&mut self, object: &ObjectRef) {
+        self.connections.remove(&object.id());
+        object.set_property(REDIS_CONNECTED_PROPERTY, Value::Bool(false));
+    }
+
+    fn is_connected(&self, object: &ObjectRef) -> bool {
+        self.connections.contains_key(&object.id())
+    }
+
+    fn connection_mut(&mut self, object: &ObjectRef) -> Option<&mut redis::Connection> {
+        self.connections.get_mut(&object.id())
+    }
+}
 
 pub(super) fn new_redis_object(
     class_name: &str,
@@ -42,7 +104,7 @@ pub(super) fn new_redis_object(
 
 pub(super) fn redis_runtime_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: "redis".to_owned(),
+        name: "redis".to_owned().into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -69,7 +131,7 @@ pub(super) fn redis_class_constant_value(class_name: &str, constant: &str) -> Op
         return None;
     }
     let value = match constant.to_ascii_uppercase().as_str() {
-        "OPT_SERIALIZER" => 1,
+        "OPT_SERIALIZER" => REDIS_OPT_SERIALIZER,
         "OPT_PREFIX" => 2,
         "OPT_READ_TIMEOUT" => 3,
         "OPT_SCAN" => 4,
@@ -83,10 +145,10 @@ pub(super) fn redis_class_constant_value(class_name: &str, constant: &str) -> Op
         "OPT_BACKOFF_BASE" => 13,
         "OPT_BACKOFF_CAP" => 14,
         "OPT_PACK_IGNORE_NUMBERS" => 15,
-        "SERIALIZER_NONE" => 0,
-        "SERIALIZER_PHP" => 1,
-        "SERIALIZER_IGBINARY" => 2,
-        "SERIALIZER_MSGPACK" => 3,
+        "SERIALIZER_NONE" => REDIS_SERIALIZER_NONE,
+        "SERIALIZER_PHP" => REDIS_SERIALIZER_PHP,
+        "SERIALIZER_IGBINARY" => REDIS_SERIALIZER_IGBINARY,
+        "SERIALIZER_MSGPACK" => REDIS_SERIALIZER_MSGPACK,
         "SERIALIZER_JSON" => 4,
         "COMPRESSION_NONE" => 0,
         "COMPRESSION_LZF" => 1,
@@ -108,6 +170,7 @@ pub(super) fn call_redis_method(
     object: &ObjectRef,
     method: &str,
     args: Vec<CallArgument>,
+    state: &mut RedisClientState,
 ) -> Result<Value, String> {
     let method = normalize_method_name(method);
     let values = call_args_to_positional(&format!("Redis::{method}"), args)?;
@@ -119,17 +182,19 @@ pub(super) fn call_redis_method(
         }
         "connect" | "pconnect" => {
             validate_redis_arg_count("Redis::connect", values.len(), 1, 6)?;
-            object.set_property(REDIS_CONNECTED_PROPERTY, Value::Bool(true));
-            Ok(Value::Bool(true))
+            let host = php_string_to_lossy_string(&to_string(&values[0])?);
+            let port = values.get(1).map(to_int).transpose()?.unwrap_or(6379);
+            let timeout = redis_connect_timeout(values.get(2))?;
+            Ok(Value::Bool(state.connect(object, &host, port, timeout)))
         }
         "close" => {
             validate_redis_arg_count("Redis::close", values.len(), 0, 0)?;
-            object.set_property(REDIS_CONNECTED_PROPERTY, Value::Bool(false));
+            state.disconnect(object);
             Ok(Value::Bool(true))
         }
         "ping" => {
             validate_redis_arg_count("Redis::ping", values.len(), 0, 1)?;
-            Ok(Value::string("+PONG"))
+            redis_query_simple(state, object, "PING", &[])
         }
         "getmode" => {
             validate_redis_arg_count("Redis::getMode", values.len(), 0, 0)?;
@@ -139,40 +204,43 @@ pub(super) fn call_redis_method(
         }
         "isconnected" | "is_connected" => {
             validate_redis_arg_count("Redis::isConnected", values.len(), 0, 0)?;
-            Ok(object
-                .get_property(REDIS_CONNECTED_PROPERTY)
-                .unwrap_or(Value::Bool(false)))
+            Ok(Value::Bool(state.is_connected(object)))
         }
         "auth" => {
             validate_redis_arg_count("Redis::auth", values.len(), 1, 1)?;
-            Ok(Value::Bool(true))
+            redis_query_bool(state, object, "AUTH", &[redis_value_bytes(&values[0])?])
         }
         "select" => {
             validate_redis_arg_count("Redis::select", values.len(), 1, 1)?;
-            object.set_property(REDIS_DB_PROPERTY, Value::Int(to_int(&values[0])?));
-            Ok(Value::Bool(true))
+            let db = to_int(&values[0])?;
+            let result = redis_query_bool(state, object, "SELECT", &[db.to_string().into_bytes()])?;
+            if result == Value::Bool(true) {
+                object.set_property(REDIS_DB_PROPERTY, Value::Int(db));
+            }
+            Ok(result)
         }
-        "set" => redis_set(object, &values),
-        "setex" => redis_setex(object, &values),
-        "setnx" => redis_setnx(object, &values),
-        "get" => redis_get(object, &values),
-        "mget" | "getmultiple" => redis_mget(object, &values),
-        "mset" => redis_mset(object, &values),
-        "del" | "delete" | "unlink" => redis_del(object, &values),
-        "exists" => redis_exists(object, &values),
-        "expire" | "pexpire" | "persist" => redis_key_bool_result(object, &values, "Redis::expire"),
-        "ttl" | "pttl" => redis_ttl(object, &values),
-        "incr" => redis_counter(object, &values, 1),
-        "incrby" => redis_counter_by(object, &values, 1),
-        "decr" => redis_counter(object, &values, -1),
-        "decrby" => redis_counter_by(object, &values, -1),
-        "hset" => redis_hset(object, &values),
-        "hget" => redis_hget(object, &values),
+        "set" => redis_set(state, object, &values),
+        "setex" => redis_setex(state, object, &values),
+        "setnx" => redis_setnx(state, object, &values),
+        "get" => redis_get(state, object, &values),
+        "mget" | "getmultiple" => redis_mget(state, object, &values),
+        "mset" => redis_mset(state, object, &values),
+        "del" | "delete" | "unlink" => redis_del(state, object, &values),
+        "exists" => redis_exists(state, object, &values),
+        "expire" | "pexpire" | "persist" => redis_key_bool_result(state, object, &values, &method),
+        "ttl" | "pttl" => redis_ttl(state, object, &values, &method),
+        "incr" => redis_counter(state, object, &values, 1),
+        "incrby" => redis_counter_by(state, object, &values, 1),
+        "decr" => redis_counter(state, object, &values, -1),
+        "decrby" => redis_counter_by(state, object, &values, -1),
+        "hset" => redis_hset(state, object, &values),
+        "hget" => redis_hget(state, object, &values),
         "hgetall" => redis_hgetall(object, &values),
         "hdel" => redis_hdel(object, &values),
         "hexists" => redis_hexists(object, &values),
-        "lpush" => redis_list_push(object, &values, true),
-        "rpush" => redis_list_push(object, &values, false),
+        "lpush" => redis_list_push(state, object, &values, true),
+        "rpush" => redis_list_push(state, object, &values, false),
+        "lrange" => redis_lrange(state, object, &values),
         "lpop" => redis_list_pop(object, &values, true),
         "rpop" => redis_list_pop(object, &values, false),
         "llen" => redis_list_len(object, &values),
@@ -211,9 +279,216 @@ pub(super) fn call_redis_method(
         "setoption" => redis_set_option(object, &values),
         "getoption" => redis_get_option(object, &values),
         other => Err(format!(
-            "E_PHP_VM_REDIS_METHOD_GAP: method Redis::{other} is not implemented in the deterministic Redis fake backend"
+            "E_PHP_VM_REDIS_METHOD_GAP: method Redis::{other} is not implemented by the endpoint-backed Redis client"
         )),
     }
+}
+
+pub(super) fn php_string_to_lossy_string(value: &PhpString) -> String {
+    String::from_utf8_lossy(value.as_bytes()).into_owned()
+}
+
+fn redis_connect_timeout(value: Option<&Value>) -> Result<Duration, String> {
+    let seconds = value.map(to_float).transpose()?.unwrap_or(1.0);
+    let millis = if seconds <= 0.0 {
+        100
+    } else {
+        (seconds * 1000.0).clamp(1.0, 60_000.0) as u64
+    };
+    Ok(Duration::from_millis(millis))
+}
+
+pub(super) fn redis_value_bytes(value: &Value) -> Result<Vec<u8>, String> {
+    Ok(to_string(value)?.as_bytes().to_vec())
+}
+
+fn redis_serializer(object: &ObjectRef) -> i64 {
+    let options = match object.get_property(REDIS_OPTIONS_PROPERTY) {
+        Some(Value::Array(array)) => array,
+        _ => return REDIS_SERIALIZER_NONE,
+    };
+    let key = ArrayKey::String(PhpString::from(REDIS_OPT_SERIALIZER.to_string().as_str()));
+    options
+        .get(&key)
+        .and_then(|value| to_int(value).ok())
+        .unwrap_or(REDIS_SERIALIZER_NONE)
+}
+
+fn redis_unsupported_serializer(serializer: i64) -> String {
+    format!(
+        "E_PHP_VM_REDIS_SERIALIZER_GAP: Redis serializer {serializer} is not implemented for endpoint-backed value payloads"
+    )
+}
+
+fn redis_encode_cache_value(object: &ObjectRef, value: &Value) -> Result<Vec<u8>, String> {
+    match redis_serializer(object) {
+        REDIS_SERIALIZER_NONE => redis_value_bytes(value),
+        REDIS_SERIALIZER_PHP => serialize_value(value)
+            .map(|encoded| encoded.as_bytes().to_vec())
+            .map_err(|error| {
+                format!(
+                    "E_PHP_VM_REDIS_SERIALIZE: failed to PHP-serialize Redis value: {}",
+                    error.message()
+                )
+            }),
+        REDIS_SERIALIZER_IGBINARY => igbinary_serialize_value(value)
+            .map(|encoded| encoded.as_bytes().to_vec())
+            .map_err(|message| {
+                format!("E_PHP_VM_REDIS_SERIALIZE: failed to igbinary-serialize Redis value: {message}")
+            }),
+        REDIS_SERIALIZER_MSGPACK => msgpack_pack_value(value)
+            .map(|encoded| encoded.as_bytes().to_vec())
+            .map_err(|message| {
+                format!("E_PHP_VM_REDIS_SERIALIZE: failed to MessagePack-serialize Redis value: {message}")
+            }),
+        other => Err(redis_unsupported_serializer(other)),
+    }
+}
+
+fn redis_decode_cache_bytes(object: &ObjectRef, bytes: Vec<u8>) -> Result<Value, String> {
+    let input = PhpString::from_bytes(bytes);
+    match redis_serializer(object) {
+        REDIS_SERIALIZER_NONE => Ok(Value::String(input)),
+        REDIS_SERIALIZER_PHP => unserialize_value(&input, UnserializeOptions::default()).map_err(
+            |error| {
+                format!(
+                    "E_PHP_VM_REDIS_UNSERIALIZE: failed to PHP-unserialize Redis value: {}",
+                    error.message()
+                )
+            },
+        ),
+        REDIS_SERIALIZER_IGBINARY => igbinary_unserialize_value(&input).map_err(|message| {
+            format!("E_PHP_VM_REDIS_UNSERIALIZE: failed to igbinary-unserialize Redis value: {message}")
+        }),
+        REDIS_SERIALIZER_MSGPACK => msgpack_unpack_value(&input).map_err(|message| {
+            format!("E_PHP_VM_REDIS_UNSERIALIZE: failed to MessagePack-unserialize Redis value: {message}")
+        }),
+        other => Err(redis_unsupported_serializer(other)),
+    }
+}
+
+fn redis_cache_value_to_php(object: &ObjectRef, value: redis::Value) -> Result<Value, String> {
+    match value {
+        redis::Value::Nil => Ok(Value::Bool(false)),
+        redis::Value::BulkString(bytes) => redis_decode_cache_bytes(object, bytes),
+        redis::Value::Array(values) => values
+            .into_iter()
+            .map(|value| redis_cache_value_to_php(object, value))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::packed_array),
+        other => Ok(redis_value_to_php(other)),
+    }
+}
+
+fn redis_command_response(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    command: &str,
+    args: &[Vec<u8>],
+) -> Result<Option<redis::Value>, String> {
+    let Some(connection) = state.connection_mut(object) else {
+        return Ok(None);
+    };
+    let mut cmd = redis::cmd(command);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    match cmd.query::<redis::Value>(connection) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            state.last_errors.insert(object.id(), error.to_string());
+            state.disconnect(object);
+            Ok(None)
+        }
+    }
+}
+
+fn redis_value_to_php(value: redis::Value) -> Value {
+    match value {
+        redis::Value::Nil => Value::Bool(false),
+        redis::Value::Int(value) => Value::Int(value),
+        redis::Value::BulkString(bytes) => Value::string(bytes),
+        redis::Value::Array(values) => {
+            Value::packed_array(values.into_iter().map(redis_value_to_php).collect())
+        }
+        redis::Value::SimpleString(value) => Value::string(value.into_bytes()),
+        redis::Value::Okay => Value::Bool(true),
+        redis::Value::Map(values) => {
+            let mut array = PhpArray::new();
+            for (key, value) in values {
+                array.insert(redis_value_to_array_key(key), redis_value_to_php(value));
+            }
+            Value::Array(array)
+        }
+        redis::Value::Attribute { data, .. } => redis_value_to_php(*data),
+        redis::Value::Set(values) => {
+            Value::packed_array(values.into_iter().map(redis_value_to_php).collect())
+        }
+        redis::Value::Double(value) => Value::float(value),
+        redis::Value::Boolean(value) => Value::Bool(value),
+        redis::Value::VerbatimString { text, .. } => Value::string(text.into_bytes()),
+        redis::Value::BigNumber(value) => Value::string(format!("{value:?}").into_bytes()),
+        redis::Value::Push { data, .. } => {
+            Value::packed_array(data.into_iter().map(redis_value_to_php).collect())
+        }
+        redis::Value::ServerError(error) => Value::string(error.to_string().into_bytes()),
+        _ => Value::Bool(false),
+    }
+}
+
+fn redis_value_to_array_key(value: redis::Value) -> ArrayKey {
+    match value {
+        redis::Value::Int(value) => ArrayKey::Int(value),
+        redis::Value::BulkString(bytes) => ArrayKey::String(PhpString::from_bytes(bytes)),
+        redis::Value::SimpleString(value) => ArrayKey::String(PhpString::from(value.as_str())),
+        other => {
+            let value = redis_value_to_php(other);
+            let key = to_string_php(&value)
+                .map(|string| php_string_to_lossy_string(&string))
+                .unwrap_or_else(|_| value_type_name(&value).to_owned());
+            ArrayKey::String(PhpString::from(key.as_str()))
+        }
+    }
+}
+
+fn redis_query_bool(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    command: &str,
+    args: &[Vec<u8>],
+) -> Result<Value, String> {
+    let Some(response) = redis_command_response(state, object, command, args)? else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(match response {
+        redis::Value::Okay | redis::Value::SimpleString(_) => Value::Bool(true),
+        redis::Value::Int(value) => Value::Bool(value != 0),
+        redis::Value::Boolean(value) => Value::Bool(value),
+        redis::Value::Nil => Value::Bool(false),
+        other => redis_value_to_php(other),
+    })
+}
+
+fn redis_query_simple(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    command: &str,
+    args: &[Vec<u8>],
+) -> Result<Value, String> {
+    let Some(response) = redis_command_response(state, object, command, args)? else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(match response {
+        redis::Value::Okay => Value::Bool(true),
+        redis::Value::SimpleString(value) => {
+            if value.starts_with('+') {
+                Value::string(value.into_bytes())
+            } else {
+                Value::string(format!("+{value}").into_bytes())
+            }
+        }
+        other => redis_value_to_php(other),
+    })
 }
 
 pub(super) fn validate_redis_arg_count(
@@ -270,72 +545,112 @@ pub(super) fn redis_array_value_entries(
         .collect())
 }
 
-pub(super) fn redis_set(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_set(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::set", values.len(), 2, 5)?;
-    let mut store = redis_store(object);
-    store.insert(redis_key(&values[0])?, values[1].clone());
-    redis_set_store(object, store);
-    Ok(Value::Bool(true))
+    redis_query_bool(
+        state,
+        object,
+        "SET",
+        &[
+            redis_value_bytes(&values[0])?,
+            redis_encode_cache_value(object, &values[1])?,
+        ],
+    )
 }
 
-pub(super) fn redis_setex(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_setex(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::setex", values.len(), 3, 3)?;
-    let mut store = redis_store(object);
-    store.insert(redis_key(&values[0])?, values[2].clone());
-    redis_set_store(object, store);
-    Ok(Value::Bool(true))
+    redis_query_bool(
+        state,
+        object,
+        "SETEX",
+        &[
+            redis_value_bytes(&values[0])?,
+            to_int(&values[1])?.to_string().into_bytes(),
+            redis_encode_cache_value(object, &values[2])?,
+        ],
+    )
 }
 
-pub(super) fn redis_setnx(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_setnx(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::setnx", values.len(), 2, 2)?;
-    let mut store = redis_store(object);
-    let key = redis_key(&values[0])?;
-    if store.get(&key).is_some() {
-        return Ok(Value::Bool(false));
-    }
-    store.insert(key, values[1].clone());
-    redis_set_store(object, store);
-    Ok(Value::Bool(true))
+    redis_query_bool(
+        state,
+        object,
+        "SETNX",
+        &[
+            redis_value_bytes(&values[0])?,
+            redis_encode_cache_value(object, &values[1])?,
+        ],
+    )
 }
 
-pub(super) fn redis_get(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_get(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::get", values.len(), 1, 1)?;
-    let store = redis_store(object);
-    Ok(store
-        .get(&redis_key(&values[0])?)
-        .cloned()
+    Ok(
+        redis_command_response(state, object, "GET", &[redis_value_bytes(&values[0])?])?
+            .map(|value| redis_cache_value_to_php(object, value))
+            .transpose()?
+            .unwrap_or(Value::Bool(false)),
+    )
+}
+
+pub(super) fn redis_mget(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
+    validate_redis_arg_count("Redis::mget", values.len(), 1, 1)?;
+    let keys = redis_array_value_entries(&values[0], "Redis::mget")?;
+    let args = keys
+        .into_iter()
+        .map(|(_, key)| redis_value_bytes(&key))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(redis_command_response(state, object, "MGET", &args)?
+        .map(|value| redis_cache_value_to_php(object, value))
+        .transpose()?
         .unwrap_or(Value::Bool(false)))
 }
 
-pub(super) fn redis_mget(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
-    validate_redis_arg_count("Redis::mget", values.len(), 1, 1)?;
-    let keys = redis_array_value_entries(&values[0], "Redis::mget")?;
-    let store = redis_store(object);
-    let result = keys
-        .into_iter()
-        .map(|(_, key)| {
-            redis_key(&key)
-                .map(|redis_key| store.get(&redis_key).cloned().unwrap_or(Value::Bool(false)))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Value::packed_array(result))
-}
-
-pub(super) fn redis_mset(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_mset(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::mset", values.len(), 1, 1)?;
-    let mut store = redis_store(object);
+    let mut args = Vec::new();
     for (key, value) in redis_array_value_entries(&values[0], "Redis::mset")? {
         let key = match key {
-            ArrayKey::Int(index) => ArrayKey::String(PhpString::from(index.to_string().as_str())),
-            ArrayKey::String(name) => ArrayKey::String(name),
+            ArrayKey::Int(index) => index.to_string().into_bytes(),
+            ArrayKey::String(name) => name.as_bytes().to_vec(),
         };
-        store.insert(key, value);
+        args.push(key);
+        args.push(redis_encode_cache_value(object, &value)?);
     }
-    redis_set_store(object, store);
-    Ok(Value::Bool(true))
+    redis_query_bool(state, object, "MSET", &args)
 }
 
-pub(super) fn redis_del(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_del(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::del", values.len(), 1, usize::MAX)?;
     let mut keys = Vec::new();
     if values.len() == 1 && matches!(values[0], Value::Array(_)) {
@@ -347,106 +662,145 @@ pub(super) fn redis_del(object: &ObjectRef, values: &[Value]) -> Result<Value, S
     } else {
         keys.extend(values.iter().cloned());
     }
-    let mut store = redis_store(object);
-    let mut removed = 0i64;
-    for key in keys {
-        if store.remove(&redis_key(&key)?).is_some() {
-            removed += 1;
-        }
-    }
-    redis_set_store(object, store);
-    Ok(Value::Int(removed))
+    let args = keys
+        .into_iter()
+        .map(|key| redis_value_bytes(&key))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(redis_command_response(state, object, "DEL", &args)?
+        .map(redis_value_to_php)
+        .unwrap_or(Value::Bool(false)))
 }
 
-pub(super) fn redis_exists(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_exists(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::exists", values.len(), 1, usize::MAX)?;
-    let store = redis_store(object);
-    let mut count = 0i64;
-    for value in values {
-        if store.get(&redis_key(value)?).is_some() {
-            count += 1;
-        }
-    }
-    Ok(Value::Int(count))
+    let args = values
+        .iter()
+        .map(redis_value_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(redis_command_response(state, object, "EXISTS", &args)?
+        .map(redis_value_to_php)
+        .unwrap_or(Value::Bool(false)))
 }
 
 pub(super) fn redis_key_bool_result(
+    state: &mut RedisClientState,
     object: &ObjectRef,
     values: &[Value],
     function: &str,
 ) -> Result<Value, String> {
     validate_redis_arg_count(function, values.len(), 1, 3)?;
-    let store = redis_store(object);
-    Ok(Value::Bool(store.get(&redis_key(&values[0])?).is_some()))
+    let command = match function {
+        "persist" => "PERSIST",
+        "pexpire" => "PEXPIRE",
+        _ => "EXPIRE",
+    };
+    let mut args = vec![redis_value_bytes(&values[0])?];
+    if command != "PERSIST" {
+        args.push(
+            values
+                .get(1)
+                .map(to_int)
+                .transpose()?
+                .unwrap_or(0)
+                .to_string()
+                .into_bytes(),
+        );
+    }
+    redis_query_bool(state, object, command, &args)
 }
 
-pub(super) fn redis_ttl(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_ttl(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+    function: &str,
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::ttl", values.len(), 1, 1)?;
-    let store = redis_store(object);
-    Ok(Value::Int(
-        if store.get(&redis_key(&values[0])?).is_some() {
-            -1
-        } else {
-            -2
-        },
-    ))
+    let command = if function == "pttl" { "PTTL" } else { "TTL" };
+    Ok(
+        redis_command_response(state, object, command, &[redis_value_bytes(&values[0])?])?
+            .map(redis_value_to_php)
+            .unwrap_or(Value::Bool(false)),
+    )
 }
 
 pub(super) fn redis_counter(
+    state: &mut RedisClientState,
     object: &ObjectRef,
     values: &[Value],
     delta: i64,
 ) -> Result<Value, String> {
     validate_redis_arg_count("Redis::counter", values.len(), 1, 1)?;
-    redis_counter_delta(object, &values[0], delta)
+    let command = if delta >= 0 { "INCR" } else { "DECR" };
+    Ok(
+        redis_command_response(state, object, command, &[redis_value_bytes(&values[0])?])?
+            .map(redis_value_to_php)
+            .unwrap_or(Value::Bool(false)),
+    )
 }
 
 pub(super) fn redis_counter_by(
+    state: &mut RedisClientState,
     object: &ObjectRef,
     values: &[Value],
     direction: i64,
 ) -> Result<Value, String> {
     validate_redis_arg_count("Redis::counterBy", values.len(), 2, 2)?;
-    redis_counter_delta(object, &values[0], to_int(&values[1])? * direction)
+    let command = if direction >= 0 { "INCRBY" } else { "DECRBY" };
+    redis_command_response(
+        state,
+        object,
+        command,
+        &[
+            redis_value_bytes(&values[0])?,
+            to_int(&values[1])?.to_string().into_bytes(),
+        ],
+    )
+    .map(|value| value.map(redis_value_to_php).unwrap_or(Value::Bool(false)))
 }
 
-pub(super) fn redis_counter_delta(
+pub(super) fn redis_hset(
+    state: &mut RedisClientState,
     object: &ObjectRef,
-    key_value: &Value,
-    delta: i64,
+    values: &[Value],
 ) -> Result<Value, String> {
-    let mut store = redis_store(object);
-    let key = redis_key(key_value)?;
-    let current = store.get(&key).map(to_int).transpose()?.unwrap_or(0);
-    let next = current
-        .checked_add(delta)
-        .ok_or_else(|| "E_PHP_VM_REDIS_COUNTER_OVERFLOW: Redis counter overflow".to_owned())?;
-    store.insert(key, Value::Int(next));
-    redis_set_store(object, store);
-    Ok(Value::Int(next))
-}
-
-pub(super) fn redis_hset(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
     validate_redis_arg_count("Redis::hSet", values.len(), 3, 3)?;
-    let mut store = redis_store(object);
-    let key = redis_key(&values[0])?;
-    let field = redis_key(&values[1])?;
-    let mut hash = redis_array_property(store.get(&key));
-    let is_new = hash.get(&field).is_none();
-    hash.insert(field, values[2].clone());
-    store.insert(key, Value::Array(hash));
-    redis_set_store(object, store);
-    Ok(Value::Int(i64::from(is_new)))
+    Ok(redis_command_response(
+        state,
+        object,
+        "HSET",
+        &[
+            redis_value_bytes(&values[0])?,
+            redis_value_bytes(&values[1])?,
+            redis_encode_cache_value(object, &values[2])?,
+        ],
+    )?
+    .map(redis_value_to_php)
+    .unwrap_or(Value::Bool(false)))
 }
 
-pub(super) fn redis_hget(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
+pub(super) fn redis_hget(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
     validate_redis_arg_count("Redis::hGet", values.len(), 2, 2)?;
-    let store = redis_store(object);
-    let hash = redis_array_property(store.get(&redis_key(&values[0])?));
-    Ok(hash
-        .get(&redis_key(&values[1])?)
-        .cloned()
-        .unwrap_or(Value::Bool(false)))
+    Ok(redis_command_response(
+        state,
+        object,
+        "HGET",
+        &[
+            redis_value_bytes(&values[0])?,
+            redis_value_bytes(&values[1])?,
+        ],
+    )?
+    .map(|value| redis_cache_value_to_php(object, value))
+    .transpose()?
+    .unwrap_or(Value::Bool(false)))
 }
 
 pub(super) fn redis_hgetall(object: &ObjectRef, values: &[Value]) -> Result<Value, String> {
@@ -481,28 +835,41 @@ pub(super) fn redis_hexists(object: &ObjectRef, values: &[Value]) -> Result<Valu
 }
 
 pub(super) fn redis_list_push(
+    state: &mut RedisClientState,
     object: &ObjectRef,
     values: &[Value],
     left: bool,
 ) -> Result<Value, String> {
     validate_redis_arg_count("Redis::listPush", values.len(), 2, usize::MAX)?;
-    let mut store = redis_store(object);
-    let key = redis_key(&values[0])?;
-    let mut elements = redis_array_property(store.get(&key))
-        .iter()
-        .map(|(_, value)| value.clone())
-        .collect::<Vec<_>>();
+    let command = if left { "LPUSH" } else { "RPUSH" };
+    let mut args = vec![redis_value_bytes(&values[0])?];
     for value in &values[1..] {
-        if left {
-            elements.insert(0, value.clone());
-        } else {
-            elements.push(value.clone());
-        }
+        args.push(redis_encode_cache_value(object, value)?);
     }
-    let len = elements.len() as i64;
-    store.insert(key, Value::packed_array(elements));
-    redis_set_store(object, store);
-    Ok(Value::Int(len))
+    Ok(redis_command_response(state, object, command, &args)?
+        .map(redis_value_to_php)
+        .unwrap_or(Value::Bool(false)))
+}
+
+pub(super) fn redis_lrange(
+    state: &mut RedisClientState,
+    object: &ObjectRef,
+    values: &[Value],
+) -> Result<Value, String> {
+    validate_redis_arg_count("Redis::lRange", values.len(), 3, 3)?;
+    Ok(redis_command_response(
+        state,
+        object,
+        "LRANGE",
+        &[
+            redis_value_bytes(&values[0])?,
+            to_int(&values[1])?.to_string().into_bytes(),
+            to_int(&values[2])?.to_string().into_bytes(),
+        ],
+    )?
+    .map(|value| redis_cache_value_to_php(object, value))
+    .transpose()?
+    .unwrap_or(Value::Bool(false)))
 }
 
 pub(super) fn redis_list_pop(
@@ -668,4 +1035,50 @@ pub(super) fn redis_get_option(object: &ObjectRef, values: &[Value]) -> Result<V
         .get(&redis_key(&values[0])?)
         .cloned()
         .unwrap_or(Value::Null))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn object_with_serializer(serializer: i64) -> ObjectRef {
+        let object = new_redis_object("Redis", Vec::new()).unwrap();
+        let mut options = PhpArray::new();
+        options.insert(
+            redis_key(&Value::Int(REDIS_OPT_SERIALIZER)).unwrap(),
+            Value::Int(serializer),
+        );
+        object.set_property(REDIS_OPTIONS_PROPERTY, Value::Array(options));
+        object
+    }
+
+    fn structured_payload() -> Value {
+        Value::packed_array(vec![
+            Value::Int(1),
+            Value::string("two"),
+            Value::packed_array(vec![Value::Bool(false), Value::Null]),
+        ])
+    }
+
+    #[test]
+    fn redis_msgpack_serializer_roundtrips_structured_payloads() {
+        let object = object_with_serializer(REDIS_SERIALIZER_MSGPACK);
+        let payload = structured_payload();
+
+        let encoded = redis_encode_cache_value(&object, &payload).unwrap();
+
+        assert_ne!(encoded, b"Array".to_vec());
+        assert_eq!(redis_decode_cache_bytes(&object, encoded).unwrap(), payload);
+    }
+
+    #[test]
+    fn redis_igbinary_serializer_roundtrips_structured_payloads() {
+        let object = object_with_serializer(REDIS_SERIALIZER_IGBINARY);
+        let payload = structured_payload();
+
+        let encoded = redis_encode_cache_value(&object, &payload).unwrap();
+
+        assert_ne!(encoded, b"Array".to_vec());
+        assert_eq!(redis_decode_cache_bytes(&object, encoded).unwrap(), payload);
+    }
 }

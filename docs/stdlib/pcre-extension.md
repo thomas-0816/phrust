@@ -1,7 +1,7 @@
 # Standard library PCRE Extension
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements an ext/pcre MVP backed by PCRE2:
+The standard library implements an ext/pcre MVP backed by PCRE2:
 
 - `preg_match`
 - `preg_match_all`

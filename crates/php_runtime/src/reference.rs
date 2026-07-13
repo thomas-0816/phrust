@@ -15,24 +15,37 @@ use crate::{
 };
 use std::cell::{BorrowError, BorrowMutError, Ref, RefCell};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_REFERENCE_CELL_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_reference_cell_id() -> u64 {
+    NEXT_REFERENCE_CELL_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Shared cell used for the simple local-reference MVP.
 #[derive(Clone, Debug)]
 pub struct ReferenceCell {
-    inner: Rc<RefCell<Value>>,
+    inner: Rc<ReferenceStorage>,
+}
+
+#[derive(Debug)]
+struct ReferenceStorage {
+    id: u64,
+    value: RefCell<Value>,
 }
 
 /// Weak debug handle to reference-cell storage for GC tests.
 #[derive(Clone, Debug)]
 pub struct WeakReferenceHandle {
-    id: usize,
-    inner: Weak<RefCell<Value>>,
+    id: u64,
+    inner: Weak<ReferenceStorage>,
 }
 
 impl WeakReferenceHandle {
     /// Returns the process-local debug ID for this handle.
     #[must_use]
-    pub const fn id(&self) -> usize {
+    pub const fn id(&self) -> u64 {
         self.id
     }
 
@@ -55,7 +68,10 @@ impl ReferenceCell {
     pub fn new(value: Value) -> Self {
         crate::layout_stats::record_reference_cell_creation();
         Self {
-            inner: Rc::new(RefCell::new(value)),
+            inner: Rc::new(ReferenceStorage {
+                id: next_reference_cell_id(),
+                value: RefCell::new(value),
+            }),
         }
     }
 
@@ -63,7 +79,7 @@ impl ReferenceCell {
     #[must_use]
     pub fn get(&self) -> Value {
         let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
-        self.inner.borrow().clone()
+        self.inner.value.borrow().clone()
     }
 
     /// Attempts to read the contained value by cloning it.
@@ -72,7 +88,7 @@ impl ReferenceCell {
     /// It returns `Err` if another caller currently holds a mutable borrow.
     pub fn try_get(&self) -> Result<Value, BorrowError> {
         let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
-        self.inner.try_borrow().map(|value| value.clone())
+        self.inner.value.try_borrow().map(|value| value.clone())
     }
 
     /// Borrows the contained value for read-only inspection.
@@ -83,12 +99,12 @@ impl ReferenceCell {
     #[doc(hidden)]
     #[must_use]
     pub fn borrow(&self) -> Ref<'_, Value> {
-        self.inner.borrow()
+        self.inner.value.borrow()
     }
 
     /// Runs `f` with a checked immutable borrow of the contained value.
     pub fn try_with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> Result<T, BorrowError> {
-        self.inner.try_borrow().map(|value| f(&value))
+        self.inner.value.try_borrow().map(|value| f(&value))
     }
 
     /// Runs `f` with a checked mutable borrow of the contained value.
@@ -100,12 +116,15 @@ impl ReferenceCell {
         &self,
         f: impl FnOnce(&mut Value) -> T,
     ) -> Result<T, BorrowMutError> {
-        self.inner.try_borrow_mut().map(|mut value| f(&mut value))
+        self.inner
+            .value
+            .try_borrow_mut()
+            .map(|mut value| f(&mut value))
     }
 
     /// Replaces the contained value.
     pub fn set(&self, value: Value) {
-        *self.inner.borrow_mut() = value;
+        *self.inner.value.borrow_mut() = value;
     }
 
     /// Attempts to replace the contained value.
@@ -113,7 +132,7 @@ impl ReferenceCell {
     /// This checked accessor is preferred outside low-level runtime internals.
     /// It returns `Err` if another caller currently holds a borrow.
     pub fn try_set(&self, value: Value) -> Result<(), BorrowMutError> {
-        self.inner.try_borrow_mut().map(|mut slot| {
+        self.inner.value.try_borrow_mut().map(|mut slot| {
             *slot = value;
         })
     }
@@ -129,8 +148,8 @@ impl ReferenceCell {
     /// This is not a PHP-visible handle and must only be used by runtime tests
     /// and diagnostics.
     #[must_use]
-    pub fn gc_debug_id(&self) -> usize {
-        Rc::as_ptr(&self.inner).cast::<()>() as usize
+    pub fn gc_debug_id(&self) -> u64 {
+        self.inner.id
     }
 
     /// Returns the current `Rc` strong count for GC debug metadata.
@@ -577,7 +596,7 @@ mod tests {
 
     fn empty_class(name: &str) -> ClassEntry {
         ClassEntry {
-            name: name.to_owned(),
+            name: name.to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -813,5 +832,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             copy_model.into_iter().map(Value::Int).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn logical_cell_id_is_shared_by_aliases_and_unique_per_cell() {
+        let cell = ReferenceCell::new(Value::Int(1));
+        let alias = cell.clone();
+        let independent = ReferenceCell::new(Value::Int(1));
+
+        assert_eq!(cell.gc_debug_id(), alias.gc_debug_id());
+        assert_ne!(cell.gc_debug_id(), independent.gc_debug_id());
     }
 }

@@ -164,7 +164,7 @@ struct FunctionHotness {
 pub struct TieringState {
     options: TieringOptions,
     stats: TieringStats,
-    functions: BTreeMap<u32, FunctionHotness>,
+    functions: BTreeMap<(u64, u32), FunctionHotness>,
 }
 
 impl TieringState {
@@ -181,6 +181,16 @@ impl TieringState {
         }
     }
 
+    /// Starts request-local accounting without discarding worker hotness.
+    pub fn begin_request(&mut self, options: TieringOptions) {
+        let exit_policy_thresholds = options.exit_policy_thresholds();
+        self.options = options;
+        self.stats = TieringStats {
+            exit_policy: ExitCounterTable::new(exit_policy_thresholds),
+            ..TieringStats::default()
+        };
+    }
+
     #[must_use]
     pub fn stats(&self) -> TieringStats {
         self.stats.clone()
@@ -188,6 +198,7 @@ impl TieringState {
 
     pub fn record_function_entry(
         &mut self,
+        unit_key: u64,
         function: FunctionId,
         quickening: QuickeningMode,
         jit: JitMode,
@@ -199,7 +210,10 @@ impl TieringState {
         }
 
         self.stats.function_entry_count = self.stats.function_entry_count.saturating_add(1);
-        let hotness = self.functions.entry(function.raw()).or_default();
+        let hotness = self
+            .functions
+            .entry((unit_key, function.raw()))
+            .or_default();
         hotness.entries = hotness.entries.saturating_add(1);
 
         let jit_enabled = matches!(jit, JitMode::Cranelift);
@@ -234,6 +248,7 @@ impl TieringState {
 
     pub fn record_loop_backedge(
         &mut self,
+        unit_key: u64,
         function: FunctionId,
         current: BlockId,
         target: BlockId,
@@ -242,7 +257,10 @@ impl TieringState {
             return;
         }
         self.stats.loop_backedge_count = self.stats.loop_backedge_count.saturating_add(1);
-        let hotness = self.functions.entry(function.raw()).or_default();
+        let hotness = self
+            .functions
+            .entry((unit_key, function.raw()))
+            .or_default();
         hotness.backedges = hotness.backedges.saturating_add(1);
     }
 
@@ -435,11 +453,11 @@ mod tests {
         });
 
         assert_eq!(
-            state.record_function_entry(FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
             ExecutionTier::Interpreter
         );
         assert_eq!(
-            state.record_function_entry(FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
             ExecutionTier::Quickened
         );
         assert_eq!(state.stats().tier1_quickened_entries, 1);
@@ -454,7 +472,12 @@ mod tests {
         });
 
         assert_eq!(
-            state.record_function_entry(FunctionId::new(1), QuickeningMode::On, JitMode::Cranelift),
+            state.record_function_entry(
+                7,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                JitMode::Cranelift,
+            ),
             ExecutionTier::Interpreter
         );
         assert_eq!(state.stats().tiering_disabled_entries, 1);
@@ -471,6 +494,7 @@ mod tests {
 
         assert_eq!(
             state.record_function_entry(
+                7,
                 FunctionId::new(1),
                 QuickeningMode::Off,
                 JitMode::Cranelift
@@ -490,6 +514,7 @@ mod tests {
 
         assert_eq!(
             state.record_function_entry(
+                7,
                 FunctionId::new(1),
                 QuickeningMode::Off,
                 JitMode::Cranelift
@@ -498,6 +523,7 @@ mod tests {
         );
         assert_eq!(
             state.record_function_entry(
+                7,
                 FunctionId::new(1),
                 QuickeningMode::Off,
                 JitMode::Cranelift
@@ -512,8 +538,8 @@ mod tests {
     fn backedge_hotness_is_counted() {
         let mut state = TieringState::new(TieringOptions::default());
 
-        state.record_loop_backedge(FunctionId::new(1), BlockId::new(3), BlockId::new(1));
-        state.record_loop_backedge(FunctionId::new(1), BlockId::new(1), BlockId::new(3));
+        state.record_loop_backedge(7, FunctionId::new(1), BlockId::new(3), BlockId::new(1));
+        state.record_loop_backedge(7, FunctionId::new(1), BlockId::new(1), BlockId::new(3));
 
         assert_eq!(state.stats().loop_backedge_count, 1);
     }
@@ -542,6 +568,7 @@ mod tests {
         state.record_inline_cache(InlineCacheObservation {
             candidate: true,
             seeded: false,
+            persistent_worker: false,
             slot_allocated: true,
             kind: None,
             hit: false,
@@ -556,10 +583,39 @@ mod tests {
         });
 
         assert_eq!(
-            state.record_function_entry(FunctionId::new(1), QuickeningMode::On, JitMode::Cranelift),
+            state.record_function_entry(
+                7,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                JitMode::Cranelift,
+            ),
             ExecutionTier::Interpreter
         );
         assert_eq!(state.stats().guard_failure_score, 2);
         assert_eq!(state.stats().tier2_jit_candidates, 0);
+    }
+
+    #[test]
+    fn request_stats_reset_but_unit_scoped_hotness_persists() {
+        let options = TieringOptions {
+            function_entry_threshold: 2,
+            ..TieringOptions::default()
+        };
+        let mut state = TieringState::new(options.clone());
+
+        assert_eq!(
+            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            ExecutionTier::Interpreter
+        );
+        state.begin_request(options);
+        assert_eq!(state.stats().function_entry_count, 0);
+        assert_eq!(
+            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            ExecutionTier::Quickened
+        );
+        assert_eq!(
+            state.record_function_entry(8, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            ExecutionTier::Interpreter
+        );
     }
 }

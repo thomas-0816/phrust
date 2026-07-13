@@ -1,0 +1,200 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "XMLWriter"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_end_document",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_end_element",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_flush",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_open_memory",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_open_uri",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_output_memory",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_start_document",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_start_element",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_text",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_write_attribute",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_write_cdata",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_write_comment",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "xmlwriter",
+        "source": "ext/xmlwriter/php_xmlwriter.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "xml"
+        }
+      ],
+      "name": "xmlwriter_write_element",
+      "visibility": "php"
+    }
+  ],
+  "name": "xmlwriter",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

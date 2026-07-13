@@ -25,10 +25,12 @@
   - `ext/standard/tests/image/image_type_to_mime_type_variation3.phpt`
   - `ext/standard/tests/image/image_type_to_mime_type_variation4.phpt`
 - Current selected module gate:
-  `/private/tmp/phrust-phpt-fileinfo-selected-after-rebase`
-  reported reference PASS 8 / SKIP 30 and target PASS 38. The local php-src
-  oracle binary was built without Fileinfo, so reference rows that require the
-  extension skip while standard image-helper rows can still pass.
+  `/private/tmp/phrust-phpt-work/module-runs/fileinfo`
+  reported reference PASS 8 / SKIP 30 and target PASS 37 / SKIP 1. The local
+  php-src oracle binary was built without Fileinfo, so reference rows that
+  require the extension skip while standard image-helper rows can still pass.
+  The target skip is `ext/fileinfo/tests/cve-2014-3538-nojit.phpt`, which is
+  not suitable for the debug PHPT build.
 - Full upstream fileinfo target snapshot: 56 rows, PASS 24 / SKIP 1 /
   FAIL 31 at
   `/private/tmp/phrust-phpt-fileinfo-full-target-finfo-open-object`.
@@ -42,11 +44,11 @@ The runtime exposes `finfo_open`, `finfo_close`, `finfo_file`,
 `image_type_to_mime_type`, and `image_type_to_extension`.
 
 `finfo_open` validates libmagic availability before returning a PHP 8.5
-`finfo` object facade. `finfo_file` and `finfo_buffer` use libmagic as the primary
-backend, store object flags across `finfo_set_flags`, and keep the local
-deterministic MIME fallback only for unavailable, errored, or inconclusive
-libmagic results. Directory paths report `directory` before byte reads, matching
-the selected PHP-visible behavior.
+`finfo` object facade. `finfo_file` and `finfo_buffer` use libmagic as the
+single MIME backend and store object flags across `finfo_set_flags`; phrust no
+longer post-processes libmagic output with local MIME signature guesses.
+Directory paths report `directory` before byte reads, matching the selected
+PHP-visible behavior.
 
 The VM recognizes the PHP 8.5 `finfo` class, supports `new finfo(...)`,
 `instanceof finfo`, repeatable `$finfo->__construct()`, and dispatches

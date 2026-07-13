@@ -1,3 +1,4 @@
 {"path":"tests/phpt/generated/xmlwriter/basic.phpt"}
 {"path":"tests/phpt/generated/xmlwriter/procedural-memory.phpt"}
 {"path":"tests/phpt/generated/xmlwriter/comments-cdata.phpt"}
+{"path":"tests/phpt/generated/xmlwriter/uri-flush.phpt"}

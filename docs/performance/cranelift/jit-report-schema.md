@@ -1,9 +1,7 @@
 # Cranelift JIT Counter And Report Schema
 
-Date: 2026-06-23.
-
-Work item.04 defines the machine-readable counter and report surface used by
-later Cranelift addendum work items.
+This document defines the machine-readable counter and report surface used
+by the Cranelift addendum.
 
 ## VM Counter Fields
 
@@ -102,23 +100,23 @@ compact stats JSON. Optional local diagnostics such as
 target ISA used by the process-local compile cache. This is metadata only and
 does not affect tiering, eligibility, native entry, or fallback behavior.
 
-Work item.10 keeps the allowed intrinsic set empty. Calls therefore remain
+The schema keeps the allowed intrinsic set empty. Calls therefore remain
 non-eligible with `JIT_ELIGIBILITY_REJECT_CALL_OPCODE` until a later work item
 adds explicit helper-call lowering.
 
-Work item.12 adds the first non-zero execution counters for the
+The schema includes the first non-zero execution counters for the
 constant-return native subset. In compact `--jit-stats=json`, the same metadata
 is emitted as `code_bytes` and `compile_time_nanos` inside the `jit` object.
 
-Work item.13 adds non-zero helper-call reporting for successful native
+The schema includes non-zero helper-call reporting for successful native
 helper arithmetic. In compact `--jit-stats=json`, `helper_calls` records the
 number of checked runtime helpers called by JIT code during the request.
 Overflow and other non-zero helper statuses fall back to the interpreter and
 increase `bailouts` instead of `executed`.
 
-Work item.14 adds structured side-exit reporting. VM counter JSON includes
+The schema includes structured side-exit reporting. VM counter JSON includes
 `jit_side_exit_reasons`, and compact `--jit-stats=json` includes
-`side_exit_reasons`. Work item.17 inline integer overflow exits use this
+`side_exit_reasons`. that stage inline integer overflow exits use this
 shape:
 
 ```json
@@ -137,7 +135,7 @@ shape:
 Actual helper status exits remain represented by `helper_status` when a later
 helper-backed path returns a non-zero status through the native ABI.
 
-Work item.15 adds process-local blacklist reporting. Compact
+The schema includes process-local blacklist reporting. Compact
 `--jit-stats=json` includes the current blacklist mode plus blacklist totals and
 reasons:
 
@@ -156,23 +154,23 @@ reasons:
 Stable blacklist reason spellings are `too_many_side_exits`,
 `guard_failure_rate`, `compile_errors`, and `abi_mismatch`.
 
-Work item.16 adds the first Cranelift big-win matrix generator. Rows emitted
+The schema includes the first Cranelift big-win matrix generator. Rows emitted
 by `scripts/performance/cranelift/jit_bench_matrix.py` include the core report
 counters plus `scenario` and `jit_mode` so each `--jit=off` and
 `--jit=cranelift` measurement can be compared directly in
 `target/performance/cranelift/big_wins_report.json`.
 
-Work item.17 adds inline checked integer add/sub/mul reporting. Successful
+The schema includes inline checked integer add/sub/mul reporting. Successful
 inline arithmetic rows report non-zero `fast_path_hits` and zero
 `helper_calls`. Overflow rows report `jit_status: "side_exit"`,
 `side_exit_reasons.overflow`, `overflow_exits`, and `slow_path_calls`.
 
-Work item.18 reuses the same row and counter schema for simple branches and
+The schema reuses the same row and counter schema for simple branches and
 counted loops. Executed loop and branch rows report non-zero `fast_path_hits`
 and zero `helper_calls`; unsupported loop-body calls report
 `jit_status: "fallback"` with `CL-GAP-LOOP-BODY-CALL`.
 
-Work item.19 adds explicit numeric-loop benchmark rows for `sum_to_n`,
+The schema includes explicit numeric-loop benchmark rows for `sum_to_n`,
 `fib_iterative`, `branchy_int_loop`, and repeated integer function calls.
 Cranelift report rows now distinguish `compile_time_seconds`,
 `execution_time_seconds`, and `total_time_seconds`; `wall_time_seconds` remains
@@ -182,7 +180,7 @@ measured total and clamping at zero. The same rows report side exits and native
 code bytes through the stable counter bundle. There is no CI-hard speedup
 threshold and no platform-specific instruction-count assumption.
 
-Work item.21 adds compact stats and report counters for the first
+The schema includes compact stats and report counters for the first
 helper-assisted packed-array int-index fetch path. The valid packed fixture
 reports non-zero `fast_path_hits` and `packed_fetch_fast_hits` with exactly one
 helper call. Bounds and negative-index fixtures report
@@ -191,7 +189,7 @@ report `packed_fetch_layout_exits` before interpreter fallback. String-key or
 untyped-index functions remain ineligible and do not raise packed-fetch fast
 hits.
 
-Work item.22 adds compact stats and report counters for the packed-foreach
+The schema includes compact stats and report counters for the packed-foreach
 integer sum fast path. Successful all-int packed array rows report non-zero
 `packed_foreach_sum_fast_hits`, `fast_path_hits`, native `code_bytes`, and
 `compile_time_nanos`, with zero helper-call counts in the per-invocation
@@ -201,7 +199,7 @@ counter. Mixed element, layout, and reference guard misses report
 `side_exit_reasons.overflow`, `packed_foreach_sum_overflow_exits`,
 `overflow_exits`, and `slow_path_calls`.
 
-Work item.24 adds compact stats and report counters for the conservative
+The schema includes compact stats and report counters for the conservative
 string/string concat fast path. Successful typed string/string rows report
 non-zero `string_concat_fast_path_hits`, `fast_path_hits`, `helper_calls`,
 native `code_bytes`, and `compile_time_nanos`, with zero
@@ -209,7 +207,7 @@ native `code_bytes`, and `compile_time_nanos`, with zero
 `__toString` fixtures remain outside the fast path and report
 `jit_status: "fallback"` without incrementing string-concat fast counters.
 
-Work item.25 adds the metadata-only property-fetch profile surface. VM
+The schema includes the metadata-only property-fetch profile surface. VM
 counter JSON now includes `property_fetch_profiles`, a stable array keyed by
 callsite. Each entry reports observed receiver `class_ids`,
 `receiver_classes`, `declared_property_names`, `visibility_contexts`,
@@ -217,10 +215,10 @@ callsite. Each entry reports observed receiver `class_ids`,
 dynamic-property fallback, whether a declared visible property was seen,
 uninitialized typed-property observations, the callsite state
 `monomorphic|polymorphic|megamorphic`, `fast_path_eligible`, and precise
-`non_eligible_reasons`. Work item.25 does not add a Cranelift inline
+`non_eligible_reasons`. the schema does not include a Cranelift inline
 property load; it only records the metadata needed by later work items.
 
-Work item.26 adds compact stats and report counters for the conservative
+The schema includes compact stats and report counters for the conservative
 monomorphic property-load fast path. Successful DTO rows report non-zero
 `property_load_fast_hits`, `fast_path_hits`, `helper_calls`, native
 `code_bytes`, and `compile_time_nanos`, with zero property guard exits.
@@ -232,7 +230,7 @@ zero property-load fast counters. Uninitialized typed properties report
 `property_load_uninitialized_exits`, and `property_load_slow_calls` before the
 interpreter raises the canonical error.
 
-Work item.27 adds the metadata-only method-call profile surface. VM counter
+The schema includes the metadata-only method-call profile surface. VM counter
 JSON now includes `method_call_profiles`, a stable array keyed by callsite.
 Each entry reports observed receiver `class_ids`, `receiver_classes`,
 `declaring_classes`, `method_ids`, `method_slot_indexes`,
@@ -241,11 +239,11 @@ flags, public `__call` and magic fallback flags, simple positional argument
 status, by-reference argument observations, callee JIT eligibility, direct
 VM-call helper availability, the callsite state
 `monomorphic|polymorphic|megamorphic`, `fast_path_eligible`, and precise
-`non_eligible_reasons`. Work item.27 does not add direct native method
+`non_eligible_reasons`. the schema does not include direct native method
 calls; it only records the metadata needed by later work items.
 
-Work item.28 adds the first guarded monomorphic method-call fast path for
-`--jit=cranelift`. The path reuses Work item.27 callsite metadata and method
+The schema includes the first guarded monomorphic method-call fast path for
+`--jit=cranelift`. The path reuses that stage callsite metadata and method
 inline-cache targets, checks the receiver class id/name and method epoch, then
 dispatches through the VM/JIT method-call helper without inlining or adding a
 second native method ABI. First misses, subclass guard failures, magic
@@ -257,7 +255,7 @@ dispatches increment `direct_call_hits` and the aggregate
 method calls, subclass fallback, magic fallback, and callee exception
 propagation.
 
-Work item.29 adds the conservative Cranelift tiering policy described in
+The schema includes the conservative Cranelift tiering policy described in
 `docs/performance/cranelift/jit-report-schema.md`. `--jit-threshold=N` is the
 minimum-call threshold, `--jit-max-compile-us=N` and `--jit-max-functions=N`
 bound request-local compilation, and `--jit-eager` admits first-call
@@ -268,7 +266,7 @@ compilation for tests. Compact `--jit-stats=json` reports `eager`,
 matrix records `tiering_mode` per row and includes threshold-mode hot/cold
 policy rows.
 
-Work item.30 adds a process-local, non-persistent compiled-function cache.
+The schema includes a process-local, non-persistent compiled-function cache.
 Cache keys include function id, function IR fingerprint, `JIT_RUNTIME_ABI_HASH`,
 JIT config bits, and target ISA. Runtime/class layout epoch mismatches
 invalidate existing entries before fallback compilation; ABI, IR, config, and
@@ -276,7 +274,7 @@ target mismatches miss by key. Reports surface `compile_cache_hits`,
 `compile_cache_misses`, and `compile_cache_invalidations` in row counters, plus
 the matching `jit_compile_cache_*` fields in VM counter JSON.
 
-Work item.31 consolidates the Cranelift Big-Win matrix. Generated reports
+that stage consolidates the Cranelift Big-Win matrix. Generated reports
 use `schema_version: 2`, include a top-level `matrix` summary, and tag each row
 with `matrix_family`, `matrix_family_label`, `path_kinds`, and the executed
 `command`. The required matrix families are `int_leaf_calls`,
@@ -285,7 +283,7 @@ with `matrix_family`, `matrix_family_label`, `path_kinds`, and the executed
 `method_call_loop`. Optional `REFERENCE_PHP` rows are advisory orientation rows;
 they are not correctness gates.
 
-Work item.32 consumes the schema-2 report through
+that stage consumes the schema-2 report through
 `scripts/performance/cranelift/guard_failure_report.py`. Rows therefore also carry
 `side_exit_reasons` and `blacklist_reasons` maps when the VM reports them. The
 guard report writes JSON and a text summary with top side exits, high-failure
@@ -330,7 +328,7 @@ Generated reports are local artifacts and must not be committed.
 
 | Field | Meaning |
 | --- | --- |
-| `matrix_family` | Stable Work item.31 family id used by the consolidated Big-Win matrix. |
+| `matrix_family` | Stable that stage family id used by the consolidated Big-Win matrix. |
 | `matrix_family_label` | Human-readable family label. |
 | `target` | Stable big-win target id such as `integer_arithmetic_leaf` or `counted_loop`. |
 | `fixture` | Fixture path used for the row. |
@@ -374,7 +372,7 @@ Rows with `jit_mode: "reference_php"` are advisory only.
 
 ## Validation
 
-Work item.04 validation:
+that stage validation:
 
 ```bash
 nix develop -c cargo test -p php_perf cranelift_jit_report

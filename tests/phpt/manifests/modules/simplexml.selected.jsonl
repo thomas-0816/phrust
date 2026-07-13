@@ -8,3 +8,4 @@
 {"path":"tests/phpt/generated/simplexml/load-file.phpt"}
 {"path":"tests/phpt/generated/simplexml/wordpress-snippets.phpt"}
 {"path":"tests/phpt/generated/simplexml/dom-interop.phpt"}
+{"path":"tests/phpt/generated/simplexml/libxml-namespaces-cdata.phpt"}

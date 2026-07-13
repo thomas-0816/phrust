@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item implements the PHP error-handling MVP in the VM because the
+The standard library implements the PHP error-handling MVP in the VM because the
 functions depend on request-local handler stacks and INI state.
 
 ## Implemented

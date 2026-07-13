@@ -1,0 +1,367 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "PgSql\\Connection"
+    },
+    {
+      "kind": "class",
+      "name": "PgSql\\Lob"
+    },
+    {
+      "kind": "class",
+      "name": "PgSql\\Result"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "PGSQL_ASSOC",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PGSQL_NUM",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PGSQL_BOTH",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PGSQL_CONNECTION_OK",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_affected_rows",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_escape_bytea",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_escape_identifier",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_escape_literal",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_escape_string",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_execute",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_fetch_array",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_fetch_assoc",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_fetch_object",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_fetch_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_fetch_row",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_free_result",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_last_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_num_fields",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_num_rows",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_pconnect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_prepare",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_query",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_query_params",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "pgsql",
+        "source": "ext/pgsql/pgsql.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "pgsql"
+        }
+      ],
+      "name": "pg_result_error",
+      "visibility": "php"
+    }
+  ],
+  "name": "pgsql",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

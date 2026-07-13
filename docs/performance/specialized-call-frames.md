@@ -1,7 +1,5 @@
 # Specialized Call Frames
 
-Date: 2026-06-28.
-
 This note defines the current interpreter policy for call-frame layout
 classification and the narrow direct-argument fast path. The generic PHP call
 path remains the source of truth for argument binding, diagnostics, references,

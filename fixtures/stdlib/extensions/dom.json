@@ -1,0 +1,45 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "DOMAttr"
+    },
+    {
+      "kind": "class",
+      "name": "DOMCdataSection"
+    },
+    {
+      "kind": "class",
+      "name": "DOMComment"
+    },
+    {
+      "kind": "class",
+      "name": "DOMDocument"
+    },
+    {
+      "kind": "class",
+      "name": "DOMElement"
+    },
+    {
+      "kind": "class",
+      "name": "DOMNode"
+    },
+    {
+      "kind": "class",
+      "name": "DOMNodeList"
+    },
+    {
+      "kind": "class",
+      "name": "DOMText"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "dom",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -1,0 +1,35 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "igbinary"
+        }
+      ],
+      "name": "igbinary_serialize",
+      "signature_gap": "igbinary is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    },
+    {
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "igbinary"
+        }
+      ],
+      "name": "igbinary_unserialize",
+      "signature_gap": "igbinary is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata.",
+      "visibility": "php"
+    }
+  ],
+  "name": "igbinary",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

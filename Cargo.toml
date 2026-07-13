@@ -6,6 +6,7 @@ members = [
     "crates/php_bytecode_cache",
     "crates/php_diagnostics",
     "crates/php_executor",
+    "crates/php_extensions",
     "crates/php_frontend_cli",
     "crates/php_ir",
     "crates/php_jit",

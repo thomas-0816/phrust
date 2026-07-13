@@ -55,6 +55,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "socket_get_option",
+        builtin_socket_get_option,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "socket_recv",
         builtin_socket_recv,
         BuiltinCompatibility::Php,
@@ -62,6 +67,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "socket_send",
         builtin_socket_send,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_set_option",
+        builtin_socket_set_option,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -107,10 +117,16 @@ fn builtin_socket_create(
     let domain = int_arg("socket_create", &args[0])?;
     let socket_type = int_arg("socket_create", &args[1])?;
     let protocol = int_arg("socket_create", &args[2])?;
-    if domain != i64::from(libc::AF_INET)
-        || socket_type != i64::from(libc::SOCK_STREAM)
-        || (protocol != 0 && protocol != i64::from(libc::IPPROTO_TCP))
-    {
+    let tcp_stream = domain == i64::from(libc::AF_INET)
+        && socket_type == i64::from(libc::SOCK_STREAM)
+        && (protocol == 0 || protocol == i64::from(libc::IPPROTO_TCP));
+    #[cfg(unix)]
+    let unix_stream = domain == i64::from(libc::AF_UNIX)
+        && socket_type == i64::from(libc::SOCK_STREAM)
+        && protocol == 0;
+    #[cfg(not(unix))]
+    let unix_stream = false;
+    if !tcp_stream && !unix_stream {
         context.socket_state().set_last_error(libc::EAFNOSUPPORT);
         return Ok(Value::Bool(false));
     }
@@ -135,7 +151,7 @@ fn builtin_socket_bind(
     };
     match context
         .socket_state()
-        .bind_tcp_listener(socket_id, &address, port)
+        .bind_stream_listener(socket_id, &address, port)
     {
         Ok(()) => Ok(Value::Bool(true)),
         Err(errno) => {
@@ -183,7 +199,7 @@ fn builtin_socket_connect(
     };
     match context
         .socket_state()
-        .connect_tcp(socket_id, &address, port)
+        .connect_stream(socket_id, &address, port)
     {
         Ok(()) => Ok(Value::Bool(true)),
         Err(errno) => {
@@ -337,15 +353,17 @@ fn builtin_socket_getsockname(
         return Err(arity_error("socket_getsockname", "two or three arguments"));
     }
     let socket_id = socket_id_arg("socket_getsockname", &args[0])?;
-    let Some(addr) = context.socket_state().local_addr(socket_id) else {
+    let Some((address, port)) = context.socket_state().local_name(socket_id) else {
         context.socket_state().set_last_error(libc::EINVAL);
         return Ok(Value::Bool(false));
     };
     if let Value::Reference(cell) = &args[1] {
-        cell.set(Value::string(addr.ip().to_string()));
+        cell.set(Value::string(address));
     }
-    if let Some(Value::Reference(cell)) = args.get(2) {
-        cell.set(Value::Int(i64::from(addr.port())));
+    if let Some(Value::Reference(cell)) = args.get(2)
+        && let Some(port) = port
+    {
+        cell.set(Value::Int(i64::from(port)));
     }
     Ok(Value::Bool(true))
 }
@@ -359,17 +377,63 @@ fn builtin_socket_getpeername(
         return Err(arity_error("socket_getpeername", "two or three arguments"));
     }
     let socket_id = socket_id_arg("socket_getpeername", &args[0])?;
-    let Some(addr) = context.socket_state().peer_addr(socket_id) else {
+    let Some((address, port)) = context.socket_state().peer_name(socket_id) else {
         context.socket_state().set_last_error(libc::EINVAL);
         return Ok(Value::Bool(false));
     };
     if let Value::Reference(cell) = &args[1] {
-        cell.set(Value::string(addr.ip().to_string()));
+        cell.set(Value::string(address));
     }
-    if let Some(Value::Reference(cell)) = args.get(2) {
-        cell.set(Value::Int(i64::from(addr.port())));
+    if let Some(Value::Reference(cell)) = args.get(2)
+        && let Some(port) = port
+    {
+        cell.set(Value::Int(i64::from(port)));
     }
     Ok(Value::Bool(true))
+}
+
+fn builtin_socket_set_option(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 4 {
+        return Err(arity_error("socket_set_option", "four arguments"));
+    }
+    let socket_id = socket_id_arg("socket_set_option", &args[0])?;
+    let level = int_arg("socket_set_option", &args[1])?;
+    let option = int_arg("socket_set_option", &args[2])?;
+    let value = socket_option_int("socket_set_option", &args[3])?;
+    match context
+        .socket_state()
+        .set_option(socket_id, level, option, value)
+    {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn builtin_socket_get_option(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 3 {
+        return Err(arity_error("socket_get_option", "three arguments"));
+    }
+    let socket_id = socket_id_arg("socket_get_option", &args[0])?;
+    let level = int_arg("socket_get_option", &args[1])?;
+    let option = int_arg("socket_get_option", &args[2])?;
+    match context.socket_state().option(socket_id, level, option) {
+        Ok(value) => Ok(Value::Int(value)),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn builtin_socket_shutdown(
@@ -539,6 +603,13 @@ fn port_arg(name: &str, value: &Value) -> Result<u16, BuiltinError> {
     })
 }
 
+fn socket_option_int(name: &str, value: &Value) -> Result<i64, BuiltinError> {
+    match value {
+        Value::Bool(value) => Ok(i64::from(*value)),
+        _ => int_arg(name, value),
+    }
+}
+
 fn socket_object(id: i64) -> ObjectRef {
     let object = ObjectRef::new_with_display_name(&socket_runtime_class(), SOCKET_CLASS);
     object.set_property(SOCKET_ID_PROPERTY, Value::Int(id));
@@ -547,7 +618,7 @@ fn socket_object(id: i64) -> ObjectRef {
 
 fn socket_runtime_class() -> ClassEntry {
     ClassEntry {
-        name: "socket".to_owned(),
+        name: "socket".to_owned().into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

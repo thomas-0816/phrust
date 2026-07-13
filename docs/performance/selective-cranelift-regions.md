@@ -1,7 +1,5 @@
 # Selective Cranelift Region Evaluation
 
-Date: 2026-06-28.
-
 This document records the current selective Cranelift region policy for the
 fastest-engine track. It is an evaluation of the existing Cranelift surface on
 current `main`, not a default-on JIT promotion.

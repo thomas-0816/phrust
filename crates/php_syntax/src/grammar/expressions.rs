@@ -368,7 +368,9 @@ fn parse_construct_expression(parser: &mut Parser<'_>) {
         || token == named(TokenName::Eval)
         || (token == named(TokenName::Exit) && parser.at(symbol(b'(')))
     {
-        parse_balanced_parenthesized_construct(parser);
+        let allow_multiple = token == named(TokenName::Isset);
+        let allow_empty = token == named(TokenName::Exit);
+        parse_parenthesized_construct_arguments(parser, allow_multiple, allow_empty);
     } else if token == named(TokenName::Exit) {
         if !at_expression_stop(parser) {
             let _has_argument = parse_expression_bp(parser, PREFIX_RIGHT_BP);
@@ -397,27 +399,54 @@ fn parse_construct_expression(parser: &mut Parser<'_>) {
     let _completed = construct.complete(parser, SyntaxKind::Node(SyntaxNodeKind::ConstructExpr));
 }
 
-fn parse_balanced_parenthesized_construct(parser: &mut Parser<'_>) {
+fn parse_parenthesized_construct_arguments(
+    parser: &mut Parser<'_>,
+    allow_multiple: bool,
+    allow_empty: bool,
+) {
     if !parser.at(symbol(b'(')) {
         parser.error_expected("expected construct argument list", &["("]);
         return;
     }
 
     parser.bump();
-    let mut depth = 1usize;
-    while !parser.is_eof() && depth > 0 {
-        if parser.at(symbol(b'(')) {
-            depth += 1;
-            parser.bump();
-        } else if parser.at(symbol(b')')) {
-            depth -= 1;
-            parser.bump();
-        } else {
-            parser.bump();
+    bump_trivia(parser);
+    if parser.at(symbol(b')')) {
+        if !allow_empty {
+            parser.error_expected("expected construct argument expression", &["expression"]);
+        }
+        parser.bump();
+        return;
+    }
+
+    loop {
+        if !parse_expression_bp(parser, 0) {
+            parser.error_expected("expected construct argument expression", &["expression"]);
+            recover_to_argument_boundary(parser);
+        }
+        bump_trivia(parser);
+        if !parser.at(symbol(b',')) {
+            break;
+        }
+        if !allow_multiple {
+            parser.error_expected("expected `)` after construct argument", &[")"]);
+        }
+        parser.bump();
+        bump_trivia(parser);
+        if parser.at(symbol(b')')) {
+            parser.error_expected("expected construct argument after comma", &["expression"]);
+            break;
         }
     }
-    if depth > 0 {
+
+    if parser.at(symbol(b')')) {
+        parser.bump();
+    } else {
         parser.error_expected("expected `)` to close construct argument list", &[")"]);
+        recover_to_argument_boundary(parser);
+        if parser.at(symbol(b')')) {
+            parser.bump();
+        }
     }
 }
 
@@ -518,7 +547,7 @@ fn parse_clone_expression(parser: &mut Parser<'_>) {
     }
 }
 
-fn parse_call_tail(parser: &mut Parser<'_>) {
+pub(crate) fn parse_call_tail(parser: &mut Parser<'_>) {
     let call = parser.start();
     parser.bump();
     let mut saw_argument = false;

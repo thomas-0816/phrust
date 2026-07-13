@@ -1,0 +1,434 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "CAL_GREGORIAN",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_JULIAN",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_JEWISH",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_FRENCH",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_NUM_CALS",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_DOW_DAYNO",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_DOW_LONG",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_DOW_SHORT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_MONTH_GREGORIAN_SHORT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_MONTH_GREGORIAN_LONG",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_MONTH_JULIAN_SHORT",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_MONTH_JULIAN_LONG",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_MONTH_JEWISH",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_MONTH_FRENCH",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_EASTER_DEFAULT",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_EASTER_ROMAN",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_EASTER_ALWAYS_GREGORIAN",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_EASTER_ALWAYS_JULIAN",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_JEWISH_ADD_ALAFIM_GERESH",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_JEWISH_ADD_ALAFIM",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "CAL_JEWISH_ADD_GERESHAYIM",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "cal_days_in_month",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "cal_from_jd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "cal_info",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "cal_to_jd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "easter_date",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "easter_days",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "frenchtojd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "gregoriantojd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jddayofweek",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jdmonthname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jdtofrench",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jdtogregorian",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jdtojewish",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jdtojulian",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jdtounix",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "jewishtojd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "juliantojd",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "calendar",
+        "source": "ext/calendar/calendar.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "calendar"
+        }
+      ],
+      "name": "unixtojd",
+      "visibility": "php"
+    }
+  ],
+  "name": "calendar",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

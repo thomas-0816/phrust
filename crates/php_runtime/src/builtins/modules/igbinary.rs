@@ -24,6 +24,23 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
 ];
 
+pub fn serialize_value(value: &Value) -> Result<PhpString, String> {
+    let mut encoder = Encoder::new();
+    encoder
+        .encode_root(value)
+        .map_err(|error| error.message().to_owned())?;
+    Ok(PhpString::from_bytes(encoder.into_bytes()))
+}
+
+pub fn unserialize_value(input: &PhpString) -> Result<Value, String> {
+    let mut decoder = Decoder::new(input.as_bytes());
+    match decoder.decode_root() {
+        Ok(value) if decoder.is_finished() => Ok(value),
+        Ok(_) => Err("extra bytes after igbinary value".to_owned()),
+        Err(message) => Err(message),
+    }
+}
+
 fn builtin_igbinary_serialize(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -32,9 +49,9 @@ fn builtin_igbinary_serialize(
     if args.len() != 1 {
         return Err(arity_error("igbinary_serialize", "exactly one argument"));
     }
-    let mut encoder = Encoder::new();
-    encoder.encode_root(&args[0])?;
-    Ok(Value::string(encoder.into_bytes()))
+    Ok(Value::String(serialize_value(&args[0]).map_err(
+        |message| BuiltinError::new("E_PHP_RUNTIME_IGBINARY_SERIALIZE", message),
+    )?))
 }
 
 fn builtin_igbinary_unserialize(
@@ -46,10 +63,9 @@ fn builtin_igbinary_unserialize(
         return Err(arity_error("igbinary_unserialize", "exactly one argument"));
     }
     let input = string_arg("igbinary_unserialize", &args[0])?;
-    let mut decoder = Decoder::new(input.as_bytes());
-    match decoder.decode_root() {
-        Ok(value) if decoder.is_finished() => Ok(value),
-        Ok(_) => {
+    match unserialize_value(&input) {
+        Ok(value) => Ok(value),
+        Err(message) if message == "extra bytes after igbinary value" => {
             context.php_warning(
                 "E_PHP_RUNTIME_IGBINARY_TRAILING_BYTES",
                 "igbinary_unserialize(): Extra bytes after igbinary value",

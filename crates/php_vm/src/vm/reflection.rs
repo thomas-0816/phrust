@@ -1,12 +1,10 @@
 //! Runtime implementation of the Reflection* built-in classes, extracted from the VM module.
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::result_large_err)]
 
 use super::prelude::*;
 
 pub(super) fn reflection_runtime_class(name: &str) -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -178,17 +176,20 @@ pub(super) fn source_span_display_line(
     compiled.source_display_line(span, end)
 }
 
-pub(super) fn runtime_source_span_display_line(span: &RuntimeSourceSpan) -> Option<i64> {
+pub(super) fn runtime_source_span_display_line(
+    compiled: &CompiledUnit,
+    span: &RuntimeSourceSpan,
+) -> Option<i64> {
     let file = span.file.as_ref()?;
-    let source = std::fs::read_to_string(file).ok()?;
-    let offset = span.start as usize;
-    let offset = offset.min(source.len());
-    let line = source.as_bytes()[..offset]
+    let file = compiled
+        .unit()
+        .files
         .iter()
-        .filter(|byte| **byte == b'\n')
-        .count()
-        + 1;
-    Some(line as i64)
+        .find(|entry| entry.path == *file)?;
+    compiled.source_display_line(
+        php_ir::source_map::IrSpan::new(file.id, span.start, span.end),
+        false,
+    )
 }
 
 pub(super) fn source_span_file_line(
@@ -369,7 +370,8 @@ impl Vm {
                         CallableMethodTarget::Object(object) => object.class_name(),
                         CallableMethodTarget::Class(class_name) => class_name.clone(),
                     };
-                    reflection_method_object(compiled, &class_name, method)
+                    let owner = class_owner_in_state(compiled, state, &class_name);
+                    reflection_method_object(&owner, &class_name, method)
                 }
                 _ => Err(
                     "E_PHP_VM_REFLECTION_UNSUPPORTED_CALLABLE: callable reflection supports user functions and closures in the reflection-clone MVP"
@@ -392,7 +394,8 @@ impl Vm {
             "reflectionmethod" => {
             let class = reflection_string_arg(&args, 0, "ReflectionMethod::__construct")?;
             let method = reflection_string_arg(&args, 1, "ReflectionMethod::__construct")?;
-            reflection_method_object(compiled, &class, &method)
+            let owner = class_owner_in_state(compiled, state, &class);
+            reflection_method_object(&owner, &class, &method)
         }
             "reflectionproperty" => {
             let class = reflection_string_arg(&args, 0, "ReflectionProperty::__construct")?;
@@ -448,15 +451,18 @@ impl Vm {
 }
 
 pub(super) fn reflection_method_value(
-    compiled: &CompiledUnit,
+    cursor: ExecutionCursor<'_>,
     object: &ObjectRef,
     method: &str,
     args: Vec<Value>,
-    output: &mut OutputBuffer,
-    stack: &CallStack,
-    state: &mut ExecutionState,
     source_span: RuntimeSourceSpan,
 ) -> Result<Value, String> {
+    let ExecutionCursor {
+        compiled,
+        output,
+        stack,
+        state,
+    } = cursor;
     let method = normalize_method_name(method);
     match normalize_class_name(&object.class_name()).as_str() {
         "reflectionattribute" => match method.as_str() {
@@ -829,7 +835,7 @@ pub(super) fn emit_reflection_parameter_is_callable_deprecation(
     state: &mut ExecutionState,
     source_span: RuntimeSourceSpan,
 ) {
-    if !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED) {
+    if !error_reporting_allows(state, php_runtime::api::PHP_E_DEPRECATED) {
         return;
     }
     let diagnostic = RuntimeDiagnostic::new(
@@ -844,8 +850,8 @@ pub(super) fn emit_reflection_parameter_is_callable_deprecation(
         output,
         state,
         &diagnostic,
-        php_runtime::PhpDiagnosticChannel::Deprecated,
-        php_runtime::PHP_E_DEPRECATED,
+        php_runtime::api::PhpDiagnosticChannel::Deprecated,
+        php_runtime::api::PHP_E_DEPRECATED,
     );
     state.diagnostics.push(diagnostic);
 }
@@ -1370,7 +1376,9 @@ pub(super) const MEMCACHED_INSTANCE_METHODS: &[&str] = &[
 pub(super) const IMAGICK_INSTANCE_METHODS: &[&str] = &[
     "__construct",
     "readImage",
+    "readImageBlob",
     "writeImage",
+    "getImagesBlob",
     "resizeImage",
     "cropImage",
     "thumbnailImage",
@@ -1379,6 +1387,7 @@ pub(super) const IMAGICK_INSTANCE_METHODS: &[&str] = &[
     "getImageHeight",
     "getImageFormat",
     "setImageFormat",
+    "stripImage",
     "clear",
     "destroy",
 ];
@@ -1660,7 +1669,7 @@ pub(super) fn reflection_class_reflection_constants_value(
 pub(super) fn reflection_class_constants_in_hierarchy(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: std::sync::Arc<php_ir::module::ClassEntry>,
+    class: CompiledClass,
 ) -> Result<Vec<ResolvedConstantOwned>, String> {
     let mut constants = Vec::new();
     let mut seen_classes = Vec::new();
@@ -1679,7 +1688,7 @@ pub(super) fn reflection_class_constants_in_hierarchy(
 pub(super) fn collect_reflection_class_constants(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: std::sync::Arc<php_ir::module::ClassEntry>,
+    class: CompiledClass,
     seen_classes: &mut Vec<String>,
     seen_names: &mut BTreeSet<String>,
     constants: &mut Vec<ResolvedConstantOwned>,

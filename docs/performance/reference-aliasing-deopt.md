@@ -1,7 +1,5 @@
 # Reference Aliasing Deoptimization Policy
 
-Date: 2026-06-28.
-
 FPE-22 adds a conservative alias-state model for PHP references. It does not
 optimize through references yet; it classifies aliasing and poisons the affected
 fast paths so reference-heavy behavior stays on the generic interpreter path.

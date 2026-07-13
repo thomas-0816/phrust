@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds a deterministic request-local INI registry. The VM seeds it
+The standard library provides a deterministic request-local INI registry. The VM seeds it
 from `RuntimeContext` at the start of execution, and `ini_set` mutates only that
 request-local registry.
 

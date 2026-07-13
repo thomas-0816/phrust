@@ -1,0 +1,98 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "XSLTProcessor"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "XSL_CLONE_AUTO",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_CLONE_NEVER",
+      "value": {
+        "kind": "int",
+        "value": -1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_CLONE_ALWAYS",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_NONE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_READ_FILE",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_WRITE_FILE",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_CREATE_DIRECTORY",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_READ_NETWORK",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_WRITE_NETWORK",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "XSL_SECPREF_DEFAULT",
+      "value": {
+        "kind": "int",
+        "value": 44
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "xsl",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

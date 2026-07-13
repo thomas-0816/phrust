@@ -3,12 +3,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use php_ir::instruction::{BinaryOp, InstructionKind};
-use php_runtime::{OutputStats, PhpArrayShapeKind, PhpArrayShapeLookupFallback, Slot, TempValue};
+use php_runtime::api::{
+    OutputStats, PhpArrayShapeKind, PhpArrayShapeLookupFallback, Slot, TempValue,
+};
+use php_runtime::experimental::{layout_stats, numeric_string};
 
 use crate::aliasing::{AliasState, alias_transition_key};
 use crate::bytecode::DenseOpcode;
 use crate::inline_cache::POLYMORPHIC_INLINE_CACHE_LIMIT;
 use crate::{InlineCacheKind, InlineCacheObservation};
+
+mod native_counters;
 
 /// O(1) per-opcode execution counts for the rich-IR interpreter, indexed by
 /// `ir_opcode_index`. Boxed so `VmCounters` stays cheap to move.
@@ -122,14 +127,119 @@ pub struct MethodCallProfile {
     pub non_eligible_reasons: BTreeSet<String>,
 }
 
-/// Aggregated request-profile timing for one VM execution boundary.
+/// Compact monotonic work counters captured at request-profile boundaries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BoundaryWorkSnapshot {
+    pub value_clones: u64,
+    pub refcounted_value_clones: u64,
+    pub string_allocations: u64,
+    pub array_handle_clones: u64,
+    pub cow_separations: u64,
+    pub reference_cell_creations: u64,
+    pub frame_allocations: u64,
+    pub frame_reuses: u64,
+    pub register_files_allocated: u64,
+    pub register_files_reused: u64,
+    pub internal_function_dispatches: u64,
+    pub symbol_map_lookups: u64,
+    pub symbol_linear_fallbacks: u64,
+    pub symbol_intern_hits: u64,
+    pub symbol_intern_misses: u64,
+    pub string_hash_cache_hits: u64,
+    pub string_hash_cache_misses: u64,
+    pub symbol_eq_fast_hits: u64,
+    pub symbol_eq_byte_fallbacks: u64,
+    pub array_dim_fetches: u64,
+    pub numeric_string_classify_calls: u64,
+    pub object_allocations: u64,
+    pub property_accesses: u64,
+    pub includes: u64,
+    pub autoloads: u64,
+}
+
+impl BoundaryWorkSnapshot {
+    #[must_use]
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        macro_rules! sub {
+            ($field:ident) => {
+                self.$field.saturating_sub(earlier.$field)
+            };
+        }
+        Self {
+            value_clones: sub!(value_clones),
+            refcounted_value_clones: sub!(refcounted_value_clones),
+            string_allocations: sub!(string_allocations),
+            array_handle_clones: sub!(array_handle_clones),
+            cow_separations: sub!(cow_separations),
+            reference_cell_creations: sub!(reference_cell_creations),
+            frame_allocations: sub!(frame_allocations),
+            frame_reuses: sub!(frame_reuses),
+            register_files_allocated: sub!(register_files_allocated),
+            register_files_reused: sub!(register_files_reused),
+            internal_function_dispatches: sub!(internal_function_dispatches),
+            symbol_map_lookups: sub!(symbol_map_lookups),
+            symbol_linear_fallbacks: sub!(symbol_linear_fallbacks),
+            symbol_intern_hits: sub!(symbol_intern_hits),
+            symbol_intern_misses: sub!(symbol_intern_misses),
+            string_hash_cache_hits: sub!(string_hash_cache_hits),
+            string_hash_cache_misses: sub!(string_hash_cache_misses),
+            symbol_eq_fast_hits: sub!(symbol_eq_fast_hits),
+            symbol_eq_byte_fallbacks: sub!(symbol_eq_byte_fallbacks),
+            array_dim_fetches: sub!(array_dim_fetches),
+            numeric_string_classify_calls: sub!(numeric_string_classify_calls),
+            object_allocations: sub!(object_allocations),
+            property_accesses: sub!(property_accesses),
+            includes: sub!(includes),
+            autoloads: sub!(autoloads),
+        }
+    }
+
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        macro_rules! add {
+            ($field:ident) => {
+                self.$field = self.$field.saturating_add(other.$field)
+            };
+        }
+        add!(value_clones);
+        add!(refcounted_value_clones);
+        add!(string_allocations);
+        add!(array_handle_clones);
+        add!(cow_separations);
+        add!(reference_cell_creations);
+        add!(frame_allocations);
+        add!(frame_reuses);
+        add!(register_files_allocated);
+        add!(register_files_reused);
+        add!(internal_function_dispatches);
+        add!(symbol_map_lookups);
+        add!(symbol_linear_fallbacks);
+        add!(symbol_intern_hits);
+        add!(symbol_intern_misses);
+        add!(string_hash_cache_hits);
+        add!(string_hash_cache_misses);
+        add!(symbol_eq_fast_hits);
+        add!(symbol_eq_byte_fallbacks);
+        add!(array_dim_fetches);
+        add!(numeric_string_classify_calls);
+        add!(object_allocations);
+        add!(property_accesses);
+        add!(includes);
+        add!(autoloads);
+    }
+}
+
+/// Aggregated request-profile work for one VM execution boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BoundaryProfile {
     pub count: u64,
     pub inclusive_nanos: u64,
     pub exclusive_nanos: u64,
-    pub rich_instructions: u64,
-    pub dense_instructions: u64,
+    pub inclusive_rich_instructions: u64,
+    pub exclusive_rich_instructions: u64,
+    pub inclusive_dense_instructions: u64,
+    pub exclusive_dense_instructions: u64,
+    pub inclusive_work: BoundaryWorkSnapshot,
+    pub exclusive_work: BoundaryWorkSnapshot,
 }
 
 /// Aggregated request-profile timing for one operation family.
@@ -247,6 +357,16 @@ pub struct VmCounters {
     pub request_pool_resets: u64,
     pub persistent_engine_allocations: u64,
     pub persistent_engine_bytes: u64,
+    pub persistent_worker_ic_hits_by_family: BTreeMap<String, u64>,
+    pub persistent_worker_ic_misses_by_family: BTreeMap<String, u64>,
+    pub persistent_worker_class_cache_hits: u64,
+    pub persistent_worker_default_slot_template_hits: u64,
+    pub persistent_worker_constructor_hits: u64,
+    pub persistent_worker_quickening_reused_sites: u64,
+    pub persistent_worker_adaptive_lock_acquisitions: u64,
+    pub persistent_worker_adaptive_copied_bytes: u64,
+    pub persistent_worker_invalidations_by_reason: BTreeMap<String, u64>,
+    pub persistent_worker_request_visible_rejections_by_family: BTreeMap<String, u64>,
     pub arena_fallback_allocations_by_reason: BTreeMap<String, u64>,
     pub destructor_sensitive_arena_blocks: u64,
     pub value_clones: u64,
@@ -254,7 +374,10 @@ pub struct VmCounters {
     pub array_handle_clones: u64,
     pub cow_separations: u64,
     pub reference_cell_creations: u64,
+    pub value_clone_by_kind: BTreeMap<String, u64>,
     pub value_clone_by_source_family: BTreeMap<String, u64>,
+    pub value_clone_by_source_family_and_kind: BTreeMap<String, BTreeMap<String, u64>>,
+    pub string_allocation_by_source_family: BTreeMap<String, u64>,
     pub array_handle_clone_by_source_family: BTreeMap<String, u64>,
     pub cow_separation_by_source_family: BTreeMap<String, u64>,
     pub reference_cell_creation_by_source_family: BTreeMap<String, u64>,
@@ -294,6 +417,7 @@ pub struct VmCounters {
     pub direct_closure_frame_hits: u64,
     pub direct_constructor_frame_hits: u64,
     pub argument_vector_allocations_avoided: u64,
+    pub prepared_arg_vector_allocations_avoided: u64,
     pub direct_frame_fallback_by_reason: BTreeMap<String, u64>,
     pub symbolized_call_name_hits: u64,
     pub symbolized_method_name_hits: u64,
@@ -448,6 +572,15 @@ pub struct VmCounters {
     pub native_candidates: u64,
     pub native_compiled_regions: u64,
     pub native_executions: u64,
+    pub copy_patch_executed: u64,
+    pub native_leaf_cache_positive_hits: u64,
+    pub native_leaf_cache_negative_hits: u64,
+    pub native_leaf_prewarm_attempts: u64,
+    pub native_leaf_prewarm_compiled: u64,
+    pub native_leaf_prewarm_rejected: u64,
+    pub native_leaf_prewarm_code_bytes: u64,
+    pub native_leaf_prewarm_compile_time_nanos: u64,
+    pub native_leaf_rejections_by_shape: BTreeMap<String, u64>,
     pub native_compile_budget_rejections: u64,
     pub native_eligibility_rejections_by_reason: BTreeMap<String, u64>,
     pub native_side_exits_by_reason: BTreeMap<String, u64>,
@@ -724,16 +857,24 @@ impl VmCounters {
         path: &str,
         inclusive_nanos: u64,
         exclusive_nanos: u64,
-        rich_instructions: u64,
-        dense_instructions: u64,
+        inclusive_rich_instructions: u64,
+        exclusive_rich_instructions: u64,
+        inclusive_dense_instructions: u64,
+        exclusive_dense_instructions: u64,
+        inclusive_work: BoundaryWorkSnapshot,
+        exclusive_work: BoundaryWorkSnapshot,
     ) {
         record_boundary_profile(
             &mut self.include_profiles_by_path,
             path,
             inclusive_nanos,
             exclusive_nanos,
-            rich_instructions,
-            dense_instructions,
+            inclusive_rich_instructions,
+            exclusive_rich_instructions,
+            inclusive_dense_instructions,
+            exclusive_dense_instructions,
+            inclusive_work,
+            exclusive_work,
         );
     }
 
@@ -872,6 +1013,10 @@ impl VmCounters {
             .or_default() += 1;
     }
 
+    pub(crate) fn record_prepared_arg_vector_allocation_avoided(&mut self) {
+        self.prepared_arg_vector_allocations_avoided += 1;
+    }
+
     pub(crate) fn record_foreach_no_clone_hit(&mut self) {
         self.foreach_no_clone_hits += 1;
     }
@@ -959,8 +1104,12 @@ impl VmCounters {
         is_method: bool,
         inclusive_nanos: u64,
         exclusive_nanos: u64,
-        rich_instructions: u64,
-        dense_instructions: u64,
+        inclusive_rich_instructions: u64,
+        exclusive_rich_instructions: u64,
+        inclusive_dense_instructions: u64,
+        exclusive_dense_instructions: u64,
+        inclusive_work: BoundaryWorkSnapshot,
+        exclusive_work: BoundaryWorkSnapshot,
     ) {
         let profiles = if is_method {
             &mut self.method_profiles_by_name
@@ -972,8 +1121,12 @@ impl VmCounters {
             name,
             inclusive_nanos,
             exclusive_nanos,
-            rich_instructions,
-            dense_instructions,
+            inclusive_rich_instructions,
+            exclusive_rich_instructions,
+            inclusive_dense_instructions,
+            exclusive_dense_instructions,
+            inclusive_work,
+            exclusive_work,
         );
     }
 
@@ -982,16 +1135,24 @@ impl VmCounters {
         name: &str,
         inclusive_nanos: u64,
         exclusive_nanos: u64,
-        rich_instructions: u64,
-        dense_instructions: u64,
+        inclusive_rich_instructions: u64,
+        exclusive_rich_instructions: u64,
+        inclusive_dense_instructions: u64,
+        exclusive_dense_instructions: u64,
+        inclusive_work: BoundaryWorkSnapshot,
+        exclusive_work: BoundaryWorkSnapshot,
     ) {
         record_boundary_profile(
             &mut self.builtin_profiles_by_name,
             name,
             inclusive_nanos,
             exclusive_nanos,
-            rich_instructions,
-            dense_instructions,
+            inclusive_rich_instructions,
+            exclusive_rich_instructions,
+            inclusive_dense_instructions,
+            exclusive_dense_instructions,
+            inclusive_work,
+            exclusive_work,
         );
     }
 
@@ -1106,11 +1267,46 @@ impl VmCounters {
         self.persistent_engine_bytes = bytes;
     }
 
-    pub(crate) fn record_runtime_layout_stats(
-        &mut self,
-        stats: php_runtime::layout_stats::RuntimeLayoutStats,
-    ) {
+    pub(crate) fn record_persistent_worker_ic(&mut self, family: &str, hit: bool) {
+        let counters = if hit {
+            &mut self.persistent_worker_ic_hits_by_family
+        } else {
+            &mut self.persistent_worker_ic_misses_by_family
+        };
+        *counters.entry(family.to_owned()).or_default() += 1;
+    }
+
+    pub(crate) fn record_persistent_worker_invalidation(&mut self, reason: &str) {
+        *self
+            .persistent_worker_invalidations_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_persistent_worker_quickening_reuse(&mut self, sites: u64) {
+        self.persistent_worker_quickening_reused_sites = self
+            .persistent_worker_quickening_reused_sites
+            .saturating_add(sites);
+    }
+
+    pub(crate) fn record_persistent_worker_request_visible_rejection(&mut self, family: &str) {
+        *self
+            .persistent_worker_request_visible_rejections_by_family
+            .entry(family.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_runtime_layout_stats(&mut self, stats: layout_stats::RuntimeLayoutStats) {
         self.value_clones += stats.value_clones;
+        for kind in layout_stats::ValueCloneKind::ALL {
+            let count = stats.value_clone_by_kind[kind as usize];
+            if count > 0 {
+                *self
+                    .value_clone_by_kind
+                    .entry(kind.name().to_owned())
+                    .or_default() += count;
+            }
+        }
         self.string_allocations += stats.string_allocations;
         self.array_handle_clones += stats.array_handle_clones;
         self.cow_separations += stats.cow_separations;
@@ -1173,11 +1369,19 @@ impl VmCounters {
 
     pub(crate) fn record_runtime_layout_source_stats(
         &mut self,
-        stats: php_runtime::layout_stats::RuntimeLayoutSourceStats,
+        stats: layout_stats::RuntimeLayoutSourceStats,
     ) {
         merge_static_counter_map(
             &mut self.value_clone_by_source_family,
             stats.value_clone_by_family,
+        );
+        merge_static_nested_counter_map(
+            &mut self.value_clone_by_source_family_and_kind,
+            stats.value_clone_by_family_and_kind,
+        );
+        merge_static_counter_map(
+            &mut self.string_allocation_by_source_family,
+            stats.string_allocation_by_family,
         );
         merge_static_counter_map(
             &mut self.array_handle_clone_by_source_family,
@@ -1726,7 +1930,7 @@ impl VmCounters {
 
     pub(crate) fn record_numeric_string_cache_stats(
         &mut self,
-        stats: php_runtime::numeric_string::NumericStringCacheStats,
+        stats: numeric_string::NumericStringCacheStats,
     ) {
         self.numeric_string_classify_calls += stats.classify_calls;
         self.numeric_string_cache_hits += stats.hits;
@@ -2033,124 +2237,6 @@ impl VmCounters {
 
     pub(crate) fn record_persistent_feedback_seeded_callsites(&mut self, installed: u64) {
         self.persistent_feedback_seeded_callsites += installed;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_compile_attempt(&mut self) {
-        self.jit_compile_attempts += 1;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_compiled(&mut self) {
-        self.jit_compiled += 1;
-        self.native_compiled_regions += 1;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_compile_metadata(&mut self, code_bytes: u64, compile_time_nanos: u64) {
-        self.jit_code_bytes += code_bytes;
-        self.jit_compile_time_nanos += compile_time_nanos;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_compile_descriptor(&mut self, descriptor: JitCompileDescriptor) {
-        self.jit_compile_descriptors.push(descriptor);
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_executed(&mut self) {
-        self.jit_executed += 1;
-        self.native_executions += 1;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_bailout(&mut self) {
-        self.jit_bailouts += 1;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_side_exit(&mut self, reason: &str) {
-        self.jit_side_exits += 1;
-        *self
-            .jit_side_exit_reasons
-            .entry(reason.to_owned())
-            .or_default() += 1;
-        self.record_native_side_exit(reason);
-    }
-
-    // Reserved by 07.CL.04; later guard work start calling it.
-    #[allow(dead_code)]
-    pub(crate) fn record_jit_guard_failure(&mut self) {
-        self.jit_guard_failures += 1;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn record_jit_blacklisted_region(&mut self, reason: &str) {
-        self.jit_blacklisted_regions += 1;
-        *self
-            .jit_blacklist_reasons
-            .entry(reason.to_owned())
-            .or_default() += 1;
-        *self
-            .native_blacklist_suppression_by_unstable_region
-            .entry(reason.to_owned())
-            .or_default() += 1;
-    }
-
-    pub(crate) fn record_jit_tiering_cold_function(&mut self) {
-        self.jit_tiering_cold_functions += 1;
-    }
-
-    pub(crate) fn record_jit_tiering_hot_function(&mut self) {
-        self.jit_tiering_hot_functions += 1;
-    }
-
-    pub(crate) fn record_jit_tiering_eager_function(&mut self) {
-        self.jit_tiering_eager_functions += 1;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_tiering_blacklist_rejection(&mut self) {
-        self.jit_tiering_blacklist_rejections += 1;
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
-    pub(crate) fn record_jit_tiering_budget_rejection(&mut self) {
-        self.jit_tiering_budget_rejections += 1;
-        self.native_compile_budget_rejections += 1;
-    }
-
-    pub(crate) fn record_native_candidate(&mut self) {
-        self.native_candidates += 1;
-    }
-
-    pub(crate) fn record_native_platform_unavailable(&mut self) {
-        self.native_platform_unavailable += 1;
-    }
-
-    pub(crate) fn record_native_eligibility_rejection(&mut self, reason: &str) {
-        *self
-            .native_eligibility_rejections_by_reason
-            .entry(reason.to_owned())
-            .or_default() += 1;
-    }
-
-    pub(crate) fn record_native_side_exit(&mut self, reason: &str) {
-        *self
-            .native_side_exits_by_reason
-            .entry(reason.to_owned())
-            .or_default() += 1;
-    }
-
-    // Reserved by 07.CL.04; later helper-call work start calling it.
-    #[allow(dead_code)]
-    pub(crate) fn record_jit_helper_call(&mut self) {
-        self.jit_helper_calls += 1;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn record_jit_fast_path_hit(&mut self) {
-        self.jit_fast_path_hits += 1;
     }
 
     #[allow(dead_code)]
@@ -3067,6 +3153,66 @@ impl VmCounters {
         );
         push_string_u64_map_field(
             &mut json,
+            "persistent_worker_ic_hits_by_family",
+            &self.persistent_worker_ic_hits_by_family,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "persistent_worker_ic_misses_by_family",
+            &self.persistent_worker_ic_misses_by_family,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_class_cache_hits",
+            self.persistent_worker_class_cache_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_default_slot_template_hits",
+            self.persistent_worker_default_slot_template_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_constructor_hits",
+            self.persistent_worker_constructor_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_quickening_reused_sites",
+            self.persistent_worker_quickening_reused_sites,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_adaptive_lock_acquisitions",
+            self.persistent_worker_adaptive_lock_acquisitions,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_worker_adaptive_copied_bytes",
+            self.persistent_worker_adaptive_copied_bytes,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "persistent_worker_invalidations_by_reason",
+            &self.persistent_worker_invalidations_by_reason,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "persistent_worker_request_visible_rejections_by_family",
+            &self.persistent_worker_request_visible_rejections_by_family,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
             "arena_fallback_allocations_by_reason",
             &self.arena_fallback_allocations_by_reason,
             true,
@@ -3378,6 +3524,12 @@ impl VmCounters {
             &mut json,
             "argument_vector_allocations_avoided",
             self.argument_vector_allocations_avoided,
+            true,
+        );
+        push_field(
+            &mut json,
+            "prepared_arg_vector_allocations_avoided",
+            self.prepared_arg_vector_allocations_avoided,
             true,
         );
         push_string_u64_map_field(
@@ -4204,6 +4356,65 @@ impl VmCounters {
         push_field(&mut json, "native_executions", self.native_executions, true);
         push_field(
             &mut json,
+            "copy_patch_executed",
+            self.copy_patch_executed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_cache_positive_hits",
+            self.native_leaf_cache_positive_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_cache_negative_hits",
+            self.native_leaf_cache_negative_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_prewarm_attempts",
+            self.native_leaf_prewarm_attempts,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_prewarm_compiled",
+            self.native_leaf_prewarm_compiled,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_prewarm_rejected",
+            self.native_leaf_prewarm_rejected,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_prewarm_code_bytes",
+            self.native_leaf_prewarm_code_bytes,
+            true,
+        );
+        push_field(
+            &mut json,
+            "native_leaf_prewarm_compile_time_nanos",
+            self.native_leaf_prewarm_compile_time_nanos,
+            true,
+        );
+        json.push_str("  \"native_leaf_rejections_by_shape\": {");
+        for (index, (shape, count)) in self.native_leaf_rejections_by_shape.iter().enumerate() {
+            if index > 0 {
+                json.push_str(", ");
+            }
+            json.push('"');
+            json.push_str(&escape_json(shape));
+            json.push_str("\": ");
+            json.push_str(&count.to_string());
+        }
+        json.push_str("},\n");
+        push_field(
+            &mut json,
             "native_compile_budget_rejections",
             self.native_compile_budget_rejections,
             true,
@@ -4931,17 +5142,31 @@ fn record_boundary_profile(
     name: &str,
     inclusive_nanos: u64,
     exclusive_nanos: u64,
-    rich_instructions: u64,
-    dense_instructions: u64,
+    inclusive_rich_instructions: u64,
+    exclusive_rich_instructions: u64,
+    inclusive_dense_instructions: u64,
+    exclusive_dense_instructions: u64,
+    inclusive_work: BoundaryWorkSnapshot,
+    exclusive_work: BoundaryWorkSnapshot,
 ) {
     let profile = profiles.entry(name.to_owned()).or_default();
     profile.count = profile.count.saturating_add(1);
     profile.inclusive_nanos = profile.inclusive_nanos.saturating_add(inclusive_nanos);
     profile.exclusive_nanos = profile.exclusive_nanos.saturating_add(exclusive_nanos);
-    profile.rich_instructions = profile.rich_instructions.saturating_add(rich_instructions);
-    profile.dense_instructions = profile
-        .dense_instructions
-        .saturating_add(dense_instructions);
+    profile.inclusive_rich_instructions = profile
+        .inclusive_rich_instructions
+        .saturating_add(inclusive_rich_instructions);
+    profile.exclusive_rich_instructions = profile
+        .exclusive_rich_instructions
+        .saturating_add(exclusive_rich_instructions);
+    profile.inclusive_dense_instructions = profile
+        .inclusive_dense_instructions
+        .saturating_add(inclusive_dense_instructions);
+    profile.exclusive_dense_instructions = profile
+        .exclusive_dense_instructions
+        .saturating_add(exclusive_dense_instructions);
+    profile.inclusive_work.saturating_add_assign(inclusive_work);
+    profile.exclusive_work.saturating_add_assign(exclusive_work);
 }
 
 fn record_operation_profile(
@@ -5706,12 +5931,27 @@ fn merge_static_counter_map(
     }
 }
 
+fn merge_static_nested_counter_map(
+    target: &mut BTreeMap<String, BTreeMap<String, u64>>,
+    source: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+) {
+    for (family, kinds) in source {
+        let target_kinds = target.entry(family.to_owned()).or_default();
+        for (kind, count) in kinds {
+            *target_kinds.entry(kind.to_owned()).or_default() += count;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{AliasState, InlineCacheKind, InlineCacheObservation, QuickeningObservation};
+    use crate::experimental::{
+        AliasState, InlineCacheKind, InlineCacheObservation, QuickeningObservation,
+    };
     use php_ir::ids::RegId;
     use php_ir::instruction::{BinaryOp, InstructionKind};
-    use php_runtime::{PhpArrayShapeKind, PhpArrayShapeLookupFallback};
+    use php_runtime::api::{PhpArrayShapeKind, PhpArrayShapeLookupFallback};
+    use php_runtime::experimental::{layout_stats, numeric_string};
     use std::collections::BTreeMap;
 
     use super::{
@@ -5752,8 +5992,9 @@ mod tests {
         counters.record_dequickened_by_reference(AliasState::PropertyOrArrayDimReference);
         counters.record_ic_invalidated_by_reference(AliasState::PropertyOrArrayDimReference);
         counters.record_dense_bytecode_fallback_by_reference(AliasState::UnknownAliasing);
-        counters.record_runtime_layout_stats(php_runtime::layout_stats::RuntimeLayoutStats {
+        counters.record_runtime_layout_stats(layout_stats::RuntimeLayoutStats {
             value_clones: 11,
+            value_clone_by_kind: [4, 2, 3, 1, 1, 0, 0, 0, 0],
             string_allocations: 7,
             array_handle_clones: 5,
             cow_separations: 3,
@@ -5792,17 +6033,20 @@ mod tests {
             record_to_mixed_ambiguous_key: 151,
             record_to_mixed_generic_mutation: 157,
         });
-        counters.record_runtime_layout_source_stats(
-            php_runtime::layout_stats::RuntimeLayoutSourceStats {
-                value_clone_by_family: BTreeMap::from([
-                    ("stack_register_local_move", 5),
-                    ("return_value", 2),
-                ]),
-                array_handle_clone_by_family: BTreeMap::from([("array_element_read", 3)]),
-                cow_separation_by_family: BTreeMap::from([("by_ref_argument_binding", 2)]),
-                reference_cell_creation_by_family: BTreeMap::from([("by_ref_argument_binding", 1)]),
-            },
-        );
+        counters.record_runtime_layout_source_stats(layout_stats::RuntimeLayoutSourceStats {
+            value_clone_by_family: BTreeMap::from([
+                ("stack_register_local_move", 5),
+                ("return_value", 2),
+            ]),
+            value_clone_by_family_and_kind: BTreeMap::from([(
+                "return_value",
+                BTreeMap::from([("array_handle", 2)]),
+            )]),
+            string_allocation_by_family: BTreeMap::from([("output_string_conversion", 4)]),
+            array_handle_clone_by_family: BTreeMap::from([("array_element_read", 3)]),
+            cow_separation_by_family: BTreeMap::from([("by_ref_argument_binding", 2)]),
+            reference_cell_creation_by_family: BTreeMap::from([("by_ref_argument_binding", 1)]),
+        });
         counters.record_autoload();
         counters.record_literal_intern(false);
         counters.record_literal_intern(true);
@@ -5826,15 +6070,13 @@ mod tests {
         counters.record_small_map_lookup_miss();
         counters.record_array_shape_lookup_fallback(PhpArrayShapeLookupFallback::KeyCoercion);
         counters.record_array_shape_lookup_fallback(PhpArrayShapeLookupFallback::OrderSemantics);
-        counters.record_numeric_string_cache_stats(
-            php_runtime::numeric_string::NumericStringCacheStats {
-                classify_calls: 7,
-                hits: 2,
-                misses: 3,
-                warning_sensitive_fallbacks: 4,
-                overflow_precision_fallbacks: 5,
-            },
-        );
+        counters.record_numeric_string_cache_stats(numeric_string::NumericStringCacheStats {
+            classify_calls: 7,
+            hits: 2,
+            misses: 3,
+            warning_sensitive_fallbacks: 4,
+            overflow_precision_fallbacks: 5,
+        });
         counters.record_numeric_string_specialization_hit();
         counters.record_typecheck_fast_path(false);
         counters.record_typecheck_fast_path(true);
@@ -6732,6 +6974,7 @@ mod tests {
         assert!(json.contains("\"native_candidates\": 0"));
         assert!(json.contains("\"native_compiled_regions\": 0"));
         assert!(json.contains("\"native_executions\": 0"));
+        assert!(json.contains("\"copy_patch_executed\": 0"));
         assert!(json.contains("\"native_compile_budget_rejections\": 0"));
         assert!(json.contains("\"native_eligibility_rejections_by_reason\": {}"));
         assert!(json.contains("\"native_side_exits_by_reason\": {}"));

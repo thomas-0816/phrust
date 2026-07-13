@@ -41,10 +41,12 @@ pub enum Value {
 }
 
 /// Register files and packed arrays memcpy `Value` on every clone; keep it
-/// small. If this assertion fails you added a fat variant - box its payload
-/// instead.
-const _: () = assert!(std::mem::size_of::<Value>() <= 24);
-const _: () = assert!(std::mem::size_of::<Option<Value>>() <= 24);
+/// small. Every heap variant is a single pointer-sized handle (identities
+/// live inside the shared cells), which is what holds the 16-byte layout.
+/// If this assertion fails you added a fat variant - box its payload or
+/// fold its side data into the pointee instead.
+const _: () = assert!(std::mem::size_of::<Value>() <= 16);
+const _: () = assert!(std::mem::size_of::<Option<Value>>() <= 16);
 
 impl Value {
     /// Creates a callable value, boxing the payload.
@@ -75,7 +77,20 @@ impl Value {
 
 impl Clone for Value {
     fn clone(&self) -> Self {
-        crate::layout_stats::record_value_clone();
+        use crate::layout_stats::ValueCloneKind;
+
+        crate::layout_stats::record_value_clone(|| match self {
+            Self::Null | Self::Bool(_) | Self::Int(_) | Self::Float(_) | Self::Uninitialized => {
+                ValueCloneKind::ScalarOrUninitialized
+            }
+            Self::String(_) => ValueCloneKind::StringHandle,
+            Self::Array(_) => ValueCloneKind::ArrayHandle,
+            Self::Object(_) => ValueCloneKind::ObjectHandle,
+            Self::Reference(_) => ValueCloneKind::ReferenceCellHandle,
+            Self::Resource(_) => ValueCloneKind::ResourceHandle,
+            Self::Callable(_) => ValueCloneKind::CallableBox,
+            Self::Fiber(_) | Self::Generator(_) => ValueCloneKind::FiberOrGeneratorHandle,
+        });
         match self {
             Self::Null => Self::Null,
             Self::Bool(value) => Self::Bool(*value),

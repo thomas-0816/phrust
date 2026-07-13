@@ -47,7 +47,7 @@
 {"path":"ext/pcre/tests/bug66121.phpt"}
 {"path":"ext/pcre/tests/bug63055.phpt"}
 {"path":"ext/pcre/tests/bug67238.phpt"}
-{"path":"ext/pcre/tests/bug69864.phpt"}
+{"path":"ext/pcre/tests/bug69864.phpt","timeout_seconds":30}
 {"path":"ext/pcre/tests/bug70232.phpt"}
 {"path":"ext/pcre/tests/bug70345.phpt"}
 {"path":"ext/pcre/tests/bug70345_old.phpt"}

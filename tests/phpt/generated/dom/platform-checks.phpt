@@ -14,6 +14,7 @@ var_dump(class_exists("DOMText", false));
 var_dump(class_exists("DOMComment", false));
 var_dump(class_exists("DOMCdataSection", false));
 var_dump(class_exists("DOMNodeList", false));
+var_dump(class_exists("DOMNamedNodeMap", false));
 var_dump(class_exists("DOMNode", false));
 var_dump(class_exists("DOMXPath", false));
 ?>
@@ -27,4 +28,5 @@ bool(true)
 bool(true)
 bool(true)
 bool(true)
-bool(false)
+bool(true)
+bool(true)

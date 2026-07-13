@@ -1,0 +1,60 @@
+{
+  "categories": {
+    "A": "literal, token, name, or metadata decoding from the authoritative syntax tree",
+    "B": "structural recovery for information missing from typed AST or HIR",
+    "C": "diagnostic rendering or derived source-position information"
+  },
+  "entries": [
+    {
+      "category": "A",
+      "id": "crates/php_ir/src/lower/context.rs:source_text_member:6020e5dc575b:1",
+      "purpose": "preserve a declaration doc comment as runtime metadata"
+    },
+    {
+      "category": "C",
+      "id": "crates/php_ir/src/lower/expressions.rs:source_text_member:376f5ba64d9d:1",
+      "purpose": "derive the line number for a constant-expression __LINE__ value"
+    },
+    {
+      "category": "C",
+      "id": "crates/php_ir/src/lower/expressions.rs:source_text_member:376f5ba64d9d:2",
+      "purpose": "derive the line number for a runtime-expression __LINE__ value"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/attributes.rs:token_text_reconstruction:c2279de42f1e:1",
+      "purpose": "decode an attribute name from typed CST tokens"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/attributes.rs:token_text_reconstruction:9255bf313a44:1",
+      "purpose": "shared token-text decoder for attribute names"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/hir.rs:token_text_reconstruction:016077c4f0cd:1",
+      "purpose": "preserve inline HTML token bytes in HIR"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/hir.rs:token_text_reconstruction:016077c4f0cd:2",
+      "purpose": "preserve literal token spelling in HIR"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/hir.rs:token_text_reconstruction:8f67532fe659:1",
+      "purpose": "preserve variable sigils and identifier token spelling in HIR"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/hir.rs:token_text_reconstruction:b90f2d63b2c8:1",
+      "purpose": "decode a typed name token sequence for namespace and alias resolution"
+    },
+    {
+      "category": "A",
+      "id": "crates/php_semantics/src/lower/hir.rs:token_text_reconstruction:9255bf313a44:1",
+      "purpose": "shared token-text decoder for literals, variables, and names"
+    }
+  ],
+  "schema_version": 1
+}

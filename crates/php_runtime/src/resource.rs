@@ -2,8 +2,8 @@
 
 use crate::{ArrayKey, PhpArray, PhpString, Value};
 use flate2::Compression;
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
+use flate2::read::{GzDecoder, ZlibDecoder};
+use flate2::write::{GzEncoder, ZlibEncoder};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -34,6 +34,8 @@ impl ResourceId {
 pub enum ResourceKind {
     /// Stream resource.
     Stream,
+    /// Stream filter resource.
+    StreamFilter,
     /// Directory resource.
     Directory,
     /// Stream context resource.
@@ -64,6 +66,39 @@ pub enum StreamSeekWhence {
     Current,
     /// Seek from the end of the stream buffer.
     End,
+}
+
+/// PHP stream filter chain selector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamFilterMode {
+    /// Attach to the read chain.
+    Read,
+    /// Attach to the write chain.
+    Write,
+    /// Attach to both read and write chains.
+    All,
+}
+
+impl StreamFilterMode {
+    /// Parses PHP's STREAM_FILTER_* constants. PHP's default `0` behaves like
+    /// the read chain for userland `stream_filter_append/prepend`.
+    #[must_use]
+    pub const fn from_php(value: i64) -> Option<Self> {
+        match value {
+            0 | 1 => Some(Self::Read),
+            2 => Some(Self::Write),
+            3 => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    const fn includes_read(self) -> bool {
+        matches!(self, Self::Read | Self::All)
+    }
+
+    const fn includes_write(self) -> bool {
+        matches!(self, Self::Write | Self::All)
+    }
 }
 
 impl StreamFlags {
@@ -309,6 +344,7 @@ impl StreamWrapperRegistry {
         if let Some(target) = uri.strip_prefix("php://") {
             return open_php_stream(table, target, mode, parsed_mode, capabilities, php_input);
         }
+        #[cfg(feature = "full-runtime")]
         if uri.starts_with("phar://") {
             return open_phar_stream(table, uri, mode, parsed_mode, cwd, capabilities);
         }
@@ -336,7 +372,32 @@ struct ResourceState {
     flags: StreamFlags,
     metadata: StreamMetadata,
     user_closable: bool,
+    read_filters: Vec<StreamFilterSpec>,
+    write_filters: Vec<StreamFilterSpec>,
     data: StreamData,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StreamFilterSpec {
+    id: ResourceId,
+    name: String,
+    kind: StreamFilterKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamFilterKind {
+    ZlibDeflate,
+    ZlibInflate,
+}
+
+impl StreamFilterKind {
+    fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "zlib.deflate" => Some(Self::ZlibDeflate),
+            "zlib.inflate" => Some(Self::ZlibInflate),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -371,6 +432,12 @@ enum StreamData {
         flags: i64,
         magic_file: Option<String>,
     },
+    StreamFilter {
+        target: ResourceRef,
+        filter_id: ResourceId,
+        mode: StreamFilterMode,
+        name: String,
+    },
 }
 
 /// Reference-counted runtime resource handle.
@@ -385,6 +452,8 @@ impl ResourceRef {
             flags,
             metadata,
             user_closable: true,
+            read_filters: Vec::new(),
+            write_filters: Vec::new(),
             data,
         })))
     }
@@ -425,6 +494,7 @@ impl ResourceRef {
         let state = self.0.borrow();
         match state.kind {
             ResourceKind::Stream => "stream".to_string(),
+            ResourceKind::StreamFilter => "stream filter".to_string(),
             ResourceKind::Directory | ResourceKind::StreamContext => {
                 state.metadata.stream_type.clone()
             }
@@ -479,6 +549,8 @@ impl ResourceRef {
                 "stream is not writable",
             ));
         }
+        let filtered = apply_stream_filters(&state.write_filters, bytes.to_vec())?;
+        let visible_len = bytes.len();
         match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
@@ -487,16 +559,17 @@ impl ResourceRef {
                 if *cursor > buffer.len() {
                     buffer.resize(*cursor, 0);
                 }
-                let end = cursor.saturating_add(bytes.len());
+                let end = cursor.saturating_add(filtered.len());
                 if end > buffer.len() {
                     buffer.resize(end, 0);
                 }
-                buffer[*cursor..end].copy_from_slice(bytes);
+                buffer[*cursor..end].copy_from_slice(&filtered);
                 *cursor = end;
             }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
-            | StreamData::FileInfo { .. } => {
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
                     "directory resource is not writable",
@@ -504,7 +577,7 @@ impl ResourceRef {
             }
         }
         flush_file_data(&state.data)?;
-        Ok(bytes.len())
+        Ok(visible_len)
     }
 
     /// Reads up to `length` bytes from a readable stream buffer.
@@ -522,7 +595,8 @@ impl ResourceRef {
                 "stream is not readable",
             ));
         }
-        match &mut state.data {
+        let filters = state.read_filters.clone();
+        let bytes = match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
             | StreamData::File { buffer, cursor, .. }
@@ -534,11 +608,13 @@ impl ResourceRef {
             }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
-            | StreamData::FileInfo { .. } => Err(StreamOpenError::new(
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_READABLE",
                 "directory resource is not byte-readable",
             )),
-        }
+        }?;
+        apply_stream_filters(&filters, bytes)
     }
 
     /// Reads one line, including the trailing newline when present.
@@ -556,7 +632,8 @@ impl ResourceRef {
                 "stream is not readable",
             ));
         }
-        match &mut state.data {
+        let filters = state.read_filters.clone();
+        let bytes = match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
             | StreamData::File { buffer, cursor, .. }
@@ -571,11 +648,13 @@ impl ResourceRef {
             }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
-            | StreamData::FileInfo { .. } => Err(StreamOpenError::new(
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_READABLE",
                 "directory resource is not line-readable",
             )),
-        }
+        }?;
+        apply_stream_filters(&filters, bytes)
     }
 
     /// Reads remaining bytes from a readable stream buffer.
@@ -593,7 +672,8 @@ impl ResourceRef {
                 "stream is not readable",
             ));
         }
-        match &mut state.data {
+        let filters = state.read_filters.clone();
+        let bytes = match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
             | StreamData::File { buffer, cursor, .. }
@@ -604,11 +684,13 @@ impl ResourceRef {
             }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
-            | StreamData::FileInfo { .. } => Err(StreamOpenError::new(
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_READABLE",
                 "directory resource is not byte-readable",
             )),
-        }
+        }?;
+        apply_stream_filters(&filters, bytes)
     }
 
     /// Rewinds seekable stream buffers to offset 0.
@@ -672,7 +754,8 @@ impl ResourceRef {
             }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
-            | StreamData::FileInfo { .. } => {
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_SEEKABLE",
                     "directory resource is not byte-seekable",
@@ -709,7 +792,8 @@ impl ResourceRef {
             }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
-            | StreamData::FileInfo { .. } => {
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
                     "resource is not a writable byte stream",
@@ -734,7 +818,9 @@ impl ResourceRef {
             | StreamData::File { cursor, .. }
             | StreamData::GzipFile { cursor, .. }
             | StreamData::Directory { cursor, .. } => *cursor,
-            StreamData::Context { .. } | StreamData::FileInfo { .. } => 0,
+            StreamData::Context { .. }
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => 0,
         })
     }
 
@@ -755,7 +841,9 @@ impl ResourceRef {
             StreamData::Directory {
                 entries, cursor, ..
             } => *cursor >= entries.len(),
-            StreamData::Context { .. } | StreamData::FileInfo { .. } => true,
+            StreamData::Context { .. }
+            | StreamData::FileInfo { .. }
+            | StreamData::StreamFilter { .. } => true,
         })
     }
 
@@ -854,6 +942,66 @@ impl ResourceRef {
     pub fn flush(&self) -> Result<(), StreamOpenError> {
         let state = self.0.borrow();
         flush_file_data(&state.data)
+    }
+
+    fn add_stream_filter(
+        &self,
+        spec: StreamFilterSpec,
+        mode: StreamFilterMode,
+        prepend: bool,
+    ) -> Result<(), StreamOpenError> {
+        let mut state = self.0.borrow_mut();
+        if state.kind != ResourceKind::Stream {
+            return Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_FILTER_TARGET",
+                "stream filter target must be an open stream",
+            ));
+        }
+        if mode.includes_read() {
+            insert_stream_filter(&mut state.read_filters, spec.clone(), prepend);
+        }
+        if mode.includes_write() {
+            insert_stream_filter(&mut state.write_filters, spec, prepend);
+        }
+        Ok(())
+    }
+
+    fn remove_stream_filter(&self, id: ResourceId, mode: StreamFilterMode) -> bool {
+        let mut state = self.0.borrow_mut();
+        let mut removed = false;
+        if mode.includes_read() {
+            removed |= remove_stream_filter_by_id(&mut state.read_filters, id);
+        }
+        if mode.includes_write() {
+            removed |= remove_stream_filter_by_id(&mut state.write_filters, id);
+        }
+        removed
+    }
+
+    /// Removes a stream filter resource from its target stream.
+    pub fn remove_stream_filter_resource(&self) -> bool {
+        let (target, filter_id, mode) = {
+            let state = self.0.borrow();
+            if state.kind != ResourceKind::StreamFilter {
+                return false;
+            }
+            let StreamData::StreamFilter {
+                target,
+                filter_id,
+                mode,
+                ..
+            } = &state.data
+            else {
+                return false;
+            };
+            (target.clone(), *filter_id, *mode)
+        };
+        let removed = target.remove_stream_filter(filter_id, mode);
+        if removed {
+            let mut state = self.0.borrow_mut();
+            state.kind = ResourceKind::Closed;
+        }
+        removed
     }
 
     /// Closes the resource. Returns `true` only for the first close.
@@ -984,6 +1132,8 @@ impl ResourceTable {
             flags: StreamFlags::new(true, false, true),
             metadata: StreamMetadata::new("plainfile", "stream", "r", uri),
             user_closable: true,
+            read_filters: Vec::new(),
+            write_filters: Vec::new(),
             data: StreamData::Directory {
                 path,
                 entries,
@@ -1004,6 +1154,8 @@ impl ResourceTable {
             flags: StreamFlags::new(false, false, false),
             metadata: StreamMetadata::new("PHP", "stream-context", "", "stream-context"),
             user_closable: true,
+            read_filters: Vec::new(),
+            write_filters: Vec::new(),
             data: StreamData::Context { options },
         })));
         self.resources.insert(id, resource.clone());
@@ -1020,6 +1172,8 @@ impl ResourceTable {
             flags: StreamFlags::new(false, false, false),
             metadata: StreamMetadata::new("fileinfo", "file_info", "", "fileinfo"),
             user_closable: true,
+            read_filters: Vec::new(),
+            write_filters: Vec::new(),
             data: StreamData::FileInfo { flags, magic_file },
         })));
         self.resources.insert(id, resource.clone());
@@ -1036,6 +1190,8 @@ impl ResourceTable {
             flags: StreamFlags::new(true, false, false),
             metadata: StreamMetadata::new("glob", "stream", "r", pattern),
             user_closable: false,
+            read_filters: Vec::new(),
+            write_filters: Vec::new(),
             data: StreamData::Memory {
                 buffer: Vec::new(),
                 cursor: 0,
@@ -1063,6 +1219,45 @@ impl ResourceTable {
                 cursor,
             },
         )
+    }
+
+    /// Attaches a built-in stream filter and returns the filter resource.
+    pub fn register_stream_filter(
+        &mut self,
+        target: &ResourceRef,
+        name: impl Into<String>,
+        mode: StreamFilterMode,
+        prepend: bool,
+    ) -> Result<Option<ResourceRef>, StreamOpenError> {
+        let name = name.into();
+        let Some(kind) = StreamFilterKind::parse(&name) else {
+            return Ok(None);
+        };
+        let id = ResourceId::new(self.next_id);
+        self.next_id += 1;
+        let spec = StreamFilterSpec {
+            id,
+            name: name.clone(),
+            kind,
+        };
+        target.add_stream_filter(spec, mode, prepend)?;
+        let resource = ResourceRef(Rc::new(RefCell::new(ResourceState {
+            id,
+            kind: ResourceKind::StreamFilter,
+            flags: StreamFlags::new(false, false, false),
+            metadata: StreamMetadata::new("PHP", "stream filter", "", name.clone()),
+            user_closable: false,
+            read_filters: Vec::new(),
+            write_filters: Vec::new(),
+            data: StreamData::StreamFilter {
+                target: target.clone(),
+                filter_id: id,
+                mode,
+                name,
+            },
+        })));
+        self.resources.insert(id, resource.clone());
+        Ok(Some(resource))
     }
 
     /// Looks up a resource by ID.
@@ -1253,6 +1448,7 @@ fn open_file_stream(
     ))
 }
 
+#[cfg(feature = "full-runtime")]
 fn open_phar_stream(
     table: &mut ResourceTable,
     uri: &str,
@@ -1319,6 +1515,67 @@ fn flush_file_data(data: &StreamData) -> Result<(), StreamOpenError> {
         })?;
     }
     Ok(())
+}
+
+fn insert_stream_filter(
+    filters: &mut Vec<StreamFilterSpec>,
+    spec: StreamFilterSpec,
+    prepend: bool,
+) {
+    if prepend {
+        filters.insert(0, spec);
+    } else {
+        filters.push(spec);
+    }
+}
+
+fn remove_stream_filter_by_id(filters: &mut Vec<StreamFilterSpec>, id: ResourceId) -> bool {
+    let Some(index) = filters.iter().position(|spec| spec.id == id) else {
+        return false;
+    };
+    filters.remove(index);
+    true
+}
+
+fn apply_stream_filters(
+    filters: &[StreamFilterSpec],
+    mut bytes: Vec<u8>,
+) -> Result<Vec<u8>, StreamOpenError> {
+    for filter in filters {
+        bytes = match filter.kind {
+            StreamFilterKind::ZlibDeflate => zlib_deflate_filter(&bytes, &filter.name)?,
+            StreamFilterKind::ZlibInflate => zlib_inflate_filter(&bytes, &filter.name)?,
+        };
+    }
+    Ok(bytes)
+}
+
+fn zlib_deflate_filter(bytes: &[u8], name: &str) -> Result<Vec<u8>, StreamOpenError> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes).map_err(|error| {
+        StreamOpenError::new(
+            "E_PHP_RUNTIME_STREAM_FILTER",
+            format!("failed to write through `{name}` filter: {error}"),
+        )
+    })?;
+    encoder.finish().map_err(|error| {
+        StreamOpenError::new(
+            "E_PHP_RUNTIME_STREAM_FILTER",
+            format!("failed to finish `{name}` filter: {error}"),
+        )
+    })
+}
+
+fn zlib_inflate_filter(bytes: &[u8], name: &str) -> Result<Vec<u8>, StreamOpenError> {
+    let mut decoder = ZlibDecoder::new(bytes);
+    let mut output = Vec::new();
+    decoder.read_to_end(&mut output).map_err(|error| {
+        StreamOpenError::new(
+            "E_PHP_RUNTIME_STREAM_FILTER",
+            format!("failed to read through `{name}` filter: {error}"),
+        )
+    })?;
+    Ok(output)
 }
 
 /// Decodes gzip bytes for gzip-backed resources.

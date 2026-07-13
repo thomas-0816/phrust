@@ -1,6 +1,6 @@
 # Enum Semantics
 
-Work item lowers PHP enum cases into dedicated HIR records without executing
+The semantic frontend lowers PHP enum cases into dedicated HIR records without executing
 enum behavior or resolving autoload-sensitive class facts.
 
 ## HIR

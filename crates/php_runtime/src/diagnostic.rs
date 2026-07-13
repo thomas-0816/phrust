@@ -1,6 +1,6 @@
 //! Runtime diagnostics shared by the VM and CLI.
 
-use crate::builtins::RuntimeSourceSpan;
+use crate::source_span::RuntimeSourceSpan;
 use php_diagnostics::{
     DiagnosticEnvelope, DiagnosticLayer, DiagnosticLocation, DiagnosticPhase, DiagnosticSeverity,
     DiagnosticSpan,
@@ -651,6 +651,8 @@ pub enum RuntimeDiagnosticPayload {
     TokenizerParse(TokenizerParseDiagnosticContext),
     /// Runtime bring-up diagnostic classification payload.
     Bringup(RuntimeBringupDiagnosticContext),
+    /// Include/require failure details used by PHP-compatible rendering.
+    IncludeFailure(IncludeFailureDiagnosticContext),
 }
 
 impl RuntimeDiagnosticPayload {
@@ -662,7 +664,48 @@ impl RuntimeDiagnosticPayload {
             Self::JsonBuiltin(payload) => payload.envelope_context(),
             Self::TokenizerParse(payload) => payload.envelope_context(),
             Self::Bringup(payload) => payload.envelope_context(),
+            Self::IncludeFailure(payload) => payload.envelope_context(),
         }
+    }
+}
+
+/// Structured include/require failure details.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncludeFailureDiagnosticContext {
+    target: String,
+    reason: String,
+}
+
+impl IncludeFailureDiagnosticContext {
+    /// Creates include/require failure context.
+    #[must_use]
+    pub fn new(target: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Requested include target.
+    #[must_use]
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// PHP-visible stream failure reason.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Structured payload fields for shared diagnostic envelopes.
+    #[must_use]
+    pub fn envelope_context(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("payload".to_string(), "include_failure".to_string()),
+            ("include_target".to_string(), self.target.clone()),
+            ("include_reason".to_string(), self.reason.clone()),
+        ])
     }
 }
 
@@ -1240,7 +1283,7 @@ pub fn undefined_function(
     RuntimeDiagnostic::new(
         "E_PHP_RUNTIME_UNDEFINED_FUNCTION",
         RuntimeSeverity::FatalError,
-        format!("undefined function {name}"),
+        format!("Call to undefined function {name}()"),
         source_span,
         stack_trace,
         Some(PhpReferenceClassification::Error),
@@ -1308,7 +1351,7 @@ mod tests {
         assert_eq!(diagnostic.severity(), RuntimeSeverity::FatalError);
         assert_eq!(
             diagnostic.to_json(),
-            "{\"id\":\"E_PHP_RUNTIME_UNDEFINED_FUNCTION\",\"severity\":\"fatal_error\",\"message\":\"undefined function missing\",\"span\":{\"file\":\"fixture.php\",\"start\":1,\"end\":8},\"stack\":[{\"function\":\"main\"}],\"php_reference\":\"error\",\"context\":{\"bringup_error_class\":\"stdlib_builtin\",\"lookup_kind\":\"function\",\"normalized_name\":\"missing\",\"payload\":\"runtime_bringup\",\"requested_name\":\"missing\"}}"
+            "{\"id\":\"E_PHP_RUNTIME_UNDEFINED_FUNCTION\",\"severity\":\"fatal_error\",\"message\":\"Call to undefined function missing()\",\"span\":{\"file\":\"fixture.php\",\"start\":1,\"end\":8},\"stack\":[{\"function\":\"main\"}],\"php_reference\":\"error\",\"context\":{\"bringup_error_class\":\"stdlib_builtin\",\"lookup_kind\":\"function\",\"normalized_name\":\"missing\",\"payload\":\"runtime_bringup\",\"requested_name\":\"missing\"}}"
         );
     }
 

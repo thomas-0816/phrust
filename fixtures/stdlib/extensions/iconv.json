@@ -1,0 +1,186 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "ICONV_MIME_DECODE_STRICT",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ICONV_MIME_DECODE_CONTINUE_ON_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ICONV_IMPL",
+      "value": {
+        "kind": "string",
+        "value": "phrust"
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "ICONV_VERSION",
+      "value": {
+        "kind": "string",
+        "value": "bounded-utf8-ascii-latin1"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_get_encoding",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_mime_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_mime_decode_headers",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_mime_encode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_set_encoding",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_strlen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_strpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_strrpos",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "iconv",
+        "source": "ext/iconv/iconv.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "iconv"
+        }
+      ],
+      "name": "iconv_substr",
+      "visibility": "php"
+    }
+  ],
+  "name": "iconv",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

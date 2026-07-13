@@ -1,0 +1,425 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "AddressInfo"
+    },
+    {
+      "kind": "class",
+      "name": "Socket"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "AF_INET",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "AF_UNIX",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOCK_STREAM",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_NORMAL_READ",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "PHP_BINARY_READ",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MSG_OOB",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MSG_WAITALL",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOL_SOCKET",
+      "value": {
+        "kind": "int",
+        "value": 65535
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SOL_TCP",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SO_REUSEADDR",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SO_KEEPALIVE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "TCP_NODELAY",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SHUT_RD",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SHUT_WR",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SHUT_RDWR",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "arginfo_owner_override": "Phrust reflection ownership differs from php-src stub placement",
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "inet_ntop",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "arginfo_owner_override": "Phrust reflection ownership differs from php-src stub placement",
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "inet_pton",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_accept",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_bind",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_clear_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_connect",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_create",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_get_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_getpeername",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_getsockname",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_last_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_listen",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_read",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_recv",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_send",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_set_option",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_shutdown",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_strerror",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_write",
+      "visibility": "php"
+    }
+  ],
+  "name": "sockets",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -1,11 +1,147 @@
 use super::*;
-use crate::{IncludeCache, IncludeLoader, InlineCacheMode, QuickeningMode, TieringOptions};
+use crate::api::{IncludeCache, IncludeLoader};
+use crate::experimental::{InlineCacheMode, QuickeningMode, TieringOptions};
 use php_ir::{
     FunctionFlags, IrBuilder, IrConstant, IrSpan, Operand, RegId, UnitId,
     instruction::InstructionKind,
 };
-use php_runtime::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
+use php_runtime::api::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
 use std::sync::Arc;
+
+fn test_declaration_origin(kind: DeclarationKind) -> DeclarationOrigin {
+    DeclarationOrigin {
+        source_path: "dynamic-symbol-test.php".to_owned(),
+        line: 1,
+        span: IrSpan::default(),
+        namespace: None,
+        kind,
+        load_kind: DeclarationLoadKind::Include,
+    }
+}
+
+#[test]
+fn dynamic_symbol_indexes_preserve_vector_order_and_first_declaration() {
+    let mut state = ExecutionState::default();
+    let first_unit = CompiledUnit::new(php_ir::IrUnit::new(UnitId::new(1)));
+    let equal_but_distinct_unit = CompiledUnit::new(php_ir::IrUnit::new(UnitId::new(1)));
+
+    assert_eq!(state.push_dynamic_unit(first_unit.clone()), 0);
+    assert_eq!(state.push_dynamic_unit(first_unit.clone()), 1);
+    assert_eq!(
+        dynamic_unit_index_for_compiled(&state, &first_unit),
+        Some(1)
+    );
+    assert_eq!(
+        dynamic_unit_index_for_compiled(&state, &equal_but_distinct_unit),
+        None,
+        "identity lookup must not use deep CompiledUnit equality"
+    );
+
+    state.push_dynamic_function(DynamicFunctionEntry {
+        name: "app\\first".to_owned(),
+        unit_index: 0,
+        function: php_ir::FunctionId::new(1),
+        origin: test_declaration_origin(DeclarationKind::Function),
+    });
+    state.push_dynamic_function(DynamicFunctionEntry {
+        name: "app\\second".to_owned(),
+        unit_index: 1,
+        function: php_ir::FunctionId::new(2),
+        origin: test_declaration_origin(DeclarationKind::Function),
+    });
+    assert_eq!(
+        state
+            .dynamic_functions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["app\\first", "app\\second"]
+    );
+    assert_eq!(
+        dynamic_function_entry_by_normalized_name(&state, "app\\first").map(|entry| entry.function),
+        Some(php_ir::FunctionId::new(1))
+    );
+
+    state.push_dynamic_constant(DynamicConstantEntry {
+        name: "FIRST".to_owned(),
+        unit_index: 0,
+        value: php_ir::ConstId::new(1),
+        origin: test_declaration_origin(DeclarationKind::GlobalConstant),
+    });
+    state.push_dynamic_constant(DynamicConstantEntry {
+        name: "SECOND".to_owned(),
+        unit_index: 1,
+        value: php_ir::ConstId::new(2),
+        origin: test_declaration_origin(DeclarationKind::GlobalConstant),
+    });
+    assert_eq!(
+        state
+            .dynamic_constants
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["FIRST", "SECOND"]
+    );
+    assert_eq!(state.dynamic_constant_index.get("FIRST"), Some(&0));
+}
+
+#[test]
+fn apcu_builtin_and_callback_share_the_registered_request_slot() {
+    let result = execute_source(
+        r#"<?php
+$key = "__phrust_registered_apcu_slot";
+apcu_delete($key);
+var_dump(apcu_store($key, "seed"));
+var_dump(apcu_entry($key, function ($key) { return "wrong-owner"; }));
+var_dump(apcu_delete($key));
+"#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "bool(true)\nstring(4) \"seed\"\nbool(true)\n"
+    );
+}
+
+#[test]
+fn immutable_unit_validation_is_prepared_once_across_requests() {
+    let source = "<?php class PreparedFixture { public function value(): int { return 7; } } echo (new PreparedFixture())->value();";
+    let frontend = php_semantics::analyze_source(source);
+    assert!(!frontend.has_errors());
+    let lowering = php_ir::lower_frontend_result(
+        &frontend,
+        php_ir::LoweringOptions {
+            source_text: Some(source.to_owned()),
+            ..php_ir::LoweringOptions::default()
+        },
+    );
+    let unit = CompiledUnit::new(lowering.unit);
+    let vm = Vm::new();
+
+    let first = vm.execute(unit.clone());
+    let second = vm.execute(unit.clone());
+    assert!(first.status.is_success(), "{:?}", first.status);
+    assert!(second.status.is_success(), "{:?}", second.status);
+    assert_eq!(first.output.to_string_lossy(), "7");
+    assert_eq!(second.output.to_string_lossy(), "7");
+    assert_eq!(
+        unit.prepared_unit_stats(),
+        crate::compiled_unit::PreparedUnitStats {
+            ir_verification_runs: 1,
+            class_validation_runs: 1,
+        }
+    );
+
+    let validating_vm = Vm::with_options(VmOptions {
+        revalidate_prepared_unit: true,
+        ..VmOptions::default()
+    });
+    let validated = validating_vm.execute(unit.clone());
+    assert!(validated.status.is_success(), "{:?}", validated.status);
+    assert_eq!(unit.prepared_unit_stats().ir_verification_runs, 1);
+    assert_eq!(unit.prepared_unit_stats().class_validation_runs, 1);
+}
 
 #[test]
 fn pdo_mysql_dsn_parser_accepts_common_tcp_options() {
@@ -34,6 +170,113 @@ fn fileinfo_object_facade_routes_to_runtime_state() {
 }
 
 #[test]
+fn fileinfo_constructor_rejects_invalid_magic_database_path() {
+    let result =
+        execute_source("<?php new finfo(FILEINFO_MIME_TYPE, '/path/to/missing/magic.mgc');");
+
+    assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
+    assert!(
+        result
+            .status
+            .message()
+            .is_some_and(|message| message.contains("E_PHP_VM_FILEINFO_MAGIC")),
+        "{:?}",
+        result.status
+    );
+}
+
+#[test]
+fn opcache_compile_file_records_only_successful_compiles() {
+    let root = std::env::temp_dir().join(format!("phrust-opcache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let source_path = root.join("index.php");
+    std::fs::write(root.join("valid.php"), "<?php return 42;\n")
+        .expect("valid fixture should be written");
+    std::fs::write(root.join("invalid.php"), "<?php function {\n")
+        .expect("invalid fixture should be written");
+    let source = r#"<?php
+$valid = __DIR__ . "/valid.php";
+$invalid = __DIR__ . "/invalid.php";
+var_dump(opcache_compile_file($valid));
+var_dump(opcache_is_script_cached($valid));
+error_reporting(0);
+var_dump(opcache_compile_file($invalid));
+var_dump(opcache_is_script_cached($invalid));
+"#;
+
+    let result = execute_source_with_options_and_path(
+        source,
+        VmOptions {
+            include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+            include_cache: Some(Arc::new(IncludeCache::new_with_revalidation_interval(
+                1,
+                std::time::Duration::ZERO,
+            ))),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+        source_path.display().to_string(),
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "bool(true)\nbool(true)\nbool(false)\nbool(false)\n"
+    );
+}
+
+#[test]
+fn getimagesize_initializes_undefined_image_info_reference() {
+    let root =
+        std::env::temp_dir().join(format!("phrust-getimagesize-by-ref-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let image_path = root.join("pixel.png");
+    std::fs::write(
+        &image_path,
+        [
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0x00, 0x00, 0x00, 0x0d, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xde,
+        ],
+    )
+    .expect("fixture should be written");
+
+    let source = format!(
+        "<?php $size = getimagesize({:?}, $info); var_dump($size[0], $size[1], is_array($info), array_keys($info));",
+        image_path.display().to_string()
+    );
+    let result = execute_source_with_options_and_path(
+        &source,
+        VmOptions {
+            runtime_context: RuntimeContext::default().with_filesystem_capabilities(
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
+            ),
+            ..VmOptions::default()
+        },
+        root.join("index.php").display().to_string(),
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(1)\nint(1)\nbool(true)\narray(0) {\n}\n"
+    );
+    assert!(
+        !result
+            .output
+            .to_string_lossy()
+            .contains("Undefined variable $info"),
+        "{}",
+        result.output.to_string_lossy()
+    );
+}
+
+#[test]
 fn trace_argument_string_preview_truncates_on_char_boundary() {
     let value = Value::string("12345678901234éXYZ");
 
@@ -41,17 +284,26 @@ fn trace_argument_string_preview_truncates_on_char_boundary() {
 }
 
 #[test]
-fn pdo_mysql_dsn_parser_rejects_invalid_port_and_socket_gap() {
+fn pdo_mysql_dsn_parser_rejects_invalid_port_and_accepts_socket() {
     assert!(
         pdo_mysql_connect_options_from_dsn("mysql:host=db;port=abc", "", "")
             .expect_err("invalid ports should be rejected")
             .contains("invalid MySQL port")
     );
+
+    let (options, charset) = pdo_mysql_connect_options_from_dsn(
+        "mysql:unix_socket=/tmp/mysql.sock;dbname=app;charset=utf8mb4",
+        "socket_user",
+        "socket_pass",
+    )
+    .expect("unix socket PDO MySQL DSN should parse");
+    let rendered = format!("{options:?}");
     assert!(
-        pdo_mysql_connect_options_from_dsn("mysql:unix_socket=/tmp/mysql.sock", "", "")
-            .expect_err("unix socket support is not implemented")
-            .contains("unix_socket DSNs are not implemented")
+        rendered.contains("socket=%2Ftmp%2Fmysql.sock"),
+        "{rendered}"
     );
+    assert!(rendered.contains("/app"), "{rendered}");
+    assert_eq!(charset.as_deref(), Some("utf8mb4"));
 }
 
 #[test]
@@ -101,6 +353,24 @@ fn pdo_pgsql_rewrites_positional_placeholders_outside_strings() {
             .expect("placeholders should rewrite"),
         "SELECT '?' AS literal, $1 AS value, $2 AS second"
     );
+}
+
+#[test]
+fn pdo_pgsql_constructor_failure_raises_pdo_exception() {
+    let result = execute_source(
+        r#"<?php
+try {
+    $pdo = new PDO("sqlite::memory:");
+    $pdo->__construct("pgsql:host=127.0.0.1;port=abc");
+    echo "not-thrown";
+} catch (PDOException $e) {
+    echo "caught:", strlen($e->getMessage()) > 0 ? "message" : "empty";
+}
+"#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"caught:message");
 }
 
 #[test]
@@ -3099,7 +3369,10 @@ fn date_time_runtime_classes_dispatch_methods() {
             echo $date->format('Y-m-d H:i:s T U'), \"\\n\";
             echo $date->getTimestamp(), \"\\n\";
             echo $date->getTimezone()->getName(), \"\\n\";
+            echo $date->setTimezone(new DateTimeZone('+01:00'))->format('H:i P'), \"\\n\";
+            echo call_user_func([$date, 'setTimezone'], new DateTimeZone('+02:00'))->format('H:i P'), \"\\n\";
             echo $date->getOffset(), '|', $zone->getOffset($date), \"\\n\";
+            $date->setTimezone($zone);
             echo DateTime::ATOM, '|', DateTimeImmutable::RFC3339_EXTENDED, '|', DateTimeInterface::RFC7231, \"\\n\";
             echo DateTimeZone::ALL_WITH_BC, \"\\n\";
             echo (new datetimezone('UTC'))->getName(), \"\\n\";
@@ -3123,7 +3396,7 @@ fn date_time_runtime_classes_dispatch_methods() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.to_string_lossy(),
-        "UTC\n2024-01-02 03:04:05 UTC 1704164645\n1704164645\nUTC\n0|0\nY-m-d\\TH:i:sP|Y-m-d\\TH:i:s.vP|D, d M Y H:i:s \\G\\M\\T\n4095\nUTC\n+00:00\n19800 -05:30 -0530 GMT-0530\n2024-01-02 03:04:05 CET 1704161045\n1|2|1 2 0 0\n2024-01-03 05:04:05\n2024-01-02|2024-01-03\n86400|0\n"
+        "UTC\n2024-01-02 03:04:05 UTC 1704164645\n1704164645\nUTC\n04:04 +01:00\n05:04 +02:00\n7200|0\nY-m-d\\TH:i:sP|Y-m-d\\TH:i:s.vP|D, d M Y H:i:s \\G\\M\\T\n4095\nUTC\n+00:00\n19800 -05:30 -0530 GMT-0530\n2024-01-02 03:04:05 CET 1704161045\n1|2|1 2 0 0\n2024-01-03 05:04:05\n2024-01-02|2024-01-03\n86400|0\n"
     );
 }
 
@@ -3301,7 +3574,7 @@ fn bootstrap_warning_sources_respect_display_and_reporting_masks() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -4025,7 +4298,7 @@ fn output_fast_paths_preserve_to_string_fallback_and_conversion_errors() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -4463,7 +4736,7 @@ fn http_superglobals_are_visible_inside_user_functions() {
         "<?php function show_server() { echo is_array($_SERVER) ? $_SERVER['REQUEST_URI'] : 'bad'; } show_server();",
         VmOptions {
             runtime_context: RuntimeContext::controlled_http(
-                php_runtime::RuntimeHttpRequestContext::new(
+                php_runtime::api::RuntimeHttpRequestContext::new(
                     "GET",
                     "127.0.0.1:18080",
                     "/admin/install.php?step=0",
@@ -4482,7 +4755,7 @@ fn http_superglobals_are_visible_inside_user_functions() {
 
 #[test]
 fn php_input_stream_reads_http_request_body_inside_vm_builtins() {
-    let mut request = php_runtime::RuntimeHttpRequestContext::new(
+    let mut request = php_runtime::api::RuntimeHttpRequestContext::new(
         "POST",
         "127.0.0.1:18080",
         "/submit.php",
@@ -4627,7 +4900,7 @@ fn include_preserves_global_reference_slots_for_bootstrap_files() {
         VmOptions {
             include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
             runtime_context: RuntimeContext::controlled_http(
-                php_runtime::RuntimeHttpRequestContext::new(
+                php_runtime::api::RuntimeHttpRequestContext::new(
                     "POST",
                     "127.0.0.1:18080",
                     "/admin/install.php?step=2",
@@ -4961,7 +5234,10 @@ fn require_once_skips_file_loaded_by_plain_require() {
             echo class_exists('LoadedByRequire', false) ? 'ok' : 'bad';
         ";
     std::fs::write(root.join("index.php"), source).expect("entry source should be written");
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let result = execute_source_with_options_and_path(
         source,
         VmOptions {
@@ -4980,7 +5256,10 @@ fn require_once_skips_file_loaded_by_plain_require() {
 
 #[test]
 fn include_cache_preserves_include_once_request_tracking() {
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let result = execute_fixture_file_with_options(
         "fixtures/runtime/valid/includes/include-once.php",
         VmOptions {
@@ -5004,7 +5283,10 @@ fn include_cache_preserves_include_once_request_tracking() {
 
 #[test]
 fn include_trace_records_cache_and_once_decisions() {
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let result = execute_fixture_file_with_options(
         "fixtures/runtime/valid/includes/include-once.php",
         VmOptions {
@@ -5066,7 +5348,10 @@ fn include_trace_records_repeated_normal_include_compile_cache_hits() {
         "<?php $count++; echo $count, '|';\n",
     )
     .expect("common include should be written");
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let result = execute_source_with_options_and_path(
         "<?php $count = 0; include 'common.php'; include './common.php'; echo $count, \"\\n\";",
         VmOptions {
@@ -5274,7 +5559,10 @@ fn include_once_tracking_is_request_local_with_shared_compile_cache() {
     std::fs::write(root.join("once.php"), "<?php $count++;\n")
         .expect("once include should be written");
     let source = "<?php $count = 0; include_once 'once.php'; include_once './once.php'; echo $count, \"\\n\";";
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let options = || VmOptions {
         include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
         include_cache: Some(Arc::clone(&cache)),
@@ -5318,7 +5606,10 @@ fn include_cache_keeps_globals_and_declarations_request_local() {
             ",
     )
     .expect("request-state include should be written");
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let options = || VmOptions {
         include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
         include_cache: Some(Arc::clone(&cache)),
@@ -5359,7 +5650,10 @@ fn include_cache_invalidates_dynamic_declaration_strict_types_after_file_edit() 
             "<?php function prompt07_rewritten_takes_int(int $value): void { echo 'weak=', $value; } prompt07_rewritten_takes_int('42');\n",
         )
         .expect("weak include should be written");
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let options = || VmOptions {
         include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
         include_cache: Some(Arc::clone(&cache)),
@@ -5398,6 +5692,146 @@ fn include_cache_invalidates_dynamic_declaration_strict_types_after_file_edit() 
 }
 
 #[test]
+fn linked_trait_calls_use_the_declaring_files_strict_types_mode() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-vm-linked-trait-strict-types-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("Traits")).expect("trait directory should be created");
+    std::fs::write(
+        root.join("Registry.php"),
+        "<?php
+            namespace Demo;
+            use Demo\\Traits\\WeakCalls;
+            use Demo\\Traits\\StrictCalls;
+            function accepts_int(int $value): void { echo $value, '|'; }
+            class Registry { use WeakCalls; use StrictCalls; }
+        ",
+    )
+    .expect("registry should be written");
+    std::fs::write(
+        root.join("Traits/WeakCalls.php"),
+        "<?php declare(strict_types=0); namespace Demo\\Traits;
+            trait WeakCalls { public function weakCall(): void { \\Demo\\accepts_int('41'); } }
+        ",
+    )
+    .expect("weak trait should be written");
+    std::fs::write(
+        root.join("Traits/StrictCalls.php"),
+        "<?php declare(strict_types=1); namespace Demo\\Traits;
+            trait StrictCalls { public function strictCall(): void { \\Demo\\accepts_int('42'); } }
+        ",
+    )
+    .expect("strict trait should be written");
+    let result = execute_source_with_options_and_path(
+        "<?php include 'Registry.php'; $registry = new Demo\\Registry(); $registry->weakCall(); $registry->strictCall(); echo 'unreachable';",
+        VmOptions {
+            include_loader: Some(
+                IncludeLoader::for_root(&root)
+                    .expect("loader")
+                    .with_compilation_dependency("Demo\\Traits\\WeakCalls", "Traits/WeakCalls.php")
+                    .with_compilation_dependency(
+                        "Demo\\Traits\\StrictCalls",
+                        "Traits/StrictCalls.php",
+                    ),
+            ),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+        root.join("main.php").to_string_lossy().into_owned(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
+    assert!(
+        result.output.to_string_lossy().starts_with("41|"),
+        "{}",
+        result.output.to_string_lossy()
+    );
+    assert!(
+        result.output.to_string_lossy().contains("TypeError"),
+        "{}",
+        result.output.to_string_lossy()
+    );
+    assert!(!result.output.to_string_lossy().contains("unreachable"));
+}
+
+#[test]
+fn linked_trait_files_preserve_execution_order_interfaces_and_reflection_paths() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-vm-linked-trait-observability-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("Traits")).expect("trait directory should be created");
+    std::fs::write(
+        root.join("Registry.php"),
+        "<?php namespace Demo;
+            interface Contract { public function send(): string; }
+            use Demo\\Traits\\PRIMARYTRAIT as First;
+            use Demo\\Traits\\SecondaryTrait;
+            echo 'root|';
+            class Registry implements Contract {
+                use First, SecondaryTrait {
+                    First::send insteadof SecondaryTrait;
+                    SecondaryTrait::send as backup;
+                }
+            }
+        ",
+    )
+    .expect("registry should be written");
+    let primary_path = root.join("Traits/PrimaryTrait.php");
+    std::fs::write(
+        &primary_path,
+        "<?php namespace Demo\\Traits; echo 'primary|';
+            trait PrimaryTrait { public function send(): string { return 'primary'; } }
+        ",
+    )
+    .expect("primary trait should be written");
+    let canonical_primary_path =
+        std::fs::canonicalize(&primary_path).expect("primary trait path should canonicalize");
+    std::fs::write(
+        root.join("Traits/SecondaryTrait.php"),
+        "<?php namespace Demo\\Traits; echo 'secondary|';
+            trait SecondaryTrait { public function send(): string { return 'secondary'; } }
+        ",
+    )
+    .expect("secondary trait should be written");
+    let result = execute_source_with_options_and_path(
+        "<?php include 'Registry.php';
+            $registry = new Demo\\Registry();
+            echo $registry->send(), '|', $registry->backup(), '|';
+            echo count(get_included_files()), '|';
+            echo (new ReflectionMethod(Demo\\Registry::class, 'send'))->getFileName();
+        ",
+        VmOptions {
+            include_loader: Some(
+                IncludeLoader::for_root(&root)
+                    .expect("loader")
+                    .with_compilation_dependency(
+                        "Demo\\Traits\\PrimaryTrait",
+                        "Traits/PrimaryTrait.php",
+                    )
+                    .with_compilation_dependency(
+                        "Demo\\Traits\\SecondaryTrait",
+                        "Traits/SecondaryTrait.php",
+                    ),
+            ),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+        root.join("main.php").to_string_lossy().into_owned(),
+    );
+    let expected = format!(
+        "primary|secondary|root|primary|secondary|4|{}",
+        canonical_primary_path.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.to_string_lossy(), expected);
+}
+
+#[test]
 fn include_trace_records_deep_finite_chain_without_recompilation() {
     let root = std::env::temp_dir().join(format!("phrust-vm-include-chain-{}", std::process::id()));
     std::fs::create_dir_all(&root).expect("temp include root should be created");
@@ -5406,7 +5840,10 @@ fn include_trace_records_deep_finite_chain_without_recompilation() {
     std::fs::write(root.join("b.php"), "<?php include 'c.php'; echo 'b|';\n")
         .expect("b include should be written");
     std::fs::write(root.join("c.php"), "<?php echo 'c|';\n").expect("c include should be written");
-    let cache = Arc::new(IncludeCache::new(1));
+    let cache = Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let result = execute_source_with_options_and_path(
         "<?php include 'a.php'; include 'a.php'; echo \"done\\n\";",
         VmOptions {
@@ -5453,7 +5890,10 @@ fn include_trace_detects_recursive_cycle_with_stack() {
         "<?php require 'a.php'; echo 'after';",
         VmOptions {
             include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
-            include_cache: Some(Arc::new(IncludeCache::new(1))),
+            include_cache: Some(Arc::new(IncludeCache::new_with_revalidation_interval(
+                1,
+                std::time::Duration::ZERO,
+            ))),
             runtime_context: RuntimeContext::default().with_cwd(root.clone()),
             trace_includes: true,
             ..VmOptions::default()
@@ -5497,6 +5937,12 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
     assert!(include_output.ends_with("after\n"), "{include_output}");
     assert_eq!(include.diagnostics[0].id(), "E_PHP_VM_INCLUDE_MISSING");
     assert_eq!(include.diagnostics[0].severity(), RuntimeSeverity::Warning);
+    let Some(RuntimeDiagnosticPayload::IncludeFailure(payload)) = include.diagnostics[0].payload()
+    else {
+        panic!("missing include failure payload");
+    };
+    assert!(payload.target().ends_with("missing.php"), "{payload:?}");
+    assert_eq!(payload.reason(), "No such file or directory");
     let counters = include.counters.expect("counters should be collected");
     assert_eq!(
         counters
@@ -5575,7 +6021,10 @@ fn negative_include_cache_preserves_missing_include_diagnostics() {
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
     let loader = IncludeLoader::for_root(root.clone()).expect("loader");
-    let cache = std::sync::Arc::new(IncludeCache::new(1));
+    let cache = std::sync::Arc::new(IncludeCache::new_with_revalidation_interval(
+        1,
+        std::time::Duration::ZERO,
+    ));
     let source =
         "<?php\necho 'a|';\ninclude 'nope.php';\necho 'b|';\ninclude 'nope.php';\necho 'c';";
     let result = execute_source_with_options(
@@ -5778,7 +6227,7 @@ fn builtin_context_persists_chdir_across_vm_builtin_calls() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -5814,7 +6263,7 @@ fn builtin_context_persists_stream_resources_across_vm_builtin_calls() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6055,7 +6504,7 @@ var_dump(str_contains($archive->getStub(), '__HALT_COMPILER'));
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6067,6 +6516,58 @@ var_dump(str_contains($archive->getStub(), '__HALT_COMPILER'));
     assert_eq!(
         result.output.to_string_lossy(),
         "int(2)\nbool(true)\nbool(true)\nbool(false)\nstring(20) \"fixture-methods.phar\"\nbool(true)\nbool(true)\n"
+    );
+}
+
+#[test]
+fn phar_arrayaccess_returns_fileinfo_with_metadata() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-phar-arrayaccess-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("temp phar root should be created");
+    let archive = root.join("metadata-fixture.phar");
+    let archive_path = archive.to_string_lossy().replace('\\', "\\\\");
+    let source = format!(
+        r#"<?php
+$hex = '3c3f706870205f5f48414c545f434f4d50494c455228293b203f3e0d0abc00000002000000110000000100150000006d657461646174612d666978747572652e706861722b000000613a323a7b733a373a2261726368697665223b733a343a226d657461223b733a313a226e223b693a333b7d08000000646174612e74787407000000f93c506a07000000156a2c42a40100001d000000613a313a7b733a353a22656e747279223b733a343a226d657461223b7d0d0000006c69622f68656c6c6f2e7068702e000000f93c506a2e000000924eee49a4010000000000007061796c6f61643c3f706870206563686f202266726f6d2d706861727c223b2072657475726e2022696e636c7564652d6f6b223b0a84e76fd65c15ed5859574cf7d652aafa41b0259dc96873783289da7164e0dd0c0300000047424d42';
+file_put_contents('{archive_path}', hex2bin($hex));
+$archive = new Phar('{archive_path}');
+$entry = $archive['data.txt'];
+var_dump($archive instanceof ArrayAccess);
+var_dump($archive instanceof Countable);
+var_dump($entry instanceof PharFileInfo);
+var_dump($entry instanceof SplFileInfo);
+var_dump($archive->getMetadata());
+var_dump($entry->getMetadata());
+var_dump($entry->getContent());
+var_dump($entry->getFilename());
+echo str_replace('phar://{archive_path}/', '', $entry->getPathname()), "\n";
+"#
+    );
+    let result = execute_source_with_options(
+        &source,
+        VmOptions {
+            execution_format: ExecutionFormat::Auto,
+            runtime_context: RuntimeContext::default()
+                .with_cwd(root.clone())
+                .with_filesystem_capabilities(
+                    php_runtime::api::FilesystemCapabilities::none()
+                        .with_allowed_roots(vec![root.clone()]),
+                ),
+            ..VmOptions::default()
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "bool(true)\nbool(true)\nbool(true)\nbool(true)\narray(2) {\n  [\"archive\"]=>\n  string(4) \"meta\"\n  [\"n\"]=>\n  int(3)\n}\narray(1) {\n  [\"entry\"]=>\n  string(4) \"meta\"\n}\nstring(7) \"payload\"\nstring(8) \"data.txt\"\ndata.txt\n"
     );
 }
 
@@ -6098,7 +6599,8 @@ fn phar_constructor_creates_empty_archive_and_inherits_file_info_methods() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -6147,7 +6649,7 @@ fn builtin_context_persists_include_path_updates_for_stream_resolution() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             ..VmOptions::default()
@@ -6641,6 +7143,7 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
         InvalidationEpoch::new(1),
         IncludePathCacheTarget {
             canonical_path: resolved.canonical_path.clone(),
+            resolution_path: resolved.resolution_path.clone(),
             fingerprint: resolved.fingerprint.clone(),
             directory_version: resolved.directory_version,
         },
@@ -6655,9 +7158,7 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
         InvalidationEpoch::new(1),
     );
     let target = target.expect("cached target");
-    let current =
-        include_path_file_fingerprint(&target.canonical_path).expect("current fingerprint");
-    let event = if current == target.fingerprint {
+    let event = if target.is_current() {
         table.record_include_path_hit(23, function, block, instruction)
     } else {
         table.invalidate_include_path(23, function, block, instruction)
@@ -6667,6 +7168,35 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
     assert_eq!(probe.kind, Some(InlineCacheKind::IncludePath));
     assert!(event.invalidation);
     assert!(event.miss);
+}
+
+#[cfg(unix)]
+#[test]
+fn include_path_inline_cache_rejects_symlink_target_swap() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "phrust-include-path-ic-link-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp root");
+    std::fs::write(root.join("first.php"), "<?php echo 'first';\n").expect("first target");
+    std::fs::write(root.join("other.php"), "<?php echo 'other';\n").expect("other target");
+    let link = root.join("linked.php");
+    symlink(root.join("first.php"), &link).expect("first symlink");
+    let loader = IncludeLoader::for_root(&root).expect("loader");
+    let resolved = loader
+        .resolve_with_include_path(None, &link.to_string_lossy(), &[], None)
+        .expect("resolve first symlink target");
+    let target = IncludePathCacheTarget::from_resolved(&resolved);
+    assert!(target.is_current());
+
+    std::fs::remove_file(&link).expect("remove first symlink");
+    symlink(root.join("other.php"), &link).expect("replacement symlink");
+
+    assert!(!target.is_current());
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -6700,7 +7230,7 @@ fn include_path_graph_invalidates_changed_file_metadata_in_vm() {
             runtime_context: RuntimeContext::default()
                 .with_cwd(root.clone())
                 .with_filesystem_capabilities(
-                    php_runtime::FilesystemCapabilities::none()
+                    php_runtime::api::FilesystemCapabilities::none()
                         .with_allowed_roots(vec![root.clone()]),
                 ),
             collect_counters: true,
@@ -6900,26 +7430,17 @@ fn bringup_diagnostics_classify_callable_and_builtin_failures() {
         Some("function")
     );
 
+    // Undefined functions are catchable Errors now, so the bring-up payload
+    // is replaced by the uncaught-exception surface when nothing catches.
     let builtin = execute_source("<?php missing_app_function();");
     assert_eq!(builtin.status.exit_status(), ExitStatus::RuntimeError);
-    let builtin_context = first_runtime_bringup_payload(&builtin).fields();
-    assert_eq!(
-        builtin_context
-            .get("bringup_error_class")
-            .map(String::as_str),
-        Some("stdlib_builtin")
-    );
-    assert_eq!(
-        builtin_context.get("requested_name").map(String::as_str),
-        Some("missing_app_function")
-    );
-    assert_eq!(
-        builtin_context.get("normalized_name").map(String::as_str),
-        Some("missing_app_function")
-    );
-    assert_eq!(
-        builtin_context.get("lookup_kind").map(String::as_str),
-        Some("function")
+    assert_eq!(builtin.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+    assert!(
+        builtin.diagnostics[0]
+            .message()
+            .contains("Uncaught Error: Call to undefined function missing_app_function()"),
+        "{}",
+        builtin.diagnostics[0].message()
     );
 }
 
@@ -7080,6 +7601,30 @@ fn destructors_run_at_shutdown_in_reverse_registration_order() {
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.as_bytes(), b"body|d:b|d:a|");
+}
+
+#[test]
+fn shutdown_stages_append_to_the_single_final_output_buffer() {
+    let result = execute_source(
+        "<?php
+        class ShutdownOutputObject {
+            function __destruct() { echo '|destructor'; }
+        }
+        function shutdown_output() { echo '|shutdown'; }
+        $object = new ShutdownOutputObject();
+        register_shutdown_function('shutdown_output');
+        echo str_repeat('x', 65536);
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.len(), 65_536 + 20);
+    assert!(
+        result
+            .output
+            .to_string_lossy()
+            .ends_with("|shutdown|destructor")
+    );
 }
 
 #[test]
@@ -7465,7 +8010,7 @@ fn destructor_throw_becomes_shutdown_runtime_error() {
 #[test]
 fn gc_snapshot_tracks_vm_roots_and_cycle_candidates() {
     let class = RuntimeClassEntry {
-        name: "GcBox".to_owned(),
+        name: "GcBox".to_owned().into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -7607,6 +8152,16 @@ fn methods_execute_static_calls() {
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.as_bytes(), b"ok");
+}
+
+#[test]
+fn scoped_missing_static_calls_use_inherited_instance_magic_call() {
+    let result = execute_source(
+        "<?php class Base { public function __call($name, $args) { echo $name, '|'; } } class Child extends Base { public function run() { static::first(); parent::second(); } } (new Child())->run();",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"first|second|");
 }
 
 #[test]
@@ -8764,7 +9319,18 @@ fn expressions_modulo_coerces_numeric_operands() {
     let result = execute_source("<?php echo 5.5 % 2;");
 
     assert!(result.status.is_success(), "{:?}", result.status);
-    assert_eq!(result.output.as_bytes(), b"1");
+    // The fractional operand deprecates before converting, like the
+    // reference: modulo is an int-only context.
+    let text = String::from_utf8_lossy(result.output.as_bytes()).into_owned();
+    assert!(
+        text.contains("Deprecated: Implicit conversion from float 5.5 to int loses precision"),
+        "{text}"
+    );
+    assert!(text.ends_with('1'), "{text}");
+
+    let integral = execute_source("<?php echo 6.0 % 4;");
+    assert!(integral.status.is_success(), "{:?}", integral.status);
+    assert_eq!(integral.output.as_bytes(), b"2");
 }
 
 #[test]
@@ -8876,12 +9442,13 @@ fn direct_frames_elide_argument_vectors_unless_observed() {
     // property is *typed* so the constructor's assignment stays off the
     // copy-patch property-store leaf (which executes the whole body natively
     // with no frame at all) and keeps exercising the direct-constructor-frame
-    // path this test asserts.
+    // path this test asserts; `get` routes through a local for the same
+    // reason, staying off the property-load leaf.
     let source = "<?php \
             function plain($a, $b) { return $a + $b; } \
             function observer() { return implode(\",\", func_get_args()); } \
             class Dto { public int $v = 0; public function __construct($v) { $this->v = $v; } \
-                        public function get() { return $this->v; } } \
+                        public function get() { $v = $this->v; return $v; } } \
             $sum = 0; \
             for ($i = 0; $i < 5; $i++) { $sum += plain($i, 1); } \
             $dto = new Dto(41); \
@@ -8916,6 +9483,76 @@ fn direct_frames_elide_argument_vectors_unless_observed() {
             >= 1,
         "{counters:?}"
     );
+}
+
+#[test]
+fn dense_direct_calls_use_inline_positional_storage() {
+    let source = "<?php \
+            function add($a, $b) { return $a + $b; } \
+            function forty_two() { return 42; } \
+            $sum = 0; for ($i = 0; $i < 6; $i++) { $sum += add($i, 1); } \
+            echo $sum, '|', forty_two();";
+    let result = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            execution_format: ExecutionFormat::Auto,
+            copy_patch_leaf_override: Some(false),
+            ..VmOptions::default()
+        },
+    );
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"21|42");
+    let counters = result.counters.expect("counters");
+    assert!(counters.dense_call_bare_args_hits >= 7, "{counters:?}");
+    assert!(
+        counters.prepared_arg_vector_allocations_avoided >= 7,
+        "{counters:?}"
+    );
+}
+
+#[test]
+fn dense_builtin_intrinsics_run_before_argument_materialization() {
+    let source = "<?php \
+            $a = ['key' => 7]; $s = 'Hello'; \
+            echo strlen($s), '|', count($a), '|', is_string($s), '|', \
+                 array_key_exists('key', $a), '|', str_contains($s, 'ell'), '|', \
+                 strtolower($s);";
+    let result = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            execution_format: ExecutionFormat::Auto,
+            inline_caches: InlineCacheMode::On,
+            ..VmOptions::default()
+        },
+    );
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"5|1|1|1|1|hello");
+    let counters = result.counters.expect("counters");
+    assert_eq!(counters.internal_function_dispatches, 0, "{counters:?}");
+    for intrinsic in [
+        "strlen",
+        "count",
+        "is_string",
+        "array_key_exists",
+        "str_contains",
+        "strtolower",
+    ] {
+        assert!(
+            counters
+                .intrinsic_hits
+                .get(intrinsic)
+                .copied()
+                .unwrap_or_default()
+                >= 1,
+            "missing pre-args hit for {intrinsic}: {counters:?}"
+        );
+    }
 }
 
 #[test]
@@ -9093,6 +9730,33 @@ fn discarded_register_values_are_consumed_without_array_handle_clone() {
             counters.array_handle_clones
         );
     }
+}
+
+#[test]
+fn dense_array_layout_probes_borrow_local_handles() {
+    let result = execute_source_with_options(
+        "<?php $values = []; for ($i = 0; $i < 32; $i++) { $values[] = $i; } echo count($values);",
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            execution_format: ExecutionFormat::Bytecode,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"32");
+    let counters = result.counters.expect("counters");
+    assert_eq!(
+        counters
+            .array_handle_clone_by_source_family
+            .get(layout_source::ARRAY_ELEMENT_WRITE.name())
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "packed-layout probes must borrow the local array: {counters:?}"
+    );
 }
 
 #[test]
@@ -9428,6 +10092,33 @@ fn quickening_observation_skips_non_candidate_rich_instructions() {
 }
 
 #[test]
+fn quickening_observation_skips_non_candidate_dense_instructions() {
+    // Dense loads and echoes have no specialization arm. They must not
+    // allocate or update quickening sites merely because a unit contains many
+    // of them.
+    let source = "<?php echo \"a\"; echo \"b\"; echo \"c\"; echo \"d\"; echo \"e\"; echo \"f\"; echo \"g\"; echo \"h\"; echo \"i\"; echo \"j\"; echo \"k\"; echo \"l\";";
+    let result = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            execution_format: ExecutionFormat::Bytecode,
+            quickening: QuickeningMode::On,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"abcdefghijkl");
+    let counters = result.counters.expect("counters");
+    assert!(counters.bytecode_instructions_executed > 12, "{counters:?}");
+    assert_eq!(counters.quickening_attempts, 0, "{counters:?}");
+    assert_eq!(counters.quickening_specialized, 0, "{counters:?}");
+    assert_eq!(counters.quickening_guard_hits, 0, "{counters:?}");
+}
+
+#[test]
 fn tiering_disabled_suppresses_quickening_observations() {
     let source =
         "<?php $sum = 0; for ($i = 0; $i < 12; $i++) { $sum = $sum + $i; } echo $sum, \"\\n\";";
@@ -9517,6 +10208,10 @@ fn managed_native_platform_unavailable_keeps_interpreter_fast_paths() {
             quickening: QuickeningMode::On,
             inline_caches: InlineCacheMode::On,
             jit: JitMode::Cranelift,
+            // This test isolates the unavailable Cranelift tier. On aarch64,
+            // copy-patch is independently available and must not satisfy the
+            // generic native execution counter here.
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -13335,10 +14030,40 @@ fn internal_builtin_by_ref_metadata_uses_generated_arginfo() {
         internal_builtin_by_ref_param_name("pcntl_waitpid", 3),
         "resource_usage"
     );
+    assert!(internal_builtin_param_requires_reference(
+        "openssl_random_pseudo_bytes",
+        1
+    ));
+    assert_eq!(
+        internal_builtin_by_ref_param_name("openssl_random_pseudo_bytes", 1),
+        "strong_result"
+    );
+    assert!(internal_builtin_param_requires_reference(
+        "openssl_encrypt",
+        5
+    ));
+    assert_eq!(
+        internal_builtin_by_ref_param_name("openssl_encrypt", 5),
+        "tag"
+    );
     assert!(!internal_builtin_param_requires_reference(
         "pcntl_waitpid",
         2
     ));
+}
+
+#[test]
+fn internal_builtin_generated_by_ref_out_param_suppresses_undefined_warning() {
+    let result = execute_source(
+        r#"<?php
+$iv = str_repeat("0", openssl_cipher_iv_length("aes-128-cbc"));
+openssl_encrypt("payload", "aes-128-cbc", "secret", 0, $iv, $tag);
+var_dump($tag);
+"#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"NULL\n");
 }
 
 #[test]
@@ -14488,7 +15213,9 @@ fn control_flow_executes_switch_match_ternary_coalesce_and_return() {
     assert_eq!(result.output.as_bytes(), b"zeroone|match|fallback|yes");
     assert_eq!(
         result.return_value,
-        Some(Value::String(php_runtime::PhpString::from_test_str("done")))
+        Some(Value::String(php_runtime::api::PhpString::from_test_str(
+            "done"
+        )))
     );
 }
 
@@ -15030,10 +15757,9 @@ fn runtime_types_check_returns_void_and_properties() {
         "E_PHP_VM_UNCAUGHT_EXCEPTION"
     );
     assert!(
-        bad_property
-            .output
-            .to_string_lossy()
-            .contains("Uncaught TypeError: property Box::$value got array, expected int"),
+        bad_property.output.to_string_lossy().contains(
+            "Uncaught TypeError: Cannot assign array to property Box::$value of type int"
+        ),
         "{}",
         bad_property.output.to_string_lossy()
     );
@@ -17790,7 +18516,8 @@ fn spl_file_info_and_file_object_use_allowed_local_files() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -17914,7 +18641,8 @@ fn spl_recursive_directory_iterator_walks_allowed_local_files() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18012,7 +18740,8 @@ fn zip_archive_create_overwrite_writes_local_entries() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18064,7 +18793,8 @@ fn spl_regex_iterator_filters_recursive_directory_paths_with_get_match() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18110,7 +18840,8 @@ fn spl_file_info_reports_link_target_created_by_symlink() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18148,7 +18879,8 @@ fn spl_internal_file_subclass_uses_parent_storage_and_methods() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18222,7 +18954,8 @@ fn spl_file_object_rejects_repeated_constructor_call() {
                 Vec::new(),
             )
             .with_filesystem_capabilities(
-                php_runtime::FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]),
+                php_runtime::api::FilesystemCapabilities::none()
+                    .with_allowed_roots(vec![root.clone()]),
             ),
             ..VmOptions::default()
         },
@@ -18623,63 +19356,57 @@ fn spl_multiple_iterator_callbacks_survive_self_detach() {
 }
 
 #[test]
-fn redis_fake_backend_covers_core_cache_probe_surface() {
+fn redis_endpoint_client_fails_closed_without_daemon() {
     let result = execute_source(
         r#"<?php
             $redis = new Redis();
             echo class_exists("Redis", false) ? "class|" : "missing|";
             echo $redis instanceof Redis ? "instance|" : "not-instance|";
             echo method_exists($redis, "getMultiple") ? "method|" : "no-method|";
-            echo $redis->connect("127.0.0.1") ? "connected|" : "offline|";
-            $redis->set("a", "1");
-            echo $redis->get("a"), "|";
-            echo $redis->incr("n"), ":", $redis->incrBy("n", 4), "|";
-            $redis->mset(["b" => "2", "c" => "3"]);
-            $many = $redis->mget(["a", "b", "missing"]);
-            echo $many[0], ":", $many[1], ":", ($many[2] === false ? "false" : "bad"), "|";
-            echo $redis->hSet("h", "f", "v"), ":", $redis->hGet("h", "f"), "|";
-            echo $redis->lPush("l", "x", "y"), ":", $redis->rPop("l"), "|";
-            echo $redis->sAdd("s", "u", "u", "v"), ":", ($redis->sIsMember("s", "v") ? "yes" : "no"), "|";
-            echo $redis->zAdd("z", 1, "m"), ":", $redis->zRange("z", 0, -1)[0], "|";
-            echo $redis->del("a", "missing"), ":", $redis->exists("a", "b");
+            echo $redis->connect("127.0.0.1", 1, 0.001) ? "connected|" : "offline|";
+            echo $redis->isConnected() ? "still-on|" : "closed|";
+            echo $redis->set("a", "1") ? "set|" : "no-set|";
+            echo $redis->get("a") === false ? "miss|" : "fake-hit|";
+            echo $redis->mset(["b" => "2"]) ? "mset|" : "no-mset|";
+            echo $redis->mget(["a", "b"]) === false ? "no-mget|" : "fake-mget|";
+            echo $redis->hSet("h", "f", "v") === false ? "no-hset|" : "fake-hset|";
+            echo $redis->lPush("l", "x") === false ? "no-lpush|" : "fake-lpush|";
+            echo $redis->lRange("l", 0, -1) === false ? "no-lrange|" : "fake-lrange|";
+            echo $redis->ttl("a") === false ? "no-ttl" : "fake-ttl";
             "#,
     );
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.as_bytes(),
-        b"class|instance|method|connected|1|1:5|1:2:false|1:v|2:x|2:yes|1:m|1:1"
+        b"class|instance|method|offline|closed|no-set|miss|no-mset|no-mget|no-hset|no-lpush|no-lrange|no-ttl"
     );
 }
 
 #[test]
-fn memcached_fake_backend_tracks_core_cache_result_surface() {
+fn memcached_endpoint_client_fails_closed_without_daemon() {
     let result = execute_source(
         r#"<?php
             $memcached = new Memcached();
             echo class_exists("Memcached", false) ? "class|" : "missing|";
             echo $memcached instanceof Memcached ? "instance|" : "not-instance|";
             echo method_exists($memcached, "getMulti") ? "method|" : "no-method|";
-            echo Memcached::RES_SUCCESS, ":", Memcached::RES_NOTFOUND, "|";
-            echo $memcached->addServer("127.0.0.1", 11211) ? "server|" : "no-server|";
-            $memcached->set("a", "1");
-            echo $memcached->get("a"), ":", $memcached->getResultCode(), "|";
-            echo ($memcached->add("a", "2") ? "add" : "no-add"), ":", $memcached->getResultCode(), "|";
-            echo $memcached->replace("a", "3") ? $memcached->get("a") : "bad", "|";
-            $memcached->setMulti(["b" => "2", "c" => "3"]);
-            $many = $memcached->getMulti(["a", "b", "missing"]);
-            echo $many["a"], ":", $many["b"], ":", (isset($many["missing"]) ? "bad" : "missing"), "|";
-            echo $memcached->increment("n", 2, 10), ":", $memcached->decrement("n", 3), "|";
-            echo $memcached->append("a", "x") ? $memcached->get("a") : "bad", "|";
-            echo $memcached->delete("a") ? "deleted|" : "not-deleted|";
-            echo ($memcached->get("a") === false ? "miss" : "bad"), ":", $memcached->getResultCode();
+            echo Memcached::RES_SUCCESS, ":", Memcached::RES_NOTFOUND, ":", Memcached::RES_FAILURE, "|";
+            echo $memcached->addServer("127.0.0.1", 1) ? "server|" : "no-server|";
+            echo $memcached->getResultCode(), ":", $memcached->getResultMessage(), "|";
+            echo $memcached->set("a", "1") ? "set|" : "no-set|";
+            echo $memcached->get("a") === false ? "miss|" : "fake-hit|";
+            echo $memcached->setMulti(["b" => "2"]) ? "mset|" : "no-mset|";
+            echo $memcached->getMulti(["a", "b"]) === false ? "no-mget|" : "fake-mget|";
+            echo $memcached->increment("n", 2, 10) === false ? "no-incr|" : "fake-incr|";
+            echo $memcached->delete("a") ? "deleted" : "not-deleted";
             "#,
     );
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.as_bytes(),
-        b"class|instance|method|0:16|server|1:0|no-add:16|3|3:2:missing|10:7|3x|deleted|miss:16"
+        b"class|instance|method|0:16:1|no-server|1:FAILURE|no-set|miss|no-mset|no-mget|no-incr|not-deleted"
     );
 }
 
@@ -18691,6 +19418,9 @@ fn imagick_surface_fails_closed_without_imagemagick_backend() {
             echo class_exists("Imagick", false) ? "class|" : "no-class|";
             echo class_exists("ImagickDraw", false) ? "draw|" : "no-draw|";
             echo method_exists("Imagick", "readImage") ? "method|" : "no-method|";
+            echo method_exists("Imagick", "readImageBlob") ? "blob|" : "no-blob|";
+            echo method_exists("Imagick", "getImageWidth") ? "width|" : "no-width|";
+            echo method_exists("Imagick", "stripImage") ? "strip|" : "no-strip|";
             $reflection = new ReflectionClass("Imagick");
             echo $reflection->getName(), ":", $reflection->getExtensionName(), "|";
             new Imagick();
@@ -18700,7 +19430,7 @@ fn imagick_surface_fails_closed_without_imagemagick_backend() {
     assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
     assert_eq!(
         result.output.as_bytes(),
-        b"loaded|class|draw|method|Imagick:imagick|"
+        b"loaded|class|draw|method|blob|width|strip|Imagick:imagick|"
     );
     assert_eq!(result.diagnostics[0].id(), "E_PHP_VM_UNSUPPORTED_IMAGICK");
 }
@@ -20017,6 +20747,34 @@ fn by_ref_builtin_indirect_temporary_warns_and_uses_temp_cell() {
 }
 
 #[test]
+fn openssl_random_pseudo_bytes_initializes_strong_result_output_arg() {
+    let result = execute_source(
+        "<?php
+            $bytes = openssl_random_pseudo_bytes(8, $strong);
+            echo strlen($bytes), '|', $strong ? 'strong' : 'weak';
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"8|strong");
+}
+
+#[test]
+fn pcre_replace_builtins_initialize_count_output_args_quietly() {
+    let result = execute_source(
+        "<?php
+            echo preg_replace('/a/', 'b', 'aa', -1, $replace_count), ':', $replace_count, \"\\n\";
+            echo preg_filter('/a/', 'b', 'aa', -1, $filter_count), ':', $filter_count, \"\\n\";
+            echo preg_replace_callback('/a/', fn($m) => 'b', 'aa', -1, $callback_count), ':', $callback_count, \"\\n\";
+            echo preg_replace_callback_array(['/a/' => fn($m) => 'b'], 'aa', -1, $array_count), ':', $array_count;
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"bb:2\nbb:2\nbb:2\nbb:2");
+}
+
+#[test]
 fn array_sort_builtins_mutate_private_properties() {
     let result = execute_source(
         "<?php
@@ -20364,9 +21122,9 @@ fn call_by_ref_argument_mismatch_is_catchable_error() {
 
 #[test]
 fn sysvshm_destroyed_handle_is_catchable_error() {
-    let result = execute_source(
-        "<?php
-            $shm = shm_attach(42, 1024);
+    let key = unique_sysvshm_vm_key(1);
+    let source = r"<?php
+            $shm = shm_attach(__KEY__, 1024);
             shm_remove($shm);
             shm_detach($shm);
             try {
@@ -20374,8 +21132,9 @@ fn sysvshm_destroyed_handle_is_catchable_error() {
             } catch (Error $e) {
                 echo $e->getMessage();
             }
-            ",
-    );
+            "
+    .replace("__KEY__", &key.to_string());
+    let result = execute_source(&source);
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
@@ -20386,9 +21145,9 @@ fn sysvshm_destroyed_handle_is_catchable_error() {
 
 #[test]
 fn sysvshm_put_var_propagates_serialize_exception() {
-    let result = execute_source(
-        "<?php
-            $shm = shm_attach(43, 1024);
+    let key = unique_sysvshm_vm_key(2);
+    let source = r"<?php
+            $shm = shm_attach(__KEY__, 1024);
             class SysvshmSerializeThrows {
                 public function __serialize(): array {
                     throw new Error('no');
@@ -20399,8 +21158,10 @@ fn sysvshm_put_var_propagates_serialize_exception() {
             } catch (Error $e) {
                 echo $e->getMessage();
             }
-            ",
-    );
+            shm_remove($shm);
+            "
+    .replace("__KEY__", &key.to_string());
+    let result = execute_source(&source);
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.as_bytes(), b"no");
@@ -20408,29 +21169,35 @@ fn sysvshm_put_var_propagates_serialize_exception() {
 
 #[test]
 fn sysvshm_put_var_detects_detach_during_serialize() {
-    let result = execute_source(
-        "<?php
+    let key = unique_sysvshm_vm_key(3);
+    let source = r"<?php
             class SysvshmSerializeDetaches {
                 public function __serialize(): array {
                     global $shm;
+                    shm_remove($shm);
                     shm_detach($shm);
                     return ['a' => 'b'];
                 }
             }
-            $shm = shm_attach(44, 1024);
+            $shm = shm_attach(__KEY__, 1024);
             try {
                 shm_put_var($shm, 1, new SysvshmSerializeDetaches);
             } catch (Error $e) {
                 echo $e->getMessage();
             }
-            ",
-    );
+            "
+    .replace("__KEY__", &key.to_string());
+    let result = execute_source(&source);
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.as_bytes(),
         b"Shared memory block has been destroyed by the serialization function"
     );
+}
+
+fn unique_sysvshm_vm_key(offset: i64) -> i64 {
+    0x5500_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f)
 }
 
 #[test]
@@ -20446,6 +21213,7 @@ fn sysvmsg_send_propagates_serialize_return_type_error() {
             } catch (TypeError $e) {
                 echo $e->getMessage();
             }
+            msg_remove_queue($queue);
             ",
     );
 
@@ -20466,6 +21234,7 @@ fn sysvmsg_receive_size_value_error_is_catchable() {
             } catch (ValueError $exception) {
                 echo $exception->getMessage();
             }
+            msg_remove_queue($queue);
             ",
     );
 
@@ -20574,11 +21343,17 @@ fn runtime_errors_emit_structured_diagnostics_and_warning_continuation() {
     );
     assert_eq!(division.diagnostics[0].stack_trace()[0].function(), "main");
 
+    // Undefined functions throw a catchable Error; uncaught it surfaces as
+    // the uncaught-exception diagnostic with the reference wording.
     let undefined = execute_source("<?php missing_function();");
     assert_eq!(undefined.status.exit_status(), ExitStatus::RuntimeError);
-    assert_eq!(
-        undefined.diagnostics[0].id(),
-        "E_PHP_RUNTIME_UNDEFINED_FUNCTION"
+    assert_eq!(undefined.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+    assert!(
+        undefined.diagnostics[0]
+            .message()
+            .contains("Uncaught Error: Call to undefined function missing_function()"),
+        "{}",
+        undefined.diagnostics[0].message()
     );
 
     let stack = execute_source("<?php function boom() { echo 1 / 0; } boom();");
@@ -20867,7 +21642,10 @@ fn dense_bytecode_auto_executes_include() {
             execution_format: ExecutionFormat::Auto,
             dense_include_execution: DenseIncludeMode::Auto,
             include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
-            include_cache: Some(Arc::new(IncludeCache::new(1))),
+            include_cache: Some(Arc::new(IncludeCache::new_with_revalidation_interval(
+                1,
+                std::time::Duration::ZERO,
+            ))),
             runtime_context: RuntimeContext::default().with_cwd(root.clone()),
             collect_counters: true,
             collect_profile_spans: false,
@@ -20949,7 +21727,10 @@ version_probe();
             execution_format: ExecutionFormat::Auto,
             dense_include_execution: DenseIncludeMode::Auto,
             include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
-            include_cache: Some(Arc::new(IncludeCache::new(1))),
+            include_cache: Some(Arc::new(IncludeCache::new_with_revalidation_interval(
+                1,
+                std::time::Duration::ZERO,
+            ))),
             runtime_context: RuntimeContext::default().with_cwd(root.clone()),
             collect_counters: true,
             collect_profile_spans: false,
@@ -22077,13 +22858,14 @@ fn first_vm_compile_payload(result: &VmResult) -> &VmCompileDiagnostic {
             RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
             RuntimeDiagnosticPayload::TokenizerParse(_) => None,
             RuntimeDiagnosticPayload::Bringup(_) => None,
+            RuntimeDiagnosticPayload::IncludeFailure(_) => None,
         })
         .expect("compile error should carry VM compile payload")
 }
 
 fn first_runtime_bringup_payload(
     result: &VmResult,
-) -> &php_runtime::RuntimeBringupDiagnosticContext {
+) -> &php_runtime::api::RuntimeBringupDiagnosticContext {
     result
         .diagnostics
         .iter()
@@ -22092,6 +22874,7 @@ fn first_runtime_bringup_payload(
             RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
             RuntimeDiagnosticPayload::TokenizerParse(_) => None,
             RuntimeDiagnosticPayload::VmCompile(_) => None,
+            RuntimeDiagnosticPayload::IncludeFailure(_) => None,
         })
         .unwrap_or_else(|| {
             panic!(
@@ -22748,5 +23531,212 @@ fn reuse_class_context_signal_reuses_frames_and_clears_blocker() {
         "flag-on must allocate fewer frames: off={} on={}",
         off.frames_allocated,
         on.frames_allocated
+    );
+}
+
+#[test]
+fn resolved_constant_reads_stay_cow_isolated() {
+    // Repeated reads of one string/array constant share the cached
+    // resolved value; a mutation through any handle must separate from
+    // the cached storage instead of corrupting later reads.
+    let result = execute_source(
+        "<?php
+for ($i = 0; $i < 3; $i++) {
+    $a = ['x' => 1, 'y' => 'base'];
+    $a['x'] = $a['x'] + $i;
+    $a['y'] .= '-mutated';
+    echo $a['x'], ':', $a['y'], \"\\n\";
+}
+for ($i = 0; $i < 2; $i++) {
+    $s = 'abc';
+    $s[0] = 'X';
+    echo $s, \"\\n\";
+}",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "1:base-mutated\n2:base-mutated\n3:base-mutated\nXbc\nXbc\n"
+    );
+}
+
+#[test]
+fn property_getter_casts_agree_between_interpreter_and_native_leaf() {
+    // The copy-patch property-load leaf admits trailing scalar casts by
+    // narrowing the expected result tag: a matching tag commits the value
+    // unchanged (identity cast), anything else side-exits so the
+    // interpreter performs the real cast. The first iteration always runs
+    // interpreted and later ones may run natively, so identical output
+    // across iterations pins the parity for both paths.
+    let result = execute_source(
+        "<?php
+class P {
+    public $b = true;
+    public $n = 5;
+    public function cast_matching() { return (bool) $this->b; }
+    public function cast_coercing() { return (bool) $this->n; }
+    public function cast_widening() { return (int) $this->b; }
+    public function untyped_plain() { return $this->n; }
+}
+$p = new P();
+for ($i = 0; $i < 3; $i++) {
+    var_dump($p->cast_matching(), $p->cast_coercing(), $p->cast_widening(), $p->untyped_plain());
+}",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let expected_round = "bool(true)\nbool(true)\nint(1)\nint(5)\n";
+    assert_eq!(
+        result.output.to_string_lossy(),
+        expected_round.repeat(3),
+        "cast getters must agree across interpreted and native iterations"
+    );
+}
+
+#[test]
+fn property_leaves_roundtrip_string_array_object_and_null() {
+    let result = execute_source_with_options(
+        "<?php
+class Payload {
+    public $value = null;
+    public function get() { return $this->value; }
+    public function put($value) { $this->value = $value; }
+}
+$payload = new Payload();
+$object = new stdClass();
+for ($i = 0; $i < 3; $i++) {
+    $payload->put('wordpress'); echo $payload->get(), '|';
+    $payload->put([10, 20]); echo $payload->get()[1], '|';
+    $payload->put($object); echo $payload->get() === $object ? 'object' : 'bad', '|';
+    $payload->put(null); echo is_null($payload->get()) ? 'null' : 'bad', PHP_EOL;
+}",
+        VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "wordpress|20|object|null\n".repeat(3),
+        "heap/null property values must agree across native and interpreter paths"
+    );
+    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+    assert!(
+        result
+            .counters
+            .as_ref()
+            .is_some_and(|counters| counters.copy_patch_executed >= 4),
+        "mixed property values must actually execute through copy-patch: {:?}",
+        result.counters
+    );
+}
+
+#[test]
+fn value_tailcall_wrappers_roundtrip_mixed_wordpress_shapes() {
+    let result = execute_source_with_options(
+        "<?php
+function sink($value) { return $value; }
+function wrapper($value) { return sink($value); }
+$object = new stdClass();
+for ($i = 0; $i < 3; $i++) {
+    echo wrapper('filter'), '|';
+    echo wrapper([3, 7])[1], '|';
+    echo wrapper($object) === $object ? 'object' : 'bad', '|';
+    echo is_null(wrapper(null)) ? 'null' : 'bad', PHP_EOL;
+}",
+        VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "filter|7|object|null\n".repeat(3),
+        "plain call wrappers must preserve mixed values across native glue"
+    );
+    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+    assert!(
+        result
+            .counters
+            .as_ref()
+            .is_some_and(|counters| counters.copy_patch_executed >= 4),
+        "mixed wrappers must actually execute through copy-patch: {:?}",
+        result.counters
+    );
+}
+
+#[test]
+fn magic_get_class_getters_stay_reference_exact_across_unset() {
+    // Classes with a hierarchy __get (every WordPress core class) now admit
+    // property-load leaves for their declared accessible slots. A declared
+    // property never routes through __get while set; unset() empties its
+    // runtime storage, which the native helper answers with a storage side
+    // exit, so the interpreter re-arms __get. The getter runs enough
+    // iterations for the native leaf to engage BEFORE the unset, so the
+    // post-unset calls prove the side exit, not just cold interpretation.
+    let result = execute_source(
+        "<?php
+class Compat {
+    public $flag = true;
+    public function __get($name) { return \"magic:$name\"; }
+    public function flag() { return (bool) $this->flag; }
+    public function raw() { return $this->flag; }
+}
+$c = new Compat();
+for ($i = 0; $i < 3; $i++) {
+    var_dump($c->flag(), $c->raw());
+}
+unset($c->flag);
+for ($i = 0; $i < 2; $i++) {
+    var_dump($c->raw());
+}",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        format!(
+            "{}{}",
+            "bool(true)\nbool(true)\n".repeat(3),
+            "string(10) \"magic:flag\"\n".repeat(2)
+        ),
+        "unset must re-arm __get identically on native-cached getters"
+    );
+}
+
+#[test]
+fn magic_set_class_setters_stay_reference_exact_across_unset() {
+    // The write-side mirror: a declared untyped slot admits the store leaf
+    // despite a hierarchy __set; unset() empties the storage and the store
+    // helper side-exits before writing, so the interpreter invokes __set.
+    let result = execute_source(
+        "<?php
+class Compat {
+    public $slot = 0;
+    public $seen = [];
+    public function __set($name, $value) { $this->seen[] = \"$name=$value\"; }
+    public function put($v) { $this->slot = $v; }
+}
+$c = new Compat();
+for ($i = 0; $i < 3; $i++) {
+    $c->put($i);
+}
+var_dump($c->slot);
+unset($c->slot);
+$c->put(9);
+$c->put(11);
+var_dump(isset($c->slot), $c->seen);",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(2)\nbool(false)\narray(2) {\n  [0]=>\n  string(6) \"slot=9\"\n  [1]=>\n  string(7) \"slot=11\"\n}\n",
+        "unset must re-arm __set identically on native-cached setters"
     );
 }

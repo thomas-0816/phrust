@@ -1,0 +1,117 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "enum",
+      "name": "PropertyHookType"
+    },
+    {
+      "kind": "class",
+      "name": "Reflection"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionAttribute"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionClass"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionClassConstant"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionConstant"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionEnum"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionEnumBackedCase"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionEnumUnitCase"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionException"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionExtension"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionFiber"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionFunction"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionFunctionAbstract"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionGenerator"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionIntersectionType"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionMethod"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionNamedType"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionObject"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionParameter"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionProperty"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionReference"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionType"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionUnionType"
+    },
+    {
+      "kind": "class",
+      "name": "ReflectionZendExtension"
+    },
+    {
+      "kind": "interface",
+      "name": "Reflector"
+    }
+  ],
+  "constants": [],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [],
+  "name": "reflection",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

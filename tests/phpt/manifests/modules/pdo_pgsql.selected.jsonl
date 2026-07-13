@@ -1,2 +1,3 @@
 {"path":"tests/phpt/generated/pdo_pgsql/platform-checks.phpt"}
+{"path":"tests/phpt/generated/pdo_pgsql/connection-failure.phpt","module":"pdo_pgsql","kind":"contract","generated_timestamp":"20260709T000000Z","generator_version":"phpt-pdo-pgsql-v2","reason":"covers no-live PostgreSQL PDO constructor failure as PDOException"}
 {"path":"tests/phpt/generated/pdo_pgsql/live-basic-dsn.phpt","module":"pdo_pgsql","kind":"contract","generated_timestamp":"20260705T000000Z","generator_version":"phpt-pdo-pgsql-v1","reason":"covers opt-in live PDO PostgreSQL connection query prepare fetch and quote through PHRUST_POSTGRES_TEST_DSN"}

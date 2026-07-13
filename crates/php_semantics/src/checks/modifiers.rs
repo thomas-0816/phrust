@@ -78,7 +78,8 @@ pub fn check_source_file(source_file: &SyntaxNode) -> Vec<SemanticDiagnostic> {
             continue;
         }
         let mut modifiers = collect_named_modifiers(property_decl.syntax());
-        if has_direct_token(property_decl.syntax(), "{") {
+        let hooked = has_direct_token(property_decl.syntax(), "{");
+        if hooked {
             modifiers.push(ModifierOccurrence::new(
                 Modifier::HookRelated,
                 property_decl.text_range(),
@@ -88,7 +89,11 @@ pub fn check_source_file(source_file: &SyntaxNode) -> Vec<SemanticDiagnostic> {
             "property",
             property_decl.text_range(),
             modifiers,
-            ModifierRules::property(),
+            if hooked {
+                ModifierRules::hooked_property()
+            } else {
+                ModifierRules::property()
+            },
             &mut diagnostics,
         );
     }
@@ -501,7 +506,8 @@ impl ModifierRules {
     const fn property() -> Self {
         Self {
             allow_abstract: false,
-            allow_final: false,
+            // Final properties are legal since PHP 8.4.
+            allow_final: true,
             allow_static: true,
             allow_readonly: true,
             allow_visibility: true,
@@ -513,6 +519,14 @@ impl ModifierRules {
             abstract_private_invalid: false,
             static_readonly_invalid: true,
             require_promoted_visibility_for_readonly: false,
+        }
+    }
+
+    /// Hooked properties (PHP 8.4) may additionally be declared abstract.
+    const fn hooked_property() -> Self {
+        Self {
+            allow_abstract: true,
+            ..Self::property()
         }
     }
 

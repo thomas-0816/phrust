@@ -7,7 +7,7 @@ symbols:
   - class StaticClosureThis
 hir_summary:
   statements: 4
-  expressions: 3
+  expressions: 4
   types: 2
   const_exprs: 0
   class_likes: 1

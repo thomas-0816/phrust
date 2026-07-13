@@ -13,7 +13,7 @@ bytecode or IR planning, but it is not a runtime representation.
 - source maps from HIR IDs to CST/source byte ranges
 - missing/error nodes for recovery-safe lowering
 
-## Work item Foundation
+## Foundation
 
 `php_semantics` now owns the initial HIR/database foundation:
 
@@ -30,9 +30,9 @@ bytecode or IR planning, but it is not a runtime representation.
   `hir::names` contain records that later lowering work items fill without
   introducing runtime values.
 - `hir::expr` and `hir::stmt` now contain structural expression and statement
-  HIR for Work item, including recovery-safe `Missing` nodes and PHP 8.5
+  HIR, including recovery-safe `Missing` nodes and PHP 8.5
   pipe/clone-with/first-class-callable forms.
-- `hir::const_expr` records Work item constant-expression candidates with
+- `hir::const_expr` records constant-expression candidates with
   context, structural kind, source expression ID, allowed flag, and source map
   span. These records annotate expression HIR; they do not evaluate values.
 - `hir::signatures` records function-like signatures, ordered parameters,
@@ -66,7 +66,7 @@ HIR may record that a construct is deferred to runtime. It must not run PHP
 files, resolve autoloaded classes, instantiate attributes, execute includes, or
 evaluate general expressions.
 
-`docs/frontend/expression-statement-hir.md` documents the Work item expression
+`docs/frontend/expression-statement-hir.md` documents the expression
 and statement lowering shape, JSON output, and current control-header
 placeholder behavior.
 

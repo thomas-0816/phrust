@@ -8,14 +8,15 @@ use crate::diagnostics::{
 };
 use crate::hir::{
     DeferredEffects, ExprId, HirCallArg, HirCatchClause, HirExpr, HirExprKind, HirIfBranch,
-    HirMatchArm, HirNameResolution, HirStmt, HirStmtKind, HirSwitchCase, ModuleId, QualifiedName,
-    StmtId,
+    HirMatchArm, HirNameResolution, HirStaticLocal, HirStmt, HirStmtKind, HirSwitchCase, ModuleId,
+    QualifiedName, StmtId,
 };
 use crate::lower::types::TypeLoweringScope;
 use crate::symbols::resolution::{ResolveContext, ResolvedName};
 use php_ast::{
-    AstNode, AstToken, BlockStmt, ClassConstDecl, ClassDecl, EnumCase, EnumDecl, ExprNode,
-    FunctionDecl, InterfaceDecl, MethodDecl, PropertyDecl, Stmt, TokenView, TraitDecl,
+    ArrowFunctionExpr, AstNode, AstToken, BlockStmt, CastKind, ClassConstDecl, ClassDecl,
+    ClosureExpr, ConstructExpr, EnumCase, EnumDecl, ExprListItem, ExprNode, FunctionDecl,
+    InterfaceDecl, MethodDecl, PropertyDecl, Stmt, TokenView, TraitDecl, Variable,
     descendant_tokens, syntax_child_nodes, syntax_child_tokens,
 };
 use php_source::TextRange;
@@ -134,6 +135,16 @@ impl HirLowerer<'_> {
     }
 
     fn collect_runtime_declaration_constant_expressions(&mut self, node: &SyntaxNode) {
+        if FunctionDecl::cast(node).is_some()
+            || MethodDecl::cast(node).is_some()
+            || ClosureExpr::cast(node).is_some()
+            || ArrowFunctionExpr::cast(node).is_some()
+        {
+            for child in syntax_child_nodes(node).filter(|child| BlockStmt::cast(child).is_none()) {
+                self.collect_expression_descendants(child);
+            }
+            return;
+        }
         if ClassConstDecl::cast(node).is_some()
             || EnumCase::cast(node).is_some()
             || PropertyDecl::cast(node).is_some()
@@ -145,6 +156,16 @@ impl HirLowerer<'_> {
         }
         for child in syntax_child_nodes(node) {
             self.collect_runtime_declaration_constant_expressions(child);
+        }
+    }
+
+    fn collect_expression_descendants(&mut self, node: &SyntaxNode) {
+        if ExprNode::cast(node).is_some() {
+            self.lower_expr(node, ResolveContext::ConstantFetch);
+            return;
+        }
+        for child in syntax_child_nodes(node) {
+            self.collect_expression_descendants(child);
         }
     }
 
@@ -168,8 +189,8 @@ impl HirLowerer<'_> {
             Some(Stmt::Expr(_)) => HirStmtKind::Expr {
                 expr: self.first_stmt_expr_child(node, false),
             },
-            Some(Stmt::Echo(_)) => {
-                let mut expressions = self.stmt_expr_children(node);
+            Some(Stmt::Echo(stmt)) => {
+                let mut expressions = self.lower_typed_expr_items(stmt.expression_items());
                 if expressions.is_empty() {
                     expressions.push(self.missing_expr(node, "missing echo expression"));
                 }
@@ -210,18 +231,27 @@ impl HirLowerer<'_> {
             Some(Stmt::Catch(_)) | Some(Stmt::Finally(_)) => HirStmtKind::Block {
                 statements: self.stmt_children(node),
             },
-            Some(Stmt::Declare(_)) => HirStmtKind::Declare {
-                expressions: self.stmt_expr_children(node),
+            Some(Stmt::Declare(stmt)) => HirStmtKind::Declare {
+                expressions: self.lower_typed_expr_items(stmt.expression_items()),
                 body: self.stmt_children(node),
             },
-            Some(Stmt::Global(_)) => HirStmtKind::Global {
-                variables: self.stmt_expr_children(node),
+            Some(Stmt::Global(stmt)) => HirStmtKind::Global {
+                variables: self.lower_typed_expr_items(stmt.expression_items()),
             },
-            Some(Stmt::Static(_)) => HirStmtKind::Static {
-                variables: self.stmt_expr_children(node),
+            Some(Stmt::Static(stmt)) => HirStmtKind::Static {
+                locals: stmt
+                    .expression_items()
+                    .map(|local| match local {
+                        ExprListItem::Expression(local) => self.lower_static_local(local),
+                        ExprListItem::Error(node) => HirStaticLocal {
+                            variable: self.missing_expr(node, "malformed static local"),
+                            initializer: None,
+                        },
+                    })
+                    .collect(),
             },
-            Some(Stmt::Unset(_)) => {
-                let mut expressions = self.construct_operand_exprs(node);
+            Some(Stmt::Unset(stmt)) => {
+                let mut expressions = self.lower_typed_expr_items(stmt.expression_items());
                 if expressions.is_empty() {
                     expressions.push(self.placeholder_expr(node));
                 }
@@ -257,6 +287,37 @@ impl HirLowerer<'_> {
         };
         self.exprs.insert(key, id);
         id
+    }
+
+    fn lower_typed_expr_items<'tree>(
+        &mut self,
+        items: impl Iterator<Item = ExprListItem<'tree>>,
+    ) -> Vec<ExprId> {
+        items
+            .map(|item| match item {
+                ExprListItem::Expression(expression) => {
+                    self.lower_expr(expression.syntax(), ResolveContext::ConstantFetch)
+                }
+                ExprListItem::Error(node) => self.missing_expr(node, "malformed expression list"),
+            })
+            .collect()
+    }
+
+    fn lower_static_local(&mut self, local: ExprNode<'_>) -> HirStaticLocal {
+        if let ExprNode::Assign(assign) = local {
+            let expressions = self.expr_children(assign.syntax());
+            return HirStaticLocal {
+                variable: expressions
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| self.missing_expr(assign.syntax(), "missing static local")),
+                initializer: expressions.get(1).copied(),
+            };
+        }
+        HirStaticLocal {
+            variable: self.lower_expr(local.syntax(), ResolveContext::ConstantFetch),
+            initializer: None,
+        }
     }
 
     fn lower_expr_wrapper(&mut self, node: &SyntaxNode, context: ResolveContext) -> ExprId {
@@ -455,8 +516,12 @@ impl HirLowerer<'_> {
             Some(ExprNode::Name(_)) => HirExprKind::Name {
                 resolution: self.resolve_name(node, context),
             },
-            Some(ExprNode::Variable(_)) => HirExprKind::Variable {
+            Some(ExprNode::Variable(variable)) => HirExprKind::Variable {
                 name: source_text_no_trivia(node),
+                sigil_count: variable.sigil_count(),
+                dynamic: variable.dynamic_expression().map(|expression| {
+                    self.lower_expr(expression.syntax(), ResolveContext::ConstantFetch)
+                }),
             },
             Some(ExprNode::Parenthesized(_)) => {
                 let expr = self.first_expr_child(node, false);
@@ -465,7 +530,20 @@ impl HirLowerer<'_> {
                     expr,
                 }
             }
-            Some(ExprNode::Prefix(_)) | Some(ExprNode::Postfix(_)) => HirExprKind::Unary {
+            Some(ExprNode::Prefix(prefix)) => {
+                if let Some(kind) = prefix.cast_kind() {
+                    HirExprKind::Cast {
+                        kind: cast_kind_name(kind).to_owned(),
+                        expr: self.first_expr_child(node, true),
+                    }
+                } else {
+                    HirExprKind::Unary {
+                        operator: first_operator_text(node).unwrap_or_else(|| "unary".to_owned()),
+                        expr: self.first_expr_child(node, true),
+                    }
+                }
+            }
+            Some(ExprNode::Postfix(_)) => HirExprKind::Unary {
                 operator: first_operator_text(node).unwrap_or_else(|| "unary".to_owned()),
                 expr: self.first_expr_child(node, true),
             },
@@ -567,13 +645,12 @@ impl HirLowerer<'_> {
                     .or_else(|| self.static_member_literal(node)),
             },
             Some(ExprNode::Array(_)) => {
+                let elements = self.list_expr_children_preserving_holes(node);
                 if first_significant_token_text(node)
                     .is_some_and(|text| text.eq_ignore_ascii_case("list"))
                 {
-                    let elements = self.list_expr_children_preserving_holes(node);
                     HirExprKind::List { elements }
                 } else {
-                    let elements = self.expr_children(node);
                     HirExprKind::Array { elements }
                 }
             }
@@ -648,6 +725,9 @@ impl HirLowerer<'_> {
 
     fn construct_expr_kind(&mut self, node: &SyntaxNode) -> HirExprKind {
         let keyword = first_significant_token_text(node).unwrap_or_default();
+        let operands = ConstructExpr::cast(node)
+            .map(|construct| self.lower_typed_expr_items(construct.expression_items()))
+            .unwrap_or_default();
         match keyword.to_ascii_lowercase().as_str() {
             "include" | "include_once" | "require" | "require_once" => {
                 self.report_deferred_effect(
@@ -657,7 +737,10 @@ impl HirLowerer<'_> {
                 );
                 HirExprKind::Include {
                     kind: keyword,
-                    expr: self.first_expr_child_or_placeholder(node),
+                    expr: operands
+                        .first()
+                        .copied()
+                        .or_else(|| Some(self.placeholder_expr(node))),
                     deferred_effects: DeferredEffects::include_like(),
                 }
             }
@@ -668,21 +751,30 @@ impl HirLowerer<'_> {
                     "eval may define symbols and mutate the current runtime scope",
                 );
                 HirExprKind::Eval {
-                    expr: Some(self.construct_operand_expr(node)),
+                    expr: operands
+                        .first()
+                        .copied()
+                        .or_else(|| Some(self.placeholder_expr(node))),
                     deferred_effects: DeferredEffects::eval(),
                 }
             }
             "exit" | "die" => HirExprKind::Exit {
-                expr: self.optional_construct_operand_expr(node),
+                expr: operands.first().copied(),
             },
             "print" => HirExprKind::BuiltinCall {
                 name: keyword,
-                args: self.call_args(node),
+                args: operands
+                    .into_iter()
+                    .map(|value| HirCallArg {
+                        name: None,
+                        value,
+                        unpack: false,
+                    })
+                    .collect(),
             },
             "isset" | "empty" => HirExprKind::BuiltinCall {
                 name: keyword,
-                args: self
-                    .construct_operand_exprs(node)
+                args: operands
                     .into_iter()
                     .map(|value| HirCallArg {
                         name: None,
@@ -1129,1112 +1221,6 @@ impl HirLowerer<'_> {
         }
     }
 
-    fn construct_operand_expr(&mut self, node: &SyntaxNode) -> ExprId {
-        if let Some(expr) = self.simple_construct_operand_expr(node) {
-            return expr;
-        }
-        let mut current = None;
-        for child in syntax_child_nodes(node) {
-            self.collect_construct_operand_chain(child, &mut current);
-        }
-        current.unwrap_or_else(|| self.placeholder_expr(node))
-    }
-
-    fn construct_operand_exprs(&mut self, node: &SyntaxNode) -> Vec<ExprId> {
-        let source = source_text_no_trivia(node);
-        let Some(open) = source.find('(') else {
-            return vec![self.construct_operand_expr(node)];
-        };
-        let Some(close) = source.rfind(')') else {
-            return vec![self.construct_operand_expr(node)];
-        };
-        let inner = &source[open + 1..close];
-        let parts = split_construct_args(inner);
-        if parts.len() <= 1 {
-            return vec![self.construct_operand_expr(node)];
-        }
-        let mut expressions = Vec::with_capacity(parts.len());
-        for part in parts {
-            let Some(expr) = self.simple_construct_operand_source(part.trim(), node.text_range())
-            else {
-                return vec![self.construct_operand_expr(node)];
-            };
-            expressions.push(expr);
-        }
-        expressions
-    }
-
-    fn optional_construct_operand_expr(&mut self, node: &SyntaxNode) -> Option<ExprId> {
-        let source = source_text_no_trivia(node);
-        let rest = source
-            .strip_prefix("exit")
-            .or_else(|| source.strip_prefix("die"))
-            .unwrap_or(&source)
-            .trim_end_matches(';')
-            .trim();
-        if rest.is_empty() || rest == "()" {
-            None
-        } else if let Some(inner) = rest
-            .strip_prefix('(')
-            .and_then(|text| text.strip_suffix(')'))
-        {
-            let inner = inner.trim();
-            if inner.is_empty() {
-                None
-            } else if is_quoted_construct_operand(inner)
-                || inner.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                Some(self.alloc_expr(
-                    HirExprKind::Literal {
-                        text: inner.to_owned(),
-                    },
-                    node.text_range(),
-                ))
-            } else {
-                self.simple_construct_operand_source(inner, node.text_range())
-                    .or_else(|| Some(self.construct_operand_expr(node)))
-            }
-        } else {
-            Some(self.construct_operand_expr(node))
-        }
-    }
-
-    fn simple_construct_operand_expr(&mut self, node: &SyntaxNode) -> Option<ExprId> {
-        let source = source_text_no_trivia(node);
-        let open = source.find('(')?;
-        let close = source.rfind(')')?;
-        let rest = source[open + 1..close].trim();
-        if is_quoted_construct_operand(rest) {
-            return Some(self.alloc_expr(
-                HirExprKind::Literal {
-                    text: rest.to_owned(),
-                },
-                node.text_range(),
-            ));
-        }
-        self.simple_construct_operand_source(rest, node.text_range())
-    }
-
-    fn simple_construct_operand_source(
-        &mut self,
-        mut rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let mut leading_cast = None;
-        if let Some((kind, after_cast)) = split_leading_construct_cast(rest) {
-            leading_cast = Some(kind.to_owned());
-            rest = after_cast.trim();
-        }
-        if let Some(after_not) = rest.strip_prefix('!') {
-            let expr = self.simple_construct_operand_source(after_not.trim(), range)?;
-            let expr = self.alloc_expr(
-                HirExprKind::Unary {
-                    operator: "!".to_owned(),
-                    expr: Some(expr),
-                },
-                range,
-            );
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_construct_builtin_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_construct_logical_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_construct_arithmetic_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_static_property_construct_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_static_method_construct_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_class_constant_construct_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_construct_call_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if let Some(expr) = self.simple_construct_binary_operand_source(rest, range) {
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if is_quoted_construct_operand(rest) {
-            let expr = self.alloc_expr(
-                HirExprKind::Literal {
-                    text: rest.to_owned(),
-                },
-                range,
-            );
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if rest.bytes().all(|byte| byte.is_ascii_digit()) {
-            let expr = self.alloc_expr(
-                HirExprKind::Literal {
-                    text: rest.to_owned(),
-                },
-                range,
-            );
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if is_simple_static_construct_class_name(rest) {
-            let expr = self.alloc_expr(
-                HirExprKind::Name {
-                    resolution: HirNameResolution::new(
-                        rest,
-                        ResolveContext::ConstantFetch.as_str(),
-                        "unresolved",
-                        None,
-                        None,
-                    ),
-                },
-                range,
-            );
-            return Some(if let Some(kind) = leading_cast {
-                self.alloc_expr(
-                    HirExprKind::Cast {
-                        kind,
-                        expr: Some(expr),
-                    },
-                    range,
-                )
-            } else {
-                expr
-            });
-        }
-        if !rest.starts_with('$') {
-            return None;
-        }
-        let variable_len = rest
-            .char_indices()
-            .find_map(|(index, ch)| {
-                (index > 0 && !(ch == '_' || ch.is_ascii_alphanumeric())).then_some(index)
-            })
-            .unwrap_or(rest.len());
-        let variable = &rest[..variable_len];
-        let mut current = self.alloc_expr(
-            HirExprKind::Variable {
-                name: variable.to_owned(),
-            },
-            range,
-        );
-        rest = rest[variable_len..].trim();
-        loop {
-            if let Some(after_open) = rest.strip_prefix('[') {
-                let close = find_construct_dimension_close(after_open)?;
-                let dim_text = after_open[..close].trim();
-                let dim = if dim_text.is_empty() {
-                    None
-                } else if let Some(expr) = self.simple_construct_operand_source(dim_text, range) {
-                    Some(expr)
-                } else if is_simple_construct_identifier(dim_text) {
-                    Some(self.alloc_expr(
-                        HirExprKind::Name {
-                            resolution: HirNameResolution::new(
-                                dim_text,
-                                ResolveContext::ConstantFetch.as_str(),
-                                "unresolved",
-                                None,
-                                None,
-                            ),
-                        },
-                        range,
-                    ))
-                } else {
-                    Some(self.alloc_expr(
-                        HirExprKind::Literal {
-                            text: dim_text.to_owned(),
-                        },
-                        range,
-                    ))
-                };
-                current = self.alloc_expr(
-                    HirExprKind::DimFetch {
-                        receiver: Some(current),
-                        dim,
-                    },
-                    range,
-                );
-                rest = after_open[close + 1..].trim();
-                continue;
-            }
-            if let Some(after_arrow) = rest.strip_prefix("->") {
-                let (property, consumed) = if let Some(after_open) = after_arrow.strip_prefix('{') {
-                    let close = find_construct_brace_close(after_open)?;
-                    let property_text = after_open[..close].trim();
-                    if property_text.is_empty() {
-                        return None;
-                    }
-                    let property = self.simple_construct_operand_source(property_text, range)?;
-                    (property, close + 2)
-                } else if after_arrow.starts_with('$') {
-                    let property_len = after_arrow
-                        .char_indices()
-                        .find_map(|(index, ch)| {
-                            (index > 0 && !(ch == '_' || ch.is_ascii_alphanumeric()))
-                                .then_some(index)
-                        })
-                        .unwrap_or(after_arrow.len());
-                    let property = after_arrow[..property_len].trim();
-                    if property.is_empty() {
-                        return None;
-                    }
-                    (
-                        self.alloc_expr(
-                            HirExprKind::Variable {
-                                name: property.to_owned(),
-                            },
-                            range,
-                        ),
-                        property_len,
-                    )
-                } else {
-                    let property_len = after_arrow
-                        .char_indices()
-                        .find_map(|(index, ch)| {
-                            (index > 0 && !(ch == '_' || ch.is_ascii_alphanumeric()))
-                                .then_some(index)
-                        })
-                        .unwrap_or(after_arrow.len());
-                    let property = after_arrow[..property_len].trim();
-                    if property.is_empty() {
-                        return None;
-                    }
-                    (
-                        self.alloc_expr(
-                            HirExprKind::Literal {
-                                text: property.to_owned(),
-                            },
-                            range,
-                        ),
-                        property_len,
-                    )
-                };
-                current = self.alloc_expr(
-                    HirExprKind::PropertyFetch {
-                        receiver: Some(current),
-                        property: Some(property),
-                        nullsafe: false,
-                    },
-                    range,
-                );
-                rest = after_arrow[consumed..].trim();
-                if let Some(after_open) = rest.strip_prefix('(') {
-                    let close = find_construct_paren_close(after_open)?;
-                    let args_source = after_open[..close].trim();
-                    let mut args = Vec::new();
-                    if !args_source.is_empty() {
-                        for arg_source in split_construct_args(args_source) {
-                            let arg_source = arg_source.trim();
-                            let (unpack, arg_source) =
-                                if let Some(unpacked) = arg_source.strip_prefix("...") {
-                                    (true, unpacked.trim())
-                                } else {
-                                    (false, arg_source)
-                                };
-                            let value = self.simple_construct_operand_source(arg_source, range)?;
-                            args.push(HirCallArg {
-                                name: None,
-                                value,
-                                unpack,
-                            });
-                        }
-                    }
-                    current = self.alloc_expr(
-                        HirExprKind::MethodCall {
-                            receiver: None,
-                            method: Some(current),
-                            args,
-                            nullsafe: false,
-                        },
-                        range,
-                    );
-                    rest = after_open[close + 1..].trim();
-                }
-                continue;
-            }
-            break;
-        }
-        if !rest.is_empty() {
-            return None;
-        }
-        Some(if let Some(kind) = leading_cast {
-            self.alloc_expr(
-                HirExprKind::Cast {
-                    kind,
-                    expr: Some(current),
-                },
-                range,
-            )
-        } else {
-            current
-        })
-    }
-
-    fn simple_construct_builtin_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (name, after_open) = rest.split_once('(')?;
-        let name = name.trim();
-        if !matches!(name, "empty" | "isset") {
-            return None;
-        }
-        let close = find_construct_paren_close(after_open)?;
-        if !after_open[close + 1..].trim().is_empty() {
-            return None;
-        }
-        let args_source = after_open[..close].trim();
-        let mut args = Vec::new();
-        if !args_source.is_empty() {
-            for arg_source in split_construct_args(args_source) {
-                let value = self.simple_construct_operand_source(arg_source.trim(), range)?;
-                args.push(HirCallArg {
-                    name: None,
-                    value,
-                    unpack: false,
-                });
-            }
-        }
-        Some(self.alloc_expr(
-            HirExprKind::BuiltinCall {
-                name: name.to_owned(),
-                args,
-            },
-            range,
-        ))
-    }
-
-    fn simple_construct_logical_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (left, operator, right) = split_construct_logical_operator(rest)?;
-        let left = self.simple_construct_operand_source(left.trim(), range)?;
-        let right = self.simple_construct_operand_source(right.trim(), range)?;
-        Some(self.alloc_expr(
-            HirExprKind::Binary {
-                operator: operator.to_owned(),
-                left: Some(left),
-                right: Some(right),
-            },
-            range,
-        ))
-    }
-
-    fn simple_construct_arithmetic_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (left, operator, right) = split_construct_additive_operator(rest)?;
-        let left = self.simple_construct_operand_source(left.trim(), range)?;
-        let right = self.simple_construct_operand_source(right.trim(), range)?;
-        Some(self.alloc_expr(
-            HirExprKind::Binary {
-                operator: operator.to_owned(),
-                left: Some(left),
-                right: Some(right),
-            },
-            range,
-        ))
-    }
-
-    fn simple_construct_binary_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let parts = split_construct_concat_parts(rest)?;
-        let mut iter = parts.into_iter();
-        let first = iter.next()?;
-        let mut current = self.simple_construct_operand_source(first, range)?;
-        for part in iter {
-            let right = self.simple_construct_operand_source(part, range)?;
-            current = self.alloc_expr(
-                HirExprKind::Binary {
-                    operator: ".".to_owned(),
-                    left: Some(current),
-                    right: Some(right),
-                },
-                range,
-            );
-        }
-        Some(current)
-    }
-
-    fn simple_construct_call_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (name, after_open) = rest.split_once('(')?;
-        let name = name.trim();
-        if !is_simple_static_construct_class_name(name) {
-            return None;
-        }
-        let close = find_construct_paren_close(after_open)?;
-        let args_source = &after_open[..close];
-        let suffix = after_open[close + 1..].trim();
-
-        let callee = self.alloc_expr(
-            HirExprKind::Name {
-                resolution: HirNameResolution::new(
-                    name,
-                    ResolveContext::FunctionCall.as_str(),
-                    "unresolved",
-                    None,
-                    None,
-                ),
-            },
-            range,
-        );
-        let mut args = Vec::new();
-        let args_source = args_source.trim();
-        if !args_source.is_empty() {
-            for arg_source in split_construct_args(args_source) {
-                let arg_source = arg_source.trim();
-                let (unpack, arg_source) = if let Some(unpacked) = arg_source.strip_prefix("...") {
-                    (true, unpacked.trim())
-                } else {
-                    (false, arg_source)
-                };
-                let value = self.simple_construct_operand_source(arg_source, range)?;
-                args.push(HirCallArg {
-                    name: None,
-                    value,
-                    unpack,
-                });
-            }
-        }
-
-        let current = self.alloc_expr(
-            HirExprKind::Call {
-                callee: Some(callee),
-                args,
-            },
-            range,
-        );
-        self.simple_construct_postfix_chain(current, suffix, range)
-    }
-
-    fn simple_construct_postfix_chain(
-        &mut self,
-        mut current: ExprId,
-        mut rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        loop {
-            if let Some(after_open) = rest.strip_prefix('[') {
-                let close = find_construct_dimension_close(after_open)?;
-                let dim_text = after_open[..close].trim();
-                let dim = if dim_text.is_empty() {
-                    None
-                } else if let Some(expr) = self.simple_construct_operand_source(dim_text, range) {
-                    Some(expr)
-                } else if is_simple_construct_identifier(dim_text) {
-                    Some(self.alloc_expr(
-                        HirExprKind::Name {
-                            resolution: HirNameResolution::new(
-                                dim_text,
-                                ResolveContext::ConstantFetch.as_str(),
-                                "unresolved",
-                                None,
-                                None,
-                            ),
-                        },
-                        range,
-                    ))
-                } else {
-                    Some(self.alloc_expr(
-                        HirExprKind::Literal {
-                            text: dim_text.to_owned(),
-                        },
-                        range,
-                    ))
-                };
-                current = self.alloc_expr(
-                    HirExprKind::DimFetch {
-                        receiver: Some(current),
-                        dim,
-                    },
-                    range,
-                );
-                rest = after_open[close + 1..].trim();
-                continue;
-            }
-            let (after_arrow, nullsafe) = if let Some(after_arrow) = rest.strip_prefix("?->") {
-                (after_arrow, true)
-            } else if let Some(after_arrow) = rest.strip_prefix("->") {
-                (after_arrow, false)
-            } else {
-                break;
-            };
-            let (property, consumed) = if let Some(after_open) = after_arrow.strip_prefix('{') {
-                let close = find_construct_brace_close(after_open)?;
-                let property_text = after_open[..close].trim();
-                if property_text.is_empty() {
-                    return None;
-                }
-                let property = self.simple_construct_operand_source(property_text, range)?;
-                (property, close + 2)
-            } else if after_arrow.starts_with('$') {
-                let property_len = after_arrow
-                    .char_indices()
-                    .find_map(|(index, ch)| {
-                        (index > 0 && !(ch == '_' || ch.is_ascii_alphanumeric())).then_some(index)
-                    })
-                    .unwrap_or(after_arrow.len());
-                let property = after_arrow[..property_len].trim();
-                if property.is_empty() {
-                    return None;
-                }
-                (
-                    self.alloc_expr(
-                        HirExprKind::Variable {
-                            name: property.to_owned(),
-                        },
-                        range,
-                    ),
-                    property_len,
-                )
-            } else {
-                let property_len = after_arrow
-                    .char_indices()
-                    .find_map(|(index, ch)| {
-                        (index > 0 && !(ch == '_' || ch.is_ascii_alphanumeric())).then_some(index)
-                    })
-                    .unwrap_or(after_arrow.len());
-                let property = after_arrow[..property_len].trim();
-                if property.is_empty() {
-                    return None;
-                }
-                (
-                    self.alloc_expr(
-                        HirExprKind::Literal {
-                            text: property.to_owned(),
-                        },
-                        range,
-                    ),
-                    property_len,
-                )
-            };
-            current = self.alloc_expr(
-                HirExprKind::PropertyFetch {
-                    receiver: Some(current),
-                    property: Some(property),
-                    nullsafe,
-                },
-                range,
-            );
-            rest = after_arrow[consumed..].trim();
-            if let Some(after_open) = rest.strip_prefix('(') {
-                let close = find_construct_paren_close(after_open)?;
-                let args_source = after_open[..close].trim();
-                let mut args = Vec::new();
-                if !args_source.is_empty() {
-                    for arg_source in split_construct_args(args_source) {
-                        let arg_source = arg_source.trim();
-                        let (unpack, arg_source) =
-                            if let Some(unpacked) = arg_source.strip_prefix("...") {
-                                (true, unpacked.trim())
-                            } else {
-                                (false, arg_source)
-                            };
-                        let value = self.simple_construct_operand_source(arg_source, range)?;
-                        args.push(HirCallArg {
-                            name: None,
-                            value,
-                            unpack,
-                        });
-                    }
-                }
-                current = self.alloc_expr(
-                    HirExprKind::MethodCall {
-                        receiver: None,
-                        method: Some(current),
-                        args,
-                        nullsafe,
-                    },
-                    range,
-                );
-                rest = after_open[close + 1..].trim();
-            }
-        }
-        rest.is_empty().then_some(current)
-    }
-
-    fn simple_static_method_construct_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (class_name, member_suffix) = rest.split_once("::")?;
-        if class_name.is_empty() || member_suffix.is_empty() || member_suffix.starts_with('$') {
-            return None;
-        }
-        if !is_simple_static_construct_class_name(class_name) {
-            return None;
-        }
-        let method_len = member_suffix
-            .char_indices()
-            .find_map(|(index, ch)| (!(ch == '_' || ch.is_ascii_alphanumeric())).then_some(index))
-            .unwrap_or(member_suffix.len());
-        let method_name = &member_suffix[..method_len];
-        if method_name.is_empty() || !is_simple_construct_identifier(method_name) {
-            return None;
-        }
-        let suffix = member_suffix[method_len..].trim();
-        let args_source = suffix.strip_prefix('(')?.strip_suffix(')')?.trim();
-
-        let resolved = if class_name.eq_ignore_ascii_case("self")
-            || class_name.eq_ignore_ascii_case("parent")
-            || class_name.eq_ignore_ascii_case("static")
-        {
-            class_name.to_ascii_lowercase()
-        } else {
-            class_name.to_owned()
-        };
-        let target = self.alloc_expr(
-            HirExprKind::Name {
-                resolution: HirNameResolution::new(
-                    class_name,
-                    ResolveContext::ConstantFetch.as_str(),
-                    "fully_qualified",
-                    Some(resolved),
-                    None,
-                ),
-            },
-            range,
-        );
-        let member = self.alloc_expr(
-            HirExprKind::Literal {
-                text: method_name.to_owned(),
-            },
-            range,
-        );
-        let callee = self.alloc_expr(
-            HirExprKind::StaticAccess {
-                target: Some(target),
-                member: Some(member),
-            },
-            range,
-        );
-        let mut args = Vec::new();
-        if !args_source.is_empty() {
-            for arg_source in split_construct_args(args_source) {
-                let arg_source = arg_source.trim();
-                let (unpack, arg_source) = if let Some(unpacked) = arg_source.strip_prefix("...") {
-                    (true, unpacked.trim())
-                } else {
-                    (false, arg_source)
-                };
-                let value = self.simple_construct_operand_source(arg_source, range)?;
-                args.push(HirCallArg {
-                    name: None,
-                    value,
-                    unpack,
-                });
-            }
-        }
-
-        Some(self.alloc_expr(
-            HirExprKind::Call {
-                callee: Some(callee),
-                args,
-            },
-            range,
-        ))
-    }
-
-    fn simple_static_property_construct_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (class_name, property_suffix) = rest.split_once("::$")?;
-        if class_name.is_empty() || property_suffix.is_empty() {
-            return None;
-        }
-        if !is_simple_static_construct_class_name(class_name) {
-            return None;
-        }
-        let property_len = property_suffix
-            .char_indices()
-            .find_map(|(index, ch)| (!(ch == '_' || ch.is_ascii_alphanumeric())).then_some(index))
-            .unwrap_or(property_suffix.len());
-        let property_name = &property_suffix[..property_len];
-        if property_name.is_empty() || !is_simple_construct_identifier(property_name) {
-            return None;
-        }
-        let mut suffix = property_suffix[property_len..].trim();
-
-        let resolved = if class_name.eq_ignore_ascii_case("self")
-            || class_name.eq_ignore_ascii_case("parent")
-            || class_name.eq_ignore_ascii_case("static")
-        {
-            class_name.to_ascii_lowercase()
-        } else {
-            class_name.to_owned()
-        };
-        let target = self.alloc_expr(
-            HirExprKind::Name {
-                resolution: HirNameResolution::new(
-                    class_name,
-                    ResolveContext::ConstantFetch.as_str(),
-                    "fully_qualified",
-                    Some(resolved),
-                    None,
-                ),
-            },
-            range,
-        );
-        let member = self.alloc_expr(
-            HirExprKind::Literal {
-                text: format!("${property_name}"),
-            },
-            range,
-        );
-        let mut current = self.alloc_expr(
-            HirExprKind::StaticAccess {
-                target: Some(target),
-                member: Some(member),
-            },
-            range,
-        );
-        while let Some(after_open) = suffix.strip_prefix('[') {
-            let close = find_construct_dimension_close(after_open)?;
-            let dim_text = after_open[..close].trim();
-            let dim = if dim_text.is_empty() {
-                None
-            } else if let Some(expr) = self.simple_construct_operand_source(dim_text, range) {
-                Some(expr)
-            } else if is_simple_construct_identifier(dim_text) {
-                Some(self.alloc_expr(
-                    HirExprKind::Name {
-                        resolution: HirNameResolution::new(
-                            dim_text,
-                            ResolveContext::ConstantFetch.as_str(),
-                            "unresolved",
-                            None,
-                            None,
-                        ),
-                    },
-                    range,
-                ))
-            } else {
-                Some(self.alloc_expr(
-                    HirExprKind::Literal {
-                        text: dim_text.to_owned(),
-                    },
-                    range,
-                ))
-            };
-            current = self.alloc_expr(
-                HirExprKind::DimFetch {
-                    receiver: Some(current),
-                    dim,
-                },
-                range,
-            );
-            suffix = after_open[close + 1..].trim();
-        }
-        if !suffix.is_empty() {
-            return None;
-        }
-        Some(current)
-    }
-
-    fn simple_class_constant_construct_operand_source(
-        &mut self,
-        rest: &str,
-        range: TextRange,
-    ) -> Option<ExprId> {
-        let (class_name, member_suffix) = rest.split_once("::")?;
-        if class_name.is_empty() || member_suffix.is_empty() || member_suffix.starts_with('$') {
-            return None;
-        }
-        if !is_simple_static_construct_class_name(class_name) {
-            return None;
-        }
-        let member_len = member_suffix
-            .char_indices()
-            .find_map(|(index, ch)| (!(ch == '_' || ch.is_ascii_alphanumeric())).then_some(index))
-            .unwrap_or(member_suffix.len());
-        let member_name = &member_suffix[..member_len];
-        if member_name.is_empty() || !is_simple_construct_identifier(member_name) {
-            return None;
-        }
-        let mut suffix = member_suffix[member_len..].trim();
-
-        let resolved = if class_name.eq_ignore_ascii_case("self")
-            || class_name.eq_ignore_ascii_case("parent")
-            || class_name.eq_ignore_ascii_case("static")
-        {
-            class_name.to_ascii_lowercase()
-        } else {
-            class_name.to_owned()
-        };
-        let target = self.alloc_expr(
-            HirExprKind::Name {
-                resolution: HirNameResolution::new(
-                    class_name,
-                    ResolveContext::ConstantFetch.as_str(),
-                    "fully_qualified",
-                    Some(resolved),
-                    None,
-                ),
-            },
-            range,
-        );
-        let member = self.alloc_expr(
-            HirExprKind::Literal {
-                text: member_name.to_owned(),
-            },
-            range,
-        );
-        let mut current = self.alloc_expr(
-            HirExprKind::StaticAccess {
-                target: Some(target),
-                member: Some(member),
-            },
-            range,
-        );
-        while let Some(after_open) = suffix.strip_prefix('[') {
-            let close = find_construct_dimension_close(after_open)?;
-            let dim_text = after_open[..close].trim();
-            let dim = if dim_text.is_empty() {
-                None
-            } else if let Some(expr) = self.simple_construct_operand_source(dim_text, range) {
-                Some(expr)
-            } else if is_simple_construct_identifier(dim_text) {
-                Some(self.alloc_expr(
-                    HirExprKind::Name {
-                        resolution: HirNameResolution::new(
-                            dim_text,
-                            ResolveContext::ConstantFetch.as_str(),
-                            "unresolved",
-                            None,
-                            None,
-                        ),
-                    },
-                    range,
-                ))
-            } else {
-                Some(self.alloc_expr(
-                    HirExprKind::Literal {
-                        text: dim_text.to_owned(),
-                    },
-                    range,
-                ))
-            };
-            current = self.alloc_expr(
-                HirExprKind::DimFetch {
-                    receiver: Some(current),
-                    dim,
-                },
-                range,
-            );
-            suffix = after_open[close + 1..].trim();
-        }
-        if !suffix.is_empty() {
-            return None;
-        }
-        Some(current)
-    }
-
-    fn collect_construct_operand_chain(&mut self, node: &SyntaxNode, current: &mut Option<ExprId>) {
-        match node.kind().name().as_str() {
-            "VARIABLE" => {
-                *current = Some(self.lower_expr(node, ResolveContext::ConstantFetch));
-                return;
-            }
-            "ARRAY_DIM_FETCH_EXPR" => {
-                let dim = self
-                    .first_expr_child(node, false)
-                    .or_else(|| self.array_dim_literal(node));
-                *current = Some(self.alloc_expr(
-                    HirExprKind::DimFetch {
-                        receiver: *current,
-                        dim,
-                    },
-                    node.text_range(),
-                ));
-                return;
-            }
-            "PROPERTY_FETCH_EXPR" => {
-                let property = self
-                    .first_expr_child(node, false)
-                    .or_else(|| self.property_name_literal(node));
-                *current = Some(self.alloc_expr(
-                    HirExprKind::PropertyFetch {
-                        receiver: *current,
-                        property,
-                        nullsafe: has_descendant_token_text(node, "?->"),
-                    },
-                    node.text_range(),
-                ));
-                return;
-            }
-            "STATIC_ACCESS_EXPR" => {
-                *current = Some(self.lower_expr(node, ResolveContext::ConstantFetch));
-                return;
-            }
-            "CALL_EXPR" => {
-                let Some(previous) = *current else {
-                    *current = Some(self.missing_expr(node, "missing construct call target"));
-                    return;
-                };
-                let args = self.call_args(node);
-                let previous_kind = self
-                    .database
-                    .module(self.module_id)
-                    .and_then(|module| module.expressions().get(previous))
-                    .map(|expr| expr.kind().as_str())
-                    .unwrap_or_default();
-                let kind = if previous_kind == "property_fetch" {
-                    HirExprKind::MethodCall {
-                        receiver: None,
-                        method: Some(previous),
-                        args,
-                        nullsafe: has_descendant_token_text(node, "?->"),
-                    }
-                } else {
-                    HirExprKind::Call {
-                        callee: Some(previous),
-                        args,
-                    }
-                };
-                let start = self
-                    .frontend_span(previous)
-                    .map(|span| span.start().to_usize())
-                    .unwrap_or_else(|| node.text_range().start().to_usize());
-                *current = Some(self.alloc_expr(
-                    kind,
-                    TextRange::new(start, node.text_range().end().to_usize()),
-                ));
-                return;
-            }
-            _ => {}
-        }
-        for child in syntax_child_nodes(node) {
-            self.collect_construct_operand_chain(child, current);
-        }
-    }
-
     fn collect_expr_descendants(&mut self, node: &SyntaxNode, expressions: &mut Vec<ExprId>) {
         if ExprNode::cast(node).is_some() {
             expressions.push(self.lower_expr(node, ResolveContext::ConstantFetch));
@@ -2296,7 +1282,7 @@ impl HirLowerer<'_> {
         for child in node.children() {
             match child {
                 SyntaxElement::Token(token) if token.kind().is_trivia() => {}
-                SyntaxElement::Token(token) if token.text() == "(" => {
+                SyntaxElement::Token(token) if token.text() == "(" || token.text() == "[" => {
                     saw_open = true;
                     expecting_element = true;
                 }
@@ -2306,7 +1292,7 @@ impl HirLowerer<'_> {
                     }
                     expecting_element = true;
                 }
-                SyntaxElement::Token(token) if token.text() == ")" => break,
+                SyntaxElement::Token(token) if token.text() == ")" || token.text() == "]" => break,
                 SyntaxElement::Token(_) => {}
                 SyntaxElement::Node(child) if ExprNode::cast(child).is_some() => {
                     elements.push(self.lower_expr(child, ResolveContext::ConstantFetch));
@@ -2353,38 +1339,13 @@ impl HirLowerer<'_> {
     }
 
     fn new_call_args(&mut self, node: &SyntaxNode) -> Vec<HirCallArg> {
-        let source = source_text_no_trivia(node);
-        if let Some(after_open) = source.strip_prefix("newclass(")
-            && let Some(close) = find_construct_paren_close(after_open)
-        {
-            let args_source = after_open[..close].trim();
-            if args_source.is_empty() {
-                return Vec::new();
-            }
-            let mut args = Vec::new();
-            for arg_source in split_construct_args(args_source) {
-                let arg_source = arg_source.trim();
-                let (unpack, arg_source) = if let Some(unpacked) = arg_source.strip_prefix("...") {
-                    (true, unpacked.trim())
-                } else {
-                    (false, arg_source)
-                };
-                let Some(value) =
-                    self.simple_construct_operand_source(arg_source, node.text_range())
-                else {
-                    return Vec::new();
-                };
-                args.push(HirCallArg {
-                    name: None,
-                    value,
-                    unpack,
-                });
-            }
-            return args;
-        }
-        if let Some(call) =
-            syntax_child_nodes(node).find(|child| child.kind().name() == "CALL_EXPR")
-        {
+        let direct_call = syntax_child_nodes(node).find(|child| child.kind().name() == "CALL_EXPR");
+        let anonymous_call = syntax_child_nodes(node)
+            .find(|child| child.kind().name() == "CLASS_DECL")
+            .and_then(|class| {
+                syntax_child_nodes(class).find(|child| child.kind().name() == "CALL_EXPR")
+            });
+        if let Some(call) = direct_call.or(anonymous_call) {
             return self.call_args(call);
         }
         self.expr_children(node)
@@ -2722,11 +1683,6 @@ impl HirLowerer<'_> {
         )
     }
 
-    fn first_expr_child_or_placeholder(&mut self, node: &SyntaxNode) -> Option<ExprId> {
-        self.first_expr_child(node, false)
-            .or_else(|| Some(self.placeholder_expr(node)))
-    }
-
     fn first_stmt_expr_child(&mut self, node: &SyntaxNode, required: bool) -> Option<ExprId> {
         let expr = self.stmt_expr_children(node).into_iter().next();
         match expr {
@@ -3001,12 +1957,18 @@ impl HirLowerer<'_> {
             .filter(|token| !token.kind().is_trivia())
             .filter(|token| token.text() != "->" && token.text() != "?->")
             .last()?;
-        Some(self.alloc_expr(
+        let kind = if token.kind().name() == "T_VARIABLE" {
+            HirExprKind::Variable {
+                name: token.text().to_owned(),
+                sigil_count: 1,
+                dynamic: None,
+            }
+        } else {
             HirExprKind::Literal {
                 text: token.text().to_owned(),
-            },
-            token.text_range(),
-        ))
+            }
+        };
+        Some(self.alloc_expr(kind, token.text_range()))
     }
 
     fn static_member_literal(&mut self, node: &SyntaxNode) -> Option<ExprId> {
@@ -3019,6 +1981,16 @@ impl HirLowerer<'_> {
                 continue;
             }
             if after_double_colon {
+                if token.kind().name() == "T_VARIABLE" {
+                    return Some(self.alloc_expr(
+                        HirExprKind::Variable {
+                            name: token.text().to_owned(),
+                            sigil_count: 1,
+                            dynamic: None,
+                        },
+                        token.text_range(),
+                    ));
+                }
                 return Some(self.alloc_expr(
                     HirExprKind::Literal {
                         text: token.text().to_owned(),
@@ -3159,384 +2131,82 @@ fn is_statement_list_item(node: &SyntaxNode) -> bool {
 }
 
 fn assignment_this_target_span(node: &SyntaxNode) -> Option<TextRange> {
-    let mut left = String::new();
-    let mut this_span = None;
-    for token in descendant_tokens::<TokenView<'_>>(node).filter(|token| !token.kind().is_trivia())
-    {
-        if token.text().ends_with('=') {
-            break;
-        }
-        if token.kind().name() == "T_VARIABLE" && token.text() == "$this" {
-            this_span.get_or_insert(token.text_range());
-        }
-        left.push_str(token.text());
+    let (_, operator_start, _) = first_assignment_operator(node)?;
+    let mut targets = direct_expr_nodes_for_diagnostic(node)
+        .filter(|target| target.text_range().end().to_usize() <= operator_start);
+    let target = targets.next()?;
+    if targets.next().is_some() {
+        return None;
     }
-    (left == "$this").then_some(this_span).flatten()
+    let variable = Variable::cast(target)?;
+    let mut tokens = descendant_tokens::<TokenView<'_>>(variable.syntax())
+        .filter(|token| !token.kind().is_trivia());
+    let token = tokens.next()?;
+    (token.kind().name() == "T_VARIABLE" && token.text() == "$this" && tokens.next().is_none())
+        .then_some(token.text_range())
 }
 
 fn assignment_class_constant_write_span(node: &SyntaxNode) -> Option<TextRange> {
-    let source = source_text_no_trivia(node);
-    let operator = first_assignment_operator_text(node)?;
-    if operator == "=&" {
-        let rhs = source.split_once("=&")?.1;
-        return is_class_constant_access_text(rhs).then_some(node.text_range());
-    }
-    let lhs = source.split_once(operator.as_str())?.0;
-    is_class_constant_access_text(lhs).then_some(node.text_range())
-}
-
-fn is_class_constant_access_text(text: &str) -> bool {
-    let text = text.trim();
-    let text = text.strip_prefix('&').unwrap_or(text);
-    if text.starts_with('$')
-        || text.contains('[')
-        || text.contains('{')
-        || text.contains("->")
-        || text.contains("?->")
-    {
-        return false;
-    }
-    let Some((_class, member)) = text.split_once("::") else {
-        return false;
+    let (operator, operator_start, operator_end) = first_assignment_operator(node)?;
+    let range = node.text_range();
+    let (start, end) = if operator == "=&" {
+        (operator_end, range.end().to_usize())
+    } else {
+        (range.start().to_usize(), operator_start)
     };
-    !member.is_empty() && !member.starts_with('$') && !member.starts_with('{')
+    direct_class_constant_access_in_range(node, start, end)
 }
 
-fn split_construct_args(source: &str) -> Vec<&str> {
-    let mut args = Vec::new();
-    let mut start = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    for (index, byte) in source.bytes().enumerate() {
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
+fn direct_class_constant_access_in_range(
+    node: &SyntaxNode,
+    start: usize,
+    end: usize,
+) -> Option<TextRange> {
+    for target in direct_expr_nodes_for_diagnostic(node) {
+        let span = target.text_range();
+        if span.end().to_usize() <= start || span.start().to_usize() >= end {
             continue;
         }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b'[' => bracket_depth = bracket_depth.saturating_add(1),
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'{' => brace_depth = brace_depth.saturating_add(1),
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
-            b'(' => paren_depth = paren_depth.saturating_add(1),
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            b',' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                args.push(source[start..index].trim());
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    args.push(source[start..].trim());
-    args
-}
-
-fn split_construct_concat_parts(source: &str) -> Option<Vec<&str>> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    for (index, byte) in source.bytes().enumerate() {
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
+        if span.start().to_usize() < start || span.end().to_usize() > end {
             continue;
         }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b'[' => bracket_depth = bracket_depth.saturating_add(1),
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'{' => brace_depth = brace_depth.saturating_add(1),
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
-            b'(' => paren_depth = paren_depth.saturating_add(1),
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            b'.' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                let part = source[start..index].trim();
-                if part.is_empty() {
-                    return None;
-                }
-                parts.push(part);
-                start = index + 1;
-            }
-            _ => {}
+        if is_class_constant_access_node(target) {
+            return Some(span);
         }
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    let tail = source[start..].trim();
-    if tail.is_empty() {
-        return None;
-    }
-    parts.push(tail);
-    Some(parts)
-}
-
-fn split_construct_additive_operator(source: &str) -> Option<(&str, &'static str, &str)> {
-    let mut bracket_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    let bytes = source.as_bytes();
-    for (index, byte) in bytes.iter().copied().enumerate().rev() {
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
-            continue;
-        }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b']' => bracket_depth = bracket_depth.saturating_add(1),
-            b'[' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'}' => brace_depth = brace_depth.saturating_add(1),
-            b'{' => brace_depth = brace_depth.saturating_sub(1),
-            b')' => paren_depth = paren_depth.saturating_add(1),
-            b'(' => paren_depth = paren_depth.saturating_sub(1),
-            b'+' | b'-' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                if additive_byte_is_unary_or_compound(bytes, index, byte) {
-                    continue;
-                }
-                let left = source[..index].trim();
-                let right = source[index + 1..].trim();
-                if !left.is_empty() && !right.is_empty() {
-                    return Some((left, if byte == b'+' { "+" } else { "-" }, right));
-                }
-            }
-            _ => {}
+        if matches!(target.kind().name().as_str(), "EXPR" | "PARENTHESIZED_EXPR")
+            && let Some(span) = direct_class_constant_access_in_range(target, start, end)
+        {
+            return Some(span);
         }
     }
     None
 }
 
-fn additive_byte_is_unary_or_compound(bytes: &[u8], index: usize, byte: u8) -> bool {
-    if index == 0 {
-        return true;
-    }
-    let prev = bytes[..index]
-        .iter()
-        .rposition(|candidate| !candidate.is_ascii_whitespace())
-        .map(|position| bytes[position]);
-    let next = bytes[index + 1..]
-        .iter()
-        .position(|candidate| !candidate.is_ascii_whitespace())
-        .map(|position| bytes[index + 1 + position]);
-    if matches!(
-        prev,
-        None | Some(b'(' | b'[' | b'{' | b',' | b'?' | b':' | b'=')
-    ) {
-        return true;
-    }
-    if byte == b'-' && next == Some(b'>') {
-        return true;
-    }
-    matches!(
-        (byte, prev, next),
-        (b'+', Some(b'+'), _)
-            | (b'+', _, Some(b'+'))
-            | (b'-', Some(b'-'), _)
-            | (b'-', _, Some(b'-'))
-            | (b'+', _, Some(b'='))
-            | (b'-', _, Some(b'='))
-    )
+fn direct_expr_nodes_for_diagnostic(node: &SyntaxNode) -> impl Iterator<Item = &SyntaxNode> {
+    syntax_child_nodes(node).filter(|child| ExprNode::cast(child).is_some())
 }
 
-fn split_construct_logical_operator(source: &str) -> Option<(&str, &'static str, &str)> {
-    let mut bracket_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    let bytes = source.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                index += 1;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                index += 1;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b'[' => bracket_depth = bracket_depth.saturating_add(1),
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'{' => brace_depth = brace_depth.saturating_add(1),
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
-            b'(' => paren_depth = paren_depth.saturating_add(1),
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            b'&' | b'|' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                if source[index..].starts_with("&&") {
-                    let left = source[..index].trim();
-                    let right = source[index + 2..].trim();
-                    if !left.is_empty() && !right.is_empty() {
-                        return Some((left, "&&", right));
-                    }
-                }
-                if source[index..].starts_with("||") {
-                    let left = source[..index].trim();
-                    let right = source[index + 2..].trim();
-                    if !left.is_empty() && !right.is_empty() {
-                        return Some((left, "||", right));
-                    }
-                }
-            }
-            _ => {}
-        }
-        index += 1;
+fn is_class_constant_access_node(node: &SyntaxNode) -> bool {
+    if node.kind().name() != "STATIC_ACCESS_EXPR" {
+        return false;
     }
-    None
+    descendant_tokens::<TokenView<'_>>(node)
+        .filter(|token| !token.kind().is_trivia())
+        .find(|token| token.text() != "::")
+        .is_some_and(|member| member.kind().name() != "T_VARIABLE")
 }
 
-fn find_construct_dimension_close(source: &str) -> Option<usize> {
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    let mut bracket_depth = 0usize;
-    for (index, byte) in source.bytes().enumerate() {
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
-            continue;
-        }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b'[' => bracket_depth = bracket_depth.saturating_add(1),
-            b']' if bracket_depth == 0 => return Some(index),
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            _ => {}
-        }
+const fn cast_kind_name(kind: CastKind) -> &'static str {
+    match kind {
+        CastKind::Int => "int",
+        CastKind::Float => "float",
+        CastKind::String => "string",
+        CastKind::Array => "array",
+        CastKind::Object => "object",
+        CastKind::Bool => "bool",
+        CastKind::Unset => "unset",
+        CastKind::Void => "void",
     }
-    None
-}
-
-fn find_construct_brace_close(source: &str) -> Option<usize> {
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    let mut bracket_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    for (index, byte) in source.bytes().enumerate() {
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
-            continue;
-        }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b'[' => bracket_depth = bracket_depth.saturating_add(1),
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'{' => brace_depth = brace_depth.saturating_add(1),
-            b'}' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                return Some(index);
-            }
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
-            b'(' => paren_depth = paren_depth.saturating_add(1),
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    None
-}
-
-fn find_construct_paren_close(source: &str) -> Option<usize> {
-    let mut quote = None::<u8>;
-    let mut escaped = false;
-    let mut bracket_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    for (index, byte) in source.bytes().enumerate() {
-        if let Some(quoted) = quote {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == quoted {
-                quote = None;
-            }
-            continue;
-        }
-        match byte {
-            b'\'' | b'"' => quote = Some(byte),
-            b'[' => bracket_depth = bracket_depth.saturating_add(1),
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'{' => brace_depth = brace_depth.saturating_add(1),
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
-            b'(' => paren_depth = paren_depth.saturating_add(1),
-            b')' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                return Some(index);
-            }
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    None
 }
 
 fn only_trivia_between(node: &SyntaxNode, left_end: usize, right_start: usize) -> bool {
@@ -3566,66 +2236,6 @@ fn array_pair_is_by_ref(node: &SyntaxNode) -> bool {
                 || name == "T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG"
                 || name == "T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG"
         })
-}
-
-fn is_quoted_construct_operand(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let Some(first) = bytes.first().copied() else {
-        return false;
-    };
-    if first != b'\'' && first != b'"' {
-        return false;
-    }
-    if bytes.len() < 2 {
-        return false;
-    }
-    let mut index = 1usize;
-    let mut escaped = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if escaped {
-            escaped = false;
-            index += 1;
-            continue;
-        }
-        if byte == b'\\' {
-            escaped = true;
-            index += 1;
-            continue;
-        }
-        if byte == first {
-            return index + 1 == bytes.len();
-        }
-        index += 1;
-    }
-    false
-}
-
-fn is_simple_construct_identifier(text: &str) -> bool {
-    let mut chars = text.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if first != '_' && !first.is_ascii_alphabetic() {
-        return false;
-    }
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-fn is_simple_static_construct_class_name(text: &str) -> bool {
-    let text = text.strip_prefix('\\').unwrap_or(text);
-    if text.is_empty() {
-        return false;
-    }
-    for segment in text.split('\\') {
-        if segment.is_empty() {
-            return false;
-        }
-        if !is_simple_construct_identifier(segment) {
-            return false;
-        }
-    }
-    true
 }
 
 fn foreach_header_is_by_ref(node: &SyntaxNode) -> bool {
@@ -3723,10 +2333,6 @@ fn ternary_question_colon_offsets(node: &SyntaxNode) -> Option<(usize, usize)> {
     None
 }
 
-fn first_assignment_operator_text(node: &SyntaxNode) -> Option<String> {
-    first_assignment_operator(node).map(|(operator, _, _)| operator)
-}
-
 fn first_assignment_operator(node: &SyntaxNode) -> Option<(String, usize, usize)> {
     let mut tokens = syntax_child_tokens(node).filter(|token| !token.kind().is_trivia());
     while let Some(token) = tokens.next() {
@@ -3813,31 +2419,6 @@ fn is_operator_token(token: &SyntaxToken) -> bool {
         || token.kind().name() == "T_INSTANCEOF"
 }
 
-fn split_leading_construct_cast(text: &str) -> Option<(&str, &str)> {
-    let text = text.trim_start();
-    let after_open = text.strip_prefix('(')?;
-    let close = after_open.find(')')?;
-    let kind = after_open[..close].trim();
-    if !matches!(
-        kind.to_ascii_lowercase().as_str(),
-        "bool"
-            | "boolean"
-            | "int"
-            | "integer"
-            | "float"
-            | "double"
-            | "real"
-            | "string"
-            | "array"
-            | "object"
-            | "unset"
-            | "void"
-    ) {
-        return None;
-    }
-    Some((kind, &after_open[close + 1..]))
-}
-
 fn has_descendant_token_text(node: &SyntaxNode, text: &str) -> bool {
     descendant_tokens::<TokenView<'_>>(node).any(|token| token.text() == text)
 }
@@ -3851,7 +2432,7 @@ mod tests {
     use super::collect_hir_in_node;
     use crate::FrontendDatabase;
     use crate::diagnostics::{DiagnosticId, DiagnosticReporter};
-    use crate::hir::{HirExprKind, HirModule};
+    use crate::hir::{HirExprKind, HirModule, HirStmtKind};
     use crate::lower::types::TypeLoweringScope;
     use php_ast::{AstNode, source_file};
     use php_syntax::parse_source_file;
@@ -3957,6 +2538,53 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.id().as_str() == "E_PHP_HIR_MISSING_CHILD")
         );
+    }
+
+    #[test]
+    fn global_recovery_preserves_missing_entry_and_exact_span() {
+        let source = "<?php function f() { global /* one */ $first, $$dynamic, , $last; }";
+        let parse = parse_source_file(source);
+        assert!(parse.has_errors());
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        let module = database.module(module_id).expect("module");
+        let variables = module
+            .statements()
+            .iter()
+            .find_map(|(_, statement)| match statement.kind() {
+                HirStmtKind::Global { variables } => Some(variables),
+                _ => None,
+            })
+            .expect("global HIR");
+        assert_eq!(variables.len(), 4);
+        assert!(matches!(
+            module.expressions()[variables[2]].kind(),
+            HirExprKind::Missing
+        ));
+        let missing_span = database
+            .source_map()
+            .span(variables[2])
+            .expect("missing entry span");
+        let missing_start = source.find(", ,").expect("malformed separator") + 2;
+        assert_eq!(
+            missing_span,
+            php_source::TextRange::new(missing_start, missing_start + 1)
+        );
+        assert!(reporter.into_diagnostics().iter().any(|diagnostic| {
+            diagnostic.id() == DiagnosticId::HirMissingChild
+                && diagnostic.span() == Some(missing_span)
+        }));
     }
 
     #[test]
@@ -4649,7 +3277,7 @@ mod tests {
         ));
         assert!(matches!(
             module.expressions()[*property].kind(),
-            HirExprKind::Variable { name } if name == "$kind"
+            HirExprKind::Variable { name, .. } if name == "$kind"
         ));
         assert!(reporter.into_diagnostics().is_empty());
     }
@@ -4774,7 +3402,7 @@ mod tests {
         assert_eq!(args.len(), 1);
         assert!(matches!(
             module.expressions()[args[0].value].kind(),
-            HirExprKind::Variable { name } if name == "$value"
+            HirExprKind::Variable { name, .. } if name == "$value"
         ));
         assert!(reporter.into_diagnostics().is_empty());
     }

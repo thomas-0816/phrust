@@ -16,19 +16,22 @@
     "Null, boolean, integer, float, byte string, packed array, and mixed array encoding",
     "Primitive igbinary scalar and array decoding with PHP int/string array keys",
     "igbinary string table references for repeated non-empty strings in arrays",
-    "Redis and Memcached serializer option smoke for SERIALIZER_IGBINARY"
+    "Redis and Memcached serializer option-state smoke for SERIALIZER_IGBINARY",
+    "Endpoint-backed Redis and Memcached igbinary payload encode/decode for structured values"
   ],
   "non_scope": [
     "Object serialization hooks and incomplete object restoration",
     "Reference identity and cyclic structure preservation",
     "Session serializer registration",
-    "Redis and Memcached wire-format serializer integration",
+    "Redis and Memcached JSON serializer wire-format integration",
     "PECL constants not present in the current igbinary function stub"
   ],
   "target_gates": [
     "nix develop -c cargo test -p php_runtime igbinary --no-fail-fast",
+    "nix develop -c cargo test -p php_vm redis --no-fail-fast",
+    "nix develop -c cargo test -p php_vm memcached --no-fail-fast",
     "nix develop -c cargo test -p php_std igbinary --no-fail-fast",
     "nix develop -c just phpt-dev-module MODULE=igbinary"
   ],
-  "next_step": "Promote upstream PECL igbinary PHPTs once object/reference semantics and Redis/Memcached serializer integration are implemented."
+  "next_step": "Promote upstream PECL igbinary PHPTs once object/reference semantics and live endpoint serializer matrices are expanded."
 }

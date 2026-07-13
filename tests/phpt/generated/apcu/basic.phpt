@@ -1,5 +1,5 @@
 --TEST--
-APCu request-local cache basics
+APCu process-local cache basics
 --SKIPIF--
 <?php if (!extension_loaded("apcu")) die("skip apcu extension not loaded"); ?>
 --FILE--
@@ -24,6 +24,12 @@ var_dump(array_key_exists("cache_list", $info));
 $sma = apcu_sma_info();
 var_dump(is_array($sma));
 var_dump($sma["num_seg"]);
+function apcu_entry_value($key) {
+    echo "entry-generator:$key\n";
+    return strtoupper($key);
+}
+var_dump(apcu_entry("entry-key", "apcu_entry_value"));
+var_dump(apcu_entry("entry-key", function ($key) { return "miss"; }));
 ?>
 --EXPECT--
 bool(true)
@@ -44,3 +50,6 @@ int(1)
 bool(true)
 bool(true)
 int(1)
+entry-generator:entry-key
+string(9) "ENTRY-KEY"
+string(9) "ENTRY-KEY"

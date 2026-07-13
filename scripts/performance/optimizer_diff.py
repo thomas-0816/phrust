@@ -224,6 +224,45 @@ def summarize_optimizer_reports(
     }
 
 
+def optimizer_report_invariant_errors(
+    reports: dict[str, dict[str, dict[str, Any] | None]],
+) -> list[str]:
+    errors: list[str] = []
+    for fixture, levels in reports.items():
+        for level, report in levels.items():
+            if not report:
+                errors.append(f"{fixture} opt{level}: optimizer report missing")
+                continue
+            for pass_report in report.get("passes", []):
+                name = pass_report.get("name", "<unnamed>")
+                if not pass_report.get("enabled", False):
+                    continue
+                stats = pass_report.get("stats", {})
+                verifier_calls = stats.get("verifier_calls")
+                expected_verifier_calls = 1 if pass_report.get("changed") else 0
+                if verifier_calls != expected_verifier_calls:
+                    errors.append(
+                        f"{fixture} opt{level} {name}: verifier_calls={verifier_calls!r}, "
+                        f"expected {expected_verifier_calls}"
+                    )
+                if not str(name).endswith("_noop"):
+                    continue
+                if stats.get("scope_snapshots") != 0 or stats.get("snapshot_bytes") != 0:
+                    errors.append(
+                        f"{fixture} opt{level} {name}: no-op pass created a snapshot"
+                    )
+                scope = pass_report.get("scope")
+                if scope != {
+                    "blocks": [],
+                    "constants": False,
+                    "functions": [],
+                    "metadata": [],
+                    "source_mappings_may_change": False,
+                }:
+                    errors.append(f"{fixture} opt{level} {name}: no-op pass touched scope")
+    return errors
+
+
 def pretty_json(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True) + "\n"
 
@@ -371,9 +410,11 @@ def run_real(engine: Path, out_dir: Path) -> int:
             if difference is not None:
                 differences.append(difference)
 
+    report_errors = optimizer_report_invariant_errors(optimizer_reports)
+
     summary = {
         "gate": "optimizer-diff",
-        "status": "fail" if differences else "pass",
+        "status": "fail" if differences or report_errors else "pass",
         "fixtures": fixtures,
         "levels": list(LEVELS),
         "comparisons": len(fixtures) * (len(LEVELS) - 1),
@@ -389,6 +430,7 @@ def run_real(engine: Path, out_dir: Path) -> int:
         "optimizer_evidence": {
             "reports_dir": rel(out_dir / "optimizer-reports"),
             "summary": summarize_optimizer_reports(optimizer_reports),
+            "invariant_errors": report_errors,
         },
         "compared": [
             "stdout",
@@ -406,6 +448,9 @@ def run_real(engine: Path, out_dir: Path) -> int:
                 f"{','.join(difference.sections)}; see {rel(difference.diff_path)}",
                 file=sys.stderr,
             )
+    for error in report_errors:
+        print(f"[fail] optimizer report invariant: {error}", file=sys.stderr)
+    if differences or report_errors:
         return 1
     print(
         f"[pass] optimizer-diff compared {len(fixtures)} fixture(s) across "

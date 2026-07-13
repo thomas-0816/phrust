@@ -24,7 +24,7 @@ compatibility is bounded by deterministic local execution.
   host filesystem, network, or process capability and tests assert only output
   shape/range
 
-Work item registers those process/shell names so Composer-style probes see a
+The standard library registers those process/shell names so Composer-style probes see a
 defined surface. Default runtime contexts do not launch a host shell; each API
 returns a deterministic PHP-visible failure value and emits
 `E_PHP_VM_PROCESS_CAPABILITY_DISABLED`. Isolated VM tests may install a process
@@ -42,17 +42,17 @@ nix develop -c just process-capability-smoke
 Unsupported or disabled capabilities must report deterministic diagnostics
 instead of panicking or silently succeeding.
 
-Local file APIs added in Work item (`fopen`, `file_get_contents`,
+Local file APIs (`fopen`, `file_get_contents`,
 `file_put_contents`, `copy`, `rename`, `unlink`, `mkdir`, `rmdir`, `touch`,
 `tempnam`, and `tmpfile`) use the same allowed-root check. Paths outside the
 request capability return PHP-visible failure values and do not fall back to
 ambient host access.
 
-Directory APIs added in Work item (`opendir`, `scandir`, `glob`, and
+Directory APIs (`opendir`, `scandir`, `glob`, and
 `chdir`) also require allowed roots. Glob expansion enumerates only the
 capability-approved local directory selected by the normalized pattern prefix.
 
-Stream helpers added in Work item preserve context options locally and keep
+Stream helpers preserve context options locally and keep
 include-path resolution capability-checked. `stream_isatty` is deterministic and
 does not probe host terminal state unless a later capability explicitly adds
 that behavior.

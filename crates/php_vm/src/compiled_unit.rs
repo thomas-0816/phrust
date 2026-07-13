@@ -1,37 +1,23 @@
 //! VM-facing wrapper around verified IR units.
 
+use php_ir::IrUnit;
 use php_ir::constants::IrConstant;
 use php_ir::ids::FunctionId;
-use php_ir::module::{ClassEntry, normalize_class_name};
+use php_ir::module::{ClassEntry, normalize_class_name, normalized_class_name};
 use php_ir::source_map::IrSpan;
-use php_ir::{ConstId, IrUnit};
+use php_ir::verify::verify_unit;
+use php_runtime::api::RuntimeDiagnostic;
+use php_source::{BytePos, LineIndex};
 use std::{
     collections::HashMap,
+    ops::Deref,
     sync::{
-        Arc, Mutex,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 static NEXT_COMPILED_UNIT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
-
-/// VM-facing function lookup entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CompiledFunctionEntry {
-    /// Normalized lookup name.
-    pub name: String,
-    /// Function ID.
-    pub function: FunctionId,
-}
-
-/// VM-facing constant lookup entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CompiledConstantEntry {
-    /// Canonical runtime lookup name.
-    pub name: String,
-    /// Constant-pool value ID.
-    pub value: ConstId,
-}
 
 /// Compiled unit handed to the interpreter.
 #[derive(Clone)]
@@ -39,17 +25,207 @@ pub struct CompiledUnit {
     inner: Arc<CompiledUnitInner>,
 }
 
+/// Invalid source-repository input supplied while constructing an artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompiledUnitBuildError {
+    /// A source references no file in the IR source map.
+    UnknownSourceFile(php_ir::ids::FileId),
+    /// More than one source was supplied for the same file ID.
+    DuplicateSourceFile(php_ir::ids::FileId),
+}
+
 struct CompiledUnitInner {
     cache_id: u64,
+    artifact_identity: u64,
     unit: IrUnit,
-    function_table: Vec<CompiledFunctionEntry>,
-    constant_table: Vec<CompiledConstantEntry>,
-    class_table: Vec<Arc<ClassEntry>>,
-    function_lookup: HashMap<String, FunctionId>,
-    constant_lookup: HashMap<String, ConstId>,
-    class_lookup: HashMap<String, usize>,
-    unit_class_lookup: HashMap<String, usize>,
-    source_line_cache: Mutex<Vec<Option<SourceLineIndex>>>,
+    class_table: Box<[usize]>,
+    function_lookup: SymbolIndex,
+    constant_lookup: SymbolIndex,
+    class_lookup: SymbolIndex,
+    unit_class_lookup: SymbolIndex,
+    sources: CompiledSourceRepository,
+    prepared: PreparedUnit,
+}
+
+/// Immutable handle to one canonical class definition.
+#[derive(Clone)]
+pub struct CompiledClass {
+    storage: CompiledClassStorage,
+}
+
+#[derive(Clone)]
+enum CompiledClassStorage {
+    Unit { owner: CompiledUnit, index: usize },
+    Owned(Arc<ClassEntry>),
+}
+
+impl CompiledClass {
+    fn in_unit(owner: CompiledUnit, index: usize) -> Self {
+        Self {
+            storage: CompiledClassStorage::Unit { owner, index },
+        }
+    }
+
+    /// Wraps runtime-produced class metadata that has no compiled-unit owner.
+    #[must_use]
+    pub fn owned(class: ClassEntry) -> Self {
+        Self {
+            storage: CompiledClassStorage::Owned(Arc::new(class)),
+        }
+    }
+
+    /// Returns true when both handles refer to the same canonical allocation.
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (&self.storage, &other.storage) {
+            (
+                CompiledClassStorage::Unit {
+                    owner: left_owner,
+                    index: left_index,
+                },
+                CompiledClassStorage::Unit {
+                    owner: right_owner,
+                    index: right_index,
+                },
+            ) => left_index == right_index && left_owner.ptr_eq(right_owner),
+            (CompiledClassStorage::Owned(left), CompiledClassStorage::Owned(right)) => {
+                Arc::ptr_eq(left, right)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Deref for CompiledClass {
+    type Target = ClassEntry;
+
+    fn deref(&self) -> &Self::Target {
+        match &self.storage {
+            CompiledClassStorage::Unit { owner, index } => &owner.inner.unit.classes[*index],
+            CompiledClassStorage::Owned(class) => class,
+        }
+    }
+}
+
+impl AsRef<ClassEntry> for CompiledClass {
+    fn as_ref(&self) -> &ClassEntry {
+        self
+    }
+}
+
+impl std::fmt::Debug for CompiledClass {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.deref().fmt(formatter)
+    }
+}
+
+impl PartialEq for CompiledClass {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+#[derive(Debug)]
+struct CompiledSourceRepository {
+    entries: Box<[Option<CompiledSource>]>,
+}
+
+#[derive(Debug)]
+struct CompiledSource {
+    text: Arc<str>,
+    lines: LineIndex,
+}
+
+#[derive(Debug)]
+struct SymbolIndex {
+    buckets: HashMap<u64, Box<[usize]>>,
+}
+
+impl SymbolIndex {
+    fn new(names: impl Iterator<Item = (usize, u64)>) -> Self {
+        let mut buckets = HashMap::<u64, Vec<usize>>::new();
+        for (index, hash) in names {
+            buckets.entry(hash).or_default().push(index);
+        }
+        Self {
+            buckets: buckets
+                .into_iter()
+                .map(|(hash, indexes)| (hash, indexes.into_boxed_slice()))
+                .collect(),
+        }
+    }
+
+    fn candidates(&self, name: &str) -> impl Iterator<Item = usize> + '_ {
+        self.buckets
+            .get(&stable_hash(name.as_bytes()))
+            .into_iter()
+            .flat_map(|indexes| indexes.iter().copied())
+    }
+}
+
+#[derive(Debug)]
+struct PreparedUnit {
+    ir_verification_errors: OnceLock<usize>,
+    class_validation: OnceLock<Result<(), Box<PreparedClassValidationError>>>,
+    ir_verification_runs: AtomicU64,
+    class_validation_runs: AtomicU64,
+    function_facts: Box<[OnceLock<PreparedFunctionFacts>]>,
+}
+
+impl PreparedUnit {
+    fn new(function_count: usize) -> Self {
+        Self {
+            ir_verification_errors: OnceLock::new(),
+            class_validation: OnceLock::new(),
+            ir_verification_runs: AtomicU64::new(0),
+            class_validation_runs: AtomicU64::new(0),
+            function_facts: (0..function_count).map(|_| OnceLock::new()).collect(),
+        }
+    }
+}
+
+/// Immutable class-validation failure retained with a compiled artifact.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedClassValidationError {
+    pub(crate) message: String,
+    pub(crate) diagnostic: Option<RuntimeDiagnostic>,
+}
+
+/// Number of immutable preparation passes performed for a compiled unit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PreparedUnitStats {
+    /// IR verification passes.
+    pub ir_verification_runs: u64,
+    /// Static class-table validation passes.
+    pub class_validation_runs: u64,
+}
+
+/// Measurable ownership and retention properties of a compiled artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompiledUnitLayoutStats {
+    /// Number of source-map files in the IR.
+    pub source_files: usize,
+    /// Number of files whose exact source text is retained.
+    pub retained_source_files: usize,
+    /// Bytes retained for runtime diagnostics.
+    pub retained_source_bytes: usize,
+    /// Canonical class entries owned by the IR unit.
+    pub canonical_classes: usize,
+    /// Deep class copies owned by `CompiledUnit` (always zero).
+    pub duplicated_classes: usize,
+    /// Symbol-table entries indexed without copying their names.
+    pub indexed_symbols: usize,
+    /// Name bytes duplicated by lookup indexes (always zero).
+    pub duplicated_symbol_name_bytes: usize,
+}
+
+/// Function-invariant execution facts shared by all requests for a unit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PreparedFunctionFacts {
+    pub(crate) observes_argument_vector: bool,
+    pub(crate) has_try_or_finally: bool,
+    pub(crate) may_hold_destructor_sensitive_value: bool,
+    pub(crate) has_inline_blocker: bool,
 }
 
 /// Dense executable artifact kind cached for one compiled unit.
@@ -76,105 +252,107 @@ pub struct DenseExecutionArtifactKey {
     pub dense_jump_threading: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SourceLineIndex {
-    newline_offsets: Vec<usize>,
-    source_len: usize,
-}
-
-impl SourceLineIndex {
-    fn new(source: &str) -> Self {
-        Self {
-            newline_offsets: source
-                .as_bytes()
-                .iter()
-                .enumerate()
-                .filter_map(|(offset, byte)| (*byte == b'\n').then_some(offset))
-                .collect(),
-            source_len: source.len(),
-        }
-    }
-
-    fn line_for_offset(&self, offset: usize) -> i64 {
-        let offset = offset.min(self.source_len);
-        let zero_based_line = self
-            .newline_offsets
-            .partition_point(|newline_offset| *newline_offset < offset);
-        (zero_based_line + 1) as i64
-    }
-}
-
 impl CompiledUnit {
-    /// Wraps an IR unit for execution.
+    /// Wraps an IR unit and snapshots all source files that are currently readable.
     #[must_use]
     pub fn new(unit: IrUnit) -> Self {
-        let file_count = unit.files.len();
-        let function_table = unit
-            .function_table
+        let sources = unit
+            .files
             .iter()
-            .map(|entry| CompiledFunctionEntry {
-                name: entry.name.clone(),
-                function: entry.function,
+            .map(|file| {
+                std::fs::read_to_string(&file.path)
+                    .ok()
+                    .map(Arc::<str>::from)
             })
             .collect();
-        let function_lookup = unit.function_table.iter().fold(
-            HashMap::with_capacity(unit.function_table.len()),
-            |mut lookup, entry| {
-                lookup.entry(entry.name.clone()).or_insert(entry.function);
-                lookup
-            },
+        Self::with_source_slots(unit, sources)
+    }
+
+    /// Wraps an IR unit with exact source text captured by the compiler.
+    pub fn try_with_sources(
+        unit: IrUnit,
+        sources: impl IntoIterator<Item = (php_ir::ids::FileId, Arc<str>)>,
+    ) -> Result<Self, CompiledUnitBuildError> {
+        let mut source_slots = vec![None; unit.files.len()];
+        for (file, source) in sources {
+            let Some(slot) = source_slots.get_mut(file.index()) else {
+                return Err(CompiledUnitBuildError::UnknownSourceFile(file));
+            };
+            if slot.is_some() {
+                return Err(CompiledUnitBuildError::DuplicateSourceFile(file));
+            }
+            *slot = Some(source);
+        }
+        Ok(Self::with_source_slots(unit, source_slots))
+    }
+
+    /// Wraps compiler-owned sources already ordered like `IrUnit::files`.
+    #[must_use]
+    pub fn with_ordered_sources(unit: IrUnit, sources: impl IntoIterator<Item = Arc<str>>) -> Self {
+        let mut source_slots = sources.into_iter().map(Some).collect::<Vec<_>>();
+        source_slots.truncate(unit.files.len());
+        source_slots.resize_with(unit.files.len(), || None);
+        Self::with_source_slots(unit, source_slots)
+    }
+
+    fn with_source_slots(unit: IrUnit, sources: Vec<Option<Arc<str>>>) -> Self {
+        let function_count = unit.functions.len();
+        let function_lookup = SymbolIndex::new(
+            unit.function_table
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (index, stable_hash(entry.name.as_bytes()))),
         );
-        let constant_table = unit
-            .constant_table
-            .iter()
-            .map(|entry| CompiledConstantEntry {
-                name: entry.name.clone(),
-                value: entry.value,
-            })
-            .collect();
-        let constant_lookup = unit.constant_table.iter().fold(
-            HashMap::with_capacity(unit.constant_table.len()),
-            |mut lookup, entry| {
-                lookup.entry(entry.name.clone()).or_insert(entry.value);
-                lookup
-            },
+        let constant_lookup = SymbolIndex::new(
+            unit.constant_table
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (index, stable_hash(entry.name.as_bytes()))),
         );
         let class_table = unit
             .classes
             .iter()
-            .filter(|entry| !entry.flags.is_conditional)
-            .map(|entry| Arc::new(entry.clone()))
-            .collect::<Vec<_>>();
-        let class_lookup = class_table.iter().enumerate().fold(
-            HashMap::with_capacity(class_table.len()),
-            |mut lookup, (index, entry)| {
-                lookup
-                    .entry(normalize_class_name(&entry.name))
-                    .or_insert(index);
-                lookup
-            },
-        );
-        let unit_class_lookup = unit.classes.iter().enumerate().fold(
-            HashMap::with_capacity(unit.classes.len()),
-            |mut lookup, (index, entry)| {
-                lookup
-                    .entry(normalize_class_name(&entry.name))
-                    .or_insert(index);
-                lookup
-            },
-        );
+            .enumerate()
+            .filter(|(_, entry)| !entry.flags.is_conditional)
+            .map(|(index, _)| index)
+            .collect::<Box<[_]>>();
+        let class_lookup = SymbolIndex::new(class_table.iter().copied().map(|index| {
+            (
+                index,
+                stable_hash(normalize_class_name(&unit.classes[index].name).as_bytes()),
+            )
+        }));
+        let unit_class_lookup =
+            SymbolIndex::new(unit.classes.iter().enumerate().map(|(index, entry)| {
+                (
+                    index,
+                    stable_hash(normalize_class_name(&entry.name).as_bytes()),
+                )
+            }));
+        let sources = CompiledSourceRepository {
+            entries: sources
+                .into_iter()
+                .map(|source| {
+                    source.map(|text| CompiledSource {
+                        lines: LineIndex::new(&text),
+                        text,
+                    })
+                })
+                .collect(),
+        };
+        let artifact_identity = artifact_identity(&unit, &sources);
         Self {
             inner: Arc::new(CompiledUnitInner {
                 cache_id: NEXT_COMPILED_UNIT_CACHE_ID.fetch_add(1, Ordering::Relaxed),
+                artifact_identity,
                 unit,
-                function_table,
-                constant_table,
                 class_table,
                 function_lookup,
                 constant_lookup,
                 class_lookup,
                 unit_class_lookup,
-                source_line_cache: Mutex::new(vec![None; file_count]),
+                sources,
+                prepared: PreparedUnit::new(function_count),
             }),
         }
     }
@@ -191,109 +369,272 @@ impl CompiledUnit {
         self.inner.cache_id
     }
 
+    /// Stable identity derived from unit, path, and retained source contents.
+    #[must_use]
+    pub fn artifact_identity(&self) -> u64 {
+        self.inner.artifact_identity
+    }
+
+    /// Returns ownership counters used by architecture and memory benchmarks.
+    #[must_use]
+    pub fn layout_stats(&self) -> CompiledUnitLayoutStats {
+        CompiledUnitLayoutStats {
+            source_files: self.inner.sources.entries.len(),
+            retained_source_files: self
+                .inner
+                .sources
+                .entries
+                .iter()
+                .filter(|source| source.is_some())
+                .count(),
+            retained_source_bytes: self
+                .inner
+                .sources
+                .entries
+                .iter()
+                .flatten()
+                .map(|source| source.text.len())
+                .sum(),
+            canonical_classes: self.inner.unit.classes.len(),
+            duplicated_classes: 0,
+            indexed_symbols: self.inner.unit.function_table.len()
+                + self.inner.unit.constant_table.len()
+                + self.inner.unit.classes.len(),
+            duplicated_symbol_name_bytes: 0,
+        }
+    }
+
+    /// Serializes stable cache/debug metadata without serializing executable IR.
+    #[must_use]
+    pub fn metadata_json(&self) -> String {
+        let stats = self.layout_stats();
+        format!(
+            concat!(
+                "{{\"schema\":\"phrust.compiled-unit.v1\",",
+                "\"unit_id\":{},\"artifact_identity\":\"{:016x}\",",
+                "\"source_files\":{},\"retained_source_files\":{},",
+                "\"retained_source_bytes\":{},\"canonical_classes\":{},",
+                "\"duplicated_classes\":{},\"indexed_symbols\":{},",
+                "\"duplicated_symbol_name_bytes\":{}}}"
+            ),
+            self.inner.unit.id.raw(),
+            self.inner.artifact_identity,
+            stats.source_files,
+            stats.retained_source_files,
+            stats.retained_source_bytes,
+            stats.canonical_classes,
+            stats.duplicated_classes,
+            stats.indexed_symbols,
+            stats.duplicated_symbol_name_bytes,
+        )
+    }
+
     /// Returns true when two handles point at the same compiled unit allocation.
     #[must_use]
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Returns the cached immutable IR verification result.
+    pub(crate) fn prepared_ir_verification_errors(&self) -> usize {
+        *self.inner.prepared.ir_verification_errors.get_or_init(|| {
+            self.inner
+                .prepared
+                .ir_verification_runs
+                .fetch_add(1, Ordering::Relaxed);
+            verify_unit(&self.inner.unit).map_or_else(|errors| errors.len(), |()| 0)
+        })
+    }
+
+    /// Returns cached static class validation, computing it at most once.
+    pub(crate) fn prepared_class_validation(
+        &self,
+        prepare: impl FnOnce() -> Result<(), Box<PreparedClassValidationError>>,
+    ) -> Result<(), Box<PreparedClassValidationError>> {
+        self.inner
+            .prepared
+            .class_validation
+            .get_or_init(|| {
+                self.inner
+                    .prepared
+                    .class_validation_runs
+                    .fetch_add(1, Ordering::Relaxed);
+                prepare()
+            })
+            .clone()
+    }
+
+    /// Preparation counters for validation and diagnostics.
+    #[must_use]
+    pub fn prepared_unit_stats(&self) -> PreparedUnitStats {
+        PreparedUnitStats {
+            ir_verification_runs: self
+                .inner
+                .prepared
+                .ir_verification_runs
+                .load(Ordering::Relaxed),
+            class_validation_runs: self
+                .inner
+                .prepared
+                .class_validation_runs
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    /// Returns immutable per-function facts, scanning a function at most once.
+    pub(crate) fn prepared_function_facts(
+        &self,
+        function: FunctionId,
+        prepare: impl FnOnce() -> PreparedFunctionFacts,
+    ) -> PreparedFunctionFacts {
+        let Some(facts) = self.inner.prepared.function_facts.get(function.index()) else {
+            return prepare();
+        };
+        *facts.get_or_init(prepare)
+    }
+
     /// Finds a user function by normalized name.
     #[must_use]
     pub fn lookup_function(&self, name: &str) -> Option<FunctionId> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
-        self.inner.function_lookup.get(name).copied()
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
+        self.inner
+            .function_lookup
+            .candidates(name)
+            .find_map(|index| {
+                let entry = self.inner.unit.function_table.get(index)?;
+                (entry.name == name).then_some(entry.function)
+            })
     }
 
     /// Finds a user constant by canonical name.
     #[must_use]
     pub fn lookup_constant(&self, name: &str) -> Option<&IrConstant> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
-        let value = self.inner.constant_lookup.get(name).copied()?;
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
+        let value = self
+            .inner
+            .constant_lookup
+            .candidates(name)
+            .find_map(|index| {
+                let entry = self.inner.unit.constant_table.get(index)?;
+                (entry.name == name).then_some(entry.value)
+            })?;
         self.inner.unit.constants.get(value.index())
     }
 
     /// Finds a class by normalized name.
     #[must_use]
     pub fn lookup_class(&self, name: &str) -> Option<&ClassEntry> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
-        let normalized = normalize_class_name(name);
-        let index = self.inner.class_lookup.get(&normalized).copied()?;
-        self.inner.class_table.get(index).map(Arc::as_ref)
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
+        let normalized = normalized_class_name(name);
+        let index = self
+            .inner
+            .class_lookup
+            .candidates(normalized.as_ref())
+            .find(|index| {
+                normalize_class_name(&self.inner.unit.classes[*index].name) == normalized.as_ref()
+            })?;
+        self.inner.unit.classes.get(index)
     }
 
     /// Finds a class by normalized name, returning a shared handle to the
     /// (potentially large) `ClassEntry` via a cheap `Arc` refcount bump instead
     /// of a deep clone.
     #[must_use]
-    pub fn lookup_class_arc(&self, name: &str) -> Option<Arc<ClassEntry>> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
-        let normalized = normalize_class_name(name);
-        let index = self.inner.class_lookup.get(&normalized).copied()?;
-        self.inner.class_table.get(index).map(Arc::clone)
+    pub fn lookup_class_handle(&self, name: &str) -> Option<CompiledClass> {
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
+        let normalized = normalized_class_name(name);
+        let index = self
+            .inner
+            .class_lookup
+            .candidates(normalized.as_ref())
+            .find(|index| {
+                normalize_class_name(&self.inner.unit.classes[*index].name) == normalized.as_ref()
+            })?;
+        Some(CompiledClass::in_unit(self.clone(), index))
     }
 
     /// Finds any class entry in the underlying IR unit, including conditional declarations.
     #[must_use]
     pub fn lookup_unit_class(&self, name: &str) -> Option<&ClassEntry> {
-        php_runtime::layout_stats::record_symbol_map_lookup();
-        let normalized = normalize_class_name(name);
-        let index = self.inner.unit_class_lookup.get(&normalized).copied()?;
+        php_runtime::experimental::layout_stats::record_symbol_map_lookup();
+        let normalized = normalized_class_name(name);
+        let index = self
+            .inner
+            .unit_class_lookup
+            .candidates(normalized.as_ref())
+            .find(|index| {
+                normalize_class_name(&self.inner.unit.classes[*index].name) == normalized.as_ref()
+            })?;
         self.inner.unit.classes.get(index)
+    }
+
+    /// Finds any class and returns a handle retaining its canonical unit owner.
+    #[must_use]
+    pub fn lookup_unit_class_handle(&self, name: &str) -> Option<CompiledClass> {
+        let normalized = normalized_class_name(name);
+        let index = self
+            .inner
+            .unit_class_lookup
+            .candidates(normalized.as_ref())
+            .find(|index| {
+                normalize_class_name(&self.inner.unit.classes[*index].name) == normalized.as_ref()
+            })?;
+        Some(CompiledClass::in_unit(self.clone(), index))
+    }
+
+    pub(crate) fn class_handle(&self, index: usize) -> Option<CompiledClass> {
+        self.inner
+            .unit
+            .classes
+            .get(index)
+            .map(|_| CompiledClass::in_unit(self.clone(), index))
     }
 
     /// Returns the VM lookup table.
     #[must_use]
-    pub fn function_table(&self) -> &[CompiledFunctionEntry] {
-        &self.inner.function_table
+    pub fn function_table(&self) -> &[php_ir::module::FunctionEntry] {
+        &self.inner.unit.function_table
     }
 
     /// Returns the VM constant lookup table.
     #[must_use]
-    pub fn constant_table(&self) -> &[CompiledConstantEntry] {
-        &self.inner.constant_table
+    pub fn constant_table(&self) -> &[php_ir::module::GlobalConstantEntry] {
+        &self.inner.unit.constant_table
     }
 
     /// Returns the VM class lookup table.
-    #[must_use]
-    pub fn class_table(&self) -> &[Arc<ClassEntry>] {
-        &self.inner.class_table
+    pub fn class_table(&self) -> impl Iterator<Item = &ClassEntry> {
+        self.inner
+            .class_table
+            .iter()
+            .map(|index| &self.inner.unit.classes[*index])
     }
 
-    /// Returns the display line for a source span using a lazy per-file line index.
+    /// Returns the display line from the immutable compile-time source snapshot.
     #[must_use]
     pub fn source_display_line(&self, span: IrSpan, end: bool) -> Option<i64> {
         let file_index = span.file.index();
-        let file = self.inner.unit.files.get(file_index)?;
+        self.inner.unit.files.get(file_index)?;
         let offset = if end { span.end } else { span.start } as usize;
-
-        if let Ok(cache) = self.inner.source_line_cache.lock()
-            && let Some(Some(index)) = cache.get(file_index)
-        {
-            return Some(index.line_for_offset(offset));
-        }
-
-        let source = std::fs::read_to_string(&file.path).ok()?;
-        let index = SourceLineIndex::new(&source);
-        let line = index.line_for_offset(offset);
-
-        if let Ok(mut cache) = self.inner.source_line_cache.lock() {
-            if cache.len() < self.inner.unit.files.len() {
-                cache.resize_with(self.inner.unit.files.len(), || None);
-            }
-            if let Some(slot) = cache.get_mut(file_index) {
-                *slot = Some(index);
-            }
-        }
-
-        Some(line)
+        self.inner
+            .sources
+            .entries
+            .get(file_index)?
+            .as_ref()
+            .map(|source| source.lines.line_col(BytePos::new(offset)).line as i64)
     }
 
-    /// Consumes the wrapper and returns the IR unit.
-    #[must_use]
-    pub fn into_unit(self) -> IrUnit {
+    /// Extracts the IR only when this is the unique artifact handle.
+    pub fn try_into_unique_unit(self) -> Result<IrUnit, Self> {
         Arc::try_unwrap(self.inner)
             .map(|inner| inner.unit)
-            .unwrap_or_else(|inner| inner.unit.clone())
+            .map_err(|inner| Self { inner })
+    }
+
+    /// Intentionally performs a deep copy of the IR.
+    #[must_use]
+    pub fn deep_clone_unit(&self) -> IrUnit {
+        self.inner.unit.clone()
     }
 }
 
@@ -302,9 +643,8 @@ impl std::fmt::Debug for CompiledUnit {
         formatter
             .debug_struct("CompiledUnit")
             .field("unit", &self.inner.unit)
-            .field("function_table", &self.inner.function_table)
-            .field("constant_table", &self.inner.constant_table)
-            .field("class_table", &self.inner.class_table)
+            .field("artifact_identity", &self.inner.artifact_identity)
+            .field("retained_sources", &self.inner.sources)
             .finish_non_exhaustive()
     }
 }
@@ -312,10 +652,52 @@ impl std::fmt::Debug for CompiledUnit {
 impl PartialEq for CompiledUnit {
     fn eq(&self, other: &Self) -> bool {
         self.inner.unit == other.inner.unit
-            && self.inner.function_table == other.inner.function_table
-            && self.inner.constant_table == other.inner.constant_table
-            && self.inner.class_table == other.inner.class_table
+            && self.inner.artifact_identity == other.inner.artifact_identity
     }
+}
+
+fn artifact_identity(unit: &IrUnit, sources: &CompiledSourceRepository) -> u64 {
+    let mut hash = stable_hash(b"phrust.compiled-unit.v1");
+    hash = hash_bytes(hash, &unit.id.raw().to_le_bytes());
+    for (index, file) in unit.files.iter().enumerate() {
+        hash = hash_field(hash, file.path.as_bytes());
+        if let Some(Some(source)) = sources.entries.get(index) {
+            hash = hash_bytes(hash, &[1]);
+            hash = hash_field(hash, source.text.as_bytes());
+        } else {
+            hash = hash_bytes(hash, &[0]);
+        }
+    }
+    for entry in &unit.function_table {
+        hash = hash_field(hash, entry.name.as_bytes());
+        hash = hash_bytes(hash, &entry.function.raw().to_le_bytes());
+    }
+    for entry in &unit.constant_table {
+        hash = hash_field(hash, entry.name.as_bytes());
+        hash = hash_bytes(hash, &entry.value.raw().to_le_bytes());
+    }
+    for class in &unit.classes {
+        hash = hash_field(hash, class.name.as_bytes());
+        hash = hash_bytes(hash, &class.id.raw().to_le_bytes());
+    }
+    hash
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    hash_bytes(0xcbf2_9ce4_8422_2325, bytes)
+}
+
+fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn hash_field(hash: u64, bytes: &[u8]) -> u64 {
+    let hash = hash_bytes(hash, &(bytes.len() as u64).to_le_bytes());
+    hash_bytes(hash, bytes)
 }
 
 impl From<IrUnit> for CompiledUnit {
@@ -327,6 +709,7 @@ impl From<IrUnit> for CompiledUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use php_ir::ConstId;
     use php_ir::ids::{ClassId, FileId, UnitId};
     use php_ir::module::{ClassFlags, FileEntry, FunctionEntry, GlobalConstantEntry};
 
@@ -354,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn source_display_line_uses_cached_byte_offset_index() {
+    fn source_display_lines_survive_source_replacement_and_deletion() {
         let root = std::env::temp_dir().join(format!(
             "phrust-compiled-unit-lines-{}-{}",
             std::process::id(),
@@ -364,15 +747,27 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("temp line-cache root should be created");
-        let path = root.join("fixture.php");
-        std::fs::write(&path, "<?php\nline2\nline3\n").expect("fixture source should be written");
+        let first_path = root.join("fixture.php");
+        let second_path = root.join("dependency.php");
+        std::fs::write(&first_path, "<?php\nline2\nline3\n")
+            .expect("fixture source should be written");
+        std::fs::write(&second_path, "one\ntwo\nthree\n")
+            .expect("dependency source should be written");
 
         let mut unit = IrUnit::new(UnitId::new(0));
         unit.files.push(FileEntry {
             id: FileId::new(0),
-            path: path.to_string_lossy().into_owned(),
+            path: first_path.to_string_lossy().into_owned(),
+        });
+        unit.files.push(FileEntry {
+            id: FileId::new(1),
+            path: second_path.to_string_lossy().into_owned(),
         });
         let compiled = CompiledUnit::new(unit);
+
+        std::fs::write(&first_path, "replaced without original line structure")
+            .expect("fixture source should be replaceable");
+        std::fs::remove_file(&second_path).expect("dependency source should be removable");
 
         assert_eq!(
             compiled.source_display_line(IrSpan::new(FileId::new(0), 0, 0), false),
@@ -387,10 +782,12 @@ mod tests {
             Some(2)
         );
 
-        std::fs::remove_file(&path).expect("fixture source should be removable");
-
         assert_eq!(
             compiled.source_display_line(IrSpan::new(FileId::new(0), 12, 12), false),
+            Some(3)
+        );
+        assert_eq!(
+            compiled.source_display_line(IrSpan::new(FileId::new(1), 8, 8), false),
             Some(3)
         );
 
@@ -399,7 +796,7 @@ mod tests {
 
     #[test]
     fn symbol_lookups_use_maps_and_preserve_first_duplicate() {
-        php_runtime::layout_stats::reset_layout_stats();
+        php_runtime::experimental::layout_stats::reset_layout_stats();
 
         let mut unit = IrUnit::new(UnitId::new(0));
         unit.constants.push(IrConstant::Int(10));
@@ -442,7 +839,7 @@ mod tests {
         assert!(compiled.lookup_constant("MISSING").is_none());
         assert!(compiled.lookup_class("Missing").is_none());
 
-        let stats = php_runtime::layout_stats::take_layout_stats();
+        let stats = php_runtime::experimental::layout_stats::take_layout_stats();
         assert_eq!(stats.symbol_map_lookups, 6, "{stats:?}");
         assert_eq!(stats.symbol_linear_fallbacks, 0, "{stats:?}");
     }
@@ -464,6 +861,119 @@ mod tests {
         assert_eq!(
             compiled.lookup_class("\\declared").map(|class| class.id),
             Some(ClassId::new(1))
+        );
+    }
+
+    #[test]
+    fn class_handles_are_canonical_within_one_unit_and_not_across_replacements() {
+        let mut unit = IrUnit::new(UnitId::new(0));
+        unit.classes.push(class_entry(7, "App\\Canonical", false));
+
+        let compiled = CompiledUnit::new(unit.clone());
+        let cloned_handle = compiled.clone();
+        let first = compiled
+            .lookup_class_handle("app\\canonical")
+            .expect("canonical class should resolve");
+        let second = cloned_handle
+            .lookup_class_handle("\\APP\\CANONICAL")
+            .expect("equivalent class spelling should resolve");
+
+        assert_eq!(compiled.cache_identity(), cloned_handle.cache_identity());
+        assert!(compiled.ptr_eq(&cloned_handle));
+        assert!(first.ptr_eq(&second));
+        assert_eq!(first.id, ClassId::new(7));
+
+        let replacement = CompiledUnit::new(unit);
+        let replacement_class = replacement
+            .lookup_class_handle("App\\Canonical")
+            .expect("replacement class should resolve");
+        assert_ne!(compiled.cache_identity(), replacement.cache_identity());
+        assert!(!compiled.ptr_eq(&replacement));
+        assert!(!first.ptr_eq(&replacement_class));
+        assert_eq!(first.id, replacement_class.id);
+    }
+
+    #[test]
+    fn unique_extraction_never_hides_a_deep_clone() {
+        let unit = IrUnit::new(UnitId::new(9));
+        let compiled = CompiledUnit::new(unit.clone());
+        let shared = compiled.clone();
+
+        let compiled = compiled
+            .try_into_unique_unit()
+            .expect_err("shared artifact must not be extracted");
+        drop(shared);
+        assert_eq!(compiled.try_into_unique_unit(), Ok(unit));
+    }
+
+    #[test]
+    fn artifact_identity_includes_retained_source_contents() {
+        let mut unit = IrUnit::new(UnitId::new(4));
+        unit.files.push(FileEntry {
+            id: FileId::new(0),
+            path: "memory.php".to_owned(),
+        });
+        let first = CompiledUnit::try_with_sources(
+            unit.clone(),
+            [(FileId::new(0), Arc::<str>::from("<?php echo 1;"))],
+        )
+        .expect("source ID should be valid");
+        let same = CompiledUnit::try_with_sources(
+            unit.clone(),
+            [(FileId::new(0), Arc::<str>::from("<?php echo 1;"))],
+        )
+        .expect("source ID should be valid");
+        let changed = CompiledUnit::try_with_sources(
+            unit,
+            [(FileId::new(0), Arc::<str>::from("<?php echo 2;"))],
+        )
+        .expect("source ID should be valid");
+
+        assert_eq!(first.artifact_identity(), same.artifact_identity());
+        assert_ne!(first.cache_identity(), same.cache_identity());
+        assert_ne!(first.artifact_identity(), changed.artifact_identity());
+        assert_eq!(
+            first.layout_stats(),
+            CompiledUnitLayoutStats {
+                source_files: 1,
+                retained_source_files: 1,
+                retained_source_bytes: 13,
+                canonical_classes: 0,
+                duplicated_classes: 0,
+                indexed_symbols: 0,
+                duplicated_symbol_name_bytes: 0,
+            }
+        );
+        assert_eq!(first.metadata_json(), same.metadata_json());
+        assert!(first.metadata_json().contains("phrust.compiled-unit.v1"));
+    }
+
+    #[test]
+    fn explicit_source_repository_rejects_unknown_and_duplicate_ids() {
+        let mut unit = IrUnit::new(UnitId::new(5));
+        unit.files.push(FileEntry {
+            id: FileId::new(0),
+            path: "entry.php".to_owned(),
+        });
+
+        assert_eq!(
+            CompiledUnit::try_with_sources(
+                unit.clone(),
+                [(FileId::new(1), Arc::<str>::from("unknown"))],
+            )
+            .expect_err("unknown file ID must fail"),
+            CompiledUnitBuildError::UnknownSourceFile(FileId::new(1))
+        );
+        assert_eq!(
+            CompiledUnit::try_with_sources(
+                unit,
+                [
+                    (FileId::new(0), Arc::<str>::from("first")),
+                    (FileId::new(0), Arc::<str>::from("second")),
+                ],
+            )
+            .expect_err("duplicate file ID must fail"),
+            CompiledUnitBuildError::DuplicateSourceFile(FileId::new(0))
         );
     }
 }

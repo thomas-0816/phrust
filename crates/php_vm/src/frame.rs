@@ -6,7 +6,7 @@ use crate::error::VmError;
 use php_ir::IrSpan;
 use php_ir::ids::{FunctionId, LocalId, RegId};
 use php_runtime::api::RuntimeSourceSpan;
-use php_runtime::{Lvalue, LvalueError, LvalueKind, ReferenceCell, Slot, TempValue, Value};
+use php_runtime::api::{Lvalue, LvalueError, LvalueKind, ReferenceCell, Slot, TempValue, Value};
 
 /// Register storage with checked accessors.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +70,12 @@ impl LocalFile {
     #[must_use]
     pub fn get_slot(&self, id: LocalId) -> Option<&Slot> {
         self.locals.get(id.index())
+    }
+
+    /// Raw slot table for the audited unchecked accessors (ADR 0021).
+    #[must_use]
+    pub(crate) fn slot_table(&self) -> &[Slot] {
+        &self.locals
     }
 
     /// Writes a local without panicking.
@@ -205,6 +211,17 @@ impl RegisterFile {
         self.registers.get(id.index()).map(TempValue::value)
     }
 
+    /// Raw slot table for the audited unchecked accessors (ADR 0021).
+    #[must_use]
+    pub(crate) fn temp_slots(&self) -> &[TempValue] {
+        &self.registers
+    }
+
+    /// Mutable raw slot table for the audited unchecked accessors (ADR 0021).
+    pub(crate) fn temp_slots_mut(&mut self) -> &mut [TempValue] {
+        &mut self.registers
+    }
+
     /// Iterates over registers in stable register order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (usize, &Value)> {
         self.registers
@@ -306,7 +323,7 @@ pub struct Frame {
     /// PHP-visible arguments supplied to this call after default/variadic
     /// normalization.
     pub arguments: Vec<Value>,
-    /// Backtrace-visible arguments (see [`TraceArguments`]).
+    /// Backtrace-visible arguments stored in the internal `TraceArguments` form.
     pub trace_arguments: TraceArguments,
     /// Source span of the call site that activated this frame, when known.
     pub call_span: Option<IrSpan>,
@@ -578,11 +595,13 @@ mod tests {
     use php_ir::IrSpan;
     use php_ir::ids::{FileId, FunctionId, LocalId, RegId};
     use php_runtime::api::RuntimeSourceSpan;
-    use php_runtime::{ClassEntry, ClassFlags, ObjectRef, PhpArray, ReferenceCell, Slot, Value};
+    use php_runtime::api::{
+        ClassEntry, ClassFlags, ObjectRef, PhpArray, ReferenceCell, Slot, Value,
+    };
 
     fn empty_class(name: &str) -> ClassEntry {
         ClassEntry {
-            name: name.to_owned(),
+            name: name.to_owned().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),

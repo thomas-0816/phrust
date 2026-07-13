@@ -4,6 +4,7 @@ use super::core::{
     argument_type_error, argument_value_error, arity_error, conversion_error, deref_value,
     float_arg, int_arg, string_arg,
 };
+use crate::builtins::context::PcreServiceAccess;
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, RuntimeSourceSpan,
@@ -934,10 +935,11 @@ fn validate_regexp(
         )));
     };
     let input = string_arg(name, value)?;
-    let compiled = match context.pcre_cache().compile(regexp) {
+    let mut pcre_services = context.pcre_services();
+    let compiled = match pcre_services.pcre_cache().compile(regexp) {
         Ok(compiled) => compiled,
         Err(error) => {
-            context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
+            pcre_services.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
             return Ok(failure);
         }
     };
@@ -945,7 +947,7 @@ fn validate_regexp(
         Ok(true) => Ok(Value::String(input)),
         Ok(false) => Ok(failure),
         Err(error) => {
-            context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
+            pcre_services.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
             Ok(failure)
         }
     }
@@ -1753,7 +1755,7 @@ mod tests {
 
     fn object(display_name: &str) -> Value {
         let class = ClassEntry {
-            name: display_name.to_ascii_lowercase(),
+            name: display_name.to_ascii_lowercase().into(),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),

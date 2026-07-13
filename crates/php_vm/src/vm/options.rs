@@ -1,10 +1,9 @@
 use crate::bytecode::BytecodeLayoutProfile;
-use crate::include::{IncludeCache, IncludeLoader};
+use crate::include::{IncludeCache, IncludeCompiler, IncludeLoader};
 use crate::inline_cache::InlineCacheMode;
 use crate::quickening::{QuickeningMode, QuickeningSiteSnapshot};
 use crate::tiering::TieringOptions;
-use php_optimizer::OptimizationLevel;
-use php_runtime::RuntimeContext;
+use php_runtime::api::RuntimeContext;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,6 +12,9 @@ use std::sync::Arc;
 pub struct VmOptions {
     /// Verify IR before dispatching it.
     pub verify_ir: bool,
+    /// Recompute immutable preparation and compare it with the cached image.
+    /// Intended for slow validation/debug runs, never production timing.
+    pub revalidate_prepared_unit: bool,
     /// Maximum instruction dispatches before reporting a runtime error.
     pub max_steps: usize,
     /// Optional local include loader. When absent, include/require are disabled
@@ -20,8 +22,8 @@ pub struct VmOptions {
     pub include_loader: Option<IncludeLoader>,
     /// Optional shared include cache for path resolution and compiled includes.
     pub include_cache: Option<Arc<IncludeCache>>,
-    /// Optimization level used when includes are compiled at runtime.
-    pub include_optimization_level: OptimizationLevel,
+    /// Executor-owned compiler used by runtime include and eval operations.
+    pub include_compiler: Option<Arc<dyn IncludeCompiler>>,
     /// Deterministic runtime context used to seed CLI globals and superglobals.
     pub runtime_context: RuntimeContext,
     /// Capture deterministic instruction trace events.
@@ -66,6 +68,10 @@ pub struct VmOptions {
     /// shape, and epoch validate at the callsite), so stale seeds invalidate
     /// back to generic resolution.
     pub callsite_seed: Vec<crate::inline_cache::FunctionCallSiteSnapshot>,
+    /// Retain engine-only quickening and guarded static inline-cache state in
+    /// the worker across isolated requests. Request-owned cache targets are
+    /// still discarded at every request boundary.
+    pub persistent_adaptive_state: bool,
     /// Allocate request-local inline-cache slots without changing semantics.
     pub inline_caches: InlineCacheMode,
     /// Select the experimental performance JIT tier for eligible hot leaf functions.
@@ -98,6 +104,11 @@ pub struct VmOptions {
     /// path is byte-identical to the pre-lever engine and this analysis is never
     /// built. Preserves COW/reference semantics.
     pub last_use_moves: bool,
+    /// Worker-stable symbol epochs: identical include replay keeps the
+    /// lookup epoch constant across requests so slot-indexed inline caches
+    /// with request-stable targets survive the request boundary. Read from
+    /// `PHRUST_WORKER_SYMBOL_EPOCH` (off unless set to `1`).
+    pub worker_symbol_epoch: bool,
     /// Runtime lever R4: allow request-local frame/register pooling to reuse a
     /// completed activation for a class-context call (a method/constructor/static
     /// call, or any call that carries `$this`/scope/called/declaring class) when
@@ -114,10 +125,11 @@ impl Default for VmOptions {
     fn default() -> Self {
         Self {
             verify_ir: true,
+            revalidate_prepared_unit: false,
             max_steps: 100_000,
             include_loader: None,
             include_cache: None,
-            include_optimization_level: OptimizationLevel::O0,
+            include_compiler: default_include_compiler(),
             runtime_context: RuntimeContext::default(),
             trace: false,
             trace_runtime: false,
@@ -134,6 +146,7 @@ impl Default for VmOptions {
             quickening: QuickeningMode::Off,
             quickening_seed: Vec::new(),
             callsite_seed: Vec::new(),
+            persistent_adaptive_state: false,
             inline_caches: InlineCacheMode::Off,
             jit: JitMode::Off,
             copy_patch_leaf_override: None,
@@ -145,9 +158,22 @@ impl Default for VmOptions {
             internal_function_dispatch_cache: true,
             adaptive_tiny_unit_setup_threshold: None,
             last_use_moves: true,
+            worker_symbol_epoch: worker_symbol_epoch_from_env(),
             reuse_class_context_frames: true,
         }
     }
+}
+
+#[cfg(not(test))]
+fn default_include_compiler() -> Option<Arc<dyn IncludeCompiler>> {
+    None
+}
+
+#[cfg(test)]
+fn default_include_compiler() -> Option<Arc<dyn IncludeCompiler>> {
+    Some(Arc::new(
+        crate::test_include_compiler::TestIncludeCompiler::baseline(),
+    ))
 }
 
 fn trace_includes_from_env() -> bool {
@@ -357,4 +383,11 @@ impl JitBlacklistMode {
     pub const fn enabled(self) -> bool {
         matches!(self, Self::On)
     }
+}
+
+fn worker_symbol_epoch_from_env() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("PHRUST_WORKER_SYMBOL_EPOCH").is_ok_and(|value| value.trim() == "1")
+    })
 }

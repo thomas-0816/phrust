@@ -1,7 +1,5 @@
 # Array Shape Observation
 
-Date: 2026-06-28.
-
 FPE-23 adds runtime-owned metadata for non-packed array shapes. Mixed arrays now
 use ordered storage plus an index map, so key lookup and overwrite keep PHP
 insertion order while avoiding repeated linear scans. The VM observes shapes

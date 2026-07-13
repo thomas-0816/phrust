@@ -11,8 +11,8 @@ use crate::hir::{
     HirModule, ModuleId,
 };
 use php_ast::{
-    AstNode, Attribute, ClassConstDecl, ConstDecl, EnumCase, ExprNode, Param, PropertyDecl,
-    StaticStmt, syntax_child_nodes, syntax_child_tokens,
+    AstNode, Attribute, ClassConstDecl, ConstDecl, EnumCase, ExprListItem, ExprNode, Param,
+    PropertyDecl, StaticStmt, syntax_child_nodes, syntax_child_tokens,
 };
 use php_source::TextRange;
 use php_syntax::SyntaxNode;
@@ -302,8 +302,8 @@ impl ConstExprCollector<'_> {
             self.collect_direct_expressions(node, ConstExprContext::EnumCaseBackingValue);
         } else if PropertyDecl::cast(node).is_some() {
             self.collect_direct_expressions(node, ConstExprContext::PropertyDefault);
-        } else if StaticStmt::cast(node).is_some() {
-            self.collect_direct_expressions(node, ConstExprContext::StaticLocalInitializer);
+        } else if let Some(static_stmt) = StaticStmt::cast(node) {
+            self.collect_static_initializers(static_stmt);
         } else if Param::cast(node).is_some() {
             let context = if is_promoted_parameter(node) {
                 ConstExprContext::PromotedPropertyDefault
@@ -332,6 +332,28 @@ impl ConstExprCollector<'_> {
                     self.reporter,
                 );
             }
+        }
+    }
+
+    fn collect_static_initializers(&mut self, static_stmt: StaticStmt<'_>) {
+        for item in static_stmt.expression_items() {
+            let ExprListItem::Expression(ExprNode::Assign(assign)) = item else {
+                continue;
+            };
+            let Some(initializer_node) = assign.right() else {
+                continue;
+            };
+            let Some(initializer) = self.expr_id_for_node(initializer_node.syntax()) else {
+                continue;
+            };
+            lower_const_expr_candidate(
+                self.database,
+                self.module_id,
+                initializer,
+                ConstExprContext::StaticLocalInitializer,
+                initializer_node.syntax().text_range(),
+                self.reporter,
+            );
         }
     }
 

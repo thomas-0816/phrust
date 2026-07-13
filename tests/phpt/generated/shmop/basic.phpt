@@ -1,5 +1,5 @@
 --TEST--
-shmop deterministic in-memory compatibility slice
+shmop host SysV shared-memory compatibility slice
 --EXTENSIONS--
 shmop
 --FILE--
@@ -8,7 +8,8 @@ echo extension_loaded('shmop') ? "loaded\n" : "missing\n";
 echo function_exists('shmop_open') ? "function\n" : "no function\n";
 echo class_exists('Shmop') ? "class\n" : "no class\n";
 
-$key = 0x53484d31;
+$keyFile = tempnam(sys_get_temp_dir(), "phrust-shmop-");
+$key = ftok($keyFile, "S");
 $shm = shmop_open($key, "n", 0600, 16);
 var_dump($shm instanceof Shmop);
 echo shmop_size($shm), "\n";
@@ -28,6 +29,7 @@ $privateB = shmop_open(0, "c", 0600, 4);
 shmop_write($privateA, "test", 0);
 var_dump(shmop_read($privateB, 0, 4) === "test");
 var_dump(shmop_delete($shm));
+@unlink($keyFile);
 ?>
 --EXPECT--
 loaded

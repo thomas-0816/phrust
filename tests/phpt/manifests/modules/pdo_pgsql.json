@@ -4,14 +4,14 @@
   "priority":"data-platform classification",
   "selected_manifest":"tests/phpt/manifests/modules/pdo_pgsql.selected.jsonl",
   "corpus_count":64,
-  "selected_count":2,
-  "pass_count":1,
+  "selected_count":3,
+  "pass_count":2,
   "skip_count":1,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":64,
-  "scope":["extension_loaded(\"pdo_pgsql\")","PDO PostgreSQL driver discovery through pdo_drivers and PDO::getAvailableDrivers","generated Pdo\\\\Pgsql and PDO_PGSql_Ext class metadata","opt-in live pgsql: PDO DSN query and prepared statement smoke when PHRUST_POSTGRES_TEST_DSN is set"],
+  "scope":["extension_loaded(\"pdo_pgsql\")","PDO PostgreSQL driver discovery through pdo_drivers and PDO::getAvailableDrivers","generated Pdo\\\\Pgsql and PDO_PGSql_Ext class metadata","pgsql: host, port, dbname, user, password, and sslmode DSN parsing through PostgresConnectOptions","no-live PostgreSQL PDO constructor failure as PDOException","opt-in live pgsql: PDO DSN query, errmode exception, prepared statement, fetch mode, and transaction smoke when PHRUST_POSTGRES_TEST_DSN is set"],
   "non_scope":["unix socket DSNs","persistent connections and server-version-specific attributes","large objects, notifications, copy helpers, and libpq parity","full PostgreSQL array/json/bytea/cursor metadata parity"],
-  "target_gates":["nix develop -c just phpt-dev-module MODULE=pdo_pgsql","nix develop -c just verify-phpt"],
+  "target_gates":["nix develop -c cargo fmt --all --check","nix develop -c cargo test -p php_runtime pdo_pgsql -- --nocapture","nix develop -c cargo test -p php_runtime pgsql -- --nocapture","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pdo_pgsql"],
   "next_step":"Promote upstream pdo_pgsql statement and type-conversion PHPTs once array/json/bytea/cursor metadata parity is implemented."
 }

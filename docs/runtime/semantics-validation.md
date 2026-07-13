@@ -50,9 +50,9 @@ tests are covered by `ci-rust`, `ci-local`, and the dedicated CI jobs.
 - `.github/workflows/ci.yml` runs `verify-runtime` in the domain-gates matrix;
   the runtime job bootstraps the pinned reference PHP binary before running the
   gate.
-- `scripts/verify/runtime-semantics.sh` remains the local validation script for
-  full Runtime semantics verification, including final docs, PHPT allowlist
-  categories, regression metadata, minimization tooling, and `runtime-phpt-smoke`.
+- `just verify-runtime` is the local validation entry point for full Runtime
+  semantics verification; the legacy `scripts/verify/*.sh` wrappers that
+  duplicated the justfile aggregates were removed.
 
 ## Closure Criteria
 

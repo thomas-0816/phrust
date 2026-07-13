@@ -728,18 +728,22 @@ impl ClassLikeLowerer<'_> {
             .resolver()
             .resolve(&qualified, ResolveContext::ClassLike);
         let name_kind = NameResolver::name_kind(ResolveContext::ClassLike);
-        let resolved = match &result {
-            ResolvedName::FullyQualified(name) => Some(name.canonical(name_kind)),
-            ResolvedName::MaybeRuntimeFallback { namespaced, .. } => {
-                Some(namespaced.canonical(name_kind))
+        let (resolved, resolved_display) = match &result {
+            ResolvedName::FullyQualified(name) => {
+                (Some(name.canonical(name_kind)), Some(name.display()))
             }
-            ResolvedName::Dynamic | ResolvedName::Unresolved => None,
+            ResolvedName::MaybeRuntimeFallback { namespaced, .. } => (
+                Some(namespaced.canonical(name_kind)),
+                Some(namespaced.display()),
+            ),
+            ResolvedName::Dynamic | ResolvedName::Unresolved => (None, None),
         };
-        HirNameResolution::new(
+        HirNameResolution::new_with_display(
             source,
             ResolveContext::ClassLike.as_str(),
             result.classification(),
             resolved,
+            resolved_display,
             None,
         )
     }
@@ -1075,6 +1079,9 @@ fn is_modifier_type_token(token: &TypeToken) -> bool {
 
 fn property_hooks(node: &SyntaxNode) -> Vec<HirPropertyHook> {
     let mut hooks = Vec::new();
+    let property_name = syntax_child_tokens(node)
+        .find(|token| token.kind().name() == "T_VARIABLE")
+        .map(|token| token.text().trim_start_matches('$').to_owned());
     for hook in syntax_child_nodes(node).filter(|node| node.kind().name() == "PROPERTY_HOOK_DECL") {
         let mut kind = None;
         let mut body = HirPropertyHookBody::Block;
@@ -1086,7 +1093,22 @@ fn property_hooks(node: &SyntaxNode) -> Vec<HirPropertyHook> {
             }
         }
         if let Some(kind) = kind {
-            hooks.push(HirPropertyHook::new(kind, hook.text_range(), body));
+            let tokens = descendant_tokens::<TokenView<'_>>(hook)
+                .filter(|token| !token.kind().is_trivia())
+                .collect::<Vec<_>>();
+            let uses_backing_storage = property_name.as_deref().is_some_and(|property_name| {
+                tokens.windows(3).any(|window| {
+                    window[0].text() == "$this"
+                        && window[1].text() == "->"
+                        && window[2].text().trim_start_matches('$') == property_name
+                })
+            });
+            hooks.push(HirPropertyHook::new(
+                kind,
+                hook.text_range(),
+                body,
+                uses_backing_storage,
+            ));
         }
     }
     hooks

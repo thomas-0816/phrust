@@ -14,6 +14,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub struct PhpExecutorOptions {
     pub optimization_level: OptimizationLevel,
+    /// Optimization level owned by the executor's runtime include compiler.
+    pub include_optimization_level: OptimizationLevel,
     pub vm_options: VmOptions,
     /// Export adaptive quickening sites after each execution. Off by
     /// default: the export walks the whole quickening table, which

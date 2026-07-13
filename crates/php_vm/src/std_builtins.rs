@@ -1,6 +1,6 @@
 //! Minimal VM bridge for the standard-library `php_std` builtin ABI.
 
-use php_runtime::{OutputBuffer, RuntimeSourceSpan as VmRuntimeSourceSpan, Value};
+use php_runtime::api::{OutputBuffer, RuntimeSourceSpan as VmRuntimeSourceSpan, Value};
 use php_std::abi::{
     BuiltinFunction, CallArgument, CallContext, RequestContext, ReturnValue, call_builtin,
 };
@@ -69,7 +69,7 @@ pub fn call_php_std_builtin(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_runtime::{PhpString, ReferenceCell, RuntimeContext};
+    use php_runtime::api::{PhpString, ReferenceCell, RuntimeContext};
     use php_std::abi::{BuiltinMetadata, BuiltinResult, RegisteredBuiltin};
 
     fn test_builtin_echo_like(context: &mut CallContext<'_>) -> BuiltinResult {

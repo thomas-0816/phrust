@@ -15,6 +15,19 @@ pub fn normalize_class_name(name: &str) -> String {
     name.trim_start_matches('\\').to_ascii_lowercase()
 }
 
+/// Allocation-free variant of [`normalize_class_name`] for lookup paths:
+/// runtime-supplied names are overwhelmingly already normalized (lowercase,
+/// no root slash), so borrowing them avoids a heap allocation per lookup.
+#[must_use]
+pub fn normalized_class_name(name: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = name.trim_start_matches('\\');
+    if trimmed.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(trimmed.to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(trimmed)
+    }
+}
+
 /// Preserves PHP-visible class spelling while removing a leading root slash.
 #[must_use]
 pub fn display_class_name(name: &str) -> String {
@@ -330,6 +343,24 @@ pub struct IrUnit {
     pub classes: Vec<ClassEntry>,
     /// File/source table.
     pub files: Vec<FileEntry>,
+    /// Top-level functions for linked source files in dependency execution order.
+    ///
+    /// The final entry is the primary file. Single-file units leave this empty
+    /// and execute `entry` directly for backward-compatible serialization.
+    #[serde(default)]
+    pub linked_file_entries: Vec<FunctionId>,
+    /// Index-aligned with `linked_file_entries`: the normalized declaration
+    /// name when explicit resolver metadata requires runtime autoload
+    /// activation before the linked source may execute.
+    #[serde(default, alias = "linked_entry_inferred_declarations")]
+    pub linked_entry_autoload_declarations: Vec<Option<String>>,
+    /// Per-file `declare(strict_types=1)` metadata indexed by [`FileId`].
+    ///
+    /// `strict_types` remains the entry-file compatibility value. Multi-file
+    /// compilation must use this table so dependency methods retain the mode
+    /// of the file that declared them.
+    #[serde(default)]
+    pub file_strict_types: Vec<bool>,
     /// Entry function.
     pub entry: FunctionId,
     /// File-level `declare(strict_types=1)` for the current single-file unit.
@@ -351,10 +382,31 @@ impl IrUnit {
             constant_table: Vec::new(),
             classes: Vec::new(),
             files: Vec::new(),
+            linked_file_entries: Vec::new(),
+            linked_entry_autoload_declarations: Vec::new(),
+            file_strict_types: Vec::new(),
             entry: FunctionId::new(0),
             strict_types: false,
             source_map: IrSourceMap::new(),
         }
+    }
+
+    /// Returns the strict-types mode of the source file containing `span`.
+    #[must_use]
+    pub fn strict_types_for_span(&self, span: IrSpan) -> bool {
+        self.file_strict_types
+            .get(span.file.index())
+            .copied()
+            .unwrap_or(self.strict_types)
+    }
+
+    /// Returns the strict-types mode of the file declaring `function`.
+    #[must_use]
+    pub fn strict_types_for_function(&self, function: FunctionId) -> bool {
+        self.functions
+            .get(function.index())
+            .map(|function| self.strict_types_for_span(function.span))
+            .unwrap_or(self.strict_types)
     }
 }
 

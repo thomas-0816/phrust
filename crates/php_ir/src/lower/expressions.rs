@@ -281,22 +281,15 @@ impl LoweringContext<'_> {
             .module(self.frontend.module().module_id())?;
         let named_constants = self.global_constant_initializer_map();
         if !default.is_const_expr_candidate() {
-            return self
-                .source_text
-                .as_str()
-                .get(default.span().start().to_usize()..default.span().end().to_usize())
-                .and_then(|source| {
-                    named_constant_from_default_source(source, named_constants).or_else(|| {
-                        class_constant_from_default_source(
-                            module,
-                            source,
-                            current_class,
-                            named_constants,
-                            class_constants,
-                            class_parents,
-                        )
-                    })
-                });
+            return constant_from_overlapping_default_expr(
+                self.frontend,
+                module,
+                default,
+                named_constants,
+                current_class,
+                class_constants,
+                class_parents,
+            );
         }
         module
             .const_exprs()
@@ -348,27 +341,6 @@ impl LoweringContext<'_> {
                     class_constants,
                     class_parents,
                 )
-            })
-            .or_else(|| {
-                self.source_text
-                    .as_str()
-                    .get(default.span().start().to_usize()..default.span().end().to_usize())
-                    .and_then(|source| {
-                        named_constant_from_default_source(source, named_constants)
-                            .or_else(|| {
-                                class_constant_from_default_source(
-                                    module,
-                                    source,
-                                    current_class,
-                                    named_constants,
-                                    class_constants,
-                                    class_parents,
-                                )
-                            })
-                            .or_else(|| {
-                                source_constant_from_default_source(source, named_constants)
-                            })
-                    })
             })
     }
 
@@ -801,7 +773,7 @@ impl LoweringContext<'_> {
             .module(self.frontend.module().module_id())?;
         let expression = module.expressions().get(expr)?;
         match expression.kind().clone() {
-            HirExprKind::Variable { name } => Some(DimAssignmentTarget {
+            HirExprKind::Variable { name, .. } => Some(DimAssignmentTarget {
                 local: builder.intern_local(function, local_name(&name)),
                 dims: Vec::new(),
                 append: false,
@@ -926,7 +898,7 @@ impl LoweringContext<'_> {
                     block,
                 })
             }
-            HirExprKind::Variable { name } => {
+            HirExprKind::Variable { name, .. } => {
                 if let Some(callable_name) = zero_arg_variable_call_name(&name) {
                     let callee_local = builder.intern_local(function, callable_name);
                     let callee = builder.alloc_register(function);
@@ -1219,50 +1191,6 @@ impl LoweringContext<'_> {
                 self.lower_yield_from_to_register(builder, site, expr)
             }
             HirExprKind::Missing => {
-                if let Some((function_name, property_local)) =
-                    self.call_dynamic_property_target_from_source_range(range)
-                {
-                    let object = builder.alloc_register(function);
-                    let call = builder.emit(
-                        function,
-                        block,
-                        InstructionKind::CallFunction {
-                            dst: object,
-                            name: normalize_function_name(&function_name),
-                            args: Vec::new(),
-                        },
-                        span,
-                    );
-                    self.add_expr_source_map(builder, function, block, call, expr, span);
-                    let property = builder.alloc_register(function);
-                    let local = builder.intern_local(function, property_local);
-                    let load_property = builder.emit(
-                        function,
-                        block,
-                        InstructionKind::LoadLocal {
-                            dst: property,
-                            local,
-                        },
-                        span,
-                    );
-                    self.add_expr_source_map(builder, function, block, load_property, expr, span);
-                    let dst = builder.alloc_register(function);
-                    let fetch = builder.emit(
-                        function,
-                        block,
-                        InstructionKind::FetchDynamicProperty {
-                            dst,
-                            object: Operand::Register(object),
-                            property: Operand::Register(property),
-                        },
-                        span,
-                    );
-                    self.add_expr_source_map(builder, function, block, fetch, expr, span);
-                    return Some(LoweredExpr {
-                        register: dst,
-                        block,
-                    });
-                }
                 self.unsupported(
                     UnsupportedFeature::HirStatement,
                     range,
@@ -1716,28 +1644,6 @@ impl LoweringContext<'_> {
         block: BlockId,
         member: ExprId,
     ) -> Option<LoweredExpr> {
-        if let Some(inner) = self.simple_braced_dynamic_member_source(member) {
-            if inner.starts_with('$') {
-                let local = builder.intern_local(site.function, local_name(&inner));
-                let dst = builder.alloc_register(site.function);
-                let range = self.span_for(SourceMappedId::from(member));
-                let span = span_from_range(self.file, range);
-                let instruction = builder.emit(
-                    site.function,
-                    block,
-                    InstructionKind::LoadLocal { dst, local },
-                    span,
-                );
-                self.add_expr_source_map(builder, site.function, block, instruction, member, span);
-                return Some(LoweredExpr {
-                    register: dst,
-                    block,
-                });
-            }
-            if literal_constant(&inner).is_some() {
-                return self.lower_literal_to_register(builder, site, &inner);
-            }
-        }
         let module = self
             .frontend
             .database()
@@ -1747,13 +1653,13 @@ impl LoweringContext<'_> {
             HirExprKind::Literal { text } if text.starts_with('$') => {
                 Some(local_name(text).to_owned())
             }
-            HirExprKind::Variable { name } if name.starts_with('$') => {
+            HirExprKind::Variable { name, .. } if name.starts_with('$') => {
                 Some(local_name(name).to_owned())
             }
             HirExprKind::Name { resolution } if resolution.source().starts_with('$') => {
                 Some(local_name(resolution.source()).to_owned())
             }
-            _ => self.dynamic_member_variable_name_from_source(member),
+            _ => None,
         };
         if let Some(variable_name) = variable_name {
             let local = builder.intern_local(site.function, variable_name);
@@ -1773,88 +1679,6 @@ impl LoweringContext<'_> {
             });
         }
         self.lower_expr_to_register(builder, site.function, block, member)
-    }
-
-    fn simple_braced_dynamic_member_source(&self, expr: ExprId) -> Option<String> {
-        let range = self.span_for(SourceMappedId::from(expr));
-        let source = self.source_text.slice(range)?.trim();
-        let inner = source.strip_prefix('{')?.strip_suffix('}')?.trim();
-        if inner.starts_with('$') || literal_constant(inner).is_some() {
-            Some(inner.to_owned())
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn dynamic_member_variable_name_from_source(&self, expr: ExprId) -> Option<String> {
-        let range = self.span_for(SourceMappedId::from(expr));
-        let source = self.source_text.slice(range)?.trim();
-        let marker = source
-            .find("->$")
-            .map(|index| (index, "->$".len()))
-            .or_else(|| source.find("?->$").map(|index| (index, "?->$".len())))?;
-        let rest = &source[marker.0 + marker.1..];
-        let end = rest
-            .bytes()
-            .position(|byte| !(byte == b'_' || byte.is_ascii_alphanumeric()))
-            .unwrap_or(rest.len());
-        let name = &rest[..end];
-        (!name.is_empty()).then(|| name.to_owned())
-    }
-
-    pub(super) fn missing_call_dynamic_property_target_from_source(
-        &self,
-        expr: ExprId,
-    ) -> Option<(String, String)> {
-        let module = self
-            .frontend
-            .database()
-            .module(self.frontend.module().module_id())?;
-        let expression = module.expressions().get(expr)?;
-        if !matches!(
-            expression.kind(),
-            HirExprKind::Missing | HirExprKind::BuiltinCall { .. }
-        ) {
-            return None;
-        }
-        let range = self.span_for(SourceMappedId::from(expr));
-        self.call_dynamic_property_target_from_source_range(range)
-    }
-
-    pub(super) fn call_dynamic_property_target_from_source_range(
-        &self,
-        range: TextRange,
-    ) -> Option<(String, String)> {
-        let mut source = self.source_text.slice(range)?.trim();
-        if (source.starts_with("empty(") || source.starts_with("isset("))
-            && source.ends_with(')')
-            && let Some(open) = source.find('(')
-        {
-            source = source[open + 1..source.len() - 1].trim();
-        }
-        let marker = source
-            .find("()->$")
-            .map(|index| (index, "()->$".len()))
-            .or_else(|| source.find("() ->$").map(|index| (index, "() ->$".len())))?;
-        let function_name = source[..marker.0]
-            .trim_end()
-            .rsplit(|ch: char| !(ch == '_' || ch == '\\' || ch.is_ascii_alphanumeric()))
-            .next()
-            .unwrap_or("");
-        if function_name.is_empty()
-            || !function_name
-                .bytes()
-                .all(|byte| byte == b'_' || byte == b'\\' || byte.is_ascii_alphanumeric())
-        {
-            return None;
-        }
-        let rest = &source[marker.0 + marker.1..];
-        let end = rest
-            .bytes()
-            .position(|byte| !(byte == b'_' || byte.is_ascii_alphanumeric()))
-            .unwrap_or(rest.len());
-        let property_local = &rest[..end];
-        (!property_local.is_empty()).then(|| (function_name.to_owned(), property_local.to_owned()))
     }
 
     pub(super) fn lower_static_access_to_register(
@@ -3584,76 +3408,6 @@ impl LoweringContext<'_> {
         arg: ExprId,
     ) -> Option<LoweredExpr> {
         let dst = builder.alloc_register(site.function);
-        if let Some((function_name, property_local)) = self
-            .missing_call_dynamic_property_target_from_source(arg)
-            .or_else(|| self.missing_call_dynamic_property_target_from_source(site.expr))
-            .or_else(|| self.call_dynamic_property_target_from_source_range(site.range))
-        {
-            let object = builder.alloc_register(site.function);
-            let call = builder.emit(
-                site.function,
-                site.block,
-                InstructionKind::CallFunction {
-                    dst: object,
-                    name: normalize_function_name(&function_name),
-                    args: Vec::new(),
-                },
-                site.span,
-            );
-            self.add_expr_source_map(
-                builder,
-                site.function,
-                site.block,
-                call,
-                site.expr,
-                site.span,
-            );
-            let property = builder.alloc_register(site.function);
-            let local = builder.intern_local(site.function, property_local);
-            let load_property = builder.emit(
-                site.function,
-                site.block,
-                InstructionKind::LoadLocal {
-                    dst: property,
-                    local,
-                },
-                site.span,
-            );
-            self.add_expr_source_map(
-                builder,
-                site.function,
-                site.block,
-                load_property,
-                site.expr,
-                site.span,
-            );
-            let instruction = if name == "isset" {
-                InstructionKind::IssetDynamicProperty {
-                    dst,
-                    object: Operand::Register(object),
-                    property: Operand::Register(property),
-                }
-            } else {
-                InstructionKind::EmptyDynamicProperty {
-                    dst,
-                    object: Operand::Register(object),
-                    property: Operand::Register(property),
-                }
-            };
-            let emitted = builder.emit(site.function, site.block, instruction, site.span);
-            self.add_expr_source_map(
-                builder,
-                site.function,
-                site.block,
-                emitted,
-                site.expr,
-                site.span,
-            );
-            return Some(LoweredExpr {
-                register: dst,
-                block: site.block,
-            });
-        }
         let kind = if let Some(local) = self.variable_local(builder, site.function, arg) {
             if name == "isset" {
                 InstructionKind::IssetLocal { dst, local }
@@ -4703,6 +4457,7 @@ impl LoweringContext<'_> {
             FunctionFlags {
                 is_closure: true,
                 is_static: signature.flags().is_static(),
+                is_generator: signature.flags().is_generator(),
                 ..FunctionFlags::default()
             },
             span,
@@ -5889,7 +5644,7 @@ impl LoweringContext<'_> {
                 .module(self.frontend.module().module_id())?;
             let expression = module.expressions().get(left)?;
             match expression.kind() {
-                HirExprKind::Variable { name } => Some(local_name(name).to_owned()),
+                HirExprKind::Variable { name, .. } => Some(local_name(name).to_owned()),
                 _ => None,
             }
         };
@@ -6098,7 +5853,7 @@ impl LoweringContext<'_> {
             .module(self.frontend.module().module_id())?;
         let expression = module.expressions().get(inner)?;
         match expression.kind() {
-            HirExprKind::Variable { name } => {
+            HirExprKind::Variable { name, .. } => {
                 let local = builder.intern_local(site.function, local_name(name));
                 let dst = builder.alloc_register(site.function);
                 let range = self.span_for(SourceMappedId::from(inner));
@@ -9725,7 +9480,7 @@ impl LoweringContext<'_> {
             .module(self.frontend.module().module_id())?;
         let expression = module.expressions().get(expr)?;
         match expression.kind() {
-            HirExprKind::Variable { name } => {
+            HirExprKind::Variable { name, .. } => {
                 Some(builder.intern_local(function, local_name(name)))
             }
             _ => None,
@@ -10067,24 +9822,12 @@ impl LoweringContext<'_> {
             .module(self.frontend.module().module_id())?;
         let expression = module.expressions().get(expr)?;
         match expression.kind() {
-            HirExprKind::Variable { name } => Some(local_name(name).to_owned()),
+            HirExprKind::Variable { name, .. } => Some(local_name(name).to_owned()),
             _ => None,
         }
     }
 
     pub(super) fn static_property_display_name(&self, expr: ExprId) -> Option<String> {
-        let range = self.span_for(SourceMappedId::from(expr));
-        if let Some(source) = self.source_text.slice(range) {
-            let source = source.trim();
-            if !source.is_empty()
-                && !source.starts_with('$')
-                && source
-                    .bytes()
-                    .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
-            {
-                return Some(local_name(source).to_owned());
-            }
-        }
         self.static_property_name(expr)
     }
 
@@ -10204,28 +9947,19 @@ impl LoweringContext<'_> {
     }
 
     pub(super) fn static_property_test_target(&self, expr: ExprId) -> Option<StaticPropertyTarget> {
-        if let Some(target) = self.static_property_target(expr) {
-            return Some(target);
-        }
+        let mut property = self.static_property_target(expr)?;
         let module = self
             .frontend
             .database()
             .module(self.frontend.module().module_id())?;
         let expression = module.expressions().get(expr)?;
-        let HirExprKind::StaticAccess { target, member } = expression.kind() else {
+        let HirExprKind::StaticAccess { target, .. } = expression.kind() else {
             return None;
         };
-        let source = self
-            .source_text
-            .slice(self.span_for(SourceMappedId::from(expr)))?;
-        if !source.contains("::$") {
-            return None;
+        if let Some(display_name) = self.static_class_display_name((*target)?) {
+            property.class_name = display_name;
         }
-        let member_expr = (*member)?;
-        Some(StaticPropertyTarget {
-            class_name: self.static_class_name((*target)?)?,
-            property: self.static_property_member_name(member_expr)?,
-        })
+        Some(property)
     }
 
     pub(super) fn class_constant_target(&self, expr: ExprId) -> Option<ClassConstantTarget> {
@@ -10654,25 +10388,31 @@ impl LoweringContext<'_> {
             }
             HirExprKind::Name { resolution } => resolution.source().starts_with('$'),
             HirExprKind::PropertyFetch { .. } => false,
-            _ => {
-                let range = self.span_for(SourceMappedId::from(method));
-                self.source_text.slice(range).is_some_and(|source| {
-                    let source = source.trim();
-                    source.starts_with('$')
-                        || source.contains("->$")
-                        || source.contains("->{")
-                        || source.contains("?->$")
-                        || source.contains("?->{")
-                })
-            }
+            _ => true,
         }
     }
 
     pub(super) fn static_access_uses_dynamic_member(&self, expr: ExprId) -> bool {
-        let range = self.span_for(SourceMappedId::from(expr));
-        self.source_text
-            .slice(range)
-            .is_some_and(|source| source.contains("::$"))
+        let Some(module) = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())
+        else {
+            return false;
+        };
+        let Some(expression) = module.expressions().get(expr) else {
+            return false;
+        };
+        let HirExprKind::StaticAccess { member, .. } = expression.kind() else {
+            return false;
+        };
+        let Some(member) = member.and_then(|member| module.expressions().get(member)) else {
+            return false;
+        };
+        !matches!(
+            member.kind(),
+            HirExprKind::Literal { .. } | HirExprKind::Name { .. }
+        )
     }
 
     pub(super) fn property_dim_target(&self, expr: ExprId) -> Option<PropertyDimTarget> {

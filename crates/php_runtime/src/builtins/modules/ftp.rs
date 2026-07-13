@@ -111,7 +111,13 @@ fn builtin_ftp_connect(
     if !context.network_requests_enabled() {
         return Ok(Value::Bool(false));
     }
-    match context.ftp_state().connect(&host, port, timeout) {
+    let allow_configured_live_endpoint = context
+        .env_value("PHRUST_FTP_LIVE_ENDPOINT")
+        .is_some_and(|endpoint| ftp_endpoint_matches(endpoint, &host, port));
+    match context
+        .ftp_state()
+        .connect(&host, port, timeout, allow_configured_live_endpoint)
+    {
         Ok(id) => Ok(Value::Object(ftp_object(id))),
         Err(_) => Ok(Value::Bool(false)),
     }
@@ -730,6 +736,19 @@ fn timeout_arg(name: &str, value: &Value) -> Result<u64, BuiltinError> {
     })
 }
 
+fn ftp_endpoint_matches(endpoint: &str, host: &str, port: u16) -> bool {
+    let (endpoint_host, endpoint_port) = match endpoint.rsplit_once(':') {
+        Some((endpoint_host, endpoint_port)) => {
+            let Ok(endpoint_port) = endpoint_port.parse::<u16>() else {
+                return false;
+            };
+            (endpoint_host, endpoint_port)
+        }
+        None => (endpoint, DEFAULT_FTP_PORT),
+    };
+    endpoint_host == host && endpoint_port == port
+}
+
 fn mode_arg(name: &str, value: Option<&Value>) -> Result<i64, BuiltinError> {
     let mode = match value {
         Some(value) => int_arg(name, value)?,
@@ -819,7 +838,7 @@ fn ftp_object(id: i64) -> ObjectRef {
 
 fn ftp_runtime_class() -> ClassEntry {
     ClassEntry {
-        name: "ftp\\connection".to_owned(),
+        name: "ftp\\connection".to_owned().into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -852,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_loopback_control_channel_uses_fake_server() {
+    fn plain_loopback_control_channel_uses_suppaftp_backend() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake ftp");
         let port = listener.local_addr().expect("local addr").port();
         let server = thread::spawn(move || {

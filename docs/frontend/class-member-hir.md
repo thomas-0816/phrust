@@ -1,6 +1,6 @@
 # Class Member HIR
 
-Work item adds typed member records to the semantic frontend without executing
+The semantic frontend provides typed member records to the semantic frontend without executing
 class semantics.
 
 The `php_semantics` HIR module now stores:

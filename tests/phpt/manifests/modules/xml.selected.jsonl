@@ -5,6 +5,7 @@
 {"path":"tests/phpt/generated/xml/constants-options.phpt"}
 {"path":"tests/phpt/generated/xml/sax-handlers.phpt"}
 {"path":"tests/phpt/generated/xml/parse-into-struct.phpt"}
+{"path":"tests/phpt/generated/xml/libxml-backend-structures.phpt"}
 {"path":"ext/xml/tests/xml_parser_get_option_variation3.phpt"}
 {"path":"ext/xml/tests/xml_parser_set_option_basic.phpt"}
 {"path":"ext/xml/tests/xml_parser_free_deprecated.phpt"}

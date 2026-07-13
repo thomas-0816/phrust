@@ -1,0 +1,177 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "finfo"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "FILEINFO_NONE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_SYMLINK",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_DEVICES",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_MIME_TYPE",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_CONTINUE",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_PRESERVE_ATIME",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_RAW",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_MIME_ENCODING",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_MIME",
+      "value": {
+        "kind": "int",
+        "value": 1040
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_APPLE",
+      "value": {
+        "kind": "int",
+        "value": 2048
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "FILEINFO_EXTENSION",
+      "value": {
+        "kind": "int",
+        "value": 16777216
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "fileinfo",
+        "source": "ext/fileinfo/fileinfo.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "finfo_buffer",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "fileinfo",
+        "source": "ext/fileinfo/fileinfo.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "finfo_close",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "fileinfo",
+        "source": "ext/fileinfo/fileinfo.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "finfo_file",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "fileinfo",
+        "source": "ext/fileinfo/fileinfo.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "finfo_open",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "fileinfo",
+        "source": "ext/fileinfo/fileinfo.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "fileinfo"
+        }
+      ],
+      "name": "finfo_set_flags",
+      "visibility": "php"
+    }
+  ],
+  "name": "fileinfo",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

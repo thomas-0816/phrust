@@ -1,8 +1,8 @@
-//! Bounded XML/DOM/SimpleXML runtime support.
+//! XML/DOM/SimpleXML runtime support.
 //!
-//! This module intentionally implements a strict, local XML subset. It rejects
-//! DTDs, processing instructions, and unresolved entities instead of fetching
-//! external resources or guessing.
+//! Parsing is routed through the libxml2-backed `xml_backend` module. This file
+//! keeps the current PHP wrapper objects and small tree projection used by DOM,
+//! SimpleXML, XMLReader, XMLWriter, and ext/xml entry points.
 
 use crate::{
     ArrayKey, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString, Value, normalize_class_name,
@@ -19,6 +19,8 @@ const XML_READER_ATTRIBUTE_INDEX: &str = "__phrust_xml_reader_attribute_index";
 const XML_WRITER_BUFFER: &str = "__phrust_xml_writer_buffer";
 const XML_WRITER_STACK: &str = "__phrust_xml_writer_stack";
 const XML_WRITER_OPEN_TAG: &str = "__phrust_xml_writer_open_tag";
+const XML_WRITER_URI: &str = "__phrust_xml_writer_uri";
+const DOM_ENTRIES: &str = "__entries";
 pub const XML_PARSER_START_ELEMENT_HANDLER: &str = "__phrust_xml_start_element_handler";
 pub const XML_PARSER_END_ELEMENT_HANDLER: &str = "__phrust_xml_end_element_handler";
 pub const XML_PARSER_CHARACTER_DATA_HANDLER: &str = "__phrust_xml_character_data_handler";
@@ -75,7 +77,7 @@ pub struct XmlReaderEvent {
 
 /// Parses a strict XML document using no external resources.
 pub fn parse_xml(input: &str) -> Result<XmlDocument, String> {
-    Parser::new(input).parse_document()
+    crate::xml_backend::parse_document(input)
 }
 
 pub fn serialize_document(document: &XmlDocument) -> String {
@@ -150,8 +152,9 @@ pub fn element_text(element: &XmlElement) -> String {
 fn simplexml_element_text(element: &XmlElement) -> String {
     let mut out = String::new();
     for child in &element.children {
-        if let XmlNode::Text(text) = child {
-            out.push_str(text);
+        match child {
+            XmlNode::Text(text) | XmlNode::Cdata(text) => out.push_str(text),
+            XmlNode::Element(_) | XmlNode::Comment(_) => {}
         }
     }
     out
@@ -321,7 +324,7 @@ fn struct_tag_name(name: &str, case_folding: bool) -> String {
 
 pub fn empty_internal_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: normalize_class_name(name),
+        name: normalize_class_name(name).into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -336,11 +339,28 @@ pub fn empty_internal_class(name: &str) -> ClassEntry {
 }
 
 pub fn new_dom_document() -> ObjectRef {
-    ObjectRef::new_with_display_name(&empty_internal_class("DOMDocument"), "DOMDocument")
+    let object =
+        ObjectRef::new_with_display_name(&empty_internal_class("DOMDocument"), "DOMDocument");
+    object.set_property("nodeName", Value::string("#document"));
+    object.set_property("nodeValue", Value::Null);
+    object.set_property("textContent", Value::string(Vec::<u8>::new()));
+    object.set_property("documentElement", Value::Null);
+    object.set_property("firstChild", Value::Null);
+    object.set_property("lastChild", Value::Null);
+    object.set_property(
+        "childNodes",
+        Value::Object(new_dom_node_list_values(Vec::new())),
+    );
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
+    object
 }
 
 pub fn new_dom_node() -> ObjectRef {
-    ObjectRef::new_with_display_name(&empty_internal_class("DOMNode"), "DOMNode")
+    let object = ObjectRef::new_with_display_name(&empty_internal_class("DOMNode"), "DOMNode");
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
+    object
 }
 
 pub fn new_dom_text(text: &str) -> ObjectRef {
@@ -351,6 +371,8 @@ pub fn new_dom_text(text: &str) -> ObjectRef {
     object.set_property("data", Value::string(text.as_bytes().to_vec()));
     object.set_property(XML_NODE_KIND, Value::string(b"text".to_vec()));
     object.set_property(XML_TEXT_STORAGE, Value::string(text.as_bytes().to_vec()));
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
     object
 }
 
@@ -363,6 +385,8 @@ pub fn new_dom_comment(text: &str) -> ObjectRef {
     object.set_property("data", Value::string(text.as_bytes().to_vec()));
     object.set_property(XML_NODE_KIND, Value::string(b"comment".to_vec()));
     object.set_property(XML_TEXT_STORAGE, Value::string(text.as_bytes().to_vec()));
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
     object
 }
 
@@ -377,6 +401,8 @@ pub fn new_dom_cdata_section(text: &str) -> ObjectRef {
     object.set_property("data", Value::string(text.as_bytes().to_vec()));
     object.set_property(XML_NODE_KIND, Value::string(b"cdata".to_vec()));
     object.set_property(XML_TEXT_STORAGE, Value::string(text.as_bytes().to_vec()));
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
     object
 }
 
@@ -387,6 +413,16 @@ pub fn new_dom_attr(name: &str, value: &str) -> ObjectRef {
     object.set_property("nodeName", Value::string(name.as_bytes().to_vec()));
     object.set_property("nodeValue", Value::string(value.as_bytes().to_vec()));
     object.set_property("textContent", Value::string(value.as_bytes().to_vec()));
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
+    object
+}
+
+pub fn new_dom_xpath(document: &ObjectRef) -> ObjectRef {
+    let object = ObjectRef::new_with_display_name(&empty_internal_class("DOMXPath"), "DOMXPath");
+    if let Some(document) = document_from_object(document) {
+        object.set_property(XML_STORAGE, document_value(&document));
+    }
     object
 }
 
@@ -397,6 +433,67 @@ pub fn new_xml_parser() -> ObjectRef {
 pub fn new_dom_element(element: &XmlElement) -> ObjectRef {
     let object =
         ObjectRef::new_with_display_name(&empty_internal_class("DOMElement"), "DOMElement");
+    set_dom_element_object(&object, element);
+    object
+}
+
+pub fn new_dom_named_node_map(attributes: &[(String, String)]) -> ObjectRef {
+    let object = ObjectRef::new_with_display_name(
+        &empty_internal_class("DOMNamedNodeMap"),
+        "DOMNamedNodeMap",
+    );
+    let mut entries = PhpArray::new();
+    for (index, (name, value)) in attributes
+        .iter()
+        .filter(|(name, _)| !is_namespace_declaration_name(name))
+        .enumerate()
+    {
+        let attribute = Value::Object(new_dom_attr(name, value));
+        object.set_property(index.to_string(), attribute.clone());
+        object.set_property(name.clone(), attribute.clone());
+        entries.insert(ArrayKey::Int(index as i64), attribute);
+    }
+    object.set_property("length", Value::Int(entries.len() as i64));
+    object.set_property(DOM_ENTRIES, Value::Array(entries));
+    object
+}
+
+fn new_dom_node_from_xml_node(node: &XmlNode) -> Value {
+    match node {
+        XmlNode::Element(element) => Value::Object(new_dom_element(element)),
+        XmlNode::Text(text) => Value::Object(new_dom_text(text)),
+        XmlNode::Comment(text) => Value::Object(new_dom_comment(text)),
+        XmlNode::Cdata(text) => Value::Object(new_dom_cdata_section(text)),
+    }
+}
+
+fn is_namespace_declaration_name(name: &str) -> bool {
+    name == "xmlns" || name.starts_with("xmlns:")
+}
+
+fn new_dom_node_list_values(values: Vec<Value>) -> ObjectRef {
+    let object =
+        ObjectRef::new_with_display_name(&empty_internal_class("DOMNodeList"), "DOMNodeList");
+    let mut entries = PhpArray::new();
+    for (index, node) in values.into_iter().enumerate() {
+        object.set_property(index.to_string(), node.clone());
+        entries.insert(ArrayKey::Int(index as i64), node);
+    }
+    object.set_property("length", Value::Int(entries.len() as i64));
+    object.set_property(DOM_ENTRIES, Value::Array(entries));
+    object
+}
+
+pub fn new_dom_node_list(elements: Vec<XmlElement>) -> ObjectRef {
+    new_dom_node_list_values(
+        elements
+            .into_iter()
+            .map(|element| Value::Object(new_dom_element(&element)))
+            .collect(),
+    )
+}
+
+fn set_dom_element_base_properties(object: &ObjectRef, element: &XmlElement) {
     object.set_property("nodeName", Value::string(element.name.as_bytes().to_vec()));
     object.set_property("tagName", Value::string(element.name.as_bytes().to_vec()));
     object.set_property(
@@ -414,21 +511,29 @@ pub fn new_dom_element(element: &XmlElement) -> ObjectRef {
         }),
     );
     object.set_property(XML_NODE_PATH, Value::string(Vec::<u8>::new()));
-    object
-}
-
-pub fn new_dom_node_list(elements: Vec<XmlElement>) -> ObjectRef {
-    let object =
-        ObjectRef::new_with_display_name(&empty_internal_class("DOMNodeList"), "DOMNodeList");
-    let mut entries = PhpArray::new();
-    for (index, element) in elements.into_iter().enumerate() {
-        let node = Value::Object(new_dom_element(&element));
-        object.set_property(index.to_string(), node.clone());
-        entries.append(node);
-    }
-    object.set_property("length", Value::Int(entries.len() as i64));
-    object.set_property("__entries", Value::Array(entries));
-    object
+    object.set_property(
+        "attributes",
+        Value::Object(new_dom_named_node_map(&element.attributes)),
+    );
+    let child_values: Vec<Value> = element
+        .children
+        .iter()
+        .map(new_dom_node_from_xml_node)
+        .collect();
+    object.set_property(
+        "firstChild",
+        child_values.first().cloned().unwrap_or(Value::Null),
+    );
+    object.set_property(
+        "lastChild",
+        child_values.last().cloned().unwrap_or(Value::Null),
+    );
+    object.set_property(
+        "childNodes",
+        Value::Object(new_dom_node_list_values(child_values)),
+    );
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
 }
 
 pub fn new_simplexml_element(element: &XmlElement) -> ObjectRef {
@@ -624,20 +729,13 @@ pub fn new_xml_writer() -> ObjectRef {
     object.set_property(XML_WRITER_BUFFER, Value::string(Vec::<u8>::new()));
     object.set_property(XML_WRITER_STACK, Value::Array(PhpArray::new()));
     object.set_property(XML_WRITER_OPEN_TAG, Value::Bool(false));
+    object.set_property(XML_WRITER_URI, Value::Null);
     object
 }
 
 pub fn dom_document_load_xml(object: &ObjectRef, xml: &str) -> Result<Value, String> {
     let document = parse_xml(xml)?;
-    object.set_property(XML_STORAGE, document_value(&document));
-    object.set_property(
-        "documentElement",
-        Value::Object(new_dom_element(&document.root)),
-    );
-    object.set_property(
-        "textContent",
-        Value::string(element_text(&document.root).into_bytes()),
-    );
+    set_dom_document_object(object, &document);
     Ok(Value::Bool(true))
 }
 
@@ -684,15 +782,7 @@ pub fn dom_document_append_child(object: &ObjectRef, child: &ObjectRef) -> Value
     let document = XmlDocument {
         root: child_element.clone(),
     };
-    object.set_property(XML_STORAGE, document_value(&document));
-    object.set_property(
-        "documentElement",
-        Value::Object(new_dom_element(&child_element)),
-    );
-    object.set_property(
-        "textContent",
-        Value::string(element_text(&child_element).into_bytes()),
-    );
+    set_dom_document_object(object, &document);
     Value::Object(new_dom_element(&child_element))
 }
 
@@ -713,9 +803,41 @@ pub fn dom_document_get_elements_by_tag_name(object: &ObjectRef, name: &str) -> 
         .unwrap_or_else(|| Value::Object(new_dom_node_list(Vec::new())))
 }
 
+pub fn dom_document_get_elements_by_tag_name_ns(
+    object: &ObjectRef,
+    namespace_uri: &str,
+    local_name: &str,
+) -> Value {
+    document_from_object(object)
+        .map(|document| {
+            Value::Object(new_dom_node_list(elements_by_tag_name_ns(
+                &document.root,
+                namespace_uri,
+                local_name,
+            )))
+        })
+        .unwrap_or_else(|| Value::Object(new_dom_node_list(Vec::new())))
+}
+
 pub fn dom_element_get_elements_by_tag_name(object: &ObjectRef, name: &str) -> Value {
     element_from_object(object)
         .map(|element| Value::Object(new_dom_node_list(elements_by_tag_name(&element, name))))
+        .unwrap_or_else(|| Value::Object(new_dom_node_list(Vec::new())))
+}
+
+pub fn dom_element_get_elements_by_tag_name_ns(
+    object: &ObjectRef,
+    namespace_uri: &str,
+    local_name: &str,
+) -> Value {
+    element_from_object(object)
+        .map(|element| {
+            Value::Object(new_dom_node_list(elements_by_tag_name_ns(
+                &element,
+                namespace_uri,
+                local_name,
+            )))
+        })
         .unwrap_or_else(|| Value::Object(new_dom_node_list(Vec::new())))
 }
 
@@ -731,6 +853,25 @@ pub fn dom_element_get_attribute(object: &ObjectRef, name: &str) -> Value {
         .unwrap_or_else(|| Value::string(Vec::<u8>::new()))
 }
 
+pub fn dom_element_has_attribute(object: &ObjectRef, name: &str) -> Value {
+    Value::Bool(
+        element_from_object(object)
+            .is_some_and(|element| element.attributes.iter().any(|(attr, _)| attr == name)),
+    )
+}
+
+pub fn dom_element_get_attribute_node(object: &ObjectRef, name: &str) -> Value {
+    element_from_object(object)
+        .and_then(|element| {
+            element
+                .attributes
+                .into_iter()
+                .find(|(attr, _)| attr == name)
+                .map(|(attr, value)| Value::Object(new_dom_attr(&attr, &value)))
+        })
+        .unwrap_or(Value::Null)
+}
+
 pub fn dom_element_set_attribute(object: &ObjectRef, name: &str, value: &str) -> Value {
     let Some(mut element) = element_from_object(object) else {
         return Value::Null;
@@ -740,6 +881,15 @@ pub fn dom_element_set_attribute(object: &ObjectRef, name: &str, value: &str) ->
     } else {
         element.attributes.push((name.to_owned(), value.to_owned()));
     }
+    set_dom_element_object(object, &element);
+    Value::Null
+}
+
+pub fn dom_element_remove_attribute(object: &ObjectRef, name: &str) -> Value {
+    let Some(mut element) = element_from_object(object) else {
+        return Value::Null;
+    };
+    element.attributes.retain(|(attr, _)| attr != name);
     set_dom_element_object(object, &element);
     Value::Null
 }
@@ -782,13 +932,41 @@ pub fn dom_element_append_child(object: &ObjectRef, child: &ObjectRef) -> Value 
 }
 
 pub fn dom_node_list_item(object: &ObjectRef, index: i64) -> Value {
-    let Some(Value::Array(entries)) = object.get_property("__entries") else {
+    let Some(Value::Array(entries)) = object.get_property(DOM_ENTRIES) else {
         return Value::Null;
     };
     entries
         .get(&ArrayKey::Int(index))
         .cloned()
         .unwrap_or(Value::Null)
+}
+
+pub fn dom_named_node_map_item(object: &ObjectRef, index: i64) -> Value {
+    dom_node_list_item(object, index)
+}
+
+pub fn dom_named_node_map_get_named_item(object: &ObjectRef, name: &str) -> Value {
+    object.get_property(name).unwrap_or(Value::Null)
+}
+
+pub fn dom_xpath_query(object: &ObjectRef, expression: &str) -> Value {
+    let Some(document) = document_from_object(object) else {
+        return Value::Object(new_dom_node_list(Vec::new()));
+    };
+    crate::xml_backend::parse_string(&serialize_document(&document))
+        .and_then(|document| document.xpath_elements(expression))
+        .map(|elements| Value::Object(new_dom_node_list(elements)))
+        .unwrap_or_else(|_| Value::Bool(false))
+}
+
+pub fn dom_xpath_evaluate(object: &ObjectRef, expression: &str) -> Value {
+    let Some(document) = document_from_object(object) else {
+        return Value::Bool(false);
+    };
+    crate::xml_backend::parse_string(&serialize_document(&document))
+        .and_then(|document| document.xpath_string(expression))
+        .map(|value| Value::string(value.into_bytes()))
+        .unwrap_or_else(|_| Value::Bool(false))
 }
 
 pub fn simplexml_load_string(xml: &str) -> Result<Value, String> {
@@ -1361,6 +1539,15 @@ pub fn xml_writer_open_memory(object: &ObjectRef) -> Value {
     object.set_property(XML_WRITER_BUFFER, Value::string(Vec::<u8>::new()));
     object.set_property(XML_WRITER_STACK, Value::Array(PhpArray::new()));
     object.set_property(XML_WRITER_OPEN_TAG, Value::Bool(false));
+    object.set_property(XML_WRITER_URI, Value::Null);
+    Value::Bool(true)
+}
+
+pub fn xml_writer_open_uri(object: &ObjectRef, uri: &str) -> Value {
+    object.set_property(XML_WRITER_BUFFER, Value::string(Vec::<u8>::new()));
+    object.set_property(XML_WRITER_STACK, Value::Array(PhpArray::new()));
+    object.set_property(XML_WRITER_OPEN_TAG, Value::Bool(false));
+    object.set_property(XML_WRITER_URI, Value::string(uri.as_bytes().to_vec()));
     Value::Bool(true)
 }
 
@@ -1477,8 +1664,32 @@ pub fn xml_writer_end_document(object: &ObjectRef) -> Value {
     Value::Bool(true)
 }
 
-pub fn xml_writer_output_memory(object: &ObjectRef) -> Value {
-    Value::string(writer_buffer(object).into_bytes())
+pub fn xml_writer_output_memory(object: &ObjectRef, flush: bool) -> Value {
+    let buffer = writer_buffer(object);
+    if flush {
+        object.set_property(XML_WRITER_BUFFER, Value::string(Vec::<u8>::new()));
+    }
+    Value::string(buffer.into_bytes())
+}
+
+pub fn xml_writer_flush_memory(object: &ObjectRef, empty: bool) -> Value {
+    xml_writer_output_memory(object, empty)
+}
+
+pub fn xml_writer_uri(object: &ObjectRef) -> Option<String> {
+    match object.get_property(XML_WRITER_URI) {
+        Some(Value::String(value)) if !value.as_bytes().is_empty() => Some(value.to_string_lossy()),
+        _ => None,
+    }
+}
+
+pub fn xml_writer_pending_bytes(object: &ObjectRef) -> Vec<u8> {
+    close_writer_open_tag(object);
+    writer_buffer(object).into_bytes()
+}
+
+pub fn xml_writer_clear_buffer(object: &ObjectRef) {
+    object.set_property(XML_WRITER_BUFFER, Value::string(Vec::<u8>::new()));
 }
 
 fn collect_text(element: &XmlElement, out: &mut String) {
@@ -1493,17 +1704,27 @@ fn collect_text(element: &XmlElement, out: &mut String) {
 }
 
 fn set_dom_element_object(object: &ObjectRef, element: &XmlElement) {
-    object.set_property("nodeName", Value::string(element.name.as_bytes().to_vec()));
-    object.set_property("tagName", Value::string(element.name.as_bytes().to_vec()));
-    let text = element_text(element);
-    object.set_property("textContent", Value::string(text.as_bytes().to_vec()));
-    object.set_property("nodeValue", Value::string(text.into_bytes()));
+    set_dom_element_base_properties(object, element);
+}
+
+fn set_dom_document_object(object: &ObjectRef, document: &XmlDocument) {
+    let document_element = Value::Object(new_dom_element(&document.root));
+    object.set_property(XML_STORAGE, document_value(document));
+    object.set_property("documentElement", document_element.clone());
+    object.set_property("firstChild", document_element.clone());
+    object.set_property("lastChild", document_element.clone());
     object.set_property(
-        XML_STORAGE,
-        document_value(&XmlDocument {
-            root: element.clone(),
-        }),
+        "childNodes",
+        Value::Object(new_dom_node_list_values(vec![document_element])),
     );
+    object.set_property(
+        "textContent",
+        Value::string(element_text(&document.root).into_bytes()),
+    );
+    object.set_property("nodeName", Value::string("#document"));
+    object.set_property("nodeValue", Value::Null);
+    object.set_property("parentNode", Value::Null);
+    object.set_property("ownerDocument", Value::Null);
 }
 
 fn elements_by_tag_name(element: &XmlElement, name: &str) -> Vec<XmlElement> {
@@ -1521,6 +1742,50 @@ fn collect_elements_by_tag_name(element: &XmlElement, name: &str, out: &mut Vec<
             collect_elements_by_tag_name(child, name, out);
         }
     }
+}
+
+fn elements_by_tag_name_ns(
+    element: &XmlElement,
+    namespace_uri: &str,
+    local_name: &str,
+) -> Vec<XmlElement> {
+    let mut out = Vec::new();
+    collect_elements_by_tag_name_ns(
+        element,
+        namespace_uri,
+        local_name,
+        &BTreeMap::new(),
+        &mut out,
+    );
+    out
+}
+
+fn collect_elements_by_tag_name_ns(
+    element: &XmlElement,
+    namespace_uri: &str,
+    local_name: &str,
+    inherited_namespaces: &BTreeMap<String, String>,
+    out: &mut Vec<XmlElement>,
+) {
+    let namespaces = element_namespace_context(element, inherited_namespaces);
+    let element_namespace = namespace_uri_for_name(&element.name, &namespaces, false);
+    let element_local = local_name_for_qualified_name(&element.name);
+    if (namespace_uri == "*" || element_namespace == namespace_uri)
+        && (local_name == "*" || element_local == local_name)
+    {
+        out.push(element.clone());
+    }
+    for child in &element.children {
+        if let XmlNode::Element(child) = child {
+            collect_elements_by_tag_name_ns(child, namespace_uri, local_name, &namespaces, out);
+        }
+    }
+}
+
+fn local_name_for_qualified_name(name: &str) -> &str {
+    name.rsplit_once(':')
+        .map(|(_, local)| local)
+        .unwrap_or(name)
 }
 
 fn push_reader_events(element: &XmlElement, events: &mut Vec<XmlReaderEvent>) {
@@ -2081,224 +2346,6 @@ fn escape_text(value: &str, attribute: bool) -> String {
     out
 }
 
-struct Parser<'a> {
-    input: &'a str,
-    pos: usize,
-}
-
-impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self { input, pos: 0 }
-    }
-
-    fn parse_document(mut self) -> Result<XmlDocument, String> {
-        self.skip_ws();
-        if self.starts_with("<?xml") {
-            self.consume_until("?>")?;
-            self.skip_ws();
-        }
-        if self.starts_with("<!") {
-            return Err(
-                "E_PHP_RUNTIME_XML_UNSUPPORTED_DECLARATION: DTD and declarations are unsupported"
-                    .to_owned(),
-            );
-        }
-        let root = self.parse_element()?;
-        self.skip_ws();
-        if !self.eof() {
-            return Err(
-                "E_PHP_RUNTIME_XML_TRAILING_CONTENT: XML document has trailing content".to_owned(),
-            );
-        }
-        Ok(XmlDocument { root })
-    }
-
-    fn parse_element(&mut self) -> Result<XmlElement, String> {
-        self.expect("<")?;
-        if self.starts_with("/") {
-            return Err("E_PHP_RUNTIME_XML_UNEXPECTED_CLOSE: unexpected closing tag".to_owned());
-        }
-        if self.starts_with("!") || self.starts_with("?") {
-            return Err(
-                "E_PHP_RUNTIME_XML_UNSUPPORTED_DECLARATION: declarations are unsupported"
-                    .to_owned(),
-            );
-        }
-        let name = self.parse_name()?;
-        let mut attributes = Vec::new();
-        loop {
-            self.skip_ws();
-            if self.starts_with("/>") {
-                self.pos += 2;
-                return Ok(XmlElement {
-                    name,
-                    attributes,
-                    children: Vec::new(),
-                });
-            }
-            if self.starts_with(">") {
-                self.pos += 1;
-                break;
-            }
-            let attr = self.parse_name()?;
-            self.skip_ws();
-            self.expect("=")?;
-            self.skip_ws();
-            let value = self.parse_quoted_value()?;
-            attributes.push((attr, value));
-        }
-        let mut children = Vec::new();
-        loop {
-            if self.eof() {
-                return Err(format!(
-                    "E_PHP_RUNTIME_XML_UNCLOSED_ELEMENT: element {name} is not closed"
-                ));
-            }
-            if self.starts_with("</") {
-                self.pos += 2;
-                let close = self.parse_name()?;
-                self.skip_ws();
-                self.expect(">")?;
-                if close != name {
-                    return Err(format!(
-                        "E_PHP_RUNTIME_XML_MISMATCHED_CLOSE: expected </{name}> got </{close}>"
-                    ));
-                }
-                return Ok(XmlElement {
-                    name,
-                    attributes,
-                    children,
-                });
-            }
-            if self.starts_with("<") {
-                children.push(XmlNode::Element(self.parse_element()?));
-            } else {
-                let text = self.parse_text()?;
-                if !text.is_empty() {
-                    children.push(XmlNode::Text(text));
-                }
-            }
-        }
-    }
-
-    fn parse_name(&mut self) -> Result<String, String> {
-        let start = self.pos;
-        while let Some(ch) = self.peek_char() {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.') {
-                self.pos += ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if self.pos == start {
-            return Err("E_PHP_RUNTIME_XML_EXPECTED_NAME: expected XML name".to_owned());
-        }
-        Ok(self.input[start..self.pos].to_owned())
-    }
-
-    fn parse_quoted_value(&mut self) -> Result<String, String> {
-        let Some(quote) = self.peek_char() else {
-            return Err("E_PHP_RUNTIME_XML_EXPECTED_QUOTE: expected quoted attribute".to_owned());
-        };
-        if quote != '"' && quote != '\'' {
-            return Err("E_PHP_RUNTIME_XML_EXPECTED_QUOTE: expected quoted attribute".to_owned());
-        }
-        self.pos += 1;
-        let start = self.pos;
-        while let Some(ch) = self.peek_char() {
-            if ch == quote {
-                let raw = &self.input[start..self.pos];
-                self.pos += 1;
-                return decode_entities(raw);
-            }
-            self.pos += ch.len_utf8();
-        }
-        Err("E_PHP_RUNTIME_XML_UNCLOSED_ATTRIBUTE: attribute is not closed".to_owned())
-    }
-
-    fn parse_text(&mut self) -> Result<String, String> {
-        let start = self.pos;
-        while let Some(ch) = self.peek_char() {
-            if ch == '<' {
-                break;
-            }
-            self.pos += ch.len_utf8();
-        }
-        decode_entities(&self.input[start..self.pos])
-    }
-
-    fn consume_until(&mut self, marker: &str) -> Result<(), String> {
-        let Some(index) = self.input[self.pos..].find(marker) else {
-            return Err(
-                "E_PHP_RUNTIME_XML_UNCLOSED_DECLARATION: XML declaration is not closed".to_owned(),
-            );
-        };
-        self.pos += index + marker.len();
-        Ok(())
-    }
-
-    fn skip_ws(&mut self) {
-        while let Some(ch) = self.peek_char() {
-            if ch.is_whitespace() {
-                self.pos += ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn expect(&mut self, token: &str) -> Result<(), String> {
-        if self.starts_with(token) {
-            self.pos += token.len();
-            Ok(())
-        } else {
-            Err(format!(
-                "E_PHP_RUNTIME_XML_EXPECTED_TOKEN: expected {token}"
-            ))
-        }
-    }
-
-    fn starts_with(&self, token: &str) -> bool {
-        self.input[self.pos..].starts_with(token)
-    }
-
-    fn eof(&self) -> bool {
-        self.pos >= self.input.len()
-    }
-
-    fn peek_char(&self) -> Option<char> {
-        self.input[self.pos..].chars().next()
-    }
-}
-
-fn decode_entities(raw: &str) -> Result<String, String> {
-    let mut out = String::new();
-    let mut rest = raw;
-    while let Some(index) = rest.find('&') {
-        out.push_str(&rest[..index]);
-        let after = &rest[index + 1..];
-        let Some(end) = after.find(';') else {
-            return Err("E_PHP_RUNTIME_XML_UNCLOSED_ENTITY: entity is not closed".to_owned());
-        };
-        let entity = &after[..end];
-        match entity {
-            "amp" => out.push('&'),
-            "lt" => out.push('<'),
-            "gt" => out.push('>'),
-            "quot" => out.push('"'),
-            "apos" => out.push('\''),
-            _ => {
-                return Err(format!(
-                    "E_PHP_RUNTIME_XML_UNSUPPORTED_ENTITY: entity &{entity}; is unsupported"
-                ));
-            }
-        }
-        rest = &after[end + 1..];
-    }
-    out.push_str(rest);
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2322,7 +2369,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_entities() {
         let error = parse_xml("<root>&xxe;</root>").expect_err("entity must fail");
-        assert!(error.contains("E_PHP_RUNTIME_XML_UNSUPPORTED_ENTITY"));
+        assert!(error.contains("E_PHP_RUNTIME_XML_PARSE_ERROR"));
     }
 
     #[test]

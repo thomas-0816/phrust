@@ -1,1 +1,2 @@
 {"path":"tests/phpt/generated/ldap/basic.phpt","reason":"Covers deterministic LDAP facade discovery, options, empty results, errors, TLS failure, and escaping without requiring a live LDAP service."}
+{"path":"tests/phpt/generated/ldap/live-endpoint.phpt","reason":"Covers opt-in ldap3-backed connect, bind, search, entry traversal, attribute fetch, and unbind against an explicitly configured live LDAP server."}

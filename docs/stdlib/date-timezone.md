@@ -2,7 +2,7 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work items 06.34 and 06.35 start Date/Time with a Rust-owned abstraction rather
+Date/Time starts with a Rust-owned abstraction rather
 than timelib FFI. The runtime exposes a deterministic timezone registry,
 request-local default timezone state, core date functions, and DateTime-like
 runtime object helpers through:

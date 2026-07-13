@@ -1,0 +1,325 @@
+{
+  "capabilities": [],
+  "classes": [
+    {
+      "kind": "class",
+      "name": "JsonException"
+    },
+    {
+      "kind": "interface",
+      "name": "JsonSerializable"
+    }
+  ],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "JSON_BIGINT_AS_STRING",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_HEX_TAG",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_HEX_AMP",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_HEX_APOS",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_HEX_QUOT",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_FORCE_OBJECT",
+      "value": {
+        "kind": "int",
+        "value": 16
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_NUMERIC_CHECK",
+      "value": {
+        "kind": "int",
+        "value": 32
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_DEPTH",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_NONE",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_STATE_MISMATCH",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_CTRL_CHAR",
+      "value": {
+        "kind": "int",
+        "value": 3
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_SYNTAX",
+      "value": {
+        "kind": "int",
+        "value": 4
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_UTF8",
+      "value": {
+        "kind": "int",
+        "value": 5
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_RECURSION",
+      "value": {
+        "kind": "int",
+        "value": 6
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_INF_OR_NAN",
+      "value": {
+        "kind": "int",
+        "value": 7
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_UNSUPPORTED_TYPE",
+      "value": {
+        "kind": "int",
+        "value": 8
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_INVALID_PROPERTY_NAME",
+      "value": {
+        "kind": "int",
+        "value": 9
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_UTF16",
+      "value": {
+        "kind": "int",
+        "value": 10
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_ERROR_NON_BACKED_ENUM",
+      "value": {
+        "kind": "int",
+        "value": 11
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_OBJECT_AS_ARRAY",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_PRETTY_PRINT",
+      "value": {
+        "kind": "int",
+        "value": 128
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_PRESERVE_ZERO_FRACTION",
+      "value": {
+        "kind": "int",
+        "value": 1024
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_PARTIAL_OUTPUT_ON_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 512
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_THROW_ON_ERROR",
+      "value": {
+        "kind": "int",
+        "value": 4194304
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_UNESCAPED_SLASHES",
+      "value": {
+        "kind": "int",
+        "value": 64
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_UNESCAPED_UNICODE",
+      "value": {
+        "kind": "int",
+        "value": 256
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_UNESCAPED_LINE_TERMINATORS",
+      "value": {
+        "kind": "int",
+        "value": 2048
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_INVALID_UTF8_IGNORE",
+      "value": {
+        "kind": "int",
+        "value": 1048576
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "JSON_INVALID_UTF8_SUBSTITUTE",
+      "value": {
+        "kind": "int",
+        "value": 2097152
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "json",
+        "source": "ext/json/json.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "json"
+        }
+      ],
+      "name": "json_decode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "json",
+        "source": "ext/json/json.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "json"
+        }
+      ],
+      "name": "json_encode",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "json",
+        "source": "ext/json/json.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "json"
+        }
+      ],
+      "name": "json_last_error",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "json",
+        "source": "ext/json/json.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "json"
+        }
+      ],
+      "name": "json_last_error_msg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "json",
+        "source": "ext/json/json.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "json"
+        }
+      ],
+      "name": "json_validate",
+      "visibility": "php"
+    }
+  ],
+  "name": "json",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

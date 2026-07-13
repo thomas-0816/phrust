@@ -1,0 +1,204 @@
+{
+  "capabilities": [],
+  "classes": [],
+  "constants": [
+    {
+      "deprecation": null,
+      "name": "READLINE_LIB",
+      "value": {
+        "kind": "string",
+        "value": "phrust"
+      }
+    }
+  ],
+  "dependencies": [],
+  "enabled_by_default": true,
+  "functions": [
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_add_history",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_callback_handler_install",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_callback_handler_remove",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_callback_read_char",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_clear_history",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_completion_function",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_info",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_list_history",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_on_new_line",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_read_history",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_redisplay",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "readline",
+        "source": "ext/readline/readline.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "readline"
+        }
+      ],
+      "name": "readline_write_history",
+      "visibility": "php"
+    }
+  ],
+  "name": "readline",
+  "schema_version": 1,
+  "state_slot": null,
+  "version": "8.5.7"
+}

@@ -33,3 +33,4 @@
 {"path":"tests/phpt/generated/standard.arrays/array-unique-smoke.phpt"}
 {"path":"tests/phpt/generated/standard.arrays/range-smoke.phpt"}
 {"path":"tests/phpt/generated/standard.arrays/sort-deterministic-smoke.phpt"}
+{"path":"tests/phpt/generated/standard.arrays/array-walk-by-ref-mutation.phpt"}

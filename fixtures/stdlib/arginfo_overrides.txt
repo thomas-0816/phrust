@@ -1,3 +1,4 @@
 # Manual deterministic overrides for scripts/stdlib/generate_arginfo.py.
-# Format: name=<function> return=<type> required=<count> reason=<short-id>
+# Format: name=<function> return=<type> required=<count> alias_of=<function> reason=<short-id>
 name=strlen return=int reason=historical-smoke-anchor
+name=read_exif_data alias_of=exif_read_data reason=php-exif-legacy-alias

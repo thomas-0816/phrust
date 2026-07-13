@@ -1,6 +1,6 @@
 # Standard library Array Sorting Functions
 
-Work item implements deterministic MVP sorting helpers:
+The standard library implements deterministic MVP sorting helpers:
 
 - `sort`, `rsort`
 - `asort`, `arsort`
