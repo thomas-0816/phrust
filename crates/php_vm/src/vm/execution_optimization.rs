@@ -97,7 +97,6 @@ impl Vm {
         *cached_scope = Some(scope);
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn maybe_write_cranelift_clif_dump(
         &self,
         compiled: &CompiledUnit,
@@ -118,14 +117,12 @@ impl Vm {
         let _ = fs::write(path, result.clif);
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_jit_compile_budget_spent(&self, compile_time_nanos: u64) {
         self.tiering
             .borrow_mut()
             .record_jit_compiled_function(compile_time_nanos);
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_jit_compile_failure_for_key(&self, key: JitFunctionKey) {
         if !self.options.jit_blacklist.enabled() {
             return;
@@ -147,7 +144,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_jit_side_exit_for_key(
         &self,
         key: JitFunctionKey,

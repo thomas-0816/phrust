@@ -28,3 +28,34 @@ hashes, target triple, and exact Cranelift CPU-feature identity. Reports under
 inventory. New alternate-executor references are rejected immediately. A path
 must be removed from the allowlist in the same prompt that removes its last
 legacy reference. Prompt 14 requires both allowlist categories to be empty.
+
+## Prompt 1 alternate-emitter removal
+
+The former handwritten native emitter and its generated stencil artifacts are
+deleted. `nix develop -c just cranelift-only-no-alternate-emitter` rejects any
+new reference to that implementation and builds both product binaries through
+the Cranelift dependency graph.
+
+## Prompt 2 mandatory compiler boundary
+
+Cranelift is a non-optional dependency and there is no product backend or
+native-off selector. The two supported profiles are:
+
+- `baseline`: eager, non-speculative Cranelift compilation with adaptive
+  optimization disabled;
+- `default` (and its `fast` alias): optimizing Cranelift compilation.
+
+`Vm::execute` is the product native entry boundary. Until later prompts make
+lowering exhaustive, an unsupported entry fails setup with
+`E_NATIVE_UNSUPPORTED_LOWERING`, the precise IR `InstructionKind`, and its
+byte span. It never resumes through the retained in-crate test oracle.
+
+Run the mandatory graph and release-symbol gate with:
+
+```sh
+nix develop -c just cranelift-only-mandatory
+```
+
+The gate checks every product binary's Cargo graph, builds the release server,
+requires Cranelift compiler symbols, and rejects retired emitter or interpreter
+entry symbols in that binary.

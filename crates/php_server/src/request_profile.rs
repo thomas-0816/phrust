@@ -965,10 +965,6 @@ fn native_json(counters: &VmCounters) -> Value {
         ("jit_compile_time_nanos", counters.jit_compile_time_nanos),
         ("jit_compiled", counters.jit_compiled),
         ("jit_executed", counters.jit_executed),
-        (
-            "native_platform_unavailable",
-            counters.native_platform_unavailable,
-        ),
         ("jit_bailouts", counters.jit_bailouts),
         ("jit_side_exits", counters.jit_side_exits),
         ("jit_guard_failures", counters.jit_guard_failures),
@@ -1370,7 +1366,6 @@ mod tests {
         counters.jit_compile_attempts = 1;
         counters.jit_compiled = 1;
         counters.jit_executed = 1;
-        counters.native_platform_unavailable = 0;
         counters
             .jit_compile_descriptors
             .push(php_vm::api::JitCompileDescriptor {
@@ -1525,10 +1520,6 @@ mod tests {
         assert_eq!(
             profile["attribution"]["native"]["jit_mode"],
             Value::from("cranelift")
-        );
-        assert_eq!(
-            profile["attribution"]["native"]["native_platform_unavailable"],
-            Value::from(0)
         );
         assert_eq!(
             profile["attribution"]["native"]["jit_compile_descriptors"][0]["target_isa"],

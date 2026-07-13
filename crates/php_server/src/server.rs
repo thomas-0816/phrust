@@ -497,7 +497,8 @@ mod tests {
         UploadRegistry,
     };
     use php_vm::api::{
-        DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode, QuickeningMode,
+        DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, NativeOptimizationPolicy,
+        QuickeningMode,
     };
     use std::{
         path::PathBuf,
@@ -669,7 +670,6 @@ mod tests {
             disable_quickening: true,
             disable_inline_caches: true,
             disable_builtin_ic: true,
-            disable_jit: true,
             disable_include_o2: true,
             disable_dense_jump_threading: true,
         };
@@ -692,7 +692,10 @@ mod tests {
         assert_eq!(options.vm_options.quickening, QuickeningMode::Off);
         assert_eq!(options.vm_options.inline_caches, InlineCacheMode::Off);
         assert!(!options.vm_options.internal_function_dispatch_cache);
-        assert_eq!(options.vm_options.jit, JitMode::Off);
+        assert_eq!(
+            options.vm_options.native_optimization,
+            NativeOptimizationPolicy::Baseline
+        );
         assert!(!options.vm_options.tiering.enabled);
         assert_eq!(options.include_optimization_level, OptimizationLevel::O0);
         assert_eq!(

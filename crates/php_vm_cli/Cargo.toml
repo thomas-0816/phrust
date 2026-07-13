@@ -7,7 +7,6 @@ rust-version.workspace = true
 
 [features]
 default = ["runtime-telemetry"]
-jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift", "php_vm/jit-cranelift"]
 runtime-telemetry = [
     "php_server/runtime-telemetry",
     "php_std/runtime-telemetry",
@@ -30,7 +29,7 @@ php_bytecode_cache = { path = "../php_bytecode_cache", version = "0.0.0", defaul
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_executor = { path = "../php_executor", version = "0.0.0", default-features = false }
 php_ir = { path = "../php_ir", version = "0.0.0" }
-php_jit = { path = "../php_jit", version = "0.0.0", optional = true }
+php_jit = { path = "../php_jit", version = "0.0.0" }
 php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
 php_perf = { path = "../php_perf", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }

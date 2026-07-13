@@ -168,15 +168,7 @@ impl PhpExecutor {
             self.options.vm_options.clone(),
             self.worker_state.clone(),
         );
-        #[cfg(feature = "jit-cranelift")]
-        {
-            vm.prewarm_cranelift(&compiled.executable_unit())
-        }
-        #[cfg(not(feature = "jit-cranelift"))]
-        {
-            let _ = (vm, compiled);
-            0
-        }
+        vm.prewarm_cranelift(&compiled.executable_unit())
     }
 
     /// Compiles and executes source in one step.
@@ -283,7 +275,8 @@ mod tests {
     use php_optimizer::OptimizationLevel;
     use php_runtime::api::RuntimeContext;
     use php_vm::api::{
-        ExecutionFormat, InlineCacheMode, JitMode, QuickeningMode, SuperinstructionMode,
+        ExecutionFormat, InlineCacheMode, NativeOptimizationPolicy, QuickeningMode,
+        SuperinstructionMode,
     };
 
     #[test]
@@ -313,7 +306,10 @@ mod tests {
             executor.options.vm_options.inline_caches,
             InlineCacheMode::On
         );
-        assert_eq!(executor.options.vm_options.jit, JitMode::Off);
+        assert_eq!(
+            executor.options.vm_options.native_optimization,
+            NativeOptimizationPolicy::Baseline
+        );
     }
 
     #[test]
@@ -800,14 +796,13 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "jit-cranelift")]
     #[test]
     fn execute_compiled_reuses_worker_cranelift_compile_cache() {
         let mut options = PhpExecutorOptions::managed_fast_runtime();
         // Exercise the production Auto path and reuse the worker-owned native
         // handle on the second request.
         options.vm_options.execution_format = ExecutionFormat::Auto;
-        options.vm_options.jit = JitMode::Cranelift;
+        options.vm_options.native_optimization = NativeOptimizationPolicy::Optimizing;
         options.vm_options.tiering.jit_eager = true;
         let executor = PhpExecutor::with_options(options);
         let compiled = executor
@@ -839,12 +834,11 @@ mod tests {
         assert!(second.jit_compile_cache_hits > 0, "{second:?}");
     }
 
-    #[cfg(feature = "jit-cranelift")]
     #[test]
     fn bounded_cranelift_prewarm_populates_cache_without_executing_script() {
         let mut options = PhpExecutorOptions::managed_fast_runtime();
         options.vm_options.execution_format = ExecutionFormat::Auto;
-        options.vm_options.jit = JitMode::Cranelift;
+        options.vm_options.native_optimization = NativeOptimizationPolicy::Optimizing;
         options.vm_options.tiering.jit_eager = true;
         let executor = PhpExecutor::with_options(options);
         let compiled = executor

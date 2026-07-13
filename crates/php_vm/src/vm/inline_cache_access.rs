@@ -90,7 +90,11 @@ impl UnitInlineCacheSite {
 
 impl Vm {
     pub(super) fn method_call_inline_cache_enabled(&self) -> bool {
-        self.options.inline_caches.enabled() || matches!(self.options.jit, JitMode::Cranelift)
+        self.options.inline_caches.enabled()
+            || matches!(
+                self.options.native_optimization,
+                NativeOptimizationPolicy::Optimizing
+            )
     }
 
     pub(super) fn lookup_function_call_inline_cache(

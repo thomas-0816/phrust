@@ -2,7 +2,7 @@ use super::*;
 use crate::api::{IncludeCache, IncludeLoader};
 use crate::experimental::{InlineCacheMode, QuickeningMode, TieringOptions};
 use php_ir::{
-    FunctionFlags, IrBuilder, IrConstant, IrSpan, Operand, RegId, UnitId,
+    FunctionFlags, IrBuilder, IrConstant, IrReturnType, IrSpan, Operand, RegId, UnitId,
     instruction::InstructionKind,
 };
 use php_runtime::api::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
@@ -6122,7 +6122,7 @@ fn export_persistent_function_callsites_reports_monomorphic_entry_unit_sites() {
         quickening: QuickeningMode::On,
         inline_caches: InlineCacheMode::On,
         superinstructions: SuperinstructionMode::On,
-        jit: JitMode::Cranelift,
+        native_optimization: NativeOptimizationPolicy::Optimizing,
         ..VmOptions::default()
     });
     let result = vm.execute(lowering.unit);
@@ -10230,44 +10230,6 @@ fn adaptive_tiny_unit_setup_keeps_larger_units_fast() {
     assert!(counters.quickening_attempts > 0, "{counters:?}");
 }
 
-#[cfg(not(feature = "jit-cranelift"))]
-#[test]
-fn managed_native_platform_unavailable_keeps_interpreter_fast_paths() {
-    let source = "<?php function native_default_leaf(int $a, int $b): int { return $a + $b; } for ($i = 0; $i < 12; $i = $i + 1) { echo native_default_leaf($i, 2); }";
-    let result = execute_source_with_options(
-        source,
-        VmOptions {
-            collect_counters: true,
-            collect_profile_spans: false,
-            collect_layout_source_attribution: true,
-            execution_format: ExecutionFormat::Ir,
-            quickening: QuickeningMode::On,
-            inline_caches: InlineCacheMode::On,
-            jit: JitMode::Cranelift,
-            // This test isolates the unavailable Cranelift tier. On aarch64,
-            // No alternate native emitter may satisfy the generic native
-            // execution counter here.
-            tiering: TieringOptions {
-                function_entry_threshold: 1,
-                ..TieringOptions::default()
-            },
-            ..VmOptions::default()
-        },
-    );
-
-    assert!(result.status.is_success(), "{:?}", result.status);
-    assert_eq!(result.output.as_bytes(), b"2345678910111213");
-    let counters = result.counters.expect("counters");
-    assert_eq!(counters.jit_mode, "cranelift");
-    assert!(counters.native_candidates > 0, "{counters:?}");
-    assert!(counters.native_platform_unavailable > 0, "{counters:?}");
-    assert_eq!(counters.native_compiled_regions, 0, "{counters:?}");
-    assert_eq!(counters.native_executions, 0, "{counters:?}");
-    assert!(counters.quickening_attempts > 0, "{counters:?}");
-    assert!(counters.inline_cache_observations > 0, "{counters:?}");
-}
-
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn jit_int_leaf_hot_loop_executes_after_warmup() {
     let source = "<?php function perf_jit_add(int $a, int $b): int { return $a + $b; } $sum = 0; for ($i = 0; $i < 12; $i++) { $sum = $sum + perf_jit_add($i, 2); } echo $sum;";
@@ -10277,7 +10239,7 @@ fn jit_int_leaf_hot_loop_executes_after_warmup() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             // This test proves the Cranelift tier compiles and executes; the
             // This fixture isolates Cranelift's scalar-int lowering.
             ..VmOptions::default()
@@ -10293,7 +10255,6 @@ fn jit_int_leaf_hot_loop_executes_after_warmup() {
     assert_eq!(counters.jit_bailouts, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn dense_cranelift_entry_marshals_direct_callee_slots() {
     let source = "<?php function dense_jit_add(int $a, int $b): int { return $a + $b; } $sum = 0; for ($i = 0; $i < 16; $i++) { $sum += dense_jit_add($i, 2); } echo $sum;";
@@ -10304,7 +10265,7 @@ fn dense_cranelift_entry_marshals_direct_callee_slots() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             execution_format: ExecutionFormat::Bytecode,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             ..VmOptions::default()
         },
     );
@@ -10318,7 +10279,6 @@ fn dense_cranelift_entry_marshals_direct_callee_slots() {
     );
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_default_tiering_keeps_cold_function_interpreted() {
     let source = "<?php function perf_jit_add(int $a, int $b): int { return $a + $b; } echo perf_jit_add(1, 2);";
@@ -10328,7 +10288,7 @@ fn cranelift_default_tiering_keeps_cold_function_interpreted() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             ..VmOptions::default()
         },
     );
@@ -10341,7 +10301,6 @@ fn cranelift_default_tiering_keeps_cold_function_interpreted() {
     assert!(counters.jit_tiering_cold_functions > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_threshold_tiering_compiles_hot_function() {
     let source = "<?php function perf_jit_add(int $a, int $b): int { return $a + $b; } $sum = 0; for ($i = 0; $i < 4; $i++) { $sum += perf_jit_add($i, 2); } echo $sum;";
@@ -10351,7 +10310,7 @@ fn cranelift_threshold_tiering_compiles_hot_function() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             jit_threshold: 2,
             tiering: TieringOptions {
                 function_entry_threshold: 2,
@@ -10370,7 +10329,6 @@ fn cranelift_threshold_tiering_compiles_hot_function() {
     assert!(counters.jit_tiering_hot_functions > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_eager_tiering_compiles_first_call_for_tests() {
     let source = "<?php function perf_jit_add(int $a, int $b): int { return $a + $b; } echo perf_jit_add(5, 7);";
@@ -10380,7 +10338,7 @@ fn cranelift_eager_tiering_compiles_first_call_for_tests() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             jit_threshold: 1,
             tiering: TieringOptions {
                 jit_eager: true,
@@ -10398,7 +10356,6 @@ fn cranelift_eager_tiering_compiles_first_call_for_tests() {
     assert!(counters.jit_tiering_eager_functions > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_compile_budget_rejection_falls_back_to_interpreter() {
     let source = "<?php function perf_jit_add(int $a, int $b): int { return $a + $b; } echo perf_jit_add(5, 7);";
@@ -10408,7 +10365,7 @@ fn cranelift_compile_budget_rejection_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             jit_threshold: 1,
             tiering: TieringOptions {
                 jit_eager: true,
@@ -10427,7 +10384,6 @@ fn cranelift_compile_budget_rejection_falls_back_to_interpreter() {
     assert!(counters.jit_tiering_budget_rejections > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_inline_arithmetic_executes_native_and_counts_fast_paths() {
     let source = "<?php function perf_jit_add_mul(int $a): int { return ($a + 2) * 3; } echo perf_jit_add_mul(4);";
@@ -10437,7 +10393,7 @@ fn cranelift_inline_arithmetic_executes_native_and_counts_fast_paths() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10462,7 +10418,6 @@ fn cranelift_inline_arithmetic_executes_native_and_counts_fast_paths() {
     assert!(counters.jit_compile_time_nanos > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_same_unit_wrapper_stays_native_across_direct_call() {
     let source = "<?php function perf_native_increment(int $value): int { return $value + 1; } function perf_native_wrapper(int $value): int { return perf_native_increment($value); } echo perf_native_wrapper(41);";
@@ -10472,7 +10427,7 @@ fn cranelift_same_unit_wrapper_stays_native_across_direct_call() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10489,7 +10444,6 @@ fn cranelift_same_unit_wrapper_stays_native_across_direct_call() {
     assert_eq!(counters.jit_bailouts, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_record_lookup_executes_native_and_counts_fast_hit() {
     let source = "<?php function perf_record_lookup(array $m, string $k) { return $m[$k]; } $m = [\"host\" => \"db.local\", \"port\" => 5432]; echo perf_record_lookup($m, \"host\"), \":\", perf_record_lookup($m, \"port\");";
@@ -10499,7 +10453,7 @@ fn cranelift_record_lookup_executes_native_and_counts_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10517,7 +10471,6 @@ fn cranelift_record_lookup_executes_native_and_counts_fast_hit() {
     assert_eq!(counters.record_lookup_layout_exits, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_record_lookup_key_miss_side_exits_and_resumes_interpreter() {
     // The missing key must side-exit and resume through the interpreter,
@@ -10529,7 +10482,7 @@ fn cranelift_record_lookup_key_miss_side_exits_and_resumes_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10553,7 +10506,6 @@ fn cranelift_record_lookup_key_miss_side_exits_and_resumes_interpreter() {
     assert_eq!(counters.record_lookup_fast_hits, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_record_lookup_layout_exit_falls_back_for_non_record_array() {
     // A packed (non-record) array fails the record-shape guard; the
@@ -10565,7 +10517,7 @@ fn cranelift_record_lookup_layout_exit_falls_back_for_non_record_array() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10580,7 +10532,6 @@ fn cranelift_record_lookup_layout_exit_falls_back_for_non_record_array() {
     assert_eq!(counters.record_lookup_fast_hits, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_record_lookup_reference_slot_side_exits() {
     // A reference-holding slot violates the read-only guard; the
@@ -10592,7 +10543,7 @@ fn cranelift_record_lookup_reference_slot_side_exits() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10607,7 +10558,6 @@ fn cranelift_record_lookup_reference_slot_side_exits() {
     assert_eq!(counters.record_lookup_fast_hits, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_packed_array_fetch_executes_native_and_counts_fast_hit() {
     let source = "<?php function perf_packed_fetch(array $xs, int $i): int { return $xs[$i]; } $xs = [10, 20, 30]; echo perf_packed_fetch($xs, 1);";
@@ -10617,7 +10567,7 @@ fn cranelift_packed_array_fetch_executes_native_and_counts_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10640,7 +10590,6 @@ fn cranelift_packed_array_fetch_executes_native_and_counts_fast_hit() {
     assert_eq!(counters.packed_fetch_layout_exits, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_packed_array_fetch_bounds_exit_falls_back_to_interpreter() {
     let source = "<?php function perf_packed_fetch_bounds(array $xs, int $i): int { return $xs[$i]; } echo perf_packed_fetch_bounds([10], 4);";
@@ -10650,7 +10599,7 @@ fn cranelift_packed_array_fetch_bounds_exit_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -10660,7 +10609,7 @@ fn cranelift_packed_array_fetch_bounds_exit_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10686,7 +10635,6 @@ fn cranelift_packed_array_fetch_bounds_exit_falls_back_to_interpreter() {
     assert_eq!(counters.jit_slow_path_calls, 1, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_packed_array_fetch_layout_exit_falls_back_for_mixed_array() {
     let source = "<?php function perf_packed_fetch_mixed(array $xs, int $i): int { return $xs[$i]; } $xs = [0 => 11, 'name' => 12]; echo perf_packed_fetch_mixed($xs, 0);";
@@ -10696,7 +10644,7 @@ fn cranelift_packed_array_fetch_layout_exit_falls_back_for_mixed_array() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -10706,7 +10654,7 @@ fn cranelift_packed_array_fetch_layout_exit_falls_back_for_mixed_array() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10727,7 +10675,6 @@ fn cranelift_packed_array_fetch_layout_exit_falls_back_for_mixed_array() {
     assert_eq!(counters.jit_slow_path_calls, 1, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_packed_foreach_sum_executes_native_and_counts_fast_hit() {
     let source = "<?php function perf_packed_foreach_sum(array $xs): int { $sum = 0; foreach ($xs as $x) { $sum += $x; } return $sum; } echo perf_packed_foreach_sum([10, 20, 30]);";
@@ -10737,7 +10684,7 @@ fn cranelift_packed_foreach_sum_executes_native_and_counts_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10765,7 +10712,6 @@ fn cranelift_packed_foreach_sum_executes_native_and_counts_fast_hit() {
     assert_eq!(counters.jit_slow_path_calls, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_packed_foreach_sum_layout_exit_falls_back_for_mixed_element() {
     let source = "<?php function perf_packed_foreach_sum_mixed(array $xs): int { $sum = 0; foreach ($xs as $x) { $sum += $x; } return $sum; } echo perf_packed_foreach_sum_mixed([10, \"20\", 30]);";
@@ -10775,7 +10721,7 @@ fn cranelift_packed_foreach_sum_layout_exit_falls_back_for_mixed_element() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -10785,7 +10731,7 @@ fn cranelift_packed_foreach_sum_layout_exit_falls_back_for_mixed_element() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10814,7 +10760,6 @@ fn cranelift_packed_foreach_sum_layout_exit_falls_back_for_mixed_element() {
     assert_eq!(counters.jit_slow_path_calls, 1, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_packed_foreach_sum_overflow_exit_falls_back_to_interpreter() {
     let source = "<?php function perf_packed_foreach_sum_overflow(array $xs): int { $sum = 0; foreach ($xs as $x) { $sum += $x; } return $sum; } echo perf_packed_foreach_sum_overflow([9223372036854775807, 1]);";
@@ -10824,7 +10769,7 @@ fn cranelift_packed_foreach_sum_overflow_exit_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -10834,7 +10779,7 @@ fn cranelift_packed_foreach_sum_overflow_exit_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10861,7 +10806,6 @@ fn cranelift_packed_foreach_sum_overflow_exit_falls_back_to_interpreter() {
     assert_eq!(counters.jit_slow_path_calls, 1, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_known_strlen_executes_native_and_counts_fast_hit() {
     let source = "<?php function perf_known_strlen(string $s): int { return strlen($s); } echo perf_known_strlen(\"hello\");";
@@ -10871,7 +10815,7 @@ fn cranelift_known_strlen_executes_native_and_counts_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10891,7 +10835,6 @@ fn cranelift_known_strlen_executes_native_and_counts_fast_hit() {
     assert_eq!(counters.known_call_slow_calls, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_known_strlen_guard_exit_preserves_type_error() {
     let source = "<?php function perf_known_strlen_guard($s): int { return strlen($s); } try { echo perf_known_strlen_guard([]); } catch (TypeError $e) { echo \"type-error\"; }";
@@ -10901,7 +10844,7 @@ fn cranelift_known_strlen_guard_exit_preserves_type_error() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -10911,7 +10854,7 @@ fn cranelift_known_strlen_guard_exit_preserves_type_error() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10936,7 +10879,6 @@ fn cranelift_known_strlen_guard_exit_preserves_type_error() {
     assert_eq!(counters.jit_slow_path_calls, 1, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_known_count_executes_for_packed_and_mixed_arrays() {
     let source = "<?php function perf_known_count(array $xs): int { return count($xs); } echo perf_known_count([10, 20, 30]), \":\", perf_known_count([\"a\" => 1, 4 => 2]);";
@@ -10946,7 +10888,7 @@ fn cranelift_known_count_executes_for_packed_and_mixed_arrays() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10966,7 +10908,6 @@ fn cranelift_known_count_executes_for_packed_and_mixed_arrays() {
     assert_eq!(counters.known_call_slow_calls, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_string_concat_executes_native_and_counts_fast_hit() {
     let source = "<?php function perf_string_concat(string $a, string $b): string { return $a . $b; } echo perf_string_concat(\"hello\", \"-world\");";
@@ -10976,7 +10917,7 @@ fn cranelift_string_concat_executes_native_and_counts_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -10997,7 +10938,6 @@ fn cranelift_string_concat_executes_native_and_counts_fast_hit() {
     assert_eq!(counters.jit_slow_path_calls, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_string_concat_rejects_string_int_without_fast_hit() {
     let source = "<?php function perf_string_int_concat(string $a, int $b): string { return $a . $b; } echo perf_string_int_concat(\"id-\", 42);";
@@ -11007,7 +10947,7 @@ fn cranelift_string_concat_rejects_string_int_without_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -11017,7 +10957,7 @@ fn cranelift_string_concat_rejects_string_int_without_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11038,7 +10978,6 @@ fn cranelift_string_concat_rejects_string_int_without_fast_hit() {
     assert_eq!(counters.string_concat_fast_path_misses, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_string_concat_rejects_object_to_string_without_fast_hit() {
     let source = "<?php class PerfConcatObject { public function __toString(): string { return 'object'; } } function perf_object_concat($a, $b): string { return $a . $b; } echo perf_object_concat(new PerfConcatObject(), '-tail');";
@@ -11048,7 +10987,7 @@ fn cranelift_string_concat_rejects_object_to_string_without_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -11058,7 +10997,7 @@ fn cranelift_string_concat_rejects_object_to_string_without_fast_hit() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11079,7 +11018,6 @@ fn cranelift_string_concat_rejects_object_to_string_without_fast_hit() {
     assert_eq!(counters.string_concat_fast_path_misses, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_helper_overflow_status_falls_back_to_interpreter() {
     let source = "<?php function perf_jit_overflow(int $a): int { return $a + 1; } echo perf_jit_overflow(9223372036854775807);";
@@ -11089,7 +11027,7 @@ fn cranelift_helper_overflow_status_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -11099,7 +11037,7 @@ fn cranelift_helper_overflow_status_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11128,7 +11066,6 @@ fn cranelift_helper_overflow_status_falls_back_to_interpreter() {
     assert_eq!(counters.jit_fast_path_hits, 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_type_switch_side_exits_do_not_blacklist_from_tiny_sample() {
     let source = r#"<?php
@@ -11144,7 +11081,7 @@ echo perf_jit_unstable_types(4), "\n";
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -11154,7 +11091,7 @@ echo perf_jit_unstable_types(4), "\n";
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11183,7 +11120,6 @@ echo perf_jit_unstable_types(4), "\n";
     assert!(counters.jit_blacklist_reasons.is_empty(), "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_blacklist_can_be_disabled_for_debugging() {
     let source = r#"<?php
@@ -11199,7 +11135,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             jit_blacklist: JitBlacklistMode::Off,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
@@ -11222,7 +11158,6 @@ echo perf_jit_unstable_types_debug(4), "\n";
     assert!(counters.jit_blacklist_reasons.is_empty(), "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_constant_return_executes_native_after_abi_check() {
     let source = "<?php function perf_const(): int { return 42; } echo perf_const();";
@@ -11232,7 +11167,7 @@ fn cranelift_constant_return_executes_native_after_abi_check() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -11253,7 +11188,6 @@ fn cranelift_constant_return_executes_native_after_abi_check() {
     assert!(counters.jit_compile_time_nanos > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_compile_cache_reuses_same_function() {
     let source = "<?php function perf_const(): int { return 42; } echo perf_const(); echo perf_const(); echo perf_const();";
@@ -11263,7 +11197,7 @@ fn cranelift_compile_cache_reuses_same_function() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 jit_eager: true,
                 function_entry_threshold: 1,
@@ -11291,7 +11225,6 @@ fn cranelift_compile_cache_reuses_same_function() {
     assert!(counters.jit_code_generations > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_compile_cache_rejects_changed_ir_and_abi() {
     let mut cache = JitRuntimeState::default();
@@ -11306,7 +11239,7 @@ fn cranelift_compile_cache_rejects_changed_ir_and_abi() {
     let handle = php_jit::JitFunctionHandle::metadata_only(
         1,
         "function.perf_const".to_owned(),
-        php_jit::JitBackend::CraneliftExperiment,
+        php_jit::CraneliftCompilerIdentity,
     );
     cache.insert_compile_cache(base.clone(), handle, 1);
 
@@ -11330,7 +11263,6 @@ fn cranelift_compile_cache_rejects_changed_ir_and_abi() {
     );
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_compile_cache_keeps_layout_independent_handle_across_epoch() {
     let mut cache = JitRuntimeState::default();
@@ -11345,7 +11277,7 @@ fn cranelift_compile_cache_keeps_layout_independent_handle_across_epoch() {
     let handle = php_jit::JitFunctionHandle::metadata_only(
         1,
         "function.perf_const".to_owned(),
-        php_jit::JitBackend::CraneliftExperiment,
+        php_jit::CraneliftCompilerIdentity,
     );
     cache.insert_compile_cache(key.clone(), handle, 1);
 
@@ -11355,7 +11287,6 @@ fn cranelift_compile_cache_keeps_layout_independent_handle_across_epoch() {
     ));
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn jit_rejected_leaf_falls_back_to_interpreter() {
     let source = "<?php function perf_jit_reject($value): int { $items = []; $items[] = strlen($value); return $items[0]; } $sum = 0; for ($i = 0; $i < 8; $i++) { $sum = $sum + perf_jit_reject('abcd'); } echo $sum;";
@@ -11365,7 +11296,7 @@ fn jit_rejected_leaf_falls_back_to_interpreter() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             ..VmOptions::default()
         },
     );
@@ -11379,7 +11310,6 @@ fn jit_rejected_leaf_falls_back_to_interpreter() {
     assert!(counters.jit_bailouts > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn jit_on_off_output_is_identical() {
     let source = "<?php function perf_jit_add(int $a, int $b): int { return $a + $b; } $sum = 0; for ($i = 0; $i < 10; $i++) { $sum = $sum + perf_jit_add($i, 3); } echo $sum;";
@@ -11389,7 +11319,7 @@ fn jit_on_off_output_is_identical() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             ..VmOptions::default()
         },
     );
@@ -11399,7 +11329,7 @@ fn jit_on_off_output_is_identical() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             // Compare interpreter and Cranelift specifically.
             ..VmOptions::default()
         },
@@ -12159,7 +12089,6 @@ fn method_call_profiles_magic_call_fallback() {
     assert!(json.contains("\"missing_declared_method\""), "{json}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_method_direct_call_hits_after_initial_fallback() {
     let source = "<?php class PerfDirectMethodTest { public function value(int $x): int { return $x + 2; } } $object = new PerfDirectMethodTest(); $sum = 0; for ($i = 0; $i < 8; $i++) { $sum += $object->value($i); } echo $sum;";
@@ -12169,7 +12098,7 @@ fn cranelift_method_direct_call_hits_after_initial_fallback() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -12186,7 +12115,6 @@ fn cranelift_method_direct_call_hits_after_initial_fallback() {
     assert!(counters.method_ic_hits > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_method_direct_call_subclass_receiver_falls_back() {
     let source = "<?php class PerfDirectBaseTest { public function value(int $x): int { return $x + 1; } } class PerfDirectChildTest extends PerfDirectBaseTest { public function value(int $x): int { return $x + 10; } } $objects = [new PerfDirectBaseTest(), new PerfDirectChildTest(), new PerfDirectBaseTest()]; $sum = 0; foreach ($objects as $i => $object) { $sum += $object->value($i); } echo $sum;";
@@ -12196,7 +12124,7 @@ fn cranelift_method_direct_call_subclass_receiver_falls_back() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -12213,7 +12141,6 @@ fn cranelift_method_direct_call_subclass_receiver_falls_back() {
     assert!(counters.method_ic_guard_failures > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_method_direct_call_magic_path_stays_fallback() {
     let source = "<?php class PerfDirectMagicTest { public function __call(string $name, array $args): int { return strlen($name) + $args[0]; } } $object = new PerfDirectMagicTest(); echo $object->missing(5);";
@@ -12223,7 +12150,7 @@ fn cranelift_method_direct_call_magic_path_stays_fallback() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -12239,7 +12166,6 @@ fn cranelift_method_direct_call_magic_path_stays_fallback() {
     assert!(counters.direct_call_fallbacks > 0, "{counters:?}");
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[test]
 fn cranelift_method_direct_call_propagates_callee_exception() {
     let source = "<?php class PerfDirectThrowerTest { public int $calls = 0; public function fail(): int { $this->calls = $this->calls + 1; if ($this->calls > 1) { throw new Exception(\"performance-direct-method\"); } return $this->calls; } } $object = new PerfDirectThrowerTest(); for ($i = 0; $i < 2; $i++) { echo $object->fail(), \"\\n\"; }";
@@ -12249,7 +12175,7 @@ fn cranelift_method_direct_call_propagates_callee_exception() {
             collect_counters: true,
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
-            jit: JitMode::Cranelift,
+            native_optimization: NativeOptimizationPolicy::Optimizing,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -22899,6 +22825,45 @@ fn manual_return_unit(value: IrConstant) -> php_ir::IrUnit {
     );
     builder.set_entry(function);
     builder.finish()
+}
+
+#[test]
+fn baseline_and_default_policies_invoke_mandatory_native_entry() {
+    let mut unit = manual_return_unit(IrConstant::Int(42));
+    let entry = unit.entry;
+    unit.functions[entry.index()].flags.is_top_level = false;
+    unit.functions[entry.index()].return_type = Some(IrReturnType::Int);
+
+    for policy in [
+        NativeOptimizationPolicy::Baseline,
+        NativeOptimizationPolicy::Optimizing,
+    ] {
+        let vm = Vm::with_options(VmOptions {
+            native_optimization: policy,
+            ..VmOptions::default()
+        });
+        let result = vm.execute_native_only(CompiledUnit::new(unit.clone()));
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.return_value, Some(Value::Int(42)));
+    }
+}
+
+#[test]
+fn mandatory_native_entry_rejects_unsupported_instruction_with_span() {
+    let mut unit = manual_echo_unit(IrConstant::Int(1));
+    let entry = unit.entry;
+    unit.functions[entry.index()].flags.is_top_level = false;
+    unit.functions[entry.index()].return_type = Some(IrReturnType::Int);
+    let result = Vm::new().execute_native_only(CompiledUnit::new(unit));
+
+    assert_eq!(result.status.exit_status(), ExitStatus::CompileError);
+    let message = result.status.message().unwrap_or_default();
+    assert!(
+        message.contains("E_NATIVE_UNSUPPORTED_LOWERING"),
+        "{message}"
+    );
+    assert!(message.contains("instruction_kind=Echo"), "{message}");
+    assert!(message.contains("span=0:0-0"), "{message}");
 }
 
 fn execute_source(source: &str) -> VmResult {

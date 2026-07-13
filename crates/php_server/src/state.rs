@@ -15,8 +15,8 @@ use php_executor::{
     PhpExecutorOptions, PhpScriptCacheInput,
 };
 use php_vm::api::{
-    CacheInstanceId, DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode,
-    QuickeningMode, VmError,
+    CacheInstanceId, DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, QuickeningMode,
+    VmError,
 };
 use std::{
     net::SocketAddr,
@@ -205,10 +205,6 @@ impl ServerEngineState {
         }
         if self.perf_ablation.disable_builtin_ic {
             options.vm_options.internal_function_dispatch_cache = false;
-        }
-        if self.perf_ablation.disable_jit {
-            options.vm_options.jit = JitMode::Off;
-            options.vm_options.tiering.enabled = false;
         }
         if self.perf_ablation.disable_include_o2 {
             options.include_optimization_level = OptimizationLevel::O0;

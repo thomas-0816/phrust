@@ -1173,13 +1173,13 @@ wordpress-reference-image:
 # Clean timing: release Phrust and stock PHP-FPM/OPcache. This never enables
 # request profiles, VM counters, or trace collection.
 wordpress-root-benchmark *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean {{args}}
 
 # Explicit Cranelift arm for the clean WordPress A/B matrix.
 wordpress-root-benchmark-cranelift *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
-    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit {{args}}
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset default {{args}}
 
 # Lean host-native Cranelift production candidate for x86_64 Linux.
 release-cranelift-amd64:
@@ -1190,7 +1190,7 @@ release-cranelift-amd64:
         printf '%s\n' "[fail] release-cranelift-amd64 requires x86_64 Linux; got $machine/$(uname -s)" >&2
         exit 1
     fi
-    CARGO_TARGET_DIR="${PHRUST_AMD64_CRANELIFT_TARGET_DIR:-target/amd64-cranelift}" cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift
+    CARGO_TARGET_DIR="${PHRUST_AMD64_CRANELIFT_TARGET_DIR:-target/amd64-cranelift}" cargo build --release -p php_server --bin phrust-server --no-default-features
 
 # Source-identical AMD64 A/B: a lean managed JIT-off binary versus a lean
 # Cranelift binary. A telemetry build is used only for untimed native evidence.
@@ -1206,8 +1206,8 @@ wordpress-root-benchmark-cranelift-amd64 *args:
     cranelift_dir="${PHRUST_AMD64_CRANELIFT_TARGET_DIR:-target/amd64-cranelift}"
     diagnostic_dir="${PHRUST_AMD64_CRANELIFT_DIAGNOSTIC_TARGET_DIR:-target/amd64-cranelift-diagnostic}"
     CARGO_TARGET_DIR="$baseline_dir" cargo build --release -p php_server --bin phrust-server --no-default-features
-    CARGO_TARGET_DIR="$cranelift_dir" cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift
-    CARGO_TARGET_DIR="$diagnostic_dir" cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift,runtime-telemetry
+    CARGO_TARGET_DIR="$cranelift_dir" cargo build --release -p php_server --bin phrust-server --no-default-features
+    CARGO_TARGET_DIR="$diagnostic_dir" cargo build --release -p php_server --bin phrust-server --no-default-features --features runtime-telemetry
     source_commit="$(git rev-parse HEAD)"
     patch_sha256="$(git diff --binary | sha256sum | cut -d' ' -f1)"
     scripts/performance/wordpress_root_benchmark.py --mode clean --cranelift-ab --baseline-server "$baseline_dir/release/phrust-server" --cranelift-server "$cranelift_dir/release/phrust-server" --diagnostic-server "$diagnostic_dir/release/phrust-server" --server-source-commit "$source_commit" --server-source-patch-sha256 "$patch_sha256" {{args}}
@@ -1222,15 +1222,15 @@ wordpress-root-tranche-gate-cranelift-amd64 baseline *args:
         exit 1
     fi
     cranelift_dir="${PHRUST_AMD64_CRANELIFT_TARGET_DIR:-target/amd64-cranelift}"
-    CARGO_TARGET_DIR="$cranelift_dir" cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift
+    CARGO_TARGET_DIR="$cranelift_dir" cargo build --release -p php_server --bin phrust-server --no-default-features
     source_commit="$(git rev-parse HEAD)"
     patch_sha256="$(git diff --binary | sha256sum | cut -d' ' -f1)"
-    PHRUST_SERVER="$cranelift_dir/release/phrust-server" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 --server-source-commit "$source_commit" --server-source-patch-sha256 "$patch_sha256" {{args}}
+    PHRUST_SERVER="$cranelift_dir/release/phrust-server" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset default --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 --server-source-commit "$source_commit" --server-source-patch-sha256 "$patch_sha256" {{args}}
 
 # Isolated persistent-feedback A/B using the same lean binary and benchmark
 # contract. Both arms and their joint ratio report share one result directory.
 wordpress-root-benchmark-feedback-ab *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --feedback-ab {{args}}
 
 # Instrumented Phrust-only attribution. Its samples are marked timing-ineligible.
@@ -1241,14 +1241,14 @@ wordpress-root-diagnostics *args:
 # Strict regression gate: compare both engines and a recorded Phrust baseline;
 # missing WordPress or reference PHP is a failure.
 wordpress-root-regression-gate *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
 
 # Prompt-pack tranche acceptance: the leading result is the warm,
 # instrumentation-free WordPress concurrency-1 p50. The ordinary regression
 # recipe remains a no-regression CI guard and does not require a speedup.
 wordpress-root-tranche-gate baseline *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-cranelift; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 {{args}}
 
 # Anti-theater guard: fail performance branches that only add docs, reports,
@@ -1409,8 +1409,8 @@ release-profile-plan:
 # use the default release build for diagnosis). Measured on microbenches:
 # property reads ~11% faster, concatenation ~5%.
 release-lean:
-    cargo build --release -p php_server --no-default-features --features jit-cranelift
-    cargo build --release -p php_vm_cli --bin php-vm --no-default-features --features jit-cranelift
+    cargo build --release -p php_server --no-default-features
+    cargo build --release -p php_vm_cli --bin php-vm --no-default-features
 
 release-benchmark-smoke:
     scripts/performance/release_profiles.py release
@@ -1602,10 +1602,10 @@ cranelift-only-precondition:
     scripts/verify/cranelift_only_stage_ratchet.py
     (cd "$oracle_dir" && CARGO_TARGET_DIR=target/oracle cargo build -p php_vm_cli --bin php-vm)
     PHRUST_INTERPRETER_ORACLE="$oracle_dir/target/oracle/debug/php-vm" scripts/verify/interpreter_oracle.py
-    cargo test -p php_jit --features jit-cranelift
-    cargo test -p php_executor --features jit-cranelift bounded_cranelift_prewarm_populates_cache_without_executing_script
+    cargo test -p php_jit
+    cargo test -p php_executor  bounded_cranelift_prewarm_populates_cache_without_executing_script
     mkdir -p target/cranelift-only
-    cargo run --quiet -p php_jit --features jit-cranelift --example cranelift_precondition_identity > target/cranelift-only/identity.txt
+    cargo run --quiet -p php_jit  --example cranelift_precondition_identity > target/cranelift-only/identity.txt
     scripts/verify/cranelift_only_precondition.py
 
 # Prompt 1 cutover gate: the retired emitter must be absent from source and all
@@ -1613,40 +1613,53 @@ cranelift-only-precondition:
 cranelift-only-no-alternate-emitter:
     scripts/verify/no_""copy""_patch.py
     scripts/verify/cranelift_only_stage_ratchet.py
-    cargo check --workspace --all-targets --features jit-cranelift
-    cargo build -p php_vm_cli --bins --no-default-features --features jit-cranelift,runtime-telemetry
-    cargo build -p php_server --bin phrust-server --no-default-features --features jit-cranelift,runtime-telemetry
+    cargo check --workspace --all-targets
+    cargo build -p php_vm_cli --bins --no-default-features --features runtime-telemetry
+    cargo build -p php_server --bin phrust-server --no-default-features --features runtime-telemetry
+
+# Prompt 2 cutover gate: Cranelift is mandatory and the release server contains
+# neither a selectable backend nor linked interpreter entry points.
+cranelift-only-mandatory:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/verify/mandatory_cranelift.py
+    scripts/verify/no_""copy""_patch.py
+    scripts/verify/cranelift_only_stage_ratchet.py
+    cargo check --workspace --all-targets
+    cargo test -p php_vm native_entry
+    cargo build --release -p php_server --bin phrust-server
+    scripts/verify/native_server_symbols.py "${CARGO_TARGET_DIR:-target}/release/phrust-server"
 
 jit-cranelift-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
     cargo check --workspace
-    @if cargo tree -p php_jit --no-default-features -e features | rg 'cranelift-' >/dev/null; then \
-        printf '%s\n' '[fail] default php_jit dependency tree unexpectedly includes Cranelift crates' >&2; \
+    @if ! cargo tree -p php_jit --no-default-features -e features | rg 'cranelift-' >/dev/null; then \
+        printf '%s\n' '[fail] php_jit dependency tree does not include mandatory Cranelift crates' >&2; \
         cargo tree -p php_jit --no-default-features -e features >&2; \
         exit 1; \
     fi
-    cargo check --workspace --features jit-cranelift
-    cargo test -p php_jit --features jit-cranelift
-    cargo test -p php_vm --features jit-cranelift jit_
-    cargo test -p php_vm --features jit-cranelift cranelift_
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    @printf '%s\n' '[pass] Cranelift feature-gating smoke passed'
+    cargo check --workspace
+    cargo test -p php_jit
+    cargo test -p php_vm  jit_
+    cargo test -p php_vm  cranelift_
+    cargo build -p php_vm_cli --bin php-vm
+    @printf '%s\n' '[pass] mandatory Cranelift smoke passed'
 
 jit-cranelift-diff:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/jit_diff.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
 jit-cranelift-bench-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
     @just jit-cranelift-diff
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/jit_bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/cranelift/bench-smoke.json --smoke
 
 jit-cranelift-report:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
     @just jit-cranelift-diff
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/jit_bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/cranelift/big_wins_report.json
 
 cranelift-guard-report:
@@ -1656,24 +1669,24 @@ cranelift-guard-report:
 
 jit-cranelift-disasm:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/disasm_dump.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
 jit-cranelift-fuzz-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/jit_eligible_ir_fuzz_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
 jit-cranelift-poly-ic-experiment:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/polymorphic_ic_experiment.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
     @just jit-cranelift-report
     scripts/performance/cranelift/guard_failure_report.py --input target/performance/cranelift/big_wins_report.json --out target/performance/cranelift/polymorphic-ic/guard-report.json --text-out target/performance/cranelift/polymorphic-ic/guard-report.txt --experimental-ic-report target/performance/cranelift/polymorphic-ic/report.json
 
 jit-cranelift-framework-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cranelift/framework_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
 verify-cranelift:
@@ -1687,7 +1700,7 @@ verify-cranelift:
     @printf '%s\n' '[pass] Cranelift verification complete'
 
 dump-cranelift-clif:
-    cargo run -p php_vm_cli --bin php-vm --features jit-cranelift -- dump-cranelift-clif
+    cargo run -p php_vm_cli --bin php-vm  -- dump-cranelift-clif
 
 safety-audit-smoke:
     @if rg -n '\bunsafe\b' crates/php_bytecode_cache crates/php_vm/src/inline_cache.rs crates/php_vm/src/quickening.rs crates/php_vm/src/tiering.rs; then \

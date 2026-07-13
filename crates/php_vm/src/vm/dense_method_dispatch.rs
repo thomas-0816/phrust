@@ -888,19 +888,23 @@ impl Vm {
         let had_cached_target = cached_target.is_some();
         if let Some(target) = cached_target {
             self.record_counter_dense_call_ic_hit();
-            if !matches!(self.options.jit, JitMode::Cranelift)
-                || dense_method_direct_call_target_is_eligible(DenseMethodDirectCallEligibility {
-                    compiled,
-                    state,
-                    target: &target,
-                    class: &class,
-                    argument_shape: method_call_shape(&args),
-                    has_magic_call,
-                    epoch,
-                })
-            {
+            if !matches!(
+                self.options.native_optimization,
+                NativeOptimizationPolicy::Optimizing
+            ) || dense_method_direct_call_target_is_eligible(DenseMethodDirectCallEligibility {
+                compiled,
+                state,
+                target: &target,
+                class: &class,
+                argument_shape: method_call_shape(&args),
+                has_magic_call,
+                epoch,
+            }) {
                 self.record_counter_dense_method_call_hit();
-                if matches!(self.options.jit, JitMode::Cranelift) {
+                if matches!(
+                    self.options.native_optimization,
+                    NativeOptimizationPolicy::Optimizing
+                ) {
                     self.record_counter_direct_call_hit();
                 }
                 return self.execute_method_call_target(
@@ -912,7 +916,11 @@ impl Vm {
         if observation.is_some() {
             self.record_counter_dense_call_ic_miss();
         }
-        if matches!(self.options.jit, JitMode::Cranelift) && !had_cached_target {
+        if matches!(
+            self.options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        ) && !had_cached_target
+        {
             self.record_counter_direct_call_fallback();
         }
 

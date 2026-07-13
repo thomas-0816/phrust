@@ -629,7 +629,7 @@ mod tests {
         let environment = PerfEnvironment::new("phrust-0.0.0", "aarch64-apple-darwin")
             .with_git_commit("abc1234")
             .with_opt_flags(["--opt-level=0", "--quickening=off"])
-            .with_feature_flag("jit-cranelift", false)
+            .with_feature_flag("cranelift", false)
             .with_feature_flag("bytecode-cache", true)
             .with_extra("TZ", "UTC")
             .with_extra("LC_ALL", "C");
@@ -660,7 +660,7 @@ mod tests {
     ],
     "feature_flags": {
       "bytecode-cache": true,
-      "jit-cranelift": false
+      "cranelift": false
     },
     "extra": {
       "LC_ALL": "C",
@@ -719,8 +719,8 @@ mod tests {
     fn cranelift_jit_report_json_is_stable_and_sorted() {
         let environment = PerfEnvironment::new("phrust-0.0.0", "aarch64-apple-darwin")
             .with_git_commit("abc1234")
-            .with_opt_flags(["--jit=cranelift", "--jit-backend=cranelift"])
-            .with_feature_flag("jit-cranelift", true);
+            .with_opt_flags(["--engine-preset=default"])
+            .with_feature_flag("cranelift", true);
         let counters = JitCounterSnapshot {
             compile_attempts: 1,
             compiled_regions: 1,
@@ -789,11 +789,10 @@ mod tests {
     "git_commit": "abc1234",
     "rust_target_triple": "aarch64-apple-darwin",
     "opt_flags": [
-      "--jit=cranelift",
-      "--jit-backend=cranelift"
+      "--engine-preset=default"
     ],
     "feature_flags": {
-      "jit-cranelift": true
+      "cranelift": true
     }
   },
   "rows": [

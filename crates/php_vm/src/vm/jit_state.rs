@@ -8,7 +8,6 @@ pub(super) struct JitFunctionKey {
     pub(super) function: FunctionId,
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct JitCompileCacheKey {
     pub(super) function: u32,
@@ -18,14 +17,12 @@ pub(super) struct JitCompileCacheKey {
     pub(super) target_isa: String,
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct JitCompileCacheEntry {
     pub(super) handle: php_jit::JitFunctionHandle,
     pub(super) runtime_layout_epoch: Option<u64>,
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum JitCompileCacheLookup {
     Hit(php_jit::JitFunctionHandle),
@@ -33,7 +30,6 @@ pub(super) enum JitCompileCacheLookup {
     Invalidated,
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum JitBlacklistReason {
     TooManySideExits,
@@ -42,7 +38,6 @@ pub(super) enum JitBlacklistReason {
     AbiMismatch,
 }
 
-#[cfg(feature = "jit-cranelift")]
 impl JitBlacklistReason {
     #[must_use]
     pub(super) const fn as_str(self) -> &'static str {
@@ -69,14 +64,11 @@ pub(super) struct JitFunctionState {
     pub(super) blacklist_epoch: u64,
     pub(super) runtime_epoch: u64,
     pub(super) unsupported_epoch: Option<u64>,
-    #[cfg(feature = "jit-cranelift")]
     pub(super) blacklist_reason: Option<JitBlacklistReason>,
-    #[cfg(feature = "jit-cranelift")]
     pub(super) handle: Option<php_jit::JitFunctionHandle>,
 }
 
 impl JitFunctionState {
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn blacklist_strict(&mut self, reason: JitBlacklistReason) -> bool {
         if self.blacklisted {
             return false;
@@ -87,7 +79,6 @@ impl JitFunctionState {
         true
     }
 
-    #[cfg(feature = "jit-cranelift")]
     fn cooldown(&mut self, reason: JitBlacklistReason, runtime_epoch: u64) -> bool {
         if self.blacklisted {
             return false;
@@ -99,7 +90,6 @@ impl JitFunctionState {
         true
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn allows_execution(&mut self, runtime_epoch: u64) -> bool {
         if self.disabled {
             return false;
@@ -117,7 +107,6 @@ impl JitFunctionState {
         true
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_compile_error(&mut self) -> Option<JitBlacklistReason> {
         self.compile_errors = self.compile_errors.saturating_add(1);
         if self.compile_errors >= JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD
@@ -128,7 +117,6 @@ impl JitFunctionState {
         None
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_side_exit(
         &mut self,
         reason: php_jit::SideExitReason,
@@ -172,11 +160,9 @@ impl JitFunctionState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct JitRuntimeState {
     pub(super) functions: HashMap<JitFunctionKey, JitFunctionState>,
-    #[cfg(feature = "jit-cranelift")]
     pub(super) compile_cache: HashMap<JitCompileCacheKey, JitCompileCacheEntry>,
 }
 
-#[cfg(feature = "jit-cranelift")]
 impl JitRuntimeState {
     pub(super) fn lookup_compile_cache(
         &mut self,
@@ -223,7 +209,6 @@ impl JitRuntimeState {
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn jit_leaf_call_shape_is_supported(
     function: &IrFunction,
     call_shape_supported: bool,
@@ -257,7 +242,6 @@ pub(super) fn jit_leaf_call_shape_is_supported(
         && !args.has_reference()
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn native_leaf_rejection_reason(
     function: &IrFunction,
     call_shape_supported: bool,
@@ -318,7 +302,7 @@ pub(super) fn native_leaf_rejection_reason(
     "unsupported_leaf_shape"
 }
 
-#[cfg(all(test, feature = "jit-cranelift"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

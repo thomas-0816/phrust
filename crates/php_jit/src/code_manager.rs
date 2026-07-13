@@ -606,7 +606,7 @@ mod tests {
     use super::{
         CraneliftCodeCacheDisposition, CraneliftCodeKey, CraneliftCodeManager, ManagedCompileError,
     };
-    use crate::{JIT_RUNTIME_ABI_HASH, JitBackend, JitFunctionHandle};
+    use crate::{CraneliftCompilerIdentity, JIT_RUNTIME_ABI_HASH, JitFunctionHandle};
     use cranelift_codegen::ir::{AbiParam, InstBuilder, UserFuncName, types};
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use cranelift_module::{Linkage, Module};
@@ -673,7 +673,7 @@ mod tests {
             JitFunctionHandle::i64_native(
                 value as u64,
                 symbol.to_owned(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 0,
                 code_bytes,

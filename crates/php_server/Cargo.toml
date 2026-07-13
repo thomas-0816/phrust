@@ -39,4 +39,3 @@ runtime-telemetry = [
     "php_vm/runtime-telemetry",
     "php_runtime/runtime-telemetry",
 ]
-jit-cranelift = ["php_executor/jit-cranelift", "php_vm/jit-cranelift"]

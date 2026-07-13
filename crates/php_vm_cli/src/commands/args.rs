@@ -142,8 +142,7 @@ pub(super) struct RunOptions<'a> {
     pub(super) bytecode_layout_profile: Option<String>,
     pub(super) quickening: QuickeningMode,
     pub(super) inline_caches: InlineCacheMode,
-    pub(super) jit: JitMode,
-    pub(super) jit_explicit: bool,
+    pub(super) native_optimization: NativeOptimizationPolicy,
     pub(super) jit_threshold: u64,
     pub(super) jit_blacklist: JitBlacklistMode,
     pub(super) jit_dump_clif: Option<String>,
@@ -477,8 +476,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
     let mut bytecode_layout_profile = None;
     let mut quickening = default_options.vm_options.quickening;
     let mut inline_caches = default_options.vm_options.inline_caches;
-    let mut jit = default_options.vm_options.jit;
-    let mut jit_explicit = false;
+    let mut native_optimization = default_options.vm_options.native_optimization;
     let mut jit_threshold = default_options.vm_options.jit_threshold;
     let mut jit_blacklist = default_options.vm_options.jit_blacklist;
     let mut jit_dump_clif = None;
@@ -540,7 +538,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 bytecode_layout = profile_options.vm_options.bytecode_layout;
                 quickening = profile_options.vm_options.quickening;
                 inline_caches = profile_options.vm_options.inline_caches;
-                jit = profile_options.vm_options.jit;
+                native_optimization = profile_options.vm_options.native_optimization;
                 jit_blacklist = profile_options.vm_options.jit_blacklist;
                 tiering = profile_options.vm_options.tiering;
                 adaptive_tiny_unit_setup_threshold = profile_options
@@ -563,7 +561,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 bytecode_layout = profile_options.vm_options.bytecode_layout;
                 quickening = profile_options.vm_options.quickening;
                 inline_caches = profile_options.vm_options.inline_caches;
-                jit = profile_options.vm_options.jit;
+                native_optimization = profile_options.vm_options.native_optimization;
                 jit_blacklist = profile_options.vm_options.jit_blacklist;
                 tiering = profile_options.vm_options.tiering;
                 adaptive_tiny_unit_setup_threshold = profile_options
@@ -695,18 +693,6 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
             }
             arg if let Some(value) = arg.strip_prefix("--inline-caches=") => {
                 inline_caches = parse_inline_cache_mode(value)?;
-            }
-            "--jit" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return Err("run --jit requires off, noop, or cranelift".to_string());
-                };
-                jit = parse_jit_mode(value)?;
-                jit_explicit = true;
-            }
-            arg if let Some(value) = arg.strip_prefix("--jit=") => {
-                jit = parse_jit_mode(value)?;
-                jit_explicit = true;
             }
             "--jit-threshold" => {
                 index += 1;
@@ -969,8 +955,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     bytecode_layout_profile,
                     quickening,
                     inline_caches,
-                    jit,
-                    jit_explicit,
+                    native_optimization,
                     jit_threshold,
                     jit_blacklist,
                     jit_dump_clif,
@@ -1020,8 +1005,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
         bytecode_layout_profile,
         quickening,
         inline_caches,
-        jit,
-        jit_explicit,
+        native_optimization,
         jit_threshold,
         jit_blacklist,
         jit_dump_clif,
@@ -1176,17 +1160,6 @@ pub(super) fn parse_inline_cache_mode(value: &str) -> Result<InlineCacheMode, St
         "on" => Ok(InlineCacheMode::On),
         _ => Err(format!(
             "unsupported inline-cache mode `{value}`; expected off or on"
-        )),
-    }
-}
-
-pub(super) fn parse_jit_mode(value: &str) -> Result<JitMode, String> {
-    match value {
-        "off" => Ok(JitMode::Off),
-        "noop" => Ok(JitMode::Noop),
-        "cranelift" => Ok(JitMode::Cranelift),
-        _ => Err(format!(
-            "unsupported jit mode `{value}`; expected off, noop, or cranelift"
         )),
     }
 }

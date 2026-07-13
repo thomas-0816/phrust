@@ -1789,20 +1789,24 @@ pub(super) fn execute_rich_call_instruction(
                 epoch,
             );
             if let Some(target) = cached_target {
-                if !matches!(vm.options.jit, JitMode::Cranelift)
-                    || method_direct_call_target_is_eligible(MethodDirectCallEligibility {
-                        compiled,
-                        state,
-                        target: &target,
-                        class: &class,
-                        args,
-                        values: &values,
-                        has_magic_call,
-                        epoch,
-                    })
-                {
+                if !matches!(
+                    vm.options.native_optimization,
+                    NativeOptimizationPolicy::Optimizing
+                ) || method_direct_call_target_is_eligible(MethodDirectCallEligibility {
+                    compiled,
+                    state,
+                    target: &target,
+                    class: &class,
+                    args,
+                    values: &values,
+                    has_magic_call,
+                    epoch,
+                }) {
                     vm.record_counter_method_direct_dispatch_hit();
-                    if matches!(vm.options.jit, JitMode::Cranelift) {
+                    if matches!(
+                        vm.options.native_optimization,
+                        NativeOptimizationPolicy::Optimizing
+                    ) {
                         vm.record_counter_direct_call_hit();
                     }
                     let result = vm.execute_method_call_target(
@@ -1873,14 +1877,20 @@ pub(super) fn execute_rich_call_instruction(
                     return RichDispatchOutcome::Continue;
                 }
                 vm.record_counter_method_direct_dispatch_fallback();
-                if matches!(vm.options.jit, JitMode::Cranelift) {
+                if matches!(
+                    vm.options.native_optimization,
+                    NativeOptimizationPolicy::Optimizing
+                ) {
                     vm.record_counter_direct_call_fallback();
                 }
             } else if let Some(observation) = cache_observation {
                 if observation.fallback_call {
                     vm.record_counter_method_direct_dispatch_fallback();
                 }
-                if matches!(vm.options.jit, JitMode::Cranelift) {
+                if matches!(
+                    vm.options.native_optimization,
+                    NativeOptimizationPolicy::Optimizing
+                ) {
                     vm.record_counter_direct_call_fallback();
                 }
             }
@@ -2182,7 +2192,10 @@ pub(super) fn execute_rich_call_instruction(
                 && !has_magic_call
                 && !method_entry.flags.is_static;
             if vm.options.inline_caches.enabled()
-                || !matches!(vm.options.jit, JitMode::Cranelift)
+                || !matches!(
+                    vm.options.native_optimization,
+                    NativeOptimizationPolicy::Optimizing
+                )
                 || direct_call_cacheable
             {
                 vm.install_method_call_inline_cache(

@@ -1,35 +1,24 @@
 // Audited native-tier ABI surface (docs/performance/cranelift/
 // safety-audit.md); compiled only under the JIT features, which the
 // pre-ADR-0020 CLI gate never covered.
-#[cfg(feature = "jit-cranelift")]
 use crate::deopt::GuardKind;
-#[cfg(feature = "jit-cranelift")]
 use php_ir::module::normalize_class_name;
-#[cfg(feature = "jit-cranelift")]
 use php_runtime::api::PhpString;
-#[cfg(feature = "jit-cranelift")]
 use php_runtime::api::Value;
 
 // Stable property-access side-exit statuses used by native helpers.
-#[cfg(feature = "jit-cranelift")]
 pub(super) const JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT: i32 = 21;
-#[cfg(feature = "jit-cranelift")]
 pub(super) const JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT: i32 = 22;
-#[cfg(feature = "jit-cranelift")]
 pub(super) const JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT: i32 = 23;
-#[cfg(feature = "jit-cranelift")]
 pub(super) const JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT: i32 = 24;
 
-#[cfg(feature = "jit-cranelift")]
 static JIT_RUNTIME_HELPER_TABLE: php_jit::JitRuntimeHelperTable =
     php_jit::JitRuntimeHelperTable::new(php_jit::jit_default_helper_dispatch);
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn jit_runtime_helper_table() -> &'static php_jit::JitRuntimeHelperTable {
     &JIT_RUNTIME_HELPER_TABLE
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn jit_guard_kind_for_side_exit(reason: php_jit::SideExitReason) -> Option<GuardKind> {
     match reason {
         php_jit::SideExitReason::TypeMismatch => Some(GuardKind::QuickeningType),
@@ -41,7 +30,6 @@ pub(super) fn jit_guard_kind_for_side_exit(reason: php_jit::SideExitReason) -> O
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_array_len_abi(value_ptr: usize, out: *mut i64) -> i32 {
     if value_ptr == 0 || out.is_null() {
@@ -66,7 +54,6 @@ pub(super) extern "C" fn jit_array_len_abi(value_ptr: usize, out: *mut i64) -> i
     php_runtime::experimental::PHP_JIT_ARRAY_STATUS_OK
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_array_fetch_int_slow_abi(
     value_ptr: usize,
@@ -88,7 +75,6 @@ pub(super) extern "C" fn jit_array_fetch_int_slow_abi(
     php_runtime::experimental::php_jit_array_fetch_int_slow(value, index, out)
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_strlen_known_abi(value_ptr: usize, out: *mut i64) -> i32 {
     if value_ptr == 0 || out.is_null() {
@@ -115,7 +101,6 @@ pub(super) extern "C" fn jit_strlen_known_abi(value_ptr: usize, out: *mut i64) -
     php_jit::JIT_HELPER_STATUS_OK
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_count_known_abi(value_ptr: usize, out: *mut i64) -> i32 {
     if value_ptr == 0 || out.is_null() {
@@ -142,7 +127,6 @@ pub(super) extern "C" fn jit_count_known_abi(value_ptr: usize, out: *mut i64) ->
     php_jit::JIT_HELPER_STATUS_OK
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_record_array_lookup_abi(
     array_ptr: usize,
@@ -172,7 +156,6 @@ pub(super) extern "C" fn jit_record_array_lookup_abi(
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_concat_string_string_fast(
     lhs_ptr: usize,
@@ -232,7 +215,6 @@ pub(super) extern "C" fn jit_concat_string_string_fast(
 /// the exact `Error`). It only reads a declared property slot — it never mutates,
 /// invokes a hook/`__get` (those shapes are excluded at recognition time), or
 /// re-enters the VM.
-#[cfg(feature = "jit-cranelift")]
 pub(crate) fn jit_property_load_fetch(
     value: &Value,
     metadata: &php_jit::JitPropertyLoadMetadata,
@@ -256,7 +238,6 @@ pub(crate) fn jit_property_load_fetch(
     Ok(value)
 }
 
-#[cfg(feature = "jit-cranelift")]
 #[allow(unsafe_code)]
 pub(super) extern "C" fn jit_property_load_monomorphic_fast(
     value_ptr: usize,

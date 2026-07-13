@@ -74,9 +74,9 @@ pub struct VmOptions {
     pub persistent_adaptive_state: bool,
     /// Allocate request-local inline-cache slots without changing semantics.
     pub inline_caches: InlineCacheMode,
-    /// Select the experimental performance JIT tier for eligible hot leaf functions.
-    /// Unsupported builds or ineligible functions stay on managed VM paths.
-    pub jit: JitMode,
+    /// Select the amount of optimization applied by the mandatory native compiler.
+    /// Both policies compile with Cranelift; baseline forbids speculative work.
+    pub native_optimization: NativeOptimizationPolicy,
     /// Hot-call threshold requested by the CLI for JIT compilation.
     pub jit_threshold: u64,
     /// Process-local JIT blacklist policy.
@@ -142,7 +142,7 @@ impl Default for VmOptions {
             callsite_seed: Vec::new(),
             persistent_adaptive_state: false,
             inline_caches: InlineCacheMode::Off,
-            jit: JitMode::Off,
+            native_optimization: NativeOptimizationPolicy::Baseline,
             jit_threshold: TieringOptions::default().function_entry_threshold,
             jit_blacklist: JitBlacklistMode::On,
             jit_dump_clif: None,
@@ -319,35 +319,30 @@ impl SuperinstructionMode {
     }
 }
 
-/// Experimental JIT switch.
+/// Optimization policy for the mandatory Cranelift compiler.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum JitMode {
-    /// Keep all execution on the interpreter.
+pub enum NativeOptimizationPolicy {
+    /// Compile eagerly without speculative specialization or adaptive promotion.
     #[default]
-    Off,
-    /// Accept JIT plumbing flags but keep execution on the interpreter.
-    Noop,
-    /// Select the Cranelift backend. Native entry is constrained to eligible
-    /// experimental leaf functions when feature support and runtime guards allow
-    /// it; otherwise execution remains on managed VM paths.
-    Cranelift,
+    Baseline,
+    /// Enable the product optimization policy on top of mandatory compilation.
+    Optimizing,
 }
 
-impl JitMode {
+impl NativeOptimizationPolicy {
     /// Stable report spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Off => "off",
-            Self::Noop => "noop",
-            Self::Cranelift => "cranelift",
+            Self::Baseline => "baseline",
+            Self::Optimizing => "optimizing",
         }
     }
 
-    /// Returns true when this mode needs the Cranelift feature to have effect.
+    /// Whether speculative and adaptive optimizations may be used.
     #[must_use]
-    pub const fn requires_cranelift(self) -> bool {
-        matches!(self, Self::Cranelift)
+    pub const fn is_optimizing(self) -> bool {
+        matches!(self, Self::Optimizing)
     }
 }
 

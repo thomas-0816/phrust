@@ -277,7 +277,6 @@ pub(super) fn instruction_runtime_error_context(
     )
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn jit_compile_cache_key(
     function_id: FunctionId,
     function: &IrFunction,
@@ -300,11 +299,10 @@ pub(super) fn jit_compile_cache_key(
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn jit_config_hash(options: &VmOptions) -> u64 {
     let config = format!(
         "jit={};quickening={};inline_caches={};blacklist={};typecheck={};threshold={};loop_threshold={}",
-        options.jit.as_str(),
+        options.native_optimization.as_str(),
         options.quickening.enabled(),
         options.inline_caches.enabled(),
         options.jit_blacklist.as_str(),
@@ -315,7 +313,6 @@ pub(super) fn jit_config_hash(options: &VmOptions) -> u64 {
     stable_hash_bytes(config.as_bytes())
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn stable_hash_bytes(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {

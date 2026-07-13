@@ -154,7 +154,7 @@ use method_cache_metadata::*;
 use method_dispatch::MagicStaticCallRequest;
 pub use options::{
     BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
-    JitBlacklistMode, JitMode, SuperinstructionMode, VmOptions,
+    JitBlacklistMode, NativeOptimizationPolicy, SuperinstructionMode, VmOptions,
 };
 use property_cache_metadata::*;
 use property_execution::PropertyDimProbe;
@@ -194,7 +194,6 @@ use crate::compiled_unit::{
     CompiledClass, CompiledUnit, DenseExecutionArtifactKey, DenseExecutionArtifactMode,
     PreparedClassValidationError, PreparedFunctionFacts,
 };
-#[cfg(feature = "jit-cranelift")]
 use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
 use crate::error::VmError;
@@ -216,7 +215,6 @@ use crate::inline_cache::{
 use crate::literal_pool::LiteralPool;
 use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
 use crate::tiering::{ExecutionTier, TieringState};
-#[cfg(feature = "jit-cranelift")]
 use jit_abi::{
     JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT, JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT,
     JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT, JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT,
@@ -361,17 +359,11 @@ const SPL_RTI_BYPASS_CURRENT: i64 = 4;
 const SPL_RTI_BYPASS_KEY: i64 = 8;
 const SORT_FLAG_CASE: i64 = 8;
 const NORMALIZER_FORM_C: i64 = php_runtime::api::NORMALIZER_FORM_C;
-#[cfg(feature = "jit-cranelift")]
 const JIT_TIERING_MIN_EXECUTIONS: u64 = 32;
-#[cfg(feature = "jit-cranelift")]
 const JIT_TIERING_MIN_SIDE_EXITS: u64 = 8;
-#[cfg(feature = "jit-cranelift")]
 const JIT_TIERING_MAX_EXIT_RATE_PERCENT: u64 = 50;
-#[cfg(feature = "jit-cranelift")]
 const JIT_TIERING_COOLDOWN_CALLS: u64 = 128;
-#[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD: u64 = 1;
-#[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_ABI_MISMATCH_THRESHOLD: u64 = 1;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoloadTraceOrigin {
@@ -384,7 +376,6 @@ enum PropertyFetchCacheRead {
     Fallback,
 }
 
-#[cfg(feature = "jit-cranelift")]
 fn value_as_jit_int(value: &Value) -> Result<i64, ()> {
     match value {
         Value::Int(value) => Ok(*value),
@@ -745,7 +736,102 @@ impl Vm {
         }
     }
 
-    /// Executes a compiled unit from its entry function.
+    /// Compiles the entry function with mandatory Cranelift and invokes its
+    /// native entry point. Unsupported lowering is a compile error; product
+    /// execution never resumes through an interpreter.
+    #[cfg(not(test))]
+    #[must_use]
+    pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
+        self.execute_native_only(unit.into())
+    }
+
+    #[must_use]
+    fn execute_native_only(&self, unit: CompiledUnit) -> VmResult {
+        let output = OutputBuffer::default();
+        let entry = unit.unit().entry;
+        let Some(function) = unit.unit().functions.get(entry.index()) else {
+            return VmResult::compile_error(output, "entry function is missing");
+        };
+        if self.options.verify_ir && unit.prepared_ir_verification_errors() > 0 {
+            return VmResult::compile_error(
+                output,
+                format!(
+                    "IR verifier failed with {} error(s)",
+                    unit.prepared_ir_verification_errors()
+                ),
+            );
+        }
+
+        let eligibility = php_jit::analyze_jit_eligibility(unit.unit(), entry);
+        if !matches!(eligibility.eligibility, php_jit::JitEligibility::Eligible) {
+            let reason = eligibility.reasons.first();
+            let location = reason
+                .and_then(|reason| reason.block.zip(reason.instruction))
+                .and_then(|(block, instruction)| {
+                    function
+                        .blocks
+                        .get(block as usize)
+                        .and_then(|block| block.instructions.get(instruction as usize))
+                });
+            let instruction = location
+                .map(|instruction| format!("{:?}", instruction.kind))
+                .unwrap_or_else(|| "function-signature".to_owned());
+            let span = location.map_or(function.span, |instruction| instruction.span);
+            let detail = reason.map_or("unsupported function shape", |reason| {
+                reason.detail.as_str()
+            });
+            return VmResult::compile_error(
+                output,
+                format!(
+                    "E_NATIVE_UNSUPPORTED_LOWERING: function={} instruction_kind={} span={}:{}-{}: {}",
+                    function.name,
+                    instruction,
+                    span.file.raw(),
+                    span.start,
+                    span.end,
+                    detail
+                ),
+            );
+        }
+
+        let mut compiler = php_jit::JitEngine::new();
+        let compiled = match compiler.compile_function(
+            unit.unit(),
+            entry,
+            php_jit::JitCompileRequest::new(format!("entry.{}", function.name))
+                .with_function_name(function.name.clone())
+                .with_opt_level(if self.options.native_optimization.is_optimizing() {
+                    2
+                } else {
+                    0
+                }),
+        ) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                return VmResult::compile_error(output, format!("E_NATIVE_COMPILE_SETUP: {error}"));
+            }
+        };
+        let Some(handle) = compiled.handle else {
+            let reason = match compiled.status {
+                php_jit::JitCompileStatus::Rejected { reason } => reason,
+                php_jit::JitCompileStatus::Compiled => {
+                    "compiler reported success without a native entry".to_owned()
+                }
+            };
+            return VmResult::compile_error(output, format!("E_NATIVE_COMPILE: {reason}"));
+        };
+        match handle.invoke_i64(&[], php_jit::JIT_RUNTIME_ABI_HASH) {
+            Ok(value) => VmResult::success(output, Some(Value::Int(value))),
+            Err(error) => VmResult::compile_error(
+                output,
+                format!("E_NATIVE_ENTRY: native entry invocation failed: {error:?}"),
+            ),
+        }
+    }
+
+    /// Executes through the frozen interpreter only in php_vm's internal test
+    /// build. Product dependencies compile the native-only method above.
+    #[cfg(test)]
     #[must_use]
     pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
         let unit = unit.into();
@@ -811,7 +897,10 @@ impl Vm {
         self.include_execution_depth.set(0);
         *self.counters.borrow_mut() = self.options.collect_counters.then(|| {
             let mut counters = VmCounters::default();
-            counters.set_jit_config(self.options.jit.as_str(), self.options.jit_threshold);
+            counters.set_jit_config(
+                self.options.native_optimization.as_str(),
+                self.options.jit_threshold,
+            );
             if skip_adaptive_tiny_unit_setup {
                 counters.record_adaptive_tiny_unit_setup_skip();
             }

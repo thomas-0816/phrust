@@ -81,7 +81,7 @@ impl Vm {
             compiled_unit_cache_key(compiled),
             function_id,
             self.options.quickening,
-            self.options.jit,
+            self.options.native_optimization,
         );
         self.record_counter_jit_tiering_decision(function_tier);
         let mut diagnostics = Vec::new();

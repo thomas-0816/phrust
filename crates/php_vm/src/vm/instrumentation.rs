@@ -778,7 +778,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_compile_attempt(&self) {
         if !self.options.collect_counters {
             return;
@@ -788,7 +787,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_compiled(&self) {
         if !self.options.collect_counters {
             return;
@@ -798,7 +796,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_compile_metadata(
         &self,
         code_bytes: u64,
@@ -812,7 +809,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_compile_descriptor(&self, descriptor: JitCompileDescriptor) {
         if !self.options.collect_counters {
             return;
@@ -822,7 +818,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_code_manager_event(
         &self,
         event: php_jit::CraneliftCodeManagerEvent,
@@ -835,7 +830,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_compile_cache_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -845,7 +839,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_compile_cache_miss(&self) {
         if !self.options.collect_counters {
             return;
@@ -855,7 +848,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_compile_cache_invalidations(&self, count: u64) {
         if !self.options.collect_counters {
             return;
@@ -868,7 +860,7 @@ impl Vm {
     }
 
     pub(super) fn record_counter_jit_tiering_decision(&self, tier: ExecutionTier) {
-        if !self.options.collect_counters || !matches!(self.options.jit, JitMode::Cranelift) {
+        if !self.options.collect_counters {
             return;
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
@@ -883,7 +875,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(feature = "jit-cranelift", allow(dead_code))]
     pub(super) fn record_counter_native_candidate(&self) {
         if !self.options.collect_counters {
             return;
@@ -893,17 +884,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(feature = "jit-cranelift", allow(dead_code))]
-    pub(super) fn record_counter_native_platform_unavailable(&self) {
-        if !self.options.collect_counters {
-            return;
-        }
-        if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters.record_native_platform_unavailable();
-        }
-    }
-
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_native_eligibility_rejection(&self, reason: &str) {
         if !self.options.collect_counters {
             return;
@@ -913,7 +893,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_tiering_blacklist_rejection(&self) {
         self.tiering.borrow_mut().record_jit_blacklist_rejection();
         if !self.options.collect_counters {
@@ -924,7 +903,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_tiering_budget_rejection(&self) {
         self.tiering
             .borrow_mut()
@@ -937,14 +915,12 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn jit_compile_budget_allows_attempt(&self) -> bool {
         let tiering = self.tiering.borrow();
         tiering.jit_compiled_functions() < self.options.tiering.jit_max_functions
             && tiering.jit_compile_budget_used_us() < self.options.tiering.jit_max_compile_us
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_executed(&self) {
         if !self.options.collect_counters {
             return;
@@ -954,7 +930,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_bailout(&self) {
         if !self.options.collect_counters {
             return;
@@ -964,7 +939,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_side_exit(&self, reason: php_jit::SideExitReason) {
         if !self.options.collect_counters {
             return;
@@ -974,7 +948,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_guard_failure(&self) {
         if !self.options.collect_counters {
             return;
@@ -984,7 +957,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_blacklisted_region(&self, reason: JitBlacklistReason) {
         if !self.options.collect_counters {
             return;
@@ -994,7 +966,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_helper_calls(&self, count: u64) {
         if !self.options.collect_counters {
             return;
@@ -1006,7 +977,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_fast_path_hits(&self, count: u64) {
         if !self.options.collect_counters {
             return;
@@ -1018,7 +988,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_compiled_to_compiled_calls(&self, count: u64) {
         if !self.options.collect_counters {
             return;
@@ -1028,7 +997,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_jit_overflow_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1038,7 +1006,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_jit_slow_path_call(&self) {
         if !self.options.collect_counters {
             return;
@@ -1048,7 +1015,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_record_lookup_fast_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1058,7 +1024,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_record_lookup_key_miss_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1068,7 +1033,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_record_lookup_layout_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1087,7 +1051,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_packed_fetch_bounds_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1097,7 +1060,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_packed_fetch_layout_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1107,7 +1069,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_packed_foreach_sum_fast_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1117,7 +1078,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_packed_foreach_sum_layout_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1127,7 +1087,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_packed_foreach_sum_overflow_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1137,7 +1096,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_known_call_fast_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1147,7 +1105,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_known_call_guard_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1157,7 +1114,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_known_call_slow_call(&self) {
         if !self.options.collect_counters {
             return;
@@ -1167,7 +1123,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_direct_call_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1177,7 +1132,6 @@ impl Vm {
         }
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(super) fn record_counter_direct_call_fallback(&self) {
         if !self.options.collect_counters {
             return;
@@ -1187,7 +1141,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_property_load_fast_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1197,7 +1150,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_property_load_guard_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1207,7 +1159,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_property_load_layout_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1217,7 +1168,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_property_load_uninitialized_exit(&self) {
         if !self.options.collect_counters {
             return;
@@ -1227,7 +1177,6 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn record_counter_property_load_slow_call(&self) {
         if !self.options.collect_counters {
             return;

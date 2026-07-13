@@ -6,7 +6,7 @@ use php_ir::ids::{BlockId, FunctionId};
 
 use crate::{
     ExitCounterKey, ExitCounterTable, ExitPolicyThresholds, GuardKind, GuardedTier,
-    InlineCacheObservation, JitMode, QuickeningMode, QuickeningObservation,
+    InlineCacheObservation, NativeOptimizationPolicy, QuickeningMode, QuickeningObservation,
     exit_policy::inline_cache_guard_kind,
 };
 
@@ -201,7 +201,7 @@ impl TieringState {
         unit_key: u64,
         function: FunctionId,
         quickening: QuickeningMode,
-        jit: JitMode,
+        _native_optimization: NativeOptimizationPolicy,
     ) -> ExecutionTier {
         if !self.options.enabled {
             self.stats.tiering_disabled_entries =
@@ -216,14 +216,10 @@ impl TieringState {
             .or_default();
         hotness.entries = hotness.entries.saturating_add(1);
 
-        let jit_enabled = matches!(jit, JitMode::Cranelift);
         let hot_by_entry = hotness.entries >= self.options.function_entry_threshold;
         let hot_by_backedge = hotness.backedges >= self.options.loop_backedge_threshold;
         let guards_stable = self.stats.guard_failure_score < self.options.guard_failure_threshold;
-        if jit_enabled
-            && guards_stable
-            && (self.options.jit_eager || hot_by_entry || hot_by_backedge)
-        {
+        if guards_stable && (self.options.jit_eager || hot_by_entry || hot_by_backedge) {
             self.stats.tier2_jit_candidates = self.stats.tier2_jit_candidates.saturating_add(1);
             if self.options.jit_eager {
                 self.stats.jit_eager_candidates = self.stats.jit_eager_candidates.saturating_add(1);
@@ -237,7 +233,7 @@ impl TieringState {
                 self.stats.tier1_quickened_entries.saturating_add(1);
             ExecutionTier::Quickened
         } else {
-            if jit_enabled && guards_stable && !self.options.jit_eager {
+            if guards_stable && !self.options.jit_eager {
                 self.stats.jit_cold_entries = self.stats.jit_cold_entries.saturating_add(1);
             }
             self.stats.tier0_interpreter_entries =
@@ -279,14 +275,14 @@ impl TieringState {
     /// Returns true when per-site exit-policy bookkeeping has a consumer.
     ///
     /// The exit-policy table only feeds native-tier compile/blacklist
-    /// decisions (jit-cranelift builds) and optional tiering stats. Without
+    /// decisions (mandatory native builds) and optional tiering stats. Without
     /// either, the per-site `ExitCounterKey` allocation and map updates are
     /// write-only work on the dispatch hot path. Aggregate quickening/IC
     /// stats (including `guard_failure_score`, which tier decisions read)
     /// are recorded unconditionally by the callers below.
     #[inline]
     fn exit_policy_recording_active(&self) -> bool {
-        cfg!(feature = "jit-cranelift") || self.options.collect_stats
+        true
     }
 
     pub fn record_quickening_site(
@@ -442,7 +438,9 @@ impl Default for TieringState {
 #[cfg(test)]
 mod tests {
     use super::{ExecutionTier, TieringOptions, TieringState};
-    use crate::{InlineCacheObservation, JitMode, QuickeningMode, QuickeningObservation};
+    use crate::{
+        InlineCacheObservation, NativeOptimizationPolicy, QuickeningMode, QuickeningObservation,
+    };
     use php_ir::ids::{BlockId, FunctionId};
 
     #[test]
@@ -453,11 +451,21 @@ mod tests {
         });
 
         assert_eq!(
-            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(
+                7,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                NativeOptimizationPolicy::Baseline
+            ),
             ExecutionTier::Interpreter
         );
         assert_eq!(
-            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(
+                7,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                NativeOptimizationPolicy::Baseline
+            ),
             ExecutionTier::Quickened
         );
         assert_eq!(state.stats().tier1_quickened_entries, 1);
@@ -476,7 +484,7 @@ mod tests {
                 7,
                 FunctionId::new(1),
                 QuickeningMode::On,
-                JitMode::Cranelift,
+                NativeOptimizationPolicy::Optimizing,
             ),
             ExecutionTier::Interpreter
         );
@@ -497,7 +505,7 @@ mod tests {
                 7,
                 FunctionId::new(1),
                 QuickeningMode::Off,
-                JitMode::Cranelift
+                NativeOptimizationPolicy::Optimizing
             ),
             ExecutionTier::Jit
         );
@@ -517,7 +525,7 @@ mod tests {
                 7,
                 FunctionId::new(1),
                 QuickeningMode::Off,
-                JitMode::Cranelift
+                NativeOptimizationPolicy::Optimizing
             ),
             ExecutionTier::Interpreter
         );
@@ -526,7 +534,7 @@ mod tests {
                 7,
                 FunctionId::new(1),
                 QuickeningMode::Off,
-                JitMode::Cranelift
+                NativeOptimizationPolicy::Optimizing
             ),
             ExecutionTier::Jit
         );
@@ -587,7 +595,7 @@ mod tests {
                 7,
                 FunctionId::new(1),
                 QuickeningMode::On,
-                JitMode::Cranelift,
+                NativeOptimizationPolicy::Optimizing,
             ),
             ExecutionTier::Interpreter
         );
@@ -604,17 +612,32 @@ mod tests {
         let mut state = TieringState::new(options.clone());
 
         assert_eq!(
-            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(
+                7,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                NativeOptimizationPolicy::Baseline
+            ),
             ExecutionTier::Interpreter
         );
         state.begin_request(options);
         assert_eq!(state.stats().function_entry_count, 0);
         assert_eq!(
-            state.record_function_entry(7, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(
+                7,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                NativeOptimizationPolicy::Baseline
+            ),
             ExecutionTier::Quickened
         );
         assert_eq!(
-            state.record_function_entry(8, FunctionId::new(1), QuickeningMode::On, JitMode::Off),
+            state.record_function_entry(
+                8,
+                FunctionId::new(1),
+                QuickeningMode::On,
+                NativeOptimizationPolicy::Baseline
+            ),
             ExecutionTier::Interpreter
         );
     }

@@ -25,7 +25,6 @@ pub(super) fn property_storage_name(
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
 pub(super) fn property_load_pre_guard_status(
     compiled: &CompiledUnit,
     state: &ExecutionState,

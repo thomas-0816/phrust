@@ -585,7 +585,6 @@ pub struct VmCounters {
     pub native_eligibility_rejections_by_reason: BTreeMap<String, u64>,
     pub native_side_exits_by_reason: BTreeMap<String, u64>,
     pub native_blacklist_suppression_by_unstable_region: BTreeMap<String, u64>,
-    pub native_platform_unavailable: u64,
     pub jit_compile_attempts: u64,
     pub jit_compiled: u64,
     pub jit_executed: u64,
@@ -4306,12 +4305,6 @@ impl VmCounters {
         json.push_str("},\n");
         push_field(
             &mut json,
-            "native_platform_unavailable",
-            self.native_platform_unavailable,
-            true,
-        );
-        push_field(
-            &mut json,
             "jit_compile_attempts",
             self.jit_compile_attempts,
             true,
@@ -5978,7 +5971,6 @@ mod tests {
         });
         counters.record_adaptive_tiny_unit_setup_skip();
         counters.record_native_candidate();
-        counters.record_native_platform_unavailable();
         counters.record_native_eligibility_rejection("reference_arg");
         counters.record_jit_compile_attempt();
         counters.record_jit_compiled();
@@ -6431,7 +6423,6 @@ mod tests {
         assert_eq!(counters.persistent_feedback_seeded_dequickens, 1);
         assert_eq!(counters.adaptive_tiny_unit_setup_skips, 1);
         assert_eq!(counters.native_candidates, 1);
-        assert_eq!(counters.native_platform_unavailable, 1);
         assert_eq!(
             counters
                 .native_eligibility_rejections_by_reason
@@ -6820,7 +6811,6 @@ mod tests {
         assert!(json.contains("\"native_eligibility_rejections_by_reason\": {}"));
         assert!(json.contains("\"native_side_exits_by_reason\": {}"));
         assert!(json.contains("\"native_blacklist_suppression_by_unstable_region\": {}"));
-        assert!(json.contains("\"native_platform_unavailable\": 0"));
         assert!(json.contains("\"jit_compile_attempts\": 0"));
         assert!(json.contains("\"jit_compiled\": 0"));
         assert!(json.contains("\"jit_executed\": 0"));

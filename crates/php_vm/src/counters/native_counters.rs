@@ -3,61 +3,50 @@
 use super::{JitCompileDescriptor, VmCounters};
 
 impl VmCounters {
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_packed_foreach_sum_fast_hit(&mut self) {
         self.packed_foreach_sum_fast_hits += 1;
         self.record_array_fast_path_hit("packed_int_sum");
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_packed_foreach_sum_layout_exit(&mut self) {
         self.packed_foreach_sum_layout_exits += 1;
         self.record_array_fast_path_fallback("layout_or_element");
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_packed_foreach_sum_overflow_exit(&mut self) {
         self.packed_foreach_sum_overflow_exits += 1;
         self.record_array_fast_path_fallback("overflow");
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_known_call_fast_hit(&mut self) {
         self.known_call_fast_hits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_known_call_guard_exit(&mut self) {
         self.known_call_guard_exits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_known_call_slow_call(&mut self) {
         self.known_call_slow_calls += 1;
         self.record_slow_path_call("jit.known_call");
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_property_load_fast_hit(&mut self) {
         self.property_load_fast_hits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_property_load_guard_exit(&mut self) {
         self.property_load_guard_exits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_property_load_layout_exit(&mut self) {
         self.property_load_layout_exits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_property_load_uninitialized_exit(&mut self) {
         self.property_load_uninitialized_exits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_property_load_slow_call(&mut self) {
         self.property_load_slow_calls += 1;
         self.record_slow_path_call("jit.property_load");
@@ -68,12 +57,10 @@ impl VmCounters {
         self.record_lookup_fast_hits += 1;
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) fn record_record_lookup_key_miss_exit(&mut self) {
         self.record_lookup_key_miss_exits += 1;
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) fn record_record_lookup_layout_exit(&mut self) {
         self.record_lookup_layout_exits += 1;
     }
@@ -108,7 +95,6 @@ impl VmCounters {
         self.record_slow_path_call("jit.generic");
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_compiled_to_compiled_calls(&mut self, count: u64) {
         self.compiled_to_compiled_calls = self.compiled_to_compiled_calls.saturating_add(count);
     }
@@ -124,44 +110,36 @@ impl VmCounters {
         self.direct_call_fallbacks += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_cache_hit(&mut self) {
         self.jit_compile_cache_hits += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_cache_miss(&mut self) {
         self.jit_compile_cache_misses += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_cache_invalidation(&mut self) {
         self.jit_compile_cache_invalidations += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_attempt(&mut self) {
         self.jit_compile_attempts += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compiled(&mut self) {
         self.jit_compiled += 1;
         self.native_compiled_regions += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_metadata(&mut self, code_bytes: u64, compile_time_nanos: u64) {
         self.jit_code_bytes += code_bytes;
         self.jit_compile_time_nanos += compile_time_nanos;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_descriptor(&mut self, descriptor: JitCompileDescriptor) {
         self.jit_compile_descriptors.push(descriptor);
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) fn record_jit_code_manager_event(
         &mut self,
         event: php_jit::CraneliftCodeManagerEvent,
@@ -182,18 +160,15 @@ impl VmCounters {
         self.jit_evictions = self.jit_evictions.saturating_add(event.evictions);
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_executed(&mut self) {
         self.jit_executed += 1;
         self.native_executions += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_bailout(&mut self) {
         self.jit_bailouts += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_side_exit(&mut self, reason: &str) {
         self.jit_side_exits += 1;
         *self
@@ -233,12 +208,10 @@ impl VmCounters {
         self.jit_tiering_eager_functions += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_tiering_blacklist_rejection(&mut self) {
         self.jit_tiering_blacklist_rejections += 1;
     }
 
-    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_tiering_budget_rejection(&mut self) {
         self.jit_tiering_budget_rejections += 1;
         self.native_compile_budget_rejections += 1;
@@ -246,10 +219,6 @@ impl VmCounters {
 
     pub(crate) fn record_native_candidate(&mut self) {
         self.native_candidates += 1;
-    }
-
-    pub(crate) fn record_native_platform_unavailable(&mut self) {
-        self.native_platform_unavailable += 1;
     }
 
     pub(crate) fn record_native_eligibility_rejection(&mut self, reason: &str) {

@@ -132,7 +132,6 @@ pub struct ServerPerfAblation {
     pub disable_quickening: bool,
     pub disable_inline_caches: bool,
     pub disable_builtin_ic: bool,
-    pub disable_jit: bool,
     pub disable_include_o2: bool,
     pub disable_dense_jump_threading: bool,
 }
@@ -681,9 +680,9 @@ Options:\n\
   --max-execution-ms <n>       PHP execution deadline in milliseconds (default: 30000)\n\
   --max-vm-steps <n>           maximum VM dispatches per request (default: 100000)\n\
   --disable-execution-deadline disable cooperative PHP execution deadline\n\
-  --engine-preset <name>       default managed-fast, baseline oracle, fast alias, or experimental-jit diagnostics\n\
+  --engine-preset <name>       default optimizing native runtime, baseline native runtime, or fast alias\n\
   --dense-includes <off|auto>  override dense-bytecode include execution\n\
-  --perf-ablation <list>       comma-separated disables: dense-includes, quickening, inline-caches, builtin-ic, jit, include-o2, dense-jump-threading, or all\n\
+  --perf-ablation <list>       comma-separated disables: dense-includes, quickening, inline-caches, builtin-ic, include-o2, dense-jump-threading, or all\n\
   --disable-metrics-endpoint   disable GET /__phrust/metrics\n\
   --metrics-token <token>      require Authorization: Bearer token for metrics\n\
   --tls-cert <path>            PEM certificate chain for HTTPS\n\
@@ -1014,7 +1013,6 @@ fn parse_perf_ablation(flag: &str, value: &str) -> Result<ServerPerfAblation, Co
                 ablation.disable_quickening = true;
                 ablation.disable_inline_caches = true;
                 ablation.disable_builtin_ic = true;
-                ablation.disable_jit = true;
                 ablation.disable_include_o2 = true;
                 ablation.disable_dense_jump_threading = true;
             }
@@ -1022,12 +1020,11 @@ fn parse_perf_ablation(flag: &str, value: &str) -> Result<ServerPerfAblation, Co
             "quickening" => ablation.disable_quickening = true,
             "inline-caches" => ablation.disable_inline_caches = true,
             "builtin-ic" | "builtin-dispatch-cache" => ablation.disable_builtin_ic = true,
-            "jit" => ablation.disable_jit = true,
             "include-o2" => ablation.disable_include_o2 = true,
             "dense-jump-threading" => ablation.disable_dense_jump_threading = true,
             _ => {
                 return Err(ConfigError::new(format!(
-                    "invalid {flag} entry `{part}`; expected dense-includes, quickening, inline-caches, builtin-ic, jit, include-o2, dense-jump-threading, all, or none"
+                    "invalid {flag} entry `{part}`; expected dense-includes, quickening, inline-caches, builtin-ic, include-o2, dense-jump-threading, all, or none"
                 )));
             }
         }
@@ -1319,10 +1316,10 @@ mod tests {
             "250000",
             "--disable-execution-deadline",
             "--engine-preset",
-            "experimental-jit",
+            "default",
             "--dense-includes=off",
             "--perf-ablation",
-            "quickening,inline-caches,builtin-ic,jit,include-o2,dense-jump-threading",
+            "quickening,inline-caches,builtin-ic,include-o2,dense-jump-threading",
             "--disable-metrics-endpoint",
             "--metrics-token",
             "secret",
@@ -1392,15 +1389,11 @@ mod tests {
         assert_eq!(config.limits.max_execution_ms, 125);
         assert_eq!(config.limits.max_vm_steps, 250_000);
         assert!(!config.limits.execution_deadline_enabled);
-        assert_eq!(
-            config.engine.engine_preset,
-            EngineProfileName::ExperimentalJit
-        );
+        assert_eq!(config.engine.engine_preset, EngineProfileName::Default);
         assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Off));
         assert!(config.engine.perf_ablation.disable_quickening);
         assert!(config.engine.perf_ablation.disable_inline_caches);
         assert!(config.engine.perf_ablation.disable_builtin_ic);
-        assert!(config.engine.perf_ablation.disable_jit);
         assert!(config.engine.perf_ablation.disable_include_o2);
         assert!(config.engine.perf_ablation.disable_dense_jump_threading);
         assert!(!config.engine.perf_ablation.disable_dense_includes);
@@ -1517,7 +1510,7 @@ rewrite_prefix_query = "/api=route,/legacy=path"
             "fast",
             "--dense-includes",
             "off",
-            "--perf-ablation=jit",
+            "--perf-ablation=quickening",
         ])
         .unwrap();
 
@@ -1550,7 +1543,7 @@ rewrite_prefix_query = "/api=route,/legacy=path"
         assert!(config.capabilities.network_requests_enabled);
         assert_eq!(config.engine.engine_preset, EngineProfileName::Default);
         assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Off));
-        assert!(config.engine.perf_ablation.disable_jit);
+        assert!(config.engine.perf_ablation.disable_quickening);
         assert!(!config.engine.perf_ablation.disable_dense_includes);
         assert_eq!(config.limits.max_vm_steps, 333_000);
         assert_eq!(config.routing.request_rewrites.len(), 2);
@@ -1690,7 +1683,7 @@ index = "../bad.php"
 
         assert_eq!(
             error.to_string(),
-            "invalid --engine-preset: unsupported engine preset `turbo`; expected baseline, default, fast, or experimental-jit"
+            "invalid --engine-preset: unsupported engine preset `turbo`; expected baseline, default, or fast"
         );
     }
 

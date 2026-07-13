@@ -5,22 +5,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-jit-cranelift = [
-    "dep:cranelift-codegen",
-    "dep:cranelift-frontend",
-    "dep:cranelift-jit",
-    "dep:cranelift-module",
-    "dep:cranelift-native",
-]
-
 [dependencies]
-cranelift-codegen = { version = "0.133.0", optional = true }
-cranelift-frontend = { version = "0.133.0", optional = true }
-cranelift-jit = { version = "0.133.0", optional = true }
-cranelift-module = { version = "0.133.0", optional = true }
-cranelift-native = { version = "0.133.0", optional = true }
+cranelift-codegen = "0.133.0"
+cranelift-frontend = "0.133.0"
+cranelift-jit = "0.133.0"
+cranelift-module = "0.133.0"
+cranelift-native = "0.133.0"
 php_ir = { path = "../php_ir", version = "0.0.0" }
 
 [target.'cfg(unix)'.dependencies]

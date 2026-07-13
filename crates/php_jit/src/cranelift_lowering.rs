@@ -1,6 +1,6 @@
 //! Optional Cranelift IR lowering and native-entry prototype for performance.
 //!
-//! This module is compiled only with `jit-cranelift`. It produces and verifies
+//! This module produces and verifies
 //! Cranelift IR text for constrained integer, array, string, property, and
 //! dispatch-helper subsets. Native execution is still default-off and requires
 //! the caller to opt in explicitly.
@@ -12,11 +12,10 @@ use crate::region_ir::{
     build_executable_region,
 };
 use crate::{
-    CraneliftCodeKey, JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_OVERFLOW, JIT_RUNTIME_ABI_HASH,
-    JitBackend, JitBackendApi, JitBackendCompileOutcome, JitBackendCompileRequest,
-    JitCompileRequest, JitCompileStatus, JitEligibility, JitFunctionHandle,
-    JitNativeSpecialization, JitPropertyLoadMetadata, ManagedJitFunction, analyze_jit_eligibility,
-    global_code_manager,
+    CraneliftCodeKey, CraneliftCompilerIdentity, JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_OVERFLOW,
+    JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus, JitEligibility, JitFunctionHandle,
+    JitNativeSpecialization, JitPropertyLoadMetadata, ManagedJitFunction, NativeCompileOutcome,
+    NativeCompileRequest, NativeCompilerApi, analyze_jit_eligibility, global_code_manager,
 };
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{
@@ -233,36 +232,19 @@ const STRING_CONCAT_HELPER_SYMBOL: &str = "php_jit_concat_string_string_fast";
 const RECORD_ARRAY_LOOKUP_HELPER_SYMBOL: &str = "phrust_jit_record_array_lookup";
 const PROPERTY_LOAD_HELPER_SYMBOL: &str = "php_jit_property_load_monomorphic_fast";
 
-/// Cranelift backend skeleton that lowers and verifies CLIF but never executes.
+/// Mandatory Cranelift native compiler.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CraneliftNoExecBackend;
+pub struct CraneliftNativeCompiler;
 
-impl JitBackendApi for CraneliftNoExecBackend {
-    fn backend(&self) -> JitBackend {
-        JitBackend::CraneliftExperiment
-    }
-
-    fn compile_region(
-        &mut self,
-        request: &JitBackendCompileRequest<'_>,
-    ) -> JitBackendCompileOutcome {
-        if !request.allow_native_execution {
-            return JitBackendCompileOutcome::skipped(
-                JitCompileStatus::NativeExecutionDisabled,
-                format!(
-                    "Cranelift no-exec backend refused native entry for region `{}`",
-                    request.compile.region_id
-                ),
-            );
-        }
-
+impl NativeCompilerApi for CraneliftNativeCompiler {
+    fn compile_region(&mut self, request: &NativeCompileRequest<'_>) -> NativeCompileOutcome {
         let (Some(unit), Some(function)) = (request.unit, request.function) else {
-            return JitBackendCompileOutcome::skipped(
+            return NativeCompileOutcome::skipped(
                 JitCompileStatus::Rejected {
-                    reason: "cranelift no-exec backend requires IR unit and function".to_owned(),
+                    reason: "cranelift native compiler requires IR unit and function".to_owned(),
                 },
                 format!(
-                    "Cranelift no-exec backend missing IR context for region `{}`",
+                    "Cranelift native compiler missing IR context for region `{}`",
                     request.compile.region_id
                 ),
             );
@@ -278,7 +260,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native constant-return region `{}` function={} abi_hash={} code_bytes={}",
@@ -292,7 +274,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -315,7 +297,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native packed-array fetch region `{}` function={} abi_hash={} code_bytes={} helper=php_jit_array_fetch_int_slow",
@@ -329,7 +311,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -353,7 +335,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native packed-foreach int-sum region `{}` function={} abi_hash={} code_bytes={} helpers=php_jit_array_len,php_jit_array_fetch_int_slow",
@@ -367,7 +349,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -389,7 +371,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             match compile_known_call_native(function, &candidate, helper_address, request.compile) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native known-call {} region `{}` function={} abi_hash={} code_bytes={} helper={}",
@@ -405,7 +387,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -428,7 +410,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native string-concat region `{}` function={} abi_hash={} code_bytes={} helper={}",
@@ -443,7 +425,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -466,7 +448,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native record-lookup region `{}` function={} abi_hash={} code_bytes={} helper={}",
@@ -481,7 +463,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -504,7 +486,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift native property-load region `{}` function={} abi_hash={} code_bytes={} helper={} class={} property=${}",
@@ -521,7 +503,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -543,7 +525,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
             ) {
                 Ok(compiled) => {
                     let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-                    return JitBackendCompileOutcome::compiled(
+                    return NativeCompileOutcome::compiled(
                         compiled.handle,
                         format!(
                             "Cranelift executable Region IR `{}` function={} abi_hash={} code_bytes={} fast_path_hits={} control_flow={}",
@@ -559,7 +541,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     );
                 }
                 Err(error) => {
-                    return JitBackendCompileOutcome::skipped(
+                    return NativeCompileOutcome::skipped(
                         JitCompileStatus::Rejected {
                             reason: error.code.to_owned(),
                         },
@@ -573,7 +555,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
         }
 
         match lower_function_to_cranelift(unit, function) {
-            Ok(result) => JitBackendCompileOutcome::skipped(
+            Ok(result) => NativeCompileOutcome::skipped(
                 JitCompileStatus::Rejected {
                     reason: "cranelift backend verified CLIF but region is not in native executable subset"
                         .to_owned(),
@@ -587,7 +569,7 @@ impl JitBackendApi for CraneliftNoExecBackend {
                     result.stats.instructions_lowered
                 ),
             ),
-            Err(error) => JitBackendCompileOutcome::skipped(
+            Err(error) => NativeCompileOutcome::skipped(
                 JitCompileStatus::Rejected {
                     reason: error.code.to_owned(),
                 },
@@ -1964,7 +1946,7 @@ fn compile_record_array_lookup_native(
             let handle = JitFunctionHandle::value_value_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 code_bytes,
                 1,
@@ -2443,7 +2425,7 @@ fn compile_constant_return_native(
             let handle = JitFunctionHandle::i64_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 arity,
                 code_bytes,
@@ -2574,7 +2556,7 @@ fn compile_packed_array_fetch_native(
             let handle = JitFunctionHandle::value_i64_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 code_bytes,
                 1,
@@ -2823,7 +2805,7 @@ fn compile_packed_foreach_int_sum_native(
             let handle = JitFunctionHandle::value_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 code_bytes,
                 0,
@@ -2937,7 +2919,7 @@ fn compile_known_call_native(
             let handle = JitFunctionHandle::value_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 code_bytes,
                 1,
@@ -3053,7 +3035,7 @@ fn compile_string_concat_native(
             let handle = JitFunctionHandle::value_value_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 code_bytes,
                 1,
@@ -3171,7 +3153,7 @@ fn compile_property_load_native(
             let handle = JitFunctionHandle::value_metadata_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 code_bytes,
                 1,
@@ -3512,11 +3494,11 @@ fn lower_region_terminator(
 #[cfg(test)]
 mod tests {
     use super::{
-        CraneliftNoExecBackend, build_trivial_add_clif_smoke, lower_function_to_cranelift,
+        CraneliftNativeCompiler, build_trivial_add_clif_smoke, lower_function_to_cranelift,
     };
     use crate::{
-        JIT_HELPER_STATUS_OVERFLOW, JIT_RUNTIME_ABI_HASH, JitBackend, JitBackendApi,
-        JitBackendCompileRequest, JitCompileRequest, JitCompileStatus,
+        JIT_HELPER_STATUS_OVERFLOW, JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus,
+        NativeCompileRequest, NativeCompilerApi,
     };
     use php_ir::{
         BinaryOp, FunctionFlags, FunctionId, InstructionKind, IrBuilder, IrConstant, IrParam,
@@ -3580,33 +3562,14 @@ mod tests {
     }
 
     #[test]
-    fn cranelift_no_exec_backend_refuses_native_entry_by_default() {
-        let mut backend = CraneliftNoExecBackend;
-        let request = JitCompileRequest::new("cl.no_exec.default");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
-            compile: &request,
-            unit: None,
-            function: None,
-            allow_native_execution: false,
-            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
-        });
-
-        assert_eq!(backend.backend(), JitBackend::CraneliftExperiment);
-        assert_eq!(outcome.status, JitCompileStatus::NativeExecutionDisabled);
-        assert!(outcome.handle.is_none());
-        assert!(outcome.diagnostics[0].contains("refused native entry"));
-    }
-
-    #[test]
     fn cranelift_backend_verifies_non_executable_clif_without_handle() {
         let (unit, function) = arithmetic_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.no_exec.verified");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3626,13 +3589,12 @@ mod tests {
     #[test]
     fn cranelift_backend_compiles_and_invokes_constant_return_native_handle() {
         let (unit, function) = constant_return_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.const.42");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3652,13 +3614,12 @@ mod tests {
     #[test]
     fn cranelift_native_handle_copy_survives_original_handle_drop() {
         let (unit, function) = constant_return_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.const.lifecycle");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3678,13 +3639,12 @@ mod tests {
     #[test]
     fn cranelift_backend_compiles_and_invokes_inline_arithmetic_native_handle() {
         let (unit, function) = helper_arithmetic_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.inline.add_mul");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3710,13 +3670,12 @@ mod tests {
     #[test]
     fn cranelift_backend_executes_region_ir_without_leaf_recognizer() {
         let (unit, function) = scalar_identity_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.region.identity");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3737,13 +3696,12 @@ mod tests {
     #[test]
     fn cranelift_backend_executes_multiblock_region_ir() {
         let (unit, function) = scalar_branch_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.region.branch");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3768,13 +3726,12 @@ mod tests {
     #[test]
     fn cranelift_region_calls_same_unit_compiled_callee_directly() {
         let (unit, function, callee) = scalar_direct_call_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.region.direct-call");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3811,13 +3768,12 @@ mod tests {
     #[test]
     fn cranelift_helper_arithmetic_overflow_returns_native_status() {
         let (unit, function) = helper_overflow_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.inline.overflow");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3833,13 +3789,12 @@ mod tests {
     #[test]
     fn cranelift_overflow_materializes_precise_region_continuation() {
         let (unit, function) = helper_overflow_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.region.deopt-state");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3878,13 +3833,12 @@ mod tests {
     #[test]
     fn cranelift_loop_enters_through_native_osr_state() {
         let (unit, function) = scalar_loop_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.region.osr");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
         });
 
@@ -3917,13 +3871,12 @@ mod tests {
     #[test]
     fn cranelift_backend_compiles_packed_array_fetch_helper_native_handle() {
         let (unit, function) = packed_array_fetch_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.packed.fetch");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses {
                 helper_table: 0,
                 packed_array_len: 0,
@@ -3963,13 +3916,12 @@ mod tests {
     #[test]
     fn cranelift_backend_compiles_packed_foreach_int_sum_native_loop() {
         let (unit, function) = packed_foreach_int_sum_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.packed.foreach.sum");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses {
                 helper_table: 0,
                 packed_array_len: test_packed_array_len_helper as *const () as usize,
@@ -4003,13 +3955,12 @@ mod tests {
     #[test]
     fn cranelift_backend_compiles_known_strlen_helper_native_handle() {
         let (unit, function) = known_strlen_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.known.strlen");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses {
                 helper_table: 0,
                 packed_array_len: 0,
@@ -4047,13 +3998,12 @@ mod tests {
     #[test]
     fn cranelift_backend_compiles_string_concat_helper_native_handle() {
         let (unit, function) = string_concat_fixture();
-        let mut backend = CraneliftNoExecBackend;
+        let mut backend = CraneliftNativeCompiler;
         let request = JitCompileRequest::new("cl.string.concat");
-        let outcome = backend.compile_region(&JitBackendCompileRequest {
+        let outcome = backend.compile_region(&NativeCompileRequest {
             compile: &request,
             unit: Some(&unit),
             function: Some(function),
-            allow_native_execution: true,
             runtime_helpers: crate::JitRuntimeHelperAddresses {
                 helper_table: 0,
                 packed_array_len: 0,

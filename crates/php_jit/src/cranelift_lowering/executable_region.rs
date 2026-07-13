@@ -60,7 +60,7 @@ pub(super) fn compile_executable_region_native(
             let handle = JitFunctionHandle::i64_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
-                JitBackend::CraneliftExperiment,
+                CraneliftCompilerIdentity,
                 address,
                 arity,
                 code_bytes,

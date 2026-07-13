@@ -48,7 +48,6 @@ impl JitArgumentSlots<'_> {
 }
 
 impl Vm {
-    #[cfg(feature = "jit-cranelift")]
     pub(super) fn try_execute_dense_jit_leaf(
         &self,
         compiled: &CompiledUnit,
@@ -61,7 +60,7 @@ impl Vm {
             compiled_unit_cache_key(compiled),
             function_id,
             self.options.quickening,
-            self.options.jit,
+            self.options.native_optimization,
         );
         self.record_counter_jit_tiering_decision(tier);
 
@@ -132,12 +131,6 @@ impl Vm {
         })
     }
 
-    #[cfg(not(feature = "jit-cranelift"))]
-    pub(super) fn try_execute_jit_leaf(&self, _request: JitLeafRequest<'_>) -> Option<Value> {
-        None
-    }
-
-    #[cfg(feature = "jit-cranelift")]
     // Audited native-tier helper boundary (docs/performance/cranelift/
     // safety-audit.md): reconstitutes Box<Value> pointers produced by JIT
     // helpers for this synchronous call.
@@ -153,9 +146,6 @@ impl Vm {
             args,
         } = request;
         if tier != ExecutionTier::Jit || !self.options.tiering.enabled {
-            return None;
-        }
-        if self.options.jit != JitMode::Cranelift {
             return None;
         }
         self.record_counter_native_candidate();
@@ -607,12 +597,11 @@ impl Vm {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     /// Precompiles a bounded set of eligible functions without executing the
     /// script. Published code is retained by the process code manager and can
     /// be adopted by every worker that later requests the same cache key.
     pub fn prewarm_cranelift(&self, compiled: &CompiledUnit) -> u64 {
-        if self.options.jit != JitMode::Cranelift || !self.options.tiering.enabled {
+        if !self.options.tiering.enabled {
             return 0;
         }
         const MAX_FUNCTIONS: usize = 64;
@@ -665,7 +654,6 @@ impl Vm {
         compiled_count
     }
 
-    #[cfg(feature = "jit-cranelift")]
     fn compile_cranelift_jit_leaf(
         &self,
         compiled: &CompiledUnit,
@@ -680,10 +668,7 @@ impl Vm {
             return None;
         }
         self.record_counter_jit_compile_attempt();
-        let mut engine = php_jit::JitEngine::with_options(php_jit::JitOptions {
-            enabled: true,
-            allow_native_execution: true,
-        });
+        let mut engine = php_jit::JitEngine::new();
         let compile_result = engine.compile_function_with_runtime_helpers(
             compiled.unit(),
             function_id,
@@ -985,7 +970,7 @@ impl Vm {
             compiled_unit_cache_key(compiled),
             function_id,
             self.options.quickening,
-            self.options.jit,
+            self.options.native_optimization,
         );
         self.record_counter_jit_tiering_decision(entry_tier);
         let plan = match self.get_or_build_dense_execution_plan(compiled) {
@@ -1103,7 +1088,6 @@ impl Vm {
                     );
                     return CachedDenseFunctionDispatch::Continue(call);
                 };
-                #[cfg(feature = "jit-cranelift")]
                 if let Some(value) =
                     self.try_execute_dense_jit_leaf(compiled, state, function_id, function, &call)
                 {

@@ -25,6 +25,10 @@
 //! use php_vm::vm::Vm;
 //! ```
 //!
+// Prompt 2 disconnects the product entry point before the remaining migration
+// prompts delete the old executor modules. They are deliberately unreachable
+// in product builds and retained only for the in-crate migration oracle tests.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 // The interpreter crate forbids unsafe entirely; native-tier unsafe lives
 // in php_jit behind its own safety audit.
 #![deny(unsafe_code)]
@@ -110,7 +114,8 @@ pub mod api {
     pub use crate::tiering::{TieringOptions, TieringStats};
     pub use crate::vm::{
         BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
-        JitBlacklistMode, JitMode, SuperinstructionMode, Vm, VmOptions, VmResult, VmWorkerState,
+        JitBlacklistMode, NativeOptimizationPolicy, SuperinstructionMode, Vm, VmOptions, VmResult,
+        VmWorkerState,
     };
 }
 
@@ -122,16 +127,8 @@ pub mod api {
 pub mod experimental {
     /// Process-wide Cranelift code-cache generation count for readiness gates.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     pub fn cranelift_code_cache_generation() -> u64 {
         php_jit::cranelift_code_manager_stats().code_generations as u64
-    }
-
-    /// A non-Cranelift build has no native code-cache generation.
-    #[must_use]
-    #[cfg(not(feature = "jit-cranelift"))]
-    pub const fn cranelift_code_cache_generation() -> u64 {
-        0
     }
 
     #[doc(hidden)]
@@ -237,4 +234,4 @@ pub(crate) use inline_cache::{InlineCacheKind, InlineCacheObservation};
 #[doc(hidden)]
 pub(crate) use quickening::{QuickeningMode, QuickeningObservation, QuickeningSpecialization};
 #[doc(hidden)]
-pub(crate) use vm::JitMode;
+pub(crate) use vm::NativeOptimizationPolicy;

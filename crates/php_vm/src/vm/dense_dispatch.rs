@@ -370,7 +370,6 @@ impl Vm {
             }
             (diagnostics, frame_index, None)
         };
-        #[cfg(feature = "jit-cranelift")]
         if let Some(value) = direct_call.as_ref().and_then(|direct| {
             stack.current().and_then(|frame| {
                 self.try_execute_direct_jit(
@@ -3362,22 +3361,14 @@ impl Vm {
                                         return (*result).into();
                                     }
                                     if fast_direct_call.is_none()
-                                        && let Some(value) = {
-                                        #[cfg(feature = "jit-cranelift")]
-                                        {
-                                            self.try_execute_dense_jit_leaf(
-                                                compiled,
-                                                state,
-                                                function,
-                                                ir_function,
-                                                &call,
-                                            )
-                                        }
-                                        #[cfg(not(feature = "jit-cranelift"))]
-                                        {
-                                            None
-                                        }
-                                    } {
+                                        && let Some(value) = self.try_execute_dense_jit_leaf(
+                                            compiled,
+                                            state,
+                                            function,
+                                            ir_function,
+                                            &call,
+                                        )
+                                    {
                                         VmResult::success_no_output(Some(value))
                                     } else {
                                         if let Some(direct) = fast_direct_call.take() {

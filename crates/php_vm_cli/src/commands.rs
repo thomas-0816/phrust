@@ -24,8 +24,8 @@ use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::Diagn
 use php_source::{SourceText, TextRange};
 use php_vm::api::{
     BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, IncludeLoader, InlineCacheMode,
-    JitBlacklistMode, JitMode, QuickeningMode, SuperinstructionMode, TieringOptions, TieringStats,
-    Vm, VmOptions, VmResult,
+    JitBlacklistMode, NativeOptimizationPolicy, QuickeningMode, SuperinstructionMode,
+    TieringOptions, TieringStats, Vm, VmOptions, VmResult,
 };
 use php_vm::experimental::{
     BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, FunctionCallSiteSnapshot,
@@ -147,7 +147,6 @@ where
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
 fn dump_cranelift_clif_command<W, E>(
     args: &[String],
     stdout: &mut W,
@@ -173,7 +172,7 @@ where
         .map_err(|error| format!("{}: {error}", output_path.display()))?;
     writeln!(
         stdout,
-        "ok backend=cranelift-experiment function={} verified={} blocks={} instructions={} path={}",
+        "ok compiler=cranelift function={} verified={} blocks={} instructions={} path={}",
         result.function_name,
         result.stats.verified,
         result.stats.blocks_lowered,
@@ -182,27 +181,6 @@ where
     )
     .map_err(|error| error.to_string())?;
     Ok(EXIT_SUCCESS)
-}
-
-#[cfg(not(feature = "jit-cranelift"))]
-fn dump_cranelift_clif_command<W, E>(
-    args: &[String],
-    _stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, String>
-where
-    W: Write,
-    E: Write,
-{
-    if !args.is_empty() {
-        return Err("dump-cranelift-clif does not accept arguments".to_string());
-    }
-    writeln!(
-        stderr,
-        "dump-cranelift-clif requires the jit-cranelift feature"
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(EXIT_UNSUPPORTED)
 }
 
 fn compile_command<W, E>(args: &[String], stdout: &mut W, stderr: &mut E) -> Result<i32, String>
@@ -645,18 +623,7 @@ where
         timings.flag("bytecode_cache", run_options.bytecode_cache.mode.as_str());
         timings.flag("quickening", on_off(run_options.quickening.enabled()));
         timings.flag("inline_caches", on_off(run_options.inline_caches.enabled()));
-        timings.flag("jit", run_options.jit.as_str());
-    }
-    if run_options.jit_explicit
-        && run_options.jit.requires_cranelift()
-        && !cfg!(feature = "jit-cranelift")
-    {
-        writeln!(
-            stderr,
-            "run --jit=cranelift requires the jit-cranelift feature"
-        )
-        .map_err(|error| error.to_string())?;
-        return Ok(EXIT_UNSUPPORTED);
+        timings.flag("jit", run_options.native_optimization.as_str());
     }
     let path = run_options.path;
     let mut cache_stats = BytecodeCacheStats::new(run_options.bytecode_cache.mode);
@@ -733,7 +700,7 @@ where
         bytecode_layout_profile,
         quickening: run_options.quickening,
         inline_caches: run_options.inline_caches,
-        jit: run_options.jit,
+        native_optimization: run_options.native_optimization,
         jit_threshold: run_options.jit_threshold,
         jit_blacklist: run_options.jit_blacklist,
         jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
@@ -840,7 +807,8 @@ where
             ir_instruction_count(compiled.ir_unit()),
         );
     }
-    let jit_eligibility_json = build_jit_eligibility_json(compiled.ir_unit(), run_options.jit);
+    let jit_eligibility_json =
+        build_jit_eligibility_json(compiled.ir_unit(), run_options.native_optimization);
     let persistent_feedback =
         prepare_persistent_feedback(run_options, path, cache_context.as_ref())?;
     // Consumption is governed separately from reading/validating/writing: with
@@ -2021,7 +1989,7 @@ fn persistent_feedback_compile_options(run_options: &RunOptions<'_>) -> String {
         on_off(run_options.quickening.enabled()),
         on_off(run_options.inline_caches.enabled()),
         run_options.bytecode_cache.mode.as_str(),
-        run_options.jit.as_str(),
+        run_options.native_optimization.as_str(),
         on_off(run_options.tiering.enabled),
     )
 }
@@ -2345,7 +2313,7 @@ fn write_jit_stats_json<W: Write>(
         "{}",
         to_json_string(&JitStatsEnvelopeJson {
             jit: JitStatsJson {
-                mode: options.jit.as_str(),
+                mode: options.native_optimization.as_str(),
                 threshold: options.jit_threshold,
                 eager: options.tiering.jit_eager,
                 max_compile_us: options.tiering.jit_max_compile_us,
@@ -2491,26 +2459,20 @@ impl<'a> From<&'a JitCompileDescriptor> for JitCompileDescriptorJson<'a> {
     }
 }
 
-#[cfg(feature = "jit-cranelift")]
-fn build_jit_eligibility_json(unit: &php_ir::IrUnit, jit: JitMode) -> serde_json::Value {
+fn build_jit_eligibility_json(
+    unit: &php_ir::IrUnit,
+    _native_optimization: NativeOptimizationPolicy,
+) -> serde_json::Value {
     let mut reports = Vec::new();
-    if jit.requires_cranelift() {
-        for index in 0..unit.functions.len() {
-            reports.push(php_jit::analyze_jit_eligibility(
-                unit,
-                php_ir::FunctionId::new(index as u32),
-            ));
-        }
+    for index in 0..unit.functions.len() {
+        reports.push(php_jit::analyze_jit_eligibility(
+            unit,
+            php_ir::FunctionId::new(index as u32),
+        ));
     }
     jit_eligibility_reports_json(&reports)
 }
 
-#[cfg(not(feature = "jit-cranelift"))]
-fn build_jit_eligibility_json(_unit: &php_ir::IrUnit, _jit: JitMode) -> serde_json::Value {
-    empty_jit_eligibility_json()
-}
-
-#[cfg(feature = "jit-cranelift")]
 fn jit_eligibility_reports_json(reports: &[php_jit::JitEligibilityReport]) -> serde_json::Value {
     let considered = reports.len();
     let eligible = reports
@@ -2538,18 +2500,6 @@ fn jit_eligibility_reports_json(reports: &[php_jit::JitEligibilityReport]) -> se
         "rejected": rejected,
         "unknown": unknown,
         "reports": reports,
-    })
-}
-
-#[cfg(not(feature = "jit-cranelift"))]
-fn empty_jit_eligibility_json() -> serde_json::Value {
-    serde_json::json!({
-        "considered": 0,
-        "eligible": 0,
-        "non_eligible": 0,
-        "rejected": 0,
-        "unknown": 0,
-        "reports": [],
     })
 }
 
@@ -2632,7 +2582,7 @@ fn region_profile_json_from_env() -> Option<String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory,\n  and accepted feedback seeds quickening and monomorphic call-IC sites behind the full runtime guard protocol\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off,\n  PHRUST_PERSISTENT_FEEDBACK_CONSUME=off; --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --last-use-moves off|on --reuse-class-context-frames off|on --dense-jump-threading off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-consume off|quickening|quickening-ics --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
+        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          optimizing Cranelift runtime; also accepted as fast\n  baseline         non-speculative baseline Cranelift runtime\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory,\n  and accepted feedback seeds quickening and monomorphic call-IC sites behind the full runtime guard protocol\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off,\n  PHRUST_PERSISTENT_FEEDBACK_CONSUME=off; --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --last-use-moves off|on --reuse-class-context-frames off|on --dense-jump-threading off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-consume off|quickening|quickening-ics --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
     )
     .map_err(|error| error.to_string())
 }
@@ -3690,7 +3640,6 @@ fn path_exists(path: &str) -> bool {
     Path::new(path).exists()
 }
 
-#[cfg(feature = "jit-cranelift")]
 fn workspace_relative_path(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -3712,8 +3661,8 @@ mod tests {
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
     use php_runtime::api::RuntimeContext;
     use php_vm::api::{
-        BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode, JitMode,
-        SuperinstructionMode,
+        BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode,
+        NativeOptimizationPolicy, SuperinstructionMode,
     };
     use serde_json::Value;
     use std::io::Cursor;
@@ -3888,7 +3837,6 @@ mod tests {
         assert_eq!(json["context"]["command"], "php-vm run");
     }
 
-    #[cfg(feature = "jit-cranelift")]
     #[test]
     fn dump_cranelift_clif_writes_verified_standalone_smoke() {
         let output = workspace_root().join("target/performance/cranelift/trivial_add.clif");
@@ -3910,26 +3858,6 @@ mod tests {
         assert!(clif.contains("function u0:0(i64, i64) -> i64"));
         assert!(clif.contains("iadd"));
         assert!(clif.contains("return"));
-    }
-
-    #[cfg(not(feature = "jit-cranelift"))]
-    #[test]
-    fn dump_cranelift_clif_reports_feature_requirement_when_disabled() {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run(
-            ["dump-cranelift-clif".to_string()],
-            &mut stdout,
-            &mut stderr,
-        );
-
-        assert_eq!(code, super::EXIT_UNSUPPORTED);
-        assert!(stdout.is_empty());
-        assert!(
-            String::from_utf8(stderr)
-                .unwrap()
-                .contains("requires the jit-cranelift feature")
-        );
     }
 
     #[test]
@@ -4447,7 +4375,10 @@ mod tests {
         assert_eq!(options.bytecode_layout_profile, None);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Off);
+        assert_eq!(
+            options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        );
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
@@ -4471,7 +4402,10 @@ mod tests {
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Off);
+        assert_eq!(
+            options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        );
         assert!(options.tiering.enabled);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
     }
@@ -4490,8 +4424,12 @@ mod tests {
         assert_eq!(options.execution_format, ExecutionFormat::Ir);
         assert_eq!(options.quickening, QuickeningMode::Off);
         assert_eq!(options.inline_caches, InlineCacheMode::Off);
-        assert_eq!(options.jit, JitMode::Off);
-        assert!(!options.tiering.enabled);
+        assert_eq!(
+            options.native_optimization,
+            NativeOptimizationPolicy::Baseline
+        );
+        assert!(options.tiering.enabled);
+        assert!(options.tiering.jit_eager);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, None);
     }
 
@@ -4513,7 +4451,10 @@ mod tests {
         assert_eq!(options.bytecode_layout_profile, None);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Off);
+        assert_eq!(
+            options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        );
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
@@ -4545,26 +4486,6 @@ mod tests {
     }
 
     #[test]
-    fn run_args_accept_experimental_jit_engine_preset() {
-        let args = vec![
-            "--engine-preset".to_string(),
-            "experimental-jit".to_string(),
-            "fixtures/runtime/valid/hello.php".to_string(),
-        ];
-
-        let options = parse_run_args(&args).expect("run args should parse");
-
-        assert_eq!(options.opt_level, OptimizationLevel::O2);
-        assert_eq!(options.include_opt_level, OptimizationLevel::O2);
-        assert_eq!(options.execution_format, ExecutionFormat::Auto);
-        assert_eq!(options.bytecode_layout, BytecodeLayoutMode::Source);
-        assert_eq!(options.quickening, QuickeningMode::On);
-        assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Cranelift);
-        assert!(options.tiering.enabled);
-    }
-
-    #[test]
     fn invalid_engine_preset_is_rejected() {
         let args = vec![
             "--engine-preset=turbo".to_string(),
@@ -4576,7 +4497,7 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.contains("expected baseline, default, fast, or experimental-jit"));
+        assert!(error.contains("expected baseline, default, or fast"));
     }
 
     #[test]
@@ -4592,30 +4513,6 @@ mod tests {
         };
 
         assert!(error.contains("expected off or on"));
-    }
-
-    #[cfg(not(feature = "jit-cranelift"))]
-    #[test]
-    fn cranelift_jit_mode_without_feature_is_unsupported() {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run(
-            [
-                "run".to_string(),
-                "--jit=cranelift".to_string(),
-                fixture("fixtures/runtime/valid/hello.php"),
-            ],
-            &mut stdout,
-            &mut stderr,
-        );
-
-        assert_eq!(code, super::EXIT_UNSUPPORTED);
-        assert!(stdout.is_empty());
-        assert!(
-            String::from_utf8(stderr)
-                .unwrap()
-                .contains("requires the jit-cranelift feature")
-        );
     }
 
     #[test]
@@ -4646,21 +4543,6 @@ mod tests {
         };
 
         assert!(error.contains("expected source or profiled"));
-    }
-
-    #[test]
-    fn invalid_jit_mode_is_rejected() {
-        let args = vec![
-            "--jit=maybe".to_string(),
-            "fixtures/runtime/valid/hello.php".to_string(),
-        ];
-
-        let error = match parse_run_args(&args) {
-            Ok(_) => panic!("invalid jit mode should be rejected"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("expected off, noop, or cranelift"));
     }
 
     #[test]
@@ -4774,104 +4656,6 @@ mod tests {
     }
 
     #[test]
-    fn run_jit_noop_mode_is_visible_in_counter_json() {
-        let path = std::env::temp_dir().join(format!(
-            "phrust-vm-jit-noop-counters-{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run(
-            [
-                "run".to_string(),
-                "--jit=noop".to_string(),
-                "--jit-threshold=7".to_string(),
-                "--counters-json".to_string(),
-                path.display().to_string(),
-                fixture("fixtures/runtime/valid/hello.php"),
-            ],
-            &mut stdout,
-            &mut stderr,
-        );
-
-        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
-        assert_eq!(stdout, b"hello runtime\n");
-        assert!(stderr.is_empty());
-        let json = std::fs::read_to_string(&path).expect("counter JSON should be written");
-        let _ = std::fs::remove_file(&path);
-        assert!(json.contains("\"jit_mode\": \"noop\""));
-        assert!(json.contains("\"jit_threshold\": 7"));
-        assert!(json.contains("\"jit_compile_attempts\": 0"));
-    }
-
-    #[test]
-    fn run_jit_stats_json_writes_compact_report_to_stderr() {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run(
-            [
-                "run".to_string(),
-                "--jit=noop".to_string(),
-                "--jit-threshold=5".to_string(),
-                "--jit-dump-clif=target/performance/cranelift/noop.clif".to_string(),
-                "--jit-stats=json".to_string(),
-                fixture("fixtures/runtime/valid/hello.php"),
-            ],
-            &mut stdout,
-            &mut stderr,
-        );
-
-        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
-        assert_eq!(stdout, b"hello runtime\n");
-        let stderr = String::from_utf8(stderr).unwrap();
-        let json = parse_json_text(stderr.trim());
-        let jit = &json["jit"];
-        assert_eq!(jit["mode"], "noop");
-        assert_eq!(jit["threshold"], 5);
-        assert_eq!(jit["eager"], false);
-        assert_eq!(jit["max_compile_us"], u64::MAX);
-        assert_eq!(jit["max_functions"], u64::MAX);
-        assert_eq!(jit["blacklist"], "on");
-        assert_eq!(jit["dump_clif"], "target/performance/cranelift/noop.clif");
-        assert!(jit["side_exit_reasons"].as_object().unwrap().is_empty());
-        assert_eq!(jit["blacklisted_regions"], 0);
-        assert!(jit["blacklist_reasons"].as_object().unwrap().is_empty());
-        assert_eq!(jit["tiering_cold_functions"], 0);
-        assert_eq!(jit["tiering_hot_functions"], 0);
-        assert_eq!(jit["tiering_eager_functions"], 0);
-        assert_eq!(jit["tiering_blacklist_rejections"], 0);
-        assert_eq!(jit["tiering_budget_rejections"], 0);
-        assert_eq!(jit["fast_path_hits"], 0);
-        assert_eq!(jit["packed_fetch_fast_hits"], 0);
-        assert_eq!(jit["packed_fetch_bounds_exits"], 0);
-        assert_eq!(jit["packed_fetch_layout_exits"], 0);
-        assert_eq!(jit["packed_foreach_sum_fast_hits"], 0);
-        assert_eq!(jit["packed_foreach_sum_layout_exits"], 0);
-        assert_eq!(jit["packed_foreach_sum_overflow_exits"], 0);
-        assert_eq!(jit["known_call_fast_hits"], 0);
-        assert_eq!(jit["known_call_guard_exits"], 0);
-        assert_eq!(jit["known_call_slow_calls"], 0);
-        assert_eq!(jit["direct_call_hits"], 0);
-        assert_eq!(jit["direct_call_fallbacks"], 0);
-        assert_eq!(jit["property_load_fast_hits"], 0);
-        assert_eq!(jit["property_load_guard_exits"], 0);
-        assert_eq!(jit["property_load_layout_exits"], 0);
-        assert_eq!(jit["property_load_uninitialized_exits"], 0);
-        assert_eq!(jit["property_load_slow_calls"], 0);
-        assert_eq!(jit["string_concat_fast_path_hits"], 0);
-        assert_eq!(jit["string_concat_fast_path_misses"], 0);
-        assert_eq!(jit["overflow_exits"], 0);
-        assert_eq!(jit["slow_path_calls"], 0);
-        assert_eq!(jit["compile_cache_hits"], 0);
-        assert_eq!(jit["compile_cache_misses"], 0);
-        assert_eq!(jit["compile_cache_invalidations"], 0);
-        assert!(jit["compile_descriptors"].as_array().unwrap().is_empty());
-        assert_eq!(jit["eligibility"]["considered"], 0);
-    }
-
-    #[cfg(feature = "jit-cranelift")]
-    #[test]
     fn cranelift_jit_stats_reports_eligibility_json_for_fixtures() {
         let fixtures = [
             (
@@ -4898,7 +4682,6 @@ mod tests {
             let code = run(
                 [
                     "run".to_string(),
-                    "--jit=cranelift".to_string(),
                     "--jit-stats=json".to_string(),
                     fixture(fixture_path),
                 ],
@@ -5013,7 +4796,10 @@ mod tests {
         assert_eq!(options.bytecode_layout_profile, None);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Off);
+        assert_eq!(
+            options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        );
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
         assert!(!options.tiering.collect_stats);
@@ -5047,7 +4833,6 @@ mod tests {
             "target/performance/bytecode-layout/block-frequency.json".to_string(),
             "--quickening=on".to_string(),
             "--inline-caches=on".to_string(),
-            "--jit=cranelift".to_string(),
             "--jit-threshold=9".to_string(),
             "--jit-max-compile-us=1000".to_string(),
             "--jit-max-functions".to_string(),
@@ -5090,7 +4875,10 @@ mod tests {
         );
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Cranelift);
+        assert_eq!(
+            options.native_optimization,
+            NativeOptimizationPolicy::Optimizing
+        );
         assert_eq!(options.jit_threshold, 1);
         assert_eq!(options.jit_blacklist, JitBlacklistMode::Off);
         assert_eq!(

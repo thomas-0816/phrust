@@ -1,7 +1,7 @@
 //! Default-off performance JIT API.
 //!
 //! Default builds use the stub backend and never allocate executable memory.
-//! The `jit-cranelift` feature enables a constrained performance experiment with
+//! Cranelift is the mandatory production compiler with
 //! explicit native-execution opt-in, ABI hash checks, verifier-backed Cranelift
 //! lowering, and documented unsafe call boundaries.
 
@@ -17,13 +17,10 @@
 
 mod abi;
 mod backend;
-#[cfg(feature = "jit-cranelift")]
 mod code_manager;
-#[cfg(feature = "jit-cranelift")]
 mod cranelift_lowering;
 mod eligibility;
 mod helpers;
-#[cfg(feature = "jit-cranelift")]
 mod host_isa;
 pub mod region_ir;
 
@@ -35,20 +32,15 @@ pub use abi::{
     JitRuntimeCalloutResult, JitRuntimeHelperTable, JitSideExit, JitVmContextHandle,
     SideExitReason, helper_id, jit_default_helper_dispatch,
 };
-pub use backend::{
-    CurrentJitBackend, JitBackendApi, JitBackendCompileOutcome, JitBackendCompileRequest,
-    NoopJitBackend,
-};
-#[cfg(feature = "jit-cranelift")]
+pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
     CompiledRegionMetadata, CraneliftCodeCacheDisposition, CraneliftCodeKey, CraneliftCodeManager,
     CraneliftCodeManagerError, CraneliftCodeManagerEvent, CraneliftCodeManagerStats,
     ManagedJitFunction, SharedJitCodeHandle, cranelift_code_manager_stats, global_code_manager,
 };
-#[cfg(feature = "jit-cranelift")]
 pub use cranelift_lowering::{
     CraneliftClifSmokeResult, CraneliftLoweringError, CraneliftLoweringResult,
-    CraneliftLoweringStats, CraneliftMachineCodeHandle, CraneliftNoExecBackend,
+    CraneliftLoweringStats, CraneliftMachineCodeHandle, CraneliftNativeCompiler,
     build_trivial_add_clif_smoke, lower_function_to_cranelift,
 };
 pub use eligibility::{
@@ -62,50 +54,22 @@ pub use helpers::{
     helper_registry_is_stable, helper_registry_layout_summary, lookup_helper_by_id,
     lookup_helper_by_name,
 };
-#[cfg(feature = "jit-cranelift")]
 pub use host_isa::{CraneliftHostIsaError, CraneliftHostIsaIdentity, cranelift_host_isa_identity};
 use php_ir::{BlockId, FunctionId, InstrId, IrSpan, IrUnit, LocalId};
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
 
-/// Stable backend selected for the current build.
+/// Stable native compiler identity embedded in code/cache metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum JitBackend {
-    /// No native backend is compiled in.
-    Stub,
-    /// The Cranelift experiment feature is compiled, but execution is still off.
-    CraneliftExperiment,
-}
+pub struct CraneliftCompilerIdentity;
 
-impl JitBackend {
-    /// Returns the backend for this build.
-    #[must_use]
-    pub const fn current() -> Self {
-        if cfg!(feature = "jit-cranelift") {
-            Self::CraneliftExperiment
-        } else {
-            Self::Stub
-        }
-    }
-
+impl CraneliftCompilerIdentity {
     /// Stable report spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Stub => "stub",
-            Self::CraneliftExperiment => "cranelift-experiment",
-        }
+        "cranelift"
     }
-}
-
-/// Options for constructing a JIT engine.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct JitOptions {
-    /// Runtime switch. Defaults off even when a backend feature is compiled.
-    pub enabled: bool,
-    /// Whether native execution is allowed for this process.
-    pub allow_native_execution: bool,
 }
 
 /// Runtime-owned helper addresses the backend may call from generated code.
@@ -204,7 +168,7 @@ pub struct JitFunctionHandle {
     /// Region that produced this handle.
     pub region_id: String,
     /// Backend that produced this handle.
-    pub backend: JitBackend,
+    pub compiler: CraneliftCompilerIdentity,
     native_entry: Option<JitNativeEntry>,
     specialization: JitNativeSpecialization,
     code_bytes: u64,
@@ -212,9 +176,7 @@ pub struct JitFunctionHandle {
     fast_path_hits_per_invocation: u64,
     property_load_metadata: Option<JitPropertyLoadMetadata>,
     region_state_metadata: Option<Arc<JitRegionStateMetadata>>,
-    #[cfg(feature = "jit-cranelift")]
     code_lifetime: Option<SharedJitCodeHandle>,
-    #[cfg(feature = "jit-cranelift")]
     code_manager_event: Option<CraneliftCodeManagerEvent>,
 }
 
@@ -222,7 +184,7 @@ impl PartialEq for JitFunctionHandle {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
             && self.region_id == other.region_id
-            && self.backend == other.backend
+            && self.compiler == other.compiler
             && self.native_entry == other.native_entry
             && self.specialization == other.specialization
             && self.code_bytes == other.code_bytes
@@ -230,16 +192,7 @@ impl PartialEq for JitFunctionHandle {
             && self.fast_path_hits_per_invocation == other.fast_path_hits_per_invocation
             && self.property_load_metadata == other.property_load_metadata
             && self.region_state_metadata == other.region_state_metadata
-            && {
-                #[cfg(feature = "jit-cranelift")]
-                {
-                    self.code_lifetime == other.code_lifetime
-                }
-                #[cfg(not(feature = "jit-cranelift"))]
-                {
-                    true
-                }
-            }
+            && self.code_lifetime == other.code_lifetime
     }
 }
 
@@ -361,11 +314,15 @@ pub enum JitNativeSpecialization {
 impl JitFunctionHandle {
     /// Creates a non-executable handle for tests and future metadata-only paths.
     #[must_use]
-    pub const fn metadata_only(id: u64, region_id: String, backend: JitBackend) -> Self {
+    pub const fn metadata_only(
+        id: u64,
+        region_id: String,
+        compiler: CraneliftCompilerIdentity,
+    ) -> Self {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: None,
             specialization: JitNativeSpecialization::Generic,
             code_bytes: 0,
@@ -373,20 +330,17 @@ impl JitFunctionHandle {
             fast_path_hits_per_invocation: 0,
             property_load_metadata: None,
             region_state_metadata: None,
-            #[cfg(feature = "jit-cranelift")]
             code_lifetime: None,
-            #[cfg(feature = "jit-cranelift")]
             code_manager_event: None,
         }
     }
 
     /// Creates a scalar integer native-entry handle.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) const fn i64_native(
         id: u64,
         region_id: String,
-        backend: JitBackend,
+        compiler: CraneliftCompilerIdentity,
         address: usize,
         arity: u8,
         code_bytes: u64,
@@ -394,7 +348,7 @@ impl JitFunctionHandle {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: Some(JitNativeEntry {
                 address,
                 arity,
@@ -414,12 +368,11 @@ impl JitFunctionHandle {
 
     /// Creates a status/out-pointer integer native-entry handle.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn i64_status_out_native(
         id: u64,
         region_id: String,
-        backend: JitBackend,
+        compiler: CraneliftCompilerIdentity,
         address: usize,
         arity: u8,
         code_bytes: u64,
@@ -430,7 +383,7 @@ impl JitFunctionHandle {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: Some(JitNativeEntry {
                 address,
                 arity,
@@ -450,11 +403,10 @@ impl JitFunctionHandle {
 
     /// Creates a status/out-pointer native entry for one opaque value and int index.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) const fn value_i64_status_out_native(
         id: u64,
         region_id: String,
-        backend: JitBackend,
+        compiler: CraneliftCompilerIdentity,
         address: usize,
         code_bytes: u64,
         helper_calls_per_invocation: u64,
@@ -463,7 +415,7 @@ impl JitFunctionHandle {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: Some(JitNativeEntry {
                 address,
                 arity: 2,
@@ -483,12 +435,11 @@ impl JitFunctionHandle {
 
     /// Creates a status/out-pointer native entry for one opaque value.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn value_status_out_native(
         id: u64,
         region_id: String,
-        backend: JitBackend,
+        compiler: CraneliftCompilerIdentity,
         address: usize,
         code_bytes: u64,
         helper_calls_per_invocation: u64,
@@ -498,7 +449,7 @@ impl JitFunctionHandle {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: Some(JitNativeEntry {
                 address,
                 arity: 1,
@@ -518,12 +469,11 @@ impl JitFunctionHandle {
 
     /// Creates a status/out-pointer native entry for one opaque value plus metadata.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn value_metadata_status_out_native(
         id: u64,
         region_id: String,
-        backend: JitBackend,
+        compiler: CraneliftCompilerIdentity,
         address: usize,
         code_bytes: u64,
         helper_calls_per_invocation: u64,
@@ -533,7 +483,7 @@ impl JitFunctionHandle {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: Some(JitNativeEntry {
                 address,
                 arity: 2,
@@ -553,12 +503,11 @@ impl JitFunctionHandle {
 
     /// Creates a status/out-pointer native entry for two opaque values.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn value_value_status_out_native(
         id: u64,
         region_id: String,
-        backend: JitBackend,
+        compiler: CraneliftCompilerIdentity,
         address: usize,
         code_bytes: u64,
         helper_calls_per_invocation: u64,
@@ -568,7 +517,7 @@ impl JitFunctionHandle {
         Self {
             id,
             region_id,
-            backend,
+            compiler,
             native_entry: Some(JitNativeEntry {
                 address,
                 arity: 2,
@@ -586,20 +535,17 @@ impl JitFunctionHandle {
         }
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) fn bind_code_lifetime(&mut self, lifetime: SharedJitCodeHandle) {
         debug_assert_eq!(self.native_entry_address(), Some(lifetime.entry_address()));
         self.code_lifetime = Some(lifetime);
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) fn bind_code_manager_event(&mut self, event: CraneliftCodeManagerEvent) {
         self.code_manager_event = Some(event);
     }
 
     /// Exact process-cache event associated with publication of this handle.
     #[must_use]
-    #[cfg(feature = "jit-cranelift")]
     pub fn code_manager_event(&self) -> Option<CraneliftCodeManagerEvent> {
         self.code_manager_event
     }
@@ -607,19 +553,11 @@ impl JitFunctionHandle {
     /// Returns the owning code generation for native handles.
     #[must_use]
     pub fn code_generation_id(&self) -> Option<u64> {
-        #[cfg(feature = "jit-cranelift")]
-        {
-            self.code_lifetime
-                .as_ref()
-                .map(SharedJitCodeHandle::generation_id)
-        }
-        #[cfg(not(feature = "jit-cranelift"))]
-        {
-            None
-        }
+        self.code_lifetime
+            .as_ref()
+            .map(SharedJitCodeHandle::generation_id)
     }
 
-    #[cfg(feature = "jit-cranelift")]
     pub(crate) fn native_entry_address(&self) -> Option<usize> {
         self.native_entry.map(|entry| entry.address)
     }
@@ -896,7 +834,6 @@ struct JitNativeEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
 enum JitNativeEntryKind {
     I64Return,
     I64StatusOut,
@@ -1241,12 +1178,6 @@ impl JitInvokeError {
 /// Machine-readable compile status.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JitCompileStatus {
-    /// Runtime JIT flag is disabled.
-    Disabled,
-    /// Backend feature is not compiled in.
-    BackendUnavailable,
-    /// Backend feature is present, but native execution is blocked.
-    NativeExecutionDisabled,
     /// Region was rejected before code generation.
     Rejected { reason: String },
     /// Region compiled to native code.
@@ -1258,9 +1189,6 @@ impl JitCompileStatus {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Disabled => "disabled",
-            Self::BackendUnavailable => "backend_unavailable",
-            Self::NativeExecutionDisabled => "native_execution_disabled",
             Self::Rejected { .. } => "rejected",
             Self::Compiled => "compiled",
         }
@@ -1302,12 +1230,6 @@ impl std::error::Error for JitError {}
 pub struct JitStats {
     /// Compile requests observed.
     pub compile_requests: u64,
-    /// Requests skipped because runtime JIT was disabled.
-    pub disabled_requests: u64,
-    /// Requests skipped because no backend feature was compiled in.
-    pub backend_unavailable: u64,
-    /// Requests blocked because native execution is not enabled.
-    pub native_execution_disabled: u64,
     /// Regions rejected by the skeleton before code generation.
     pub rejected: u64,
     /// Native compile successes. Zero until native compilation work enable it.
@@ -1332,35 +1254,25 @@ pub struct JitStats {
     pub eligibility_instructions_analyzed: u64,
 }
 
-/// Default-off JIT engine skeleton.
+/// Mandatory native compiler engine.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitEngine {
-    options: JitOptions,
-    backend: JitBackend,
     stats: JitStats,
 }
 
 impl JitEngine {
-    /// Creates a default-off engine.
+    /// Creates a Cranelift compiler engine.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_options(JitOptions::default())
-    }
-
-    /// Creates an engine with explicit options.
-    #[must_use]
-    pub fn with_options(options: JitOptions) -> Self {
         Self {
-            options,
-            backend: JitBackend::current(),
             stats: JitStats::default(),
         }
     }
 
     /// Returns the selected backend for this build.
     #[must_use]
-    pub const fn backend(&self) -> JitBackend {
-        self.backend
+    pub const fn compiler_kind(&self) -> CraneliftCompilerIdentity {
+        CraneliftCompilerIdentity
     }
 
     /// Returns accumulated stats.
@@ -1392,7 +1304,7 @@ impl JitEngine {
 
     /// Attempts to compile a region with the build-selected backend.
     pub fn compile(&mut self, request: JitCompileRequest) -> Result<JitCompileResult, JitError> {
-        let mut backend = CurrentJitBackend::new(self.backend);
+        let mut backend = CraneliftNativeCompiler;
         self.compile_with_backend(request, &mut backend)
     }
 
@@ -1403,7 +1315,7 @@ impl JitEngine {
         function: FunctionId,
         request: JitCompileRequest,
     ) -> Result<JitCompileResult, JitError> {
-        let mut backend = CurrentJitBackend::new(self.backend);
+        let mut backend = CraneliftNativeCompiler;
         self.compile_function_with_backend(unit, function, request, &mut backend)
     }
 
@@ -1415,7 +1327,7 @@ impl JitEngine {
         request: JitCompileRequest,
         runtime_helpers: JitRuntimeHelperAddresses,
     ) -> Result<JitCompileResult, JitError> {
-        let mut backend = CurrentJitBackend::new(self.backend);
+        let mut backend = CraneliftNativeCompiler;
         self.compile_inner(
             request,
             Some(unit),
@@ -1429,7 +1341,7 @@ impl JitEngine {
     ///
     /// This is the API boundary the VM can exercise without taking a concrete
     /// dependency on Cranelift internals.
-    pub fn compile_with_backend<B: JitBackendApi>(
+    pub fn compile_with_backend<B: NativeCompilerApi>(
         &mut self,
         request: JitCompileRequest,
         backend: &mut B,
@@ -1444,7 +1356,7 @@ impl JitEngine {
     }
 
     /// Attempts to compile one IR function through a backend-neutral implementation.
-    pub fn compile_function_with_backend<B: JitBackendApi>(
+    pub fn compile_function_with_backend<B: NativeCompilerApi>(
         &mut self,
         unit: &IrUnit,
         function: FunctionId,
@@ -1460,7 +1372,7 @@ impl JitEngine {
         )
     }
 
-    fn compile_inner<B: JitBackendApi>(
+    fn compile_inner<B: NativeCompilerApi>(
         &mut self,
         request: JitCompileRequest,
         unit: Option<&IrUnit>,
@@ -1473,47 +1385,30 @@ impl JitEngine {
         }
 
         self.stats.compile_requests += 1;
-        let (status, handle, diagnostics) = if !self.options.enabled {
-            self.stats.disabled_requests += 1;
-            (
-                JitCompileStatus::Disabled,
-                None,
-                vec![format!(
-                    "jit region `{}` skipped with status `disabled`",
-                    request.region_id
-                )],
-            )
-        } else {
-            let backend_request = JitBackendCompileRequest {
-                compile: &request,
-                unit,
-                function,
-                allow_native_execution: self.options.allow_native_execution,
-                runtime_helpers,
-            };
-            let outcome = backend.compile_region(&backend_request);
-            self.record_compile_status(&outcome.status);
-            self.stats.native_code_bytes += outcome.code_bytes;
-            self.stats.native_compile_time_nanos += outcome.compile_time_nanos;
-            if outcome.handle.is_some() {
-                self.stats.executable_memory_allocations += 1;
-            }
-            (outcome.status, outcome.handle, outcome.diagnostics)
+        let backend_request = NativeCompileRequest {
+            compile: &request,
+            unit,
+            function,
+            runtime_helpers,
         };
+        let outcome = backend.compile_region(&backend_request);
+        self.record_compile_status(&outcome.status);
+        self.stats.native_code_bytes += outcome.code_bytes;
+        self.stats.native_compile_time_nanos += outcome.compile_time_nanos;
+        if outcome.handle.is_some() {
+            self.stats.executable_memory_allocations += 1;
+        }
 
         Ok(JitCompileResult {
-            status,
-            handle,
-            diagnostics,
+            status: outcome.status,
+            handle: outcome.handle,
+            diagnostics: outcome.diagnostics,
             stats: self.stats.clone(),
         })
     }
 
     fn record_compile_status(&mut self, status: &JitCompileStatus) {
         match status {
-            JitCompileStatus::Disabled => self.stats.disabled_requests += 1,
-            JitCompileStatus::BackendUnavailable => self.stats.backend_unavailable += 1,
-            JitCompileStatus::NativeExecutionDisabled => self.stats.native_execution_disabled += 1,
             JitCompileStatus::Rejected { .. } => self.stats.rejected += 1,
             JitCompileStatus::Compiled => self.stats.native_compiles += 1,
         }
@@ -1528,7 +1423,7 @@ impl Default for JitEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{JitBackend, JitCompileRequest, JitCompileStatus, JitEngine, JitError, JitOptions};
+    use super::{JitCompileRequest, JitEngine, JitError};
     use crate::{
         JitAbiValue, JitBailout, JitBailoutKind, JitEligibility, JitExceptionMarker,
         JitFrameHandle, JitFrameView, JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult,
@@ -1538,59 +1433,6 @@ mod tests {
         BinaryOp, BlockId, FunctionFlags, FunctionId, InstrId, InstructionKind, IrBuilder,
         IrConstant, IrReturnType, IrSpan, LocalId, Operand, RegId, UnitId,
     };
-
-    #[test]
-    fn backend_reflects_feature_flag_without_requiring_native_execution() {
-        let engine = JitEngine::new();
-        if cfg!(feature = "jit-cranelift") {
-            assert_eq!(engine.backend(), JitBackend::CraneliftExperiment);
-        } else {
-            assert_eq!(engine.backend(), JitBackend::Stub);
-        }
-        assert_eq!(engine.stats().executable_memory_allocations, 0);
-    }
-
-    #[test]
-    fn default_engine_skips_compile_when_disabled() {
-        let mut engine = JitEngine::new();
-        let result = engine
-            .compile(JitCompileRequest::new("main"))
-            .expect("compile request is valid");
-
-        assert_eq!(result.status, JitCompileStatus::Disabled);
-        assert!(result.handle.is_none());
-        assert_eq!(result.stats.compile_requests, 1);
-        assert_eq!(result.stats.disabled_requests, 1);
-        assert_eq!(result.stats.native_compiles, 0);
-        assert_eq!(result.stats.executable_memory_allocations, 0);
-    }
-
-    #[test]
-    fn enabled_stub_reports_backend_unavailable_without_native_code() {
-        let mut engine = JitEngine::with_options(JitOptions {
-            enabled: true,
-            allow_native_execution: false,
-        });
-        let result = engine
-            .compile(
-                JitCompileRequest::new("loop")
-                    .with_function_name("loop")
-                    .with_ir_fingerprint("abc123")
-                    .with_opt_level(1),
-            )
-            .expect("compile request is valid");
-
-        if cfg!(feature = "jit-cranelift") {
-            assert_eq!(result.status, JitCompileStatus::NativeExecutionDisabled);
-            assert_eq!(result.stats.native_execution_disabled, 1);
-        } else {
-            assert_eq!(result.status, JitCompileStatus::BackendUnavailable);
-            assert_eq!(result.stats.backend_unavailable, 1);
-        }
-        assert!(result.handle.is_none());
-        assert_eq!(result.stats.native_compiles, 0);
-        assert_eq!(result.stats.executable_memory_allocations, 0);
-    }
 
     #[test]
     fn empty_region_id_is_an_api_error() {
