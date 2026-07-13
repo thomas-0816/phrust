@@ -163,6 +163,28 @@ pub struct RegionNativeCall {
     pub caller_strict_types: bool,
 }
 
+/// Explicit PHP control operation lowered into generated code. These variants
+/// never request bytecode/IR interpreter exception dispatch.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RegionNativeControl {
+    EnterTry {
+        handler_index: u32,
+    },
+    LeaveTry,
+    EndFinally {
+        after: BlockId,
+        outer_finally: Option<BlockId>,
+    },
+    Throw {
+        value: RegionOperand,
+    },
+    MakeException {
+        dst: RegId,
+        class_name: String,
+        message: Option<RegionOperand>,
+    },
+}
+
 impl RegionNativeCall {
     /// Returns the fixed-arity userland callee for the allocation-free path.
     /// Every other call shape is resolved by the typed native trampoline.
@@ -231,6 +253,7 @@ pub enum RegionInstructionKind {
         rhs: RegionOperand,
     },
     NativeCall(RegionNativeCall),
+    NativeControl(RegionNativeControl),
     /// Explicit fatal produced by IR lowering; native code returns fatal status.
     RuntimeFatal {
         diagnostic_id: String,
@@ -267,6 +290,15 @@ pub enum RegionTerminator {
     },
     Return {
         value: RegionOperand,
+        finally: Option<BlockId>,
+    },
+    ReturnReference {
+        local: LocalId,
+        finally: Option<BlockId>,
+    },
+    Exit {
+        value: Option<RegionOperand>,
+        finally: Option<BlockId>,
     },
     /// The semantic graph is complete, but Cranelift has no lowering yet.
     MissingLowering,
@@ -435,7 +467,7 @@ impl RegionTerminator {
             Self::JumpIf {
                 if_true, if_false, ..
             } => vec![*if_true, *if_false],
-            Self::Return { .. } => Vec::new(),
+            Self::Return { .. } | Self::ReturnReference { .. } | Self::Exit { .. } => Vec::new(),
             Self::MissingLowering => Vec::new(),
         }
     }
@@ -701,6 +733,42 @@ impl BaselineRegionBuilder {
                         returns_by_reference: false,
                         caller_strict_types: unit.strict_types,
                     }),
+                    InstructionKind::EnterTry { .. } => {
+                        let handler_index = collect_exception_regions(ir_function)
+                            .iter()
+                            .position(|region| region.instruction == instruction.id)
+                            .and_then(|index| u32::try_from(index).ok())
+                            .unwrap_or(u32::MAX);
+                        RegionInstructionKind::NativeControl(RegionNativeControl::EnterTry {
+                            handler_index,
+                        })
+                    }
+                    InstructionKind::LeaveTry => {
+                        RegionInstructionKind::NativeControl(RegionNativeControl::LeaveTry)
+                    }
+                    InstructionKind::EndFinally { after } => {
+                        RegionInstructionKind::NativeControl(RegionNativeControl::EndFinally {
+                            after: *after,
+                            outer_finally: None,
+                        })
+                    }
+                    InstructionKind::Throw { value } => lower_operand(unit, *value).map_or(
+                        RegionInstructionKind::MissingLowering,
+                        |value| {
+                            RegionInstructionKind::NativeControl(RegionNativeControl::Throw {
+                                value,
+                            })
+                        },
+                    ),
+                    InstructionKind::MakeException {
+                        dst,
+                        class_name,
+                        message,
+                    } => RegionInstructionKind::NativeControl(RegionNativeControl::MakeException {
+                        dst: *dst,
+                        class_name: class_name.clone(),
+                        message: lower_operand(unit, *message).ok(),
+                    }),
                     InstructionKind::RuntimeError {
                         diagnostic_id,
                         message,
@@ -739,11 +807,6 @@ impl BaselineRegionBuilder {
                     | InstructionKind::YieldFrom { .. }
                     | InstructionKind::CloneObject { .. }
                     | InstructionKind::CloneWith { .. }
-                    | InstructionKind::EnterTry { .. }
-                    | InstructionKind::LeaveTry
-                    | InstructionKind::EndFinally { .. }
-                    | InstructionKind::Throw { .. }
-                    | InstructionKind::MakeException { .. }
                     | InstructionKind::MakeClosure { .. }
                     | InstructionKind::ResolveCallable { .. }
                     | InstructionKind::AcquireCallable { .. }
@@ -834,6 +897,8 @@ impl BaselineRegionBuilder {
                 .map(|param| param.local)
                 .collect::<Vec<_>>(),
         );
+        let exception_regions = collect_exception_regions(ir_function);
+        annotate_native_finally_control(&mut blocks, &exception_regions);
         let region = RegionGraph {
             function,
             function_name: ir_function.name.clone(),
@@ -847,7 +912,7 @@ impl BaselineRegionBuilder {
             returns_by_ref: ir_function.returns_by_ref,
             attributes: ir_function.attributes.clone(),
             declarations: declaration_metadata(unit, function),
-            exception_regions: collect_exception_regions(ir_function),
+            exception_regions,
             compile_metadata: runtime_metadata.clone(),
             parameter_locals: ir_function.params.iter().map(|param| param.local).collect(),
             local_count: ir_function.local_count,
@@ -889,6 +954,98 @@ fn collect_exception_regions(ir_function: &php_ir::IrFunction) -> Vec<RegionExce
             })
         })
         .collect()
+}
+
+fn annotate_native_finally_control(blocks: &mut [RegionBlock], handlers: &[RegionExceptionRegion]) {
+    if blocks.is_empty() || handlers.is_empty() {
+        return;
+    }
+    let mut entry_stacks = vec![None::<Vec<u32>>; blocks.len()];
+    entry_stacks[0] = Some(Vec::new());
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in blocks.iter() {
+            let Some(mut stack) = entry_stacks[block.id.index()].clone() else {
+                continue;
+            };
+            for instruction in &block.instructions {
+                match instruction.kind {
+                    RegionInstructionKind::NativeControl(RegionNativeControl::EnterTry {
+                        handler_index,
+                    }) => {
+                        if let Some(handler) = handlers.get(handler_index as usize) {
+                            for target in [handler.catch, handler.finally].into_iter().flatten() {
+                                changed |=
+                                    merge_handler_stack(&mut entry_stacks[target.index()], &stack);
+                            }
+                        }
+                        stack.push(handler_index);
+                    }
+                    RegionInstructionKind::NativeControl(RegionNativeControl::LeaveTry) => {
+                        let _ = stack.pop();
+                    }
+                    _ => {}
+                }
+            }
+            for target in block.terminator.targets() {
+                changed |= merge_handler_stack(&mut entry_stacks[target.index()], &stack);
+            }
+        }
+    }
+
+    for block in blocks {
+        let mut stack = entry_stacks[block.id.index()].clone().unwrap_or_default();
+        for instruction in &mut block.instructions {
+            match &mut instruction.kind {
+                RegionInstructionKind::NativeControl(RegionNativeControl::EnterTry {
+                    handler_index,
+                }) => stack.push(*handler_index),
+                RegionInstructionKind::NativeControl(RegionNativeControl::LeaveTry) => {
+                    let _ = stack.pop();
+                }
+                RegionInstructionKind::NativeControl(RegionNativeControl::EndFinally {
+                    outer_finally,
+                    ..
+                }) => {
+                    *outer_finally = stack
+                        .iter()
+                        .rev()
+                        .filter_map(|index| handlers.get(*index as usize))
+                        .find_map(|handler| handler.finally);
+                }
+                _ => {}
+            }
+        }
+        let pending_finally = stack
+            .iter()
+            .rev()
+            .filter_map(|index| handlers.get(*index as usize))
+            .find_map(|handler| handler.finally);
+        match &mut block.terminator {
+            RegionTerminator::Return { finally, .. }
+            | RegionTerminator::ReturnReference { finally, .. }
+            | RegionTerminator::Exit { finally, .. } => *finally = pending_finally,
+            _ => {}
+        }
+    }
+}
+
+fn merge_handler_stack(slot: &mut Option<Vec<u32>>, candidate: &[u32]) -> bool {
+    let Some(existing) = slot else {
+        *slot = Some(candidate.to_vec());
+        return true;
+    };
+    let common = existing
+        .iter()
+        .zip(candidate)
+        .take_while(|(lhs, rhs)| lhs == rhs)
+        .count();
+    if common == existing.len() {
+        return false;
+    }
+    existing.truncate(common);
+    true
 }
 
 /// Compatibility wrapper for callers that do not yet own runtime metadata.
@@ -1110,6 +1267,7 @@ fn lower_terminator(
             by_ref_local: None,
         } => Ok(RegionTerminator::Return {
             value: lower_operand(unit, *value)?,
+            finally: None,
         }),
         TerminatorKind::Return { value: None, .. } => Err(NativeCompileError::new(
             "JIT_REGION_REJECT_TERMINATOR",
@@ -1117,15 +1275,15 @@ fn lower_terminator(
         )),
         TerminatorKind::Return {
             value: Some(_),
-            by_ref_local: Some(_),
-        } => Err(NativeCompileError::new(
-            "JIT_REGION_REJECT_TERMINATOR",
-            "by-reference return has no scalar Region IR lowering",
-        )),
-        TerminatorKind::Exit { .. } => Err(NativeCompileError::new(
-            "JIT_REGION_REJECT_TERMINATOR",
-            "Exit has no scalar Region IR lowering",
-        )),
+            by_ref_local: Some(local),
+        } => Ok(RegionTerminator::ReturnReference {
+            local: *local,
+            finally: None,
+        }),
+        TerminatorKind::Exit { value } => Ok(RegionTerminator::Exit {
+            value: value.map(|value| lower_operand(unit, value)).transpose()?,
+            finally: None,
+        }),
     }
 }
 
@@ -1343,6 +1501,83 @@ mod tests {
             instruction.kind,
             RegionInstructionKind::MissingLowering
         )));
+    }
+
+    #[test]
+    fn exception_instructions_enter_the_native_control_model() {
+        let mut builder = IrBuilder::new(UnitId::new(96));
+        let file = builder.add_file("exceptions.php");
+        let span = IrSpan::new(file, 0, 30);
+        let function = builder.start_function("exceptions", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let entry = builder.append_block(function);
+        let finally = builder.append_block(function);
+        let after = builder.append_block(function);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::EnterTry {
+                catch: None,
+                catch_types: Vec::new(),
+                finally: Some(finally),
+                after,
+                exception_local: None,
+            },
+            span,
+        );
+        let message = builder.intern_constant(IrConstant::Int(17));
+        let exception = builder.alloc_register(function);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::MakeException {
+                dst: exception,
+                class_name: "runtimeexception".to_owned(),
+                message: Operand::Constant(message),
+            },
+            span,
+        );
+        builder.emit(function, entry, InstructionKind::LeaveTry, span);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::Throw {
+                value: Operand::Register(exception),
+            },
+            span,
+        );
+        builder.terminate_jump(function, entry, after, span);
+        builder.emit(
+            function,
+            finally,
+            InstructionKind::EndFinally { after },
+            span,
+        );
+        builder.terminate_jump(function, finally, after, span);
+        let zero = builder.intern_constant(IrConstant::Int(0));
+        builder.terminate_return(function, after, Some(Operand::Constant(zero)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("exception region");
+        let controls = region
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| {
+                matches!(instruction.kind, RegionInstructionKind::NativeControl(_))
+            })
+            .count();
+        assert_eq!(controls, 5);
+        assert_eq!(region.exception_regions.len(), 1);
+        assert!(
+            !region
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instruction| matches!(
+                    instruction.kind,
+                    RegionInstructionKind::MissingLowering
+                ))
+        );
     }
 
     #[test]

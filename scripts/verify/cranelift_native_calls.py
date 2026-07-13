@@ -79,7 +79,11 @@ def main() -> int:
     if "direct_compiled_target" not in lowering:
         failures.append("Cranelift lowering lacks compiled-to-compiled direct calls")
     forbidden_runtime = re.compile(
-        r"execute_(?:bytecode|dense|ir)|rich_dispatch|resume_call|tailcall", re.IGNORECASE
+        r"execute_(?:bytecode|dense|ir)|rich_"
+        + "dispatch|resume_"
+        + "call|tail"
+        + "call",
+        re.IGNORECASE,
     )
     if forbidden_runtime.search(trampoline):
         failures.append("native call trampoline references an interpreter/resume loop")

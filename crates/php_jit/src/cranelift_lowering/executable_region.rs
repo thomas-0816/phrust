@@ -206,7 +206,7 @@ fn validate_region_native_coverage(region: &RegionGraph) -> Result<(), Cranelift
             ),
         ));
     }
-    if region.returns_by_ref || !region.captures.is_empty() || region.flags.is_generator {
+    if !region.captures.is_empty() || region.flags.is_generator {
         return Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_MISSING_FUNCTION_STATE_LOWERING",
             format!(
@@ -324,12 +324,67 @@ fn define_region_graph_function(
         for local_index in 0..region.local_count {
             locals.insert(LocalId::new(local_index), builder.declare_var(types::I64));
         }
+        let pending_status = builder.declare_var(types::I32);
+        let pending_value = builder.declare_var(types::I64);
+        let continue_status = builder
+            .ins()
+            .iconst(types::I32, i64::from(crate::JitCallStatus::CONTINUE.0));
+        let empty_value = builder.ins().iconst(types::I64, 0);
+        builder.def_var(pending_status, continue_status);
+        builder.def_var(pending_value, empty_value);
         for (param, value) in region
             .parameter_locals
             .iter()
             .zip(params.iter().copied().take(usize::from(arity)))
         {
             builder.def_var(local_variable(&locals, *param)?, value);
+        }
+        let handler_resume_blocks = region
+            .exception_regions
+            .iter()
+            .flat_map(|handler| [handler.catch, handler.finally])
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        for target in handler_resume_blocks {
+            let loader = builder.create_block();
+            let next = builder.create_block();
+            let encoded_resume = crate::native_handler_resume_id(target);
+            let requested =
+                builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, resume_id, i64::from(encoded_resume));
+            builder.ins().brif(requested, loader, &[], next, &[]);
+            builder.switch_to_block(loader);
+            let status = builder.ins().load(
+                types::I32,
+                MemFlagsData::new(),
+                resume_state,
+                std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
+            );
+            let value = builder.ins().load(
+                types::I64,
+                MemFlagsData::new(),
+                resume_state,
+                std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
+            );
+            builder.def_var(pending_status, status);
+            builder.def_var(pending_value, value);
+            let target_block = region.blocks.get(target.index()).ok_or_else(|| {
+                CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_REJECT_NATIVE_HANDLER",
+                    format!("native handler block {} is missing", target.raw()),
+                )
+            })?;
+            for local in &target_block.entry_live_locals {
+                let offset = 24_i32.saturating_add((local.raw() as i32).saturating_mul(8));
+                let local_value =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), resume_state, offset);
+                builder.def_var(local_variable(&locals, *local)?, local_value);
+            }
+            builder.ins().jump(cranelift_block(&blocks, target)?, &[]);
+            builder.switch_to_block(next);
         }
         for osr_entry in region.osr_entries() {
             let loader = builder.create_block();
@@ -367,10 +422,14 @@ fn define_region_graph_function(
                     &mut builder,
                     functions,
                     native_call_helper,
+                    &blocks,
                     &locals,
                     &mut registers,
                     instruction,
+                    result_out,
                     deopt_out,
+                    pending_status,
+                    pending_value,
                     region.function,
                     region.local_count,
                     pointer_type,
@@ -385,6 +444,8 @@ fn define_region_graph_function(
                 &locals,
                 &registers,
                 result_out,
+                pending_status,
+                pending_value,
                 &region_block.terminator,
             )?;
         }
@@ -414,7 +475,7 @@ fn define_region_graph_function(
         .flat_map(|compiled| compiled.buffer.get_srclocs_sorted())
         .filter_map(|range| {
             let source = range.loc.bits();
-            (source != 0).then_some(crate::JitNativePcRange {
+            (source != 0 && source != u32::MAX).then_some(crate::JitNativePcRange {
                 function: region.function,
                 start: range.start,
                 end: range.end,
@@ -495,5 +556,46 @@ fn region_graph_metadata<'a>(
         continuations,
         native_pc_ranges,
         osr_entries,
+        exception_handlers: regions
+            .iter()
+            .flat_map(|region| {
+                region.exception_regions.iter().filter_map(move |handler| {
+                    let enter_continuation = region
+                        .blocks
+                        .get(handler.block.index())?
+                        .instructions
+                        .iter()
+                        .find(|instruction| instruction.id == handler.instruction)?
+                        .continuation_id;
+                    Some(crate::JitExceptionHandlerMetadata {
+                        function: region.function,
+                        enter_continuation,
+                        catch: handler.catch,
+                        catch_types: handler.catch_types.clone(),
+                        finally: handler.finally,
+                        after: handler.after,
+                        exception_local: handler.exception_local,
+                    })
+                })
+            })
+            .collect(),
+        safepoints: regions
+            .iter()
+            .flat_map(|region| {
+                region.blocks.iter().flat_map(move |block| {
+                    block.instructions.iter().filter_map(move |instruction| {
+                        crate::region_ir::baseline_instruction_lowering(&instruction.source_kind)
+                            .requires_safepoint
+                            .then(|| crate::JitNativeSafepointMetadata {
+                                function: region.function,
+                                continuation_id: instruction.continuation_id,
+                                baseline_frame_slots: instruction.live_locals.clone(),
+                                optimized_roots_required: region.compile_metadata.tier
+                                    == NativeCompilerTier::Optimizing,
+                            })
+                    })
+                })
+            })
+            .collect(),
     }
 }

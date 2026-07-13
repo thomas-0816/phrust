@@ -29,7 +29,9 @@ pub use abi::{
     JitBailout, JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue, JitCValueTag,
     JitCallResult, JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView,
     JitHelperDispatch, JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame,
-    JitNativeCallKind, JitNativeCallTarget, JitNativeDispatchTrampoline, JitNativeIndirectionEntry,
+    JitNativeCallKind, JitNativeCallTarget, JitNativeControlRecord, JitNativeDestructorPoint,
+    JitNativeDispatchTrampoline, JitNativeExceptionHandler, JitNativeFrameHeader,
+    JitNativeIndirectionEntry, JitNativePcMetadata, JitNativeRootEntry, JitNativeRootKind,
     JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
     JitRuntimeCalloutResult, JitRuntimeHelperTable, JitSideExit, JitVmContextHandle,
     SideExitReason, helper_id, jit_default_helper_dispatch,
@@ -60,6 +62,12 @@ use php_ir::{BlockId, FunctionId, InstrId, IrSpan, IrUnit, LocalId};
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
+
+const JIT_NATIVE_HANDLER_RESUME_TAG: u32 = 0x8000_0000;
+
+const fn native_handler_resume_id(block: BlockId) -> i32 {
+    (JIT_NATIVE_HANDLER_RESUME_TAG | block.raw()) as i32
+}
 
 /// Stable native compiler identity embedded in code/cache metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -229,6 +237,53 @@ pub struct JitNativePcRange {
     pub continuation_id: u32,
 }
 
+/// Exception-handler table row published for explicit native unwind.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitExceptionHandlerMetadata {
+    pub function: FunctionId,
+    pub enter_continuation: u32,
+    pub catch: Option<BlockId>,
+    pub catch_types: Vec<String>,
+    pub finally: Option<BlockId>,
+    pub after: BlockId,
+    pub exception_local: Option<LocalId>,
+}
+
+/// GC roots live at one native safepoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitNativeSafepointMetadata {
+    pub function: FunctionId,
+    pub continuation_id: u32,
+    /// Baseline frames publish tagged handles through these stable slots.
+    pub baseline_frame_slots: Vec<LocalId>,
+    /// Optimized code must provide stack-map or shadow-slot entries.
+    pub optimized_roots_required: bool,
+}
+
+/// Source-level frame resolved from a native PC without interpreter frames.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitNativeBacktraceFrame {
+    pub function: FunctionId,
+    pub continuation_id: u32,
+    pub span: IrSpan,
+}
+
+/// Runtime/native action selected while unwinding one compiled PHP frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JitNativeUnwindTarget {
+    Catch {
+        block: BlockId,
+        exception_local: Option<LocalId>,
+        handler_index: usize,
+    },
+    Finally {
+        block: BlockId,
+        pending: JitCallStatus,
+        handler_index: usize,
+    },
+    Propagate(JitCallStatus),
+}
+
 /// One native loop-entry point addressable by a stable OSR ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitOsrEntryMetadata {
@@ -248,6 +303,66 @@ pub struct JitRegionStateMetadata {
     pub continuations: Vec<JitContinuationMetadata>,
     pub native_pc_ranges: Vec<JitNativePcRange>,
     pub osr_entries: Vec<JitOsrEntryMetadata>,
+    pub exception_handlers: Vec<JitExceptionHandlerMetadata>,
+    pub safepoints: Vec<JitNativeSafepointMetadata>,
+}
+
+impl JitRegionStateMetadata {
+    /// Resolves a generated PC offset to precise PHP source metadata.
+    #[must_use]
+    pub fn resolve_native_pc(&self, pc: u32) -> Option<JitNativeBacktraceFrame> {
+        let range = self
+            .native_pc_ranges
+            .iter()
+            .find(|range| range.start <= pc && pc < range.end)?;
+        let continuation = self.continuations.iter().find(|continuation| {
+            continuation.function == range.function && continuation.id == range.continuation_id
+        })?;
+        Some(JitNativeBacktraceFrame {
+            function: continuation.function,
+            continuation_id: continuation.id,
+            span: continuation.span,
+        })
+    }
+
+    /// Selects catch/finally control without entering an interpreter dispatch
+    /// loop. The runtime supplies PHP class matching for a thrown object.
+    #[must_use]
+    pub fn select_native_unwind(
+        &self,
+        function: FunctionId,
+        active_handler_depth: usize,
+        status: JitCallStatus,
+        mut catch_matches: impl FnMut(&[String]) -> bool,
+    ) -> JitNativeUnwindTarget {
+        let handlers = self
+            .exception_handlers
+            .iter()
+            .enumerate()
+            .filter(|(_, handler)| handler.function == function)
+            .take(active_handler_depth)
+            .collect::<Vec<_>>();
+        for (index, handler) in handlers.into_iter().rev() {
+            if status == JitCallStatus::THROW
+                && let Some(catch) = handler.catch
+                && catch_matches(&handler.catch_types)
+            {
+                return JitNativeUnwindTarget::Catch {
+                    block: catch,
+                    exception_local: handler.exception_local,
+                    handler_index: index,
+                };
+            }
+            if let Some(finally) = handler.finally {
+                return JitNativeUnwindTarget::Finally {
+                    block: finally,
+                    pending: status,
+                    handler_index: index,
+                };
+            }
+        }
+        JitNativeUnwindTarget::Propagate(status)
+    }
 }
 
 impl Eq for JitFunctionHandle {}
@@ -719,6 +834,111 @@ impl JitFunctionHandle {
         entry.invoke_i64_with_deopt(args)
     }
 
+    /// Runs catch/finally continuations through native block entries until the
+    /// status is handled or must propagate to the caller. No interpreter frame
+    /// is constructed during this loop.
+    pub fn invoke_i64_with_native_unwind(
+        &self,
+        args: &[i64],
+        runtime_abi_hash: u64,
+        mut catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let Some(entry) = self.native_entry else {
+            return Err(JitInvokeError::MissingNativeEntry);
+        };
+        let Some(metadata) = self.region_state_metadata() else {
+            return self.invoke_i64_with_deopt(args, runtime_abi_hash);
+        };
+        if runtime_abi_hash != JIT_RUNTIME_ABI_HASH || entry.abi_hash != JIT_RUNTIME_ABI_HASH {
+            return Err(JitInvokeError::AbiHashMismatch {
+                expected: JIT_RUNTIME_ABI_HASH,
+                actual: runtime_abi_hash,
+            });
+        }
+        if args.len() != usize::from(entry.arity) {
+            return Err(JitInvokeError::ArityMismatch {
+                expected: entry.arity,
+                actual: args.len() as u8,
+            });
+        }
+        let function = metadata
+            .continuations
+            .first()
+            .map(|continuation| continuation.function)
+            .ok_or(JitInvokeError::MissingNativeEntry)?;
+        let mut outcome = entry.invoke_i64_with_deopt(args)?;
+        let mut handler_depth = metadata
+            .exception_handlers
+            .iter()
+            .filter(|handler| handler.function == function)
+            .count();
+        loop {
+            let JitI64InvokeOutcome::SideExit {
+                status,
+                value,
+                state,
+            } = outcome
+            else {
+                return Ok(outcome);
+            };
+            let control = JitCallStatus(status as u32);
+            if !matches!(
+                control,
+                JitCallStatus::THROW
+                    | JitCallStatus::RETURN
+                    | JitCallStatus::RETURN_REFERENCE
+                    | JitCallStatus::EXIT
+            ) {
+                return Ok(JitI64InvokeOutcome::SideExit {
+                    status,
+                    value,
+                    state,
+                });
+            }
+            match metadata.select_native_unwind(function, handler_depth, control, |types| {
+                catch_matches(types, value)
+            }) {
+                JitNativeUnwindTarget::Catch {
+                    block,
+                    exception_local,
+                    handler_index,
+                } => {
+                    handler_depth = handler_index;
+                    let mut resume_state = state;
+                    if let Some(local) = exception_local
+                        && local.index() < JIT_DEOPT_MAX_SLOTS
+                    {
+                        resume_state.slots[local.index()] = value;
+                        resume_state.initialized_mask |= 1_u64 << local.raw();
+                    }
+                    outcome = entry.invoke_i64_handler_resume(
+                        args,
+                        block,
+                        JitCallStatus::CONTINUE,
+                        value,
+                        resume_state,
+                    )?;
+                }
+                JitNativeUnwindTarget::Finally {
+                    block,
+                    pending,
+                    handler_index,
+                } => {
+                    handler_depth = handler_index;
+                    outcome =
+                        entry.invoke_i64_handler_resume(args, block, pending, value, state)?;
+                }
+                JitNativeUnwindTarget::Propagate(_) => {
+                    return Ok(JitI64InvokeOutcome::SideExit {
+                        status,
+                        value,
+                        state,
+                    });
+                }
+            }
+        }
+    }
+
     /// Enters a compiled loop through a stable native OSR entry.
     pub fn invoke_i64_osr(
         &self,
@@ -899,6 +1119,26 @@ impl JitNativeEntry {
         self.invoke_i64_status_out_with_resume(args, entry_id as i32, state as *const _)
     }
 
+    fn invoke_i64_handler_resume(
+        self,
+        args: &[i64],
+        block: BlockId,
+        status: JitCallStatus,
+        value: i64,
+        mut state: JitDeoptState,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        if self.kind != JitNativeEntryKind::I64StatusOut {
+            return Err(JitInvokeError::MissingNativeEntry);
+        }
+        state.control_status = status;
+        state.control_value = value;
+        self.invoke_i64_status_out_with_resume(
+            args,
+            native_handler_resume_id(block),
+            &state as *const _,
+        )
+    }
+
     fn invoke_i64_return(self, args: &[i64]) -> Result<i64, JitInvokeError> {
         // SAFETY: Handles are created only after Cranelift defines the matching
         // `extern "C" fn(...i64) -> i64` signature. The public method checks
@@ -1022,11 +1262,12 @@ impl JitNativeEntry {
                 _ => return Err(JitInvokeError::UnsupportedArity(args.len() as u8)),
             }
         };
-        if status == JIT_HELPER_STATUS_OK {
+        if status == JitCallStatus::RETURN.0 as i32 {
             Ok(JitI64InvokeOutcome::Returned(out))
         } else {
             Ok(JitI64InvokeOutcome::SideExit {
                 status,
+                value: out,
                 state: deopt,
             })
         }
@@ -1135,7 +1376,11 @@ impl JitNativeEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JitI64InvokeOutcome {
     Returned(i64),
-    SideExit { status: i32, state: JitDeoptState },
+    SideExit {
+        status: i32,
+        value: i64,
+        state: JitDeoptState,
+    },
 }
 
 /// Invocation failures reported before interpreter fallback.
@@ -1178,7 +1423,10 @@ impl JitInvokeError {
             | Self::IncompleteOsrState(_) => JitSideExit::new(SideExitReason::UnsupportedValue),
             Self::AbiHashMismatch { .. } => JitSideExit::new(SideExitReason::AbiMismatch),
             Self::ArityMismatch { .. } => JitSideExit::new(SideExitReason::TypeMismatch),
-            Self::NativeStatus(status) if *status == JIT_HELPER_STATUS_OVERFLOW => {
+            Self::NativeStatus(status)
+                if *status == JIT_HELPER_STATUS_OVERFLOW
+                    || *status == JitCallStatus::RECOMPILE_REQUESTED.0 as i32 =>
+            {
                 JitSideExit::new(SideExitReason::Overflow).with_status(*status)
             }
             Self::NativeStatus(status) => {

@@ -1571,14 +1571,7 @@ fn check_instruction(
         | InstructionKind::LeaveTry
         | InstructionKind::EndFinally { .. }
         | InstructionKind::Throw { .. }
-        | InstructionKind::MakeException { .. } => {
-            rejected.push(JitEligibilityReason::instruction(
-                "JIT_ELIGIBILITY_REJECT_EXCEPTION_OPCODE",
-                "exception control-flow is outside the JIT subset",
-                block,
-                id,
-            ))
-        }
+        | InstructionKind::MakeException { .. } => {}
         InstructionKind::Yield { .. } | InstructionKind::YieldFrom { .. } => {
             rejected.push(JitEligibilityReason::instruction(
                 "JIT_ELIGIBILITY_REJECT_GENERATOR_OPCODE",

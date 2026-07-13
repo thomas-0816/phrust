@@ -165,3 +165,40 @@ nix develop -c just cranelift-native-calls
 The generated `target/cranelift-only/native-call-model.{json,md}` records the
 ABI layout and coverage. The gate rejects missing call forms, VM call objects
 in native lowering, interpreter re-entry, and the old tailcall/resume protocol.
+
+## Prompt 7 native control flow
+
+Native PHP entries use one versioned status vocabulary with ABI-stable tags:
+`Continue`, `Return`, `ReturnReference`, `Throw`, `Exit`,
+`SuspendGenerator`, `SuspendFiber`, `RuntimeError`, `CompileRequired`, and
+`RecompileRequested`. Helper-local success/fallback codes are not used as
+native PHP frame outcomes. Direct calls and the dynamic trampoline propagate
+the PHP status and value without Rust unwinding across generated code.
+
+`EnterTry`, `LeaveTry`, `EndFinally`, `Throw`, and `MakeException` are explicit
+`RegionNativeControl` operations. Return and exit terminators carry their
+active finally target; generated code stores pending status/value state and
+runs the compiled finally block before leaving the frame. Exception handler
+blocks have tagged native resume entries. `JitRegionStateMetadata` selects
+catch/finally targets, and `invoke_i64_with_native_unwind` resumes those native
+blocks without constructing an interpreter frame or entering an exception
+dispatch loop.
+
+Every compiled handle publishes exception tables, safepoints, baseline live
+slot roots, optimized-root requirements, and continuation-attributed native PC
+ranges. Native PCs resolve back to exact IR byte spans for PHP backtraces.
+The C-compatible frame/root/handler records contain no Rust collections.
+Destructor ordering points—local overwrite, discard, frame return, exception
+unwind, and request shutdown—are stable ABI tags and destructors use the
+unified native call kind introduced in Prompt 6.
+
+Run the gate with:
+
+```sh
+nix develop -c just cranelift-native-control
+```
+
+It writes `target/cranelift-only/native-control-flow.{json,md}`, validates the
+ABI and source structure, executes native catch/throw/return/exit/finally
+tests, exercises the existing PHP-visible exception/destructor/error-handler/
+shutdown/GC ordering fixtures, and checks the complete workspace graph.

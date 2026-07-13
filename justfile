@@ -1679,6 +1679,25 @@ cranelift-native-calls:
     cargo test -p php_vm native_call_trampoline_requests_compile_without_interpreter_reentry
     cargo check --workspace --all-targets
 
+# Prompt 7 cutover gate: PHP control leaves generated frames only through the
+# stable status ABI, explicit native unwind, published roots, and native PCs.
+cranelift-native-control:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_control_audit
+    scripts/verify/cranelift_native_control.py
+    scripts/verify/cranelift_only_stage_ratchet.py
+    cargo test -p php_jit --lib native_control_status_numbers_are_stable
+    cargo test -p php_jit --lib compiled_finally
+    cargo test -p php_jit --lib native_unwind_resumes
+    cargo test -p php_jit --lib throw_uses_explicit_native_status
+    cargo test -p php_vm exceptions_run_finally_before_
+    cargo test -p php_vm destructors_run_when_local_last_reference_is_replaced_or_unset
+    cargo test -p php_vm gc_snapshot_tracks_vm_roots_and_cycle_candidates
+    cargo test -p php_vm internal_builtin_diagnostics_respect_error_handler
+    cargo test -p php_vm shutdown_stages_append_to_the_single_final_output_buffer
+    cargo check --workspace --all-targets
+
 jit-cranelift-smoke:
     @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
     cargo check --workspace

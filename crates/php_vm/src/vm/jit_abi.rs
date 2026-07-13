@@ -28,7 +28,7 @@ pub(super) extern "C" fn jit_native_call_dispatch_abi(
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     if frame.is_null() || out.is_null() {
-        return php_jit::JIT_HELPER_STATUS_FATAL;
+        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // SAFETY: The generated caller owns both records for this synchronous
@@ -39,18 +39,18 @@ pub(super) extern "C" fn jit_native_call_dispatch_abi(
             || (frame.argument_count != 0 && frame.arguments == 0)
         {
             return (
-                php_jit::JIT_HELPER_STATUS_FATAL,
+                php_jit::JitCallStatus::ABI_MISMATCH.0 as i32,
                 php_jit::JitCallStatus::ABI_MISMATCH,
             );
         }
         (
-            php_jit::JIT_HELPER_STATUS_COMPILE_REQUIRED,
+            php_jit::JitCallStatus::COMPILE_REQUIRED.0 as i32,
             php_jit::JitCallStatus::COMPILE_REQUIRED,
         )
     }));
     let (status, call_status) = result.unwrap_or((
-        php_jit::JIT_HELPER_STATUS_FATAL,
-        php_jit::JitCallStatus::ABI_MISMATCH,
+        php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+        php_jit::JitCallStatus::RUNTIME_ERROR,
     ));
     // SAFETY: `out` is a checked, caller-owned result record.
     unsafe {
@@ -324,14 +324,14 @@ mod tests {
         let mut out = php_jit::JitCallResult::default();
         assert_eq!(
             jit_native_call_dispatch_abi(0, &mut frame, &mut out),
-            php_jit::JIT_HELPER_STATUS_COMPILE_REQUIRED
+            php_jit::JitCallStatus::COMPILE_REQUIRED.0 as i32
         );
         assert_eq!(out.status, php_jit::JitCallStatus::COMPILE_REQUIRED);
 
         frame.abi_version = frame.abi_version.saturating_add(1);
         assert_eq!(
             jit_native_call_dispatch_abi(0, &mut frame, &mut out),
-            php_jit::JIT_HELPER_STATUS_FATAL
+            php_jit::JitCallStatus::ABI_MISMATCH.0 as i32
         );
         assert_eq!(out.status, php_jit::JitCallStatus::ABI_MISMATCH);
     }

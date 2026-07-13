@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{BlockId, FunctionId, InstrId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 5;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 6;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x07c1_a817_0000_0005;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x07c1_a817_0000_0006;
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
 pub const JIT_DEOPT_MAX_SLOTS: usize = 64;
@@ -37,6 +37,10 @@ pub struct JitDeoptState {
     pub initialized_mask: u64,
     /// Materialized scalar locals indexed by their VM local ID.
     pub slots: [i64; JIT_DEOPT_MAX_SLOTS],
+    /// Explicit PHP control resumed at a catch/finally native entry.
+    pub control_status: JitCallStatus,
+    pub control_reserved: u32,
+    pub control_value: i64,
 }
 
 impl Default for JitDeoptState {
@@ -48,6 +52,9 @@ impl Default for JitDeoptState {
             reserved: 0,
             initialized_mask: 0,
             slots: [0; JIT_DEOPT_MAX_SLOTS],
+            control_status: JitCallStatus::CONTINUE,
+            control_reserved: 0,
+            control_value: 0,
         }
     }
 }
@@ -60,15 +67,36 @@ impl Default for JitDeoptState {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct JitCallStatus(pub u32);
 
+impl Default for JitCallStatus {
+    fn default() -> Self {
+        Self::CONTINUE
+    }
+}
+
 impl JitCallStatus {
-    pub const RETURN: Self = Self(0);
-    pub const THROW: Self = Self(1);
-    pub const EXIT: Self = Self(2);
-    pub const YIELD: Self = Self(3);
-    pub const FIBER_SUSPEND: Self = Self(4);
-    pub const DEOPT: Self = Self(5);
-    pub const ABI_MISMATCH: Self = Self(6);
-    pub const COMPILE_REQUIRED: Self = Self(7);
+    pub const CONTINUE: Self = Self(0);
+    pub const RETURN: Self = Self(1);
+    pub const RETURN_REFERENCE: Self = Self(2);
+    pub const THROW: Self = Self(3);
+    pub const EXIT: Self = Self(4);
+    pub const SUSPEND_GENERATOR: Self = Self(5);
+    pub const SUSPEND_FIBER: Self = Self(6);
+    pub const RUNTIME_ERROR: Self = Self(7);
+    pub const COMPILE_REQUIRED: Self = Self(8);
+    pub const RECOMPILE_REQUESTED: Self = Self(9);
+    /// Boundary validation failed before generated code was entered.
+    pub const ABI_MISMATCH: Self = Self(10);
+
+    /// Compatibility spellings retained for callers while all native entry
+    /// points migrate to the explicit control-status vocabulary.
+    pub const YIELD: Self = Self::SUSPEND_GENERATOR;
+    pub const FIBER_SUSPEND: Self = Self::SUSPEND_FIBER;
+    pub const DEOPT: Self = Self::RECOMPILE_REQUESTED;
+
+    #[must_use]
+    pub const fn is_terminal_return(self) -> bool {
+        self.0 == Self::RETURN.0 || self.0 == Self::RETURN_REFERENCE.0
+    }
 }
 
 /// Stable tagged value passed across the generic helper boundary.
@@ -100,6 +128,111 @@ impl Default for JitCallResult {
             value: JitAbiSlot::default(),
         }
     }
+}
+
+/// ABI-visible reason why native PHP control left the current frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeControlRecord {
+    pub status: JitCallStatus,
+    /// Source continuation at which the status originated.
+    pub continuation_id: u32,
+    /// Return value, reference cell, throwable, exit code, or suspend value.
+    pub value: JitAbiSlot,
+    /// Opaque VM-owned throwable handle when `status` is `THROW`.
+    pub exception_handle: u64,
+    /// Resume target selected by explicit native unwind, or `u32::MAX`.
+    pub resume_block: u32,
+    pub handler_depth: u32,
+}
+
+/// One exception region published by a native PHP frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeExceptionHandler {
+    pub enter_continuation: u32,
+    pub catch_block: u32,
+    pub finally_block: u32,
+    pub after_block: u32,
+    pub exception_local: u32,
+    pub catch_type_start: u32,
+    pub catch_type_count: u32,
+}
+
+/// GC root representation for a live value at a native safepoint.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct JitNativeRootKind(pub u32);
+
+impl JitNativeRootKind {
+    /// Baseline frame slot in the frame's published tagged-slot table.
+    pub const FRAME_SLOT: Self = Self(1);
+    /// Optimized-frame root in a compiler stack map.
+    pub const STACK_MAP: Self = Self(2);
+    /// Optimized-frame root mirrored into a shadow slot.
+    pub const SHADOW_SLOT: Self = Self(3);
+}
+
+/// One heap handle visible to GC at a native safepoint.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeRootEntry {
+    pub kind: JitNativeRootKind,
+    pub slot: u32,
+    pub stack_offset: i32,
+    pub value_tag: u32,
+}
+
+/// PHP-visible points at which native code may release the last object root
+/// and must invoke `__destruct` through a native call entry.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct JitNativeDestructorPoint(pub u32);
+
+impl JitNativeDestructorPoint {
+    pub const LOCAL_OVERWRITE: Self = Self(1);
+    pub const DISCARD: Self = Self(2);
+    pub const FRAME_RETURN: Self = Self(3);
+    pub const EXCEPTION_UNWIND: Self = Self(4);
+    pub const REQUEST_SHUTDOWN: Self = Self(5);
+}
+
+/// Precise source/backtrace record associated with a generated PC range.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativePcMetadata {
+    pub function_id: u32,
+    pub continuation_id: u32,
+    pub native_start: u32,
+    pub native_end: u32,
+    pub file_id: u32,
+    pub source_start: u32,
+    pub source_end: u32,
+    pub handler_depth: u32,
+    pub root_map_start: u32,
+    pub root_map_count: u32,
+}
+
+/// Published native frame header. Generated code and runtime helpers exchange
+/// only pointers/counts; Rust containers never cross this boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeFrameHeader {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub function_id: u32,
+    pub generation: u32,
+    pub caller_frame: u64,
+    pub slots: u64,
+    pub slot_count: u32,
+    pub active_handler_depth: u32,
+    pub handlers: u64,
+    pub handler_count: u32,
+    pub roots: u64,
+    pub root_count: u32,
+    pub pc_metadata: u64,
+    pub pc_metadata_count: u32,
+    pub flags: u32,
 }
 
 /// Stable native-call target family. Numeric values are ABI-visible.
@@ -1008,8 +1141,10 @@ mod tests {
         JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitCExit, JitCExitTag, JitCFrameView,
         JitCValue, JitCValueTag, JitCallResult, JitCallStatus, JitFrameHandle, JitFrameView,
         JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
-        JitNativeIndirectionEntry, JitOpaqueHandle, JitOpaqueValueKind, JitSideExit,
-        JitVmContextHandle, SideExitReason, helper_id, jit_default_helper_dispatch,
+        JitNativeControlRecord, JitNativeExceptionHandler, JitNativeFrameHeader,
+        JitNativeIndirectionEntry, JitNativePcMetadata, JitNativeRootEntry, JitOpaqueHandle,
+        JitOpaqueValueKind, JitSideExit, JitVmContextHandle, SideExitReason, helper_id,
+        jit_default_helper_dispatch,
     };
 
     #[test]
@@ -1039,7 +1174,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 5);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 6);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);
@@ -1052,10 +1187,32 @@ mod tests {
         assert_eq!(align_of::<JitCExit>(), 8);
         assert_eq!(align_of::<JitNativeCallArgument>(), 8);
         assert_eq!(align_of::<JitNativeCallFrame>(), 8);
+        assert_eq!(align_of::<JitNativeControlRecord>(), 8);
+        assert_eq!(align_of::<JitNativeExceptionHandler>(), 4);
+        assert_eq!(align_of::<JitNativeFrameHeader>(), 8);
+        assert_eq!(align_of::<JitNativePcMetadata>(), 4);
+        assert_eq!(align_of::<JitNativeRootEntry>(), 4);
         assert_eq!(
             JitNativeCallFrame::default().struct_size as usize,
             size_of::<JitNativeCallFrame>()
         );
+    }
+
+    #[test]
+    fn native_control_status_numbers_are_stable() {
+        assert_eq!(JitCallStatus::CONTINUE.0, 0);
+        assert_eq!(JitCallStatus::RETURN.0, 1);
+        assert_eq!(JitCallStatus::RETURN_REFERENCE.0, 2);
+        assert_eq!(JitCallStatus::THROW.0, 3);
+        assert_eq!(JitCallStatus::EXIT.0, 4);
+        assert_eq!(JitCallStatus::SUSPEND_GENERATOR.0, 5);
+        assert_eq!(JitCallStatus::SUSPEND_FIBER.0, 6);
+        assert_eq!(JitCallStatus::RUNTIME_ERROR.0, 7);
+        assert_eq!(JitCallStatus::COMPILE_REQUIRED.0, 8);
+        assert_eq!(JitCallStatus::RECOMPILE_REQUESTED.0, 9);
+        assert!(JitCallStatus::RETURN.is_terminal_return());
+        assert!(JitCallStatus::RETURN_REFERENCE.is_terminal_return());
+        assert!(!JitCallStatus::THROW.is_terminal_return());
     }
 
     #[test]

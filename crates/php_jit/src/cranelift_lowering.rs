@@ -11,12 +11,11 @@ use crate::region_ir::build_baseline_region;
 use crate::region_ir::{
     BaselineRegionBuilder, CompileMetadata, NativeCompilerTier, RegionBinaryOp, RegionCallResult,
     RegionCallTarget, RegionCompareOpCode, RegionGraph, RegionInstruction, RegionInstructionKind,
-    RegionNativeCall, RegionOperand, RegionTerminator,
+    RegionNativeCall, RegionNativeControl, RegionOperand, RegionTerminator,
 };
 use crate::{
-    CraneliftCodeKey, CraneliftCompilerIdentity, JIT_HELPER_STATUS_FATAL, JIT_HELPER_STATUS_OK,
-    JIT_HELPER_STATUS_OVERFLOW, JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus,
-    JitEligibility, JitFunctionHandle, ManagedJitFunction, NativeCompileOutcome,
+    CraneliftCodeKey, CraneliftCompilerIdentity, JIT_RUNTIME_ABI_HASH, JitCompileRequest,
+    JitCompileStatus, JitEligibility, JitFunctionHandle, ManagedJitFunction, NativeCompileOutcome,
     NativeCompileRequest, NativeCompilerApi, analyze_jit_eligibility, global_code_manager,
 };
 #[cfg(test)]
@@ -2884,7 +2883,7 @@ fn compile_packed_foreach_int_sum_native(
                 let len_status = builder.inst_results(len_call)[0];
                 let ok_status = builder
                     .ins()
-                    .iconst(types::I32, i64::from(JIT_HELPER_STATUS_OK));
+                    .iconst(types::I32, i64::from(crate::JIT_HELPER_STATUS_OK));
                 let len_ok = builder.ins().icmp(IntCC::Equal, len_status, ok_status);
                 let len_status_args = [len_status.into()];
                 builder
@@ -2965,7 +2964,7 @@ fn compile_packed_foreach_int_sum_native(
                 builder.seal_block(overflow_exit);
                 let overflow_status = builder
                     .ins()
-                    .iconst(types::I32, i64::from(JIT_HELPER_STATUS_OVERFLOW));
+                    .iconst(types::I32, i64::from(crate::JIT_HELPER_STATUS_OVERFLOW));
                 builder.ins().return_(&[overflow_status]);
 
                 builder.seal_block(entry);
@@ -3454,10 +3453,14 @@ fn lower_region_instruction(
     builder: &mut FunctionBuilder<'_>,
     functions: &BTreeMap<FunctionId, FuncId>,
     native_call_helper: Option<FuncId>,
+    blocks: &[ir::Block],
     locals: &BTreeMap<LocalId, Variable>,
     registers: &mut BTreeMap<RegId, ir::Value>,
     instruction: &RegionInstruction,
+    result_out: ir::Value,
     deopt_out: ir::Value,
+    pending_status: Variable,
+    pending_value: Variable,
     function: FunctionId,
     local_count: u32,
     pointer_type: ir::Type,
@@ -3512,6 +3515,7 @@ fn lower_region_instruction(
                     registers,
                     call,
                     instruction,
+                    result_out,
                     function,
                     local_count,
                     pointer_type,
@@ -3552,17 +3556,89 @@ fn lower_region_instruction(
             let status = builder.inst_results(call)[0];
             let ok = builder.create_block();
             let side_exit = builder.create_block();
-            let is_ok =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, status, i64::from(JIT_HELPER_STATUS_OK));
+            let is_ok = builder.ins().icmp_imm(
+                IntCC::Equal,
+                status,
+                i64::from(crate::JitCallStatus::RETURN.0),
+            );
             builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
             builder.switch_to_block(side_exit);
+            let control_value = builder.ins().stack_load(types::I64, result_slot, 0);
+            builder
+                .ins()
+                .store(MemFlagsData::new(), control_value, result_out, 0);
             builder.ins().return_(&[status]);
             builder.switch_to_block(ok);
             let value = builder.ins().stack_load(types::I64, result_slot, 0);
             registers.insert(dst, value);
         }
+        RegionInstructionKind::NativeControl(control) => match control {
+            RegionNativeControl::EnterTry { .. } | RegionNativeControl::LeaveTry => {
+                // Handler state is published in `JitRegionStateMetadata` and
+                // consumed by explicit native unwind. These markers do not
+                // call the VM's exception interpreter loop.
+            }
+            RegionNativeControl::EndFinally {
+                after,
+                outer_finally,
+            } => {
+                let status = builder.use_var(pending_status);
+                let normal = cranelift_block(blocks, *after)?;
+                let pending = builder.create_block();
+                let is_continue = builder.ins().icmp_imm(
+                    IntCC::Equal,
+                    status,
+                    i64::from(crate::JitCallStatus::CONTINUE.0),
+                );
+                builder.ins().brif(is_continue, normal, &[], pending, &[]);
+                builder.switch_to_block(pending);
+                if let Some(finally) = outer_finally {
+                    builder.ins().jump(cranelift_block(blocks, *finally)?, &[]);
+                } else {
+                    let value = builder.use_var(pending_value);
+                    builder
+                        .ins()
+                        .store(MemFlagsData::new(), value, result_out, 0);
+                    builder.ins().return_(&[status]);
+                }
+                let unreachable = builder.create_block();
+                builder.switch_to_block(unreachable);
+                builder.seal_block(unreachable);
+            }
+            RegionNativeControl::Throw { value } => {
+                let value = lower_region_operand(builder, locals, registers, *value)?;
+                builder
+                    .ins()
+                    .store(MemFlagsData::new(), value, result_out, 0);
+                let status = builder
+                    .ins()
+                    .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
+                builder.ins().return_(&[status]);
+                let unreachable = builder.create_block();
+                builder.switch_to_block(unreachable);
+                builder.seal_block(unreachable);
+            }
+            RegionNativeControl::MakeException {
+                dst,
+                class_name,
+                message,
+            } => {
+                // The scalar baseline carries opaque VM handles as i64. The
+                // runtime owns materialization; this stable token preserves
+                // class/message identity until the typed exception helper
+                // publishes the object in the native frame.
+                let class = builder
+                    .ins()
+                    .iconst(types::I64, stable_call_symbol_hash(class_name) as i64);
+                let value = if let Some(message) = message {
+                    let message = lower_region_operand(builder, locals, registers, *message)?;
+                    builder.ins().bxor(class, message)
+                } else {
+                    class
+                };
+                registers.insert(*dst, value);
+            }
+        },
         RegionInstructionKind::Compare { dst, op, lhs, rhs } => {
             let lhs = lower_region_operand(builder, locals, registers, *lhs)?;
             let rhs = lower_region_operand(builder, locals, registers, *rhs)?;
@@ -3572,7 +3648,7 @@ fn lower_region_instruction(
         RegionInstructionKind::RuntimeFatal { .. } => {
             let status = builder
                 .ins()
-                .iconst(types::I32, i64::from(JIT_HELPER_STATUS_FATAL));
+                .iconst(types::I32, i64::from(crate::JitCallStatus::RUNTIME_ERROR.0));
             builder.ins().return_(&[status]);
             let unreachable = builder.create_block();
             builder.switch_to_block(unreachable);
@@ -3674,6 +3750,7 @@ fn lower_native_call_trampoline(
     registers: &mut BTreeMap<RegId, ir::Value>,
     call: &RegionNativeCall,
     instruction: &RegionInstruction,
+    result_out: ir::Value,
     function: FunctionId,
     local_count: u32,
     pointer_type: ir::Type,
@@ -3881,11 +3958,17 @@ fn lower_native_call_trampoline(
     let status = builder.inst_results(helper_call)[0];
     let ok = builder.create_block();
     let side_exit = builder.create_block();
-    let is_ok = builder
-        .ins()
-        .icmp_imm(IntCC::Equal, status, i64::from(JIT_HELPER_STATUS_OK));
+    let is_ok = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::RETURN.0),
+    );
     builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
     builder.switch_to_block(side_exit);
+    let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), control_value, result_out, 0);
     builder.ins().return_(&[status]);
     builder.switch_to_block(ok);
     let value = builder.ins().stack_load(types::I64, out_slot, 16);
@@ -3954,9 +4037,10 @@ fn lower_checked_region_binary(
             .ins()
             .store(MemFlagsData::new(), value, deopt_out, offset);
     }
-    let status = builder
-        .ins()
-        .iconst(types::I32, i64::from(JIT_HELPER_STATUS_OVERFLOW));
+    let status = builder.ins().iconst(
+        types::I32,
+        i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+    );
     builder.ins().return_(&[status]);
     builder.switch_to_block(ok_block);
     Ok(result)
@@ -3994,6 +4078,8 @@ fn lower_region_terminator(
     locals: &BTreeMap<LocalId, Variable>,
     registers: &BTreeMap<RegId, ir::Value>,
     result_out: ir::Value,
+    pending_status: Variable,
+    pending_value: Variable,
     terminator: &RegionTerminator,
 ) -> Result<(), CraneliftLoweringError> {
     match terminator {
@@ -4038,15 +4124,57 @@ fn lower_region_terminator(
                 &[],
             );
         }
-        RegionTerminator::Return { value } => {
+        RegionTerminator::Return { value, finally } => {
             let value = lower_region_operand(builder, locals, registers, *value)?;
-            builder
-                .ins()
-                .store(MemFlagsData::new(), value, result_out, 0);
             let status = builder
                 .ins()
-                .iconst(types::I32, i64::from(JIT_HELPER_STATUS_OK));
-            builder.ins().return_(&[status]);
+                .iconst(types::I32, i64::from(crate::JitCallStatus::RETURN.0));
+            lower_region_frame_exit(
+                builder,
+                blocks,
+                result_out,
+                pending_status,
+                pending_value,
+                value,
+                status,
+                *finally,
+            )?;
+        }
+        RegionTerminator::ReturnReference { local, finally } => {
+            let value = use_local_variable(builder, locals, *local)?;
+            let status = builder.ins().iconst(
+                types::I32,
+                i64::from(crate::JitCallStatus::RETURN_REFERENCE.0),
+            );
+            lower_region_frame_exit(
+                builder,
+                blocks,
+                result_out,
+                pending_status,
+                pending_value,
+                value,
+                status,
+                *finally,
+            )?;
+        }
+        RegionTerminator::Exit { value, finally } => {
+            let value = value
+                .map(|value| lower_region_operand(builder, locals, registers, value))
+                .transpose()?
+                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+            let status = builder
+                .ins()
+                .iconst(types::I32, i64::from(crate::JitCallStatus::EXIT.0));
+            lower_region_frame_exit(
+                builder,
+                blocks,
+                result_out,
+                pending_status,
+                pending_value,
+                value,
+                status,
+                *finally,
+            )?;
         }
         RegionTerminator::MissingLowering => {
             return Err(CraneliftLoweringError::new(
@@ -4058,14 +4186,38 @@ fn lower_region_terminator(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn lower_region_frame_exit(
+    builder: &mut FunctionBuilder<'_>,
+    blocks: &[ir::Block],
+    result_out: ir::Value,
+    pending_status: Variable,
+    pending_value: Variable,
+    value: ir::Value,
+    status: ir::Value,
+    finally: Option<BlockId>,
+) -> Result<(), CraneliftLoweringError> {
+    if let Some(finally) = finally {
+        builder.def_var(pending_status, status);
+        builder.def_var(pending_value, value);
+        builder.ins().jump(cranelift_block(blocks, finally)?, &[]);
+    } else {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, result_out, 0);
+        builder.ins().return_(&[status]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CraneliftNativeCompiler, build_trivial_add_clif_smoke, lower_function_to_cranelift,
     };
     use crate::{
-        JIT_HELPER_STATUS_FATAL, JIT_HELPER_STATUS_OVERFLOW, JIT_RUNTIME_ABI_HASH,
-        JitCompileRequest, JitCompileStatus, NativeCompileRequest, NativeCompilerApi,
+        JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus, NativeCompileRequest,
+        NativeCompilerApi,
     };
     use php_ir::{
         BinaryOp, FunctionFlags, FunctionId, InstructionKind, IrBuilder, IrConstant, IrParam,
@@ -4195,8 +4347,267 @@ mod tests {
                 .handle
                 .expect("native fatal handle")
                 .invoke_i64(&[], JIT_RUNTIME_ABI_HASH),
-            Err(crate::JitInvokeError::NativeStatus(JIT_HELPER_STATUS_FATAL))
+            Err(crate::JitInvokeError::NativeStatus(
+                crate::JitCallStatus::RUNTIME_ERROR.0 as i32,
+            ))
         );
+    }
+
+    #[test]
+    fn throw_uses_explicit_native_status_and_publishes_unwind_metadata() {
+        let mut builder = IrBuilder::new(UnitId::new(705));
+        let file = builder.add_file("native-throw.php");
+        let span = IrSpan::new(file, 5, 25);
+        let function = builder.start_function("native_throw", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let entry = builder.append_block(function);
+        let finally = builder.append_block(function);
+        let after = builder.append_block(function);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::EnterTry {
+                catch: None,
+                catch_types: Vec::new(),
+                finally: Some(finally),
+                after,
+                exception_local: None,
+            },
+            span,
+        );
+        let message = builder.intern_constant(IrConstant::Int(23));
+        let exception = builder.alloc_register(function);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::MakeException {
+                dst: exception,
+                class_name: "runtimeexception".to_owned(),
+                message: Operand::Constant(message),
+            },
+            span,
+        );
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::Throw {
+                value: Operand::Register(exception),
+            },
+            span,
+        );
+        builder.terminate_jump(function, entry, after, span);
+        builder.emit(
+            function,
+            finally,
+            InstructionKind::EndFinally { after },
+            span,
+        );
+        builder.terminate_jump(function, finally, after, span);
+        let zero = builder.intern_constant(IrConstant::Int(0));
+        builder.terminate_return(function, after, Some(Operand::Constant(zero)), span);
+        let unit = builder.finish();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.native-throw"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        let handle = outcome.handle.expect("native throw handle");
+        let metadata = handle
+            .region_state_metadata()
+            .expect("native frame metadata");
+        assert_eq!(metadata.exception_handlers.len(), 1);
+        assert!(!metadata.safepoints.is_empty());
+        let range = metadata
+            .native_pc_ranges
+            .iter()
+            .find(|range| range.end > range.start)
+            .expect("non-empty native PC range");
+        assert!(
+            metadata.resolve_native_pc(range.start).is_some(),
+            "{metadata:#?}"
+        );
+        assert!(matches!(
+            metadata.select_native_unwind(
+                function,
+                1,
+                crate::JitCallStatus::THROW,
+                |_| false,
+            ),
+            crate::JitNativeUnwindTarget::Finally { block, .. } if block == finally
+        ));
+        let crate::JitI64InvokeOutcome::SideExit { status, value, .. } = handle
+            .invoke_i64_with_deopt(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("native throw executes")
+        else {
+            panic!("throw unexpectedly returned");
+        };
+        assert_eq!(status, crate::JitCallStatus::THROW.0 as i32);
+        assert_ne!(value, 0);
+    }
+
+    #[test]
+    fn native_unwind_resumes_compiled_catch_without_interpreter_frame() {
+        let mut builder = IrBuilder::new(UnitId::new(708));
+        let file = builder.add_file("native-catch.php");
+        let span = IrSpan::new(file, 0, 30);
+        let function = builder.start_function("native_catch", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let entry = builder.append_block(function);
+        let catch = builder.append_block(function);
+        let after = builder.append_block(function);
+        let exception_local = builder.intern_local(function, "exception");
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::EnterTry {
+                catch: Some(catch),
+                catch_types: vec!["runtimeexception".to_owned()],
+                finally: None,
+                after,
+                exception_local: Some(exception_local),
+            },
+            span,
+        );
+        let thrown = builder.intern_constant(IrConstant::Int(33));
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::Throw {
+                value: Operand::Constant(thrown),
+            },
+            span,
+        );
+        builder.terminate_jump(function, entry, after, span);
+        let caught = builder.intern_constant(IrConstant::Int(77));
+        builder.terminate_return(function, catch, Some(Operand::Constant(caught)), span);
+        let fallback = builder.intern_constant(IrConstant::Int(0));
+        builder.terminate_return(function, after, Some(Operand::Constant(fallback)), span);
+        let unit = builder.finish();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.native-catch"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        let native = outcome
+            .handle
+            .expect("native catch handle")
+            .invoke_i64_with_native_unwind(&[], JIT_RUNTIME_ABI_HASH, |types, value| {
+                value == 33 && types == ["runtimeexception"]
+            })
+            .expect("explicit native unwind");
+        assert_eq!(native, crate::JitI64InvokeOutcome::Returned(77));
+    }
+
+    #[test]
+    fn return_runs_compiled_finally_before_native_frame_return() {
+        let mut builder = IrBuilder::new(UnitId::new(706));
+        let file = builder.add_file("return-finally.php");
+        let span = IrSpan::new(file, 0, 40);
+        let function = builder.start_function("return_finally", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let entry = builder.append_block(function);
+        let finally = builder.append_block(function);
+        let after = builder.append_block(function);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::EnterTry {
+                catch: None,
+                catch_types: Vec::new(),
+                finally: Some(finally),
+                after,
+                exception_local: None,
+            },
+            span,
+        );
+        let returned = builder.intern_constant(IrConstant::Int(41));
+        builder.terminate_return(function, entry, Some(Operand::Constant(returned)), span);
+        builder.emit(
+            function,
+            finally,
+            InstructionKind::EndFinally { after },
+            span,
+        );
+        builder.terminate_jump(function, finally, after, span);
+        let fallback = builder.intern_constant(IrConstant::Int(0));
+        builder.terminate_return(function, after, Some(Operand::Constant(fallback)), span);
+        let unit = builder.finish();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.return-finally"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        assert_eq!(
+            outcome
+                .handle
+                .expect("compiled finally handle")
+                .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+                .expect("return through finally"),
+            41
+        );
+    }
+
+    #[test]
+    fn exit_runs_compiled_finally_before_native_exit_status() {
+        let mut builder = IrBuilder::new(UnitId::new(707));
+        let file = builder.add_file("exit-finally.php");
+        let span = IrSpan::new(file, 0, 40);
+        let function = builder.start_function("exit_finally", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let entry = builder.append_block(function);
+        let finally = builder.append_block(function);
+        let after = builder.append_block(function);
+        builder.emit(
+            function,
+            entry,
+            InstructionKind::EnterTry {
+                catch: None,
+                catch_types: Vec::new(),
+                finally: Some(finally),
+                after,
+                exception_local: None,
+            },
+            span,
+        );
+        let exit_code = builder.intern_constant(IrConstant::Int(5));
+        builder.terminate_exit(function, entry, Some(Operand::Constant(exit_code)), span);
+        builder.emit(
+            function,
+            finally,
+            InstructionKind::EndFinally { after },
+            span,
+        );
+        builder.terminate_jump(function, finally, after, span);
+        let zero = builder.intern_constant(IrConstant::Int(0));
+        builder.terminate_return(function, after, Some(Operand::Constant(zero)), span);
+        let unit = builder.finish();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.exit-finally"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        let crate::JitI64InvokeOutcome::SideExit { status, value, .. } = outcome
+            .handle
+            .expect("compiled exit handle")
+            .invoke_i64_with_deopt(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("exit through finally")
+        else {
+            panic!("exit unexpectedly returned");
+        };
+        assert_eq!(status, crate::JitCallStatus::EXIT.0 as i32);
+        assert_eq!(value, 5);
     }
 
     #[test]
@@ -4367,13 +4778,13 @@ mod tests {
                 .expect("native caller and callee should execute"),
             42
         );
-        let crate::JitI64InvokeOutcome::SideExit { status, state } = handle
+        let crate::JitI64InvokeOutcome::SideExit { status, state, .. } = handle
             .invoke_i64_with_deopt(&[i64::MAX], JIT_RUNTIME_ABI_HASH)
             .expect("callee overflow should preserve precise state")
         else {
             panic!("callee overflow unexpectedly returned");
         };
-        assert_eq!(status, JIT_HELPER_STATUS_OVERFLOW);
+        assert_eq!(status, crate::JitCallStatus::RECOMPILE_REQUESTED.0 as i32);
         assert_eq!(state.function_id, callee.raw());
         assert_eq!(state.slots[0], i64::MAX);
     }
@@ -4400,7 +4811,7 @@ mod tests {
                     value: crate::JitAbiSlot::default(),
                 });
             }
-            crate::JIT_HELPER_STATUS_COMPILE_REQUIRED
+            crate::JitCallStatus::COMPILE_REQUIRED.0 as i32
         }
 
         let (unit, function) = scalar_dynamic_call_fixture();
@@ -4423,7 +4834,7 @@ mod tests {
         else {
             panic!("dynamic call unexpectedly returned");
         };
-        assert_eq!(status, crate::JIT_HELPER_STATUS_COMPILE_REQUIRED);
+        assert_eq!(status, crate::JitCallStatus::COMPILE_REQUIRED.0 as i32);
     }
 
     #[test]
@@ -4443,7 +4854,10 @@ mod tests {
         let error = handle
             .invoke_i64(&[i64::MAX], JIT_RUNTIME_ABI_HASH)
             .expect_err("checked inline arithmetic should request fallback");
-        assert_eq!(error, crate::JitInvokeError::NativeStatus(2));
+        assert_eq!(
+            error,
+            crate::JitInvokeError::NativeStatus(crate::JitCallStatus::RECOMPILE_REQUESTED.0 as i32,)
+        );
         assert_eq!(error.side_exit().reason, crate::SideExitReason::Overflow);
     }
 
@@ -4466,13 +4880,13 @@ mod tests {
             .expect("executable regions publish state metadata");
         assert!(!metadata.continuations.is_empty());
         assert!(!metadata.native_pc_ranges.is_empty());
-        let crate::JitI64InvokeOutcome::SideExit { status, state } = handle
+        let crate::JitI64InvokeOutcome::SideExit { status, state, .. } = handle
             .invoke_i64_with_deopt(&[i64::MAX], JIT_RUNTIME_ABI_HASH)
             .expect("native invocation")
         else {
             panic!("overflow must side-exit");
         };
-        assert_eq!(status, crate::JIT_HELPER_STATUS_OVERFLOW);
+        assert_eq!(status, crate::JitCallStatus::RECOMPILE_REQUESTED.0 as i32);
         assert_eq!(state.function_id, function.raw());
         assert_eq!(state.slot_count, 1);
         assert_eq!(state.initialized_mask & 1, 1);
