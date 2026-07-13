@@ -35,9 +35,10 @@ pub use abi::{
     JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
     JitNativeFiberState, JitNativeFrameHeader, JitNativeGeneratorState, JitNativeIndirectionEntry,
     JitNativePcMetadata, JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind,
-    JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy, JitOpaqueHandle, JitOpaqueValueKind,
-    JitRegionResult, JitRuntimeCallout, JitRuntimeCalloutResult, JitRuntimeHelperTable,
-    JitSideExit, JitVmContextHandle, SideExitReason, helper_id, jit_default_helper_dispatch,
+    JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy, JitNativeTransitionState,
+    JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
+    JitRuntimeCalloutResult, JitRuntimeHelperTable, JitSideExit, JitVmContextHandle,
+    SideExitReason, helper_id, jit_default_helper_dispatch,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -72,6 +73,7 @@ use std::sync::Arc;
 
 const JIT_NATIVE_HANDLER_RESUME_TAG: u32 = 0x8000_0000;
 const JIT_NATIVE_SUSPENSION_RESUME_TAG: u32 = 0x4000_0000;
+pub const JIT_NATIVE_TRANSITION_RESUME_TAG: u32 = 0x2000_0000;
 
 const fn native_handler_resume_id(block: BlockId) -> i32 {
     (JIT_NATIVE_HANDLER_RESUME_TAG | block.raw()) as i32
@@ -79,6 +81,10 @@ const fn native_handler_resume_id(block: BlockId) -> i32 {
 
 const fn native_suspension_resume_id(continuation_id: u32) -> i32 {
     (JIT_NATIVE_SUSPENSION_RESUME_TAG | continuation_id) as i32
+}
+
+const fn native_transition_resume_id(continuation_id: u32) -> i32 {
+    (JIT_NATIVE_TRANSITION_RESUME_TAG | continuation_id) as i32
 }
 
 /// Stable native compiler identity embedded in code/cache metadata.
@@ -299,6 +305,27 @@ pub struct JitNativeDynamicCodeMetadata {
     pub restart_cache: bool,
 }
 
+/// Exact baseline-native continuation available to optimized guard exits.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitNativeTransitionMetadata {
+    pub function: FunctionId,
+    pub native_version: u32,
+    pub continuation_id: u32,
+    pub resume_id: i32,
+    pub span: IrSpan,
+    pub live_locals: Vec<LocalId>,
+    pub live_registers: Vec<php_ir::RegId>,
+    pub result_register: Option<php_ir::RegId>,
+}
+
+/// Process-local generated entry for one function in a compiled unit graph.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitNativeFunctionEntryMetadata {
+    pub function: FunctionId,
+    pub address: usize,
+    pub arity: u8,
+}
+
 /// Source-level frame resolved from a native PC without interpreter frames.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitNativeBacktraceFrame {
@@ -337,6 +364,8 @@ pub struct JitOsrEntryMetadata {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitRegionStateMetadata {
     pub local_count: u32,
+    pub compiler_tier: region_ir::NativeCompilerTier,
+    pub native_version: u32,
     /// Statically linked native call sites in this compiled call graph.
     pub compiled_to_compiled_call_sites: u64,
     pub continuations: Vec<JitContinuationMetadata>,
@@ -346,6 +375,8 @@ pub struct JitRegionStateMetadata {
     pub safepoints: Vec<JitNativeSafepointMetadata>,
     pub suspensions: Vec<JitNativeSuspensionMetadata>,
     pub dynamic_code: Vec<JitNativeDynamicCodeMetadata>,
+    pub native_transitions: Vec<JitNativeTransitionMetadata>,
+    pub function_entries: Vec<JitNativeFunctionEntryMetadata>,
 }
 
 impl JitRegionStateMetadata {
@@ -873,6 +904,87 @@ impl JitFunctionHandle {
             });
         }
         entry.invoke_i64_with_deopt(args)
+    }
+
+    /// Enters the exact baseline-native continuation described by `state`.
+    /// Live locals/registers are reconstructed from the shared native state;
+    /// instructions before the continuation are not executed again.
+    pub fn invoke_i64_native_transition(
+        &self,
+        state: &JitNativeTransitionState,
+        runtime_abi_hash: u64,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        if runtime_abi_hash != JIT_RUNTIME_ABI_HASH {
+            return Err(JitInvokeError::AbiHashMismatch {
+                expected: JIT_RUNTIME_ABI_HASH,
+                actual: runtime_abi_hash,
+            });
+        }
+        let metadata =
+            self.region_state_metadata()
+                .ok_or(JitInvokeError::MissingNativeTransition(
+                    state.continuation_id,
+                ))?;
+        if metadata.compiler_tier != region_ir::NativeCompilerTier::Baseline {
+            return Err(JitInvokeError::NativeTransitionRequiresBaseline);
+        }
+        let transition = metadata
+            .native_transitions
+            .iter()
+            .find(|entry| {
+                entry.function.raw() == state.function_id
+                    && entry.continuation_id == state.continuation_id
+            })
+            .ok_or(JitInvokeError::MissingNativeTransition(
+                state.continuation_id,
+            ))?;
+        let locals_complete = transition.live_locals.iter().all(|local| {
+            state.initialized_mask & (1_u64.checked_shl(local.raw()).unwrap_or(0)) != 0
+        });
+        let registers_complete = transition.live_registers.iter().all(|register| {
+            state.initialized_register_mask & (1_u64.checked_shl(register.raw()).unwrap_or(0)) != 0
+        });
+        if !locals_complete || !registers_complete {
+            return Err(JitInvokeError::IncompleteNativeTransition(
+                state.continuation_id,
+            ));
+        }
+        let function_entry = metadata
+            .function_entries
+            .iter()
+            .find(|entry| entry.function.raw() == state.function_id)
+            .ok_or(JitInvokeError::MissingNativeTransition(
+                state.continuation_id,
+            ))?;
+        let Some(mut entry) = self.native_entry else {
+            return Err(JitInvokeError::MissingNativeEntry);
+        };
+        entry.address = function_entry.address;
+        entry.arity = function_entry.arity;
+        let args = vec![0_i64; usize::from(function_entry.arity)];
+        entry.invoke_i64_status_out_with_resume(
+            &args,
+            transition.resume_id,
+            state as *const JitNativeTransitionState,
+        )
+    }
+
+    /// Runs optimized native code and transfers a guard exit directly into an
+    /// already-published baseline-native continuation.
+    pub fn invoke_i64_with_native_transition(
+        &self,
+        baseline: &Self,
+        args: &[i64],
+        runtime_abi_hash: u64,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let outcome = self.invoke_i64_with_deopt(args, runtime_abi_hash)?;
+        let JitI64InvokeOutcome::SideExit { status, state, .. } = &outcome else {
+            return Ok(outcome);
+        };
+        if *status != JitCallStatus::RECOMPILE_REQUESTED.0 as i32 {
+            return Ok(outcome);
+        }
+        baseline.invoke_i64_native_transition(state, runtime_abi_hash)
     }
 
     /// Runs catch/finally continuations through native block entries until the
@@ -1512,6 +1624,12 @@ pub enum JitInvokeError {
     MissingSuspensionEntry(u32),
     /// Caller did not materialize every local required by the OSR entry.
     IncompleteOsrState(u32),
+    /// Requested baseline-native continuation is absent.
+    MissingNativeTransition(u32),
+    /// The selected target is not a non-speculative baseline artifact.
+    NativeTransitionRequiresBaseline,
+    /// Guard state omits a local/register required by the continuation.
+    IncompleteNativeTransition(u32),
 }
 
 impl JitInvokeError {
@@ -1533,7 +1651,12 @@ impl JitInvokeError {
             | Self::UnsupportedArity(_)
             | Self::MissingOsrEntry(_)
             | Self::MissingSuspensionEntry(_)
-            | Self::IncompleteOsrState(_) => JitSideExit::new(SideExitReason::UnsupportedValue),
+            | Self::IncompleteOsrState(_)
+            | Self::MissingNativeTransition(_)
+            | Self::NativeTransitionRequiresBaseline
+            | Self::IncompleteNativeTransition(_) => {
+                JitSideExit::new(SideExitReason::UnsupportedValue)
+            }
             Self::AbiHashMismatch { .. } => JitSideExit::new(SideExitReason::AbiMismatch),
             Self::ArityMismatch { .. } => JitSideExit::new(SideExitReason::TypeMismatch),
             Self::NativeStatus(status)

@@ -139,10 +139,25 @@ pub(super) fn compile_region_graph_native(
                     format!("failed to finalize executable region call graph: {error}"),
                 )
             })?;
+            let function_entries = regions
+                .values()
+                .map(|candidate| {
+                    Ok(crate::JitNativeFunctionEntryMetadata {
+                        function: candidate.function,
+                        address: module.get_finalized_function(functions[&candidate.function])
+                            as usize,
+                        arity: region_arity(candidate)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
             let root = functions[&function];
             let address = module.get_finalized_function(root) as usize;
-            let region_state_metadata =
-                region_graph_metadata(region.local_count, regions.values(), native_pc_ranges);
+            let region_state_metadata = region_graph_metadata(
+                region.local_count,
+                regions.values(),
+                native_pc_ranges,
+                function_entries,
+            );
             let handle = JitFunctionHandle::i64_status_out_native(
                 u64::from(function.raw()) + 1,
                 request.region_id.clone(),
@@ -340,6 +355,62 @@ fn region_arity(region: &RegionGraph) -> Result<u8, CraneliftLoweringError> {
     })
 }
 
+fn region_instruction_result_register(kind: &RegionInstructionKind) -> Option<RegId> {
+    match kind {
+        RegionInstructionKind::Move { dst, .. }
+        | RegionInstructionKind::LoadLocal { dst, .. }
+        | RegionInstructionKind::Binary { dst, .. }
+        | RegionInstructionKind::Compare { dst, .. } => Some(*dst),
+        RegionInstructionKind::NativeCall(RegionNativeCall {
+            result: RegionCallResult::Register(dst),
+            ..
+        }) => Some(*dst),
+        RegionInstructionKind::NativeControl(RegionNativeControl::MakeException {
+            dst, ..
+        }) => Some(*dst),
+        RegionInstructionKind::NativeSuspend(
+            RegionNativeSuspend::GeneratorYield { dst, .. }
+            | RegionNativeSuspend::GeneratorDelegate { dst, .. }
+            | RegionNativeSuspend::FiberSuspend { dst, .. },
+        ) => Some(*dst),
+        RegionInstructionKind::NativeDynamicCode(
+            RegionNativeDynamicCode::Include { dst, .. }
+            | RegionNativeDynamicCode::Eval { dst, .. }
+            | RegionNativeDynamicCode::MakeClosure { dst, .. },
+        ) => Some(*dst),
+        RegionInstructionKind::Nop
+        | RegionInstructionKind::StoreLocal { .. }
+        | RegionInstructionKind::Discard { .. }
+        | RegionInstructionKind::NativeCall(RegionNativeCall {
+            result: RegionCallResult::ReferenceLocal(_),
+            ..
+        })
+        | RegionInstructionKind::NativeControl(_)
+        | RegionInstructionKind::NativeDynamicCode(_)
+        | RegionInstructionKind::RuntimeFatal { .. }
+        | RegionInstructionKind::CompileTimeFatal { .. }
+        | RegionInstructionKind::MissingLowering => None,
+    }
+}
+
+fn region_register_types(region: &RegionGraph) -> BTreeMap<RegId, ir::Type> {
+    region
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| {
+            region_instruction_result_register(&instruction.kind).map(|register| {
+                let type_ = if matches!(instruction.kind, RegionInstructionKind::Compare { .. }) {
+                    types::I8
+                } else {
+                    types::I64
+                };
+                (register, type_)
+            })
+        })
+        .collect()
+}
+
 fn region_graph_signature(
     module: &JITModule,
     region: &RegionGraph,
@@ -374,6 +445,17 @@ fn define_region_graph_function(
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
         let blocks = create_region_cranelift_blocks(&mut builder, region)?;
+        let instruction_blocks = region
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .map(|instruction| (instruction.continuation_id, builder.create_block()))
+            .collect::<BTreeMap<_, _>>();
+        let terminator_blocks = region
+            .blocks
+            .iter()
+            .map(|block| (block.id, builder.create_block()))
+            .collect::<BTreeMap<_, _>>();
         let suspension_blocks = region
             .blocks
             .iter()
@@ -401,12 +483,22 @@ fn define_region_graph_function(
         for local_index in 0..region.local_count {
             locals.insert(LocalId::new(local_index), builder.declare_var(types::I64));
         }
+        let register_types = region_register_types(region);
+        let register_variables = (0..region.register_count)
+            .map(|index| {
+                let register = RegId::new(index);
+                let type_ = register_types.get(&register).copied().unwrap_or(types::I64);
+                (register, builder.declare_var(type_))
+            })
+            .collect::<BTreeMap<_, _>>();
         let pending_status = builder.declare_var(types::I32);
         let pending_value = builder.declare_var(types::I64);
         let continue_status = builder
             .ins()
             .iconst(types::I32, i64::from(crate::JitCallStatus::CONTINUE.0));
         let empty_value = builder.ins().iconst(types::I64, 0);
+        let native_version =
+            u32::from(region.compile_metadata.tier == NativeCompilerTier::Optimizing);
         builder.def_var(pending_status, continue_status);
         builder.def_var(pending_value, empty_value);
         for (param, value) in region
@@ -478,6 +570,20 @@ fn define_region_graph_function(
                         .icmp_imm(IntCC::Equal, resume_id, i64::from(encoded_resume));
                 builder.ins().brif(requested, loader, &[], next, &[]);
                 builder.switch_to_block(loader);
+                let control_status = builder.ins().load(
+                    types::I32,
+                    MemFlagsData::new(),
+                    resume_state,
+                    std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
+                );
+                let control_value = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    resume_state,
+                    std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
+                );
+                builder.def_var(pending_status, control_status);
+                builder.def_var(pending_value, control_value);
                 for local in &instruction.live_locals {
                     let offset = 24_i32.saturating_add((local.raw() as i32).saturating_mul(8));
                     let value =
@@ -493,6 +599,71 @@ fn define_region_graph_function(
                     &[],
                 );
                 builder.switch_to_block(next);
+            }
+        }
+        for region_block in &region.blocks {
+            let mut live_registers = Vec::new();
+            for instruction in &region_block.instructions {
+                let loader = builder.create_block();
+                let next = builder.create_block();
+                let encoded_resume =
+                    crate::native_transition_resume_id(instruction.continuation_id);
+                let requested =
+                    builder
+                        .ins()
+                        .icmp_imm(IntCC::Equal, resume_id, i64::from(encoded_resume));
+                builder.ins().brif(requested, loader, &[], next, &[]);
+                builder.switch_to_block(loader);
+                let control_status = builder.ins().load(
+                    types::I32,
+                    MemFlagsData::new(),
+                    resume_state,
+                    std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
+                );
+                let control_value = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    resume_state,
+                    std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
+                );
+                builder.def_var(pending_status, control_status);
+                builder.def_var(pending_value, control_value);
+                for local in &instruction.live_locals {
+                    let offset = std::mem::offset_of!(crate::JitDeoptState, slots)
+                        .saturating_add(local.index().saturating_mul(8));
+                    let value = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::new(),
+                        resume_state,
+                        offset as i32,
+                    );
+                    builder.def_var(local_variable(&locals, *local)?, value);
+                }
+                for register in &live_registers {
+                    let variable = register_variables[register];
+                    let type_ = register_types.get(register).copied().unwrap_or(types::I64);
+                    let offset = std::mem::offset_of!(crate::JitDeoptState, registers)
+                        .saturating_add(register.index().saturating_mul(8));
+                    let value = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::new(),
+                        resume_state,
+                        offset as i32,
+                    );
+                    let value = if type_ == types::I64 {
+                        value
+                    } else {
+                        builder.ins().ireduce(type_, value)
+                    };
+                    builder.def_var(variable, value);
+                }
+                builder
+                    .ins()
+                    .jump(instruction_blocks[&instruction.continuation_id], &[]);
+                builder.switch_to_block(next);
+                if let Some(register) = region_instruction_result_register(&instruction.kind) {
+                    live_registers.push(register);
+                }
             }
         }
         for osr_entry in region.osr_entries() {
@@ -520,9 +691,16 @@ fn define_region_graph_function(
         builder.ins().jump(normal_entry, &[]);
 
         for region_block in &region.blocks {
-            builder.switch_to_block(cranelift_block(&blocks, region_block.id)?);
             let mut registers = BTreeMap::new();
-            for instruction in &region_block.instructions {
+            builder.switch_to_block(cranelift_block(&blocks, region_block.id)?);
+            let first = region_block
+                .instructions
+                .first()
+                .map(|instruction| instruction_blocks[&instruction.continuation_id])
+                .unwrap_or(terminator_blocks[&region_block.id]);
+            builder.ins().jump(first, &[]);
+            for (index, instruction) in region_block.instructions.iter().enumerate() {
+                builder.switch_to_block(instruction_blocks[&instruction.continuation_id]);
                 builder.set_srcloc(ir::SourceLoc::new(
                     instruction.continuation_id.saturating_add(1),
                 ));
@@ -532,6 +710,7 @@ fn define_region_graph_function(
                     functions,
                     native_call_helper,
                     native_dynamic_code_helper,
+                    &register_variables,
                     &blocks,
                     &suspension_blocks,
                     &locals,
@@ -544,9 +723,17 @@ fn define_region_graph_function(
                     pending_value,
                     region.function,
                     region.local_count,
+                    native_version,
                     pointer_type,
                 )?;
+                let next = region_block
+                    .instructions
+                    .get(index + 1)
+                    .map(|next| instruction_blocks[&next.continuation_id])
+                    .unwrap_or(terminator_blocks[&region_block.id]);
+                builder.ins().jump(next, &[]);
             }
+            builder.switch_to_block(terminator_blocks[&region_block.id]);
             builder.set_srcloc(ir::SourceLoc::new(
                 region_block.terminator_continuation_id.saturating_add(1),
             ));
@@ -603,6 +790,7 @@ fn region_graph_metadata<'a>(
     root_local_count: u32,
     regions: impl Iterator<Item = &'a RegionGraph>,
     native_pc_ranges: Vec<crate::JitNativePcRange>,
+    function_entries: Vec<crate::JitNativeFunctionEntryMetadata>,
 ) -> crate::JitRegionStateMetadata {
     let regions = regions.collect::<Vec<_>>();
     let continuations = regions
@@ -648,6 +836,15 @@ fn region_graph_metadata<'a>(
         .collect();
     crate::JitRegionStateMetadata {
         local_count: root_local_count,
+        compiler_tier: regions
+            .first()
+            .map(|region| region.compile_metadata.tier)
+            .unwrap_or_default(),
+        native_version: u32::from(
+            regions.first().is_some_and(|region| {
+                region.compile_metadata.tier == NativeCompilerTier::Optimizing
+            }),
+        ),
         compiled_to_compiled_call_sites: regions
             .iter()
             .flat_map(|region| &region.blocks)
@@ -799,5 +996,34 @@ fn region_graph_metadata<'a>(
                 })
             })
             .collect(),
+        native_transitions: regions
+            .iter()
+            .flat_map(|region| {
+                region.blocks.iter().flat_map(move |block| {
+                    let mut live_registers = Vec::new();
+                    block.instructions.iter().map(move |instruction| {
+                        let transition = crate::JitNativeTransitionMetadata {
+                            function: region.function,
+                            native_version: u32::from(
+                                region.compile_metadata.tier == NativeCompilerTier::Optimizing,
+                            ),
+                            continuation_id: instruction.continuation_id,
+                            resume_id: crate::native_transition_resume_id(
+                                instruction.continuation_id,
+                            ),
+                            span: instruction.span,
+                            live_locals: instruction.live_locals.clone(),
+                            live_registers: live_registers.clone(),
+                            result_register: region_instruction_result_register(&instruction.kind),
+                        };
+                        if let Some(register) = transition.result_register {
+                            live_registers.push(register);
+                        }
+                        transition
+                    })
+                })
+            })
+            .collect(),
+        function_entries,
     }
 }

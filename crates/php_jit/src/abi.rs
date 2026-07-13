@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{BlockId, FunctionId, InstrId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 8;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 9;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x08c1_a817_0000_0008;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x09c1_a817_0000_0009;
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
 pub const JIT_DEOPT_MAX_SLOTS: usize = 64;
@@ -32,8 +32,8 @@ pub struct JitDeoptState {
     pub continuation_id: u32,
     /// Number of addressable local slots in the compiled region.
     pub slot_count: u32,
-    /// Reserved for append-only ABI growth; native writers must store zero.
-    pub reserved: u32,
+    /// Native source-version identity reconstructed at a transition.
+    pub native_version: u32,
     /// Bit `n` is set when `slots[n]` contains a materialized value.
     pub initialized_mask: u64,
     /// Materialized scalar locals indexed by their VM local ID.
@@ -57,7 +57,7 @@ impl Default for JitDeoptState {
             function_id: u32::MAX,
             continuation_id: u32::MAX,
             slot_count: 0,
-            reserved: 0,
+            native_version: 0,
             initialized_mask: 0,
             slots: [0; JIT_DEOPT_MAX_SLOTS],
             control_status: JitCallStatus::CONTINUE,
@@ -72,6 +72,12 @@ impl Default for JitDeoptState {
         }
     }
 }
+
+/// State reconstructed for a native-to-native version transition.
+///
+/// This compatibility alias retains the established C layout while public
+/// compiler/runtime APIs use native-transition terminology.
+pub type JitNativeTransitionState = JitDeoptState;
 
 /// Stable status returned by native calls and runtime helpers.
 ///
@@ -1419,7 +1425,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 8);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 9);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);

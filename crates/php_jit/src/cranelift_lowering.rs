@@ -3436,19 +3436,48 @@ fn use_local_variable(
 fn lower_region_operand(
     builder: &mut FunctionBuilder<'_>,
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &BTreeMap<RegId, ir::Value>,
+    registers: &BTreeMap<RegId, Variable>,
     operand: RegionOperand,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     match operand {
-        RegionOperand::Register(reg) => registers.get(&reg).copied().ok_or_else(|| {
-            CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_MISSING_REGISTER",
-                format!("register {} has not been lowered in this block", reg.raw()),
-            )
-        }),
+        RegionOperand::Register(reg) => {
+            let variable = registers.get(&reg).copied().ok_or_else(|| {
+                CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_REJECT_MISSING_REGISTER",
+                    format!("register {} has not been lowered in this block", reg.raw()),
+                )
+            })?;
+            builder.try_use_var(variable).map_err(|error| {
+                CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_REJECT_MISSING_REGISTER",
+                    format!("register {} has no native value: {error}", reg.raw()),
+                )
+            })
+        }
         RegionOperand::I64(value) => Ok(builder.ins().iconst(types::I64, value)),
         RegionOperand::Local(local) => use_local_variable(builder, locals, local),
     }
+}
+
+fn define_region_register(
+    builder: &mut FunctionBuilder<'_>,
+    register_variables: &BTreeMap<RegId, Variable>,
+    registers: &mut BTreeMap<RegId, Variable>,
+    register: RegId,
+    value: ir::Value,
+) -> Result<(), CraneliftLoweringError> {
+    let variable = register_variables.get(&register).copied().ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_MISSING_REGISTER",
+            format!(
+                "register {} has no declared native variable",
+                register.raw()
+            ),
+        )
+    })?;
+    builder.def_var(variable, value);
+    registers.insert(register, variable);
+    Ok(())
 }
 
 fn lower_region_instruction(
@@ -3457,10 +3486,11 @@ fn lower_region_instruction(
     functions: &BTreeMap<FunctionId, FuncId>,
     native_call_helper: Option<FuncId>,
     native_dynamic_code_helper: Option<FuncId>,
+    register_variables: &BTreeMap<RegId, Variable>,
     blocks: &[ir::Block],
     suspension_blocks: &BTreeMap<u32, ir::Block>,
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &mut BTreeMap<RegId, ir::Value>,
+    registers: &mut BTreeMap<RegId, Variable>,
     instruction: &RegionInstruction,
     result_out: ir::Value,
     deopt_out: ir::Value,
@@ -3469,17 +3499,18 @@ fn lower_region_instruction(
     pending_value: Variable,
     function: FunctionId,
     local_count: u32,
+    native_version: u32,
     pointer_type: ir::Type,
 ) -> Result<(), CraneliftLoweringError> {
     match &instruction.kind {
         RegionInstructionKind::Nop => {}
         RegionInstructionKind::Move { dst, src } => {
             let cl_value = lower_region_operand(builder, locals, registers, *src)?;
-            registers.insert(*dst, cl_value);
+            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::LoadLocal { dst, local } => {
             let cl_value = use_local_variable(builder, locals, *local)?;
-            registers.insert(*dst, cl_value);
+            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::StoreLocal { local, src } => {
             let cl_value = lower_region_operand(builder, locals, registers, *src)?;
@@ -3502,8 +3533,10 @@ fn lower_region_instruction(
                 local_count,
                 instruction,
                 locals,
+                registers,
+                native_version,
             )?;
-            registers.insert(*dst, cl_value);
+            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::NativeCall(call) => {
             let direct = match call.result {
@@ -3518,6 +3551,7 @@ fn lower_region_instruction(
                     builder,
                     native_call_helper,
                     locals,
+                    register_variables,
                     registers,
                     call,
                     instruction,
@@ -3576,7 +3610,7 @@ fn lower_region_instruction(
             builder.ins().return_(&[status]);
             builder.switch_to_block(ok);
             let value = builder.ins().stack_load(types::I64, result_slot, 0);
-            registers.insert(dst, value);
+            define_region_register(builder, register_variables, registers, dst, value)?;
         }
         RegionInstructionKind::NativeControl(control) => match control {
             RegionNativeControl::EnterTry { .. } | RegionNativeControl::LeaveTry => {
@@ -3642,7 +3676,7 @@ fn lower_region_instruction(
                 } else {
                     class
                 };
-                registers.insert(*dst, value);
+                define_region_register(builder, register_variables, registers, *dst, value)?;
             }
         },
         RegionInstructionKind::NativeSuspend(suspend) => {
@@ -3650,6 +3684,7 @@ fn lower_region_instruction(
                 builder,
                 suspension_blocks,
                 locals,
+                register_variables,
                 registers,
                 suspend,
                 instruction,
@@ -3666,6 +3701,7 @@ fn lower_region_instruction(
                 builder,
                 native_dynamic_code_helper,
                 locals,
+                register_variables,
                 registers,
                 operation,
                 instruction,
@@ -3678,7 +3714,7 @@ fn lower_region_instruction(
             let lhs = lower_region_operand(builder, locals, registers, *lhs)?;
             let rhs = lower_region_operand(builder, locals, registers, *rhs)?;
             let cl_value = builder.ins().icmp(region_compare_intcc(*op), lhs, rhs);
-            registers.insert(*dst, cl_value);
+            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::RuntimeFatal { .. } => {
             let status = builder
@@ -3716,7 +3752,8 @@ fn lower_native_suspension(
     builder: &mut FunctionBuilder<'_>,
     suspension_blocks: &BTreeMap<u32, ir::Block>,
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &mut BTreeMap<RegId, ir::Value>,
+    register_variables: &BTreeMap<RegId, Variable>,
+    registers: &mut BTreeMap<RegId, Variable>,
     suspend: &RegionNativeSuspend,
     instruction: &RegionInstruction,
     result_out: ir::Value,
@@ -3815,7 +3852,7 @@ fn lower_native_suspension(
         std::mem::offset_of!(crate::JitDeoptState, initialized_register_mask) as i32,
     );
     for register in &register_ids {
-        let value = registers[register];
+        let value = builder.use_var(registers[register]);
         let value = if builder.func.dfg.value_type(value) == types::I64 {
             value
         } else {
@@ -3901,9 +3938,9 @@ fn lower_native_suspension(
             builder
                 .ins()
                 .load(types::I64, MemFlagsData::new(), resume_state, offset as i32);
-        registers.insert(register, value);
+        define_region_register(builder, register_variables, registers, register, value)?;
     }
-    registers.insert(dst, resume_value);
+    define_region_register(builder, register_variables, registers, dst, resume_value)?;
     Ok(())
 }
 
@@ -3978,7 +4015,8 @@ fn lower_native_call_trampoline(
     builder: &mut FunctionBuilder<'_>,
     native_call_helper: Option<FuncId>,
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &mut BTreeMap<RegId, ir::Value>,
+    register_variables: &BTreeMap<RegId, Variable>,
+    registers: &mut BTreeMap<RegId, Variable>,
     call: &RegionNativeCall,
     instruction: &RegionInstruction,
     result_out: ir::Value,
@@ -4205,7 +4243,7 @@ fn lower_native_call_trampoline(
     let value = builder.ins().stack_load(types::I64, out_slot, 16);
     match call.result {
         RegionCallResult::Register(register) => {
-            registers.insert(register, value);
+            define_region_register(builder, register_variables, registers, register, value)?;
         }
         RegionCallResult::ReferenceLocal(local) => {
             builder.def_var(local_variable(locals, local)?, value);
@@ -4220,7 +4258,8 @@ fn lower_native_dynamic_code(
     builder: &mut FunctionBuilder<'_>,
     native_dynamic_code_helper: Option<FuncId>,
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &mut BTreeMap<RegId, ir::Value>,
+    register_variables: &BTreeMap<RegId, Variable>,
+    registers: &mut BTreeMap<RegId, Variable>,
     operation: &RegionNativeDynamicCode,
     instruction: &RegionInstruction,
     result_out: ir::Value,
@@ -4427,7 +4466,7 @@ fn lower_native_dynamic_code(
             (std::mem::offset_of!(crate::JitCallResult, value)
                 + std::mem::offset_of!(crate::JitAbiSlot, payload)) as i32,
         );
-        registers.insert(destination, value);
+        define_region_register(builder, register_variables, registers, destination, value)?;
     }
     Ok(())
 }
@@ -4442,6 +4481,8 @@ fn lower_checked_region_binary(
     local_count: u32,
     instruction: &RegionInstruction,
     locals: &BTreeMap<LocalId, Variable>,
+    registers: &BTreeMap<RegId, Variable>,
+    native_version: u32,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let (result, overflow) = match op {
         RegionBinaryOp::Add => builder.ins().sadd_overflow(lhs, rhs),
@@ -4468,7 +4509,7 @@ fn lower_checked_region_binary(
     builder
         .ins()
         .store(MemFlagsData::new(), slot_count, deopt_out, 8);
-    let reserved = builder.ins().iconst(types::I32, 0);
+    let reserved = builder.ins().iconst(types::I32, i64::from(native_version));
     builder
         .ins()
         .store(MemFlagsData::new(), reserved, deopt_out, 12);
@@ -4485,6 +4526,31 @@ fn lower_checked_region_binary(
         builder
             .ins()
             .store(MemFlagsData::new(), value, deopt_out, offset);
+    }
+    let initialized_register_mask = registers.keys().fold(0_u64, |mask, register| {
+        mask | 1_u64.checked_shl(register.raw()).unwrap_or(0)
+    });
+    let register_mask = builder
+        .ins()
+        .iconst(types::I64, initialized_register_mask as i64);
+    builder.ins().store(
+        MemFlagsData::new(),
+        register_mask,
+        deopt_out,
+        std::mem::offset_of!(crate::JitDeoptState, initialized_register_mask) as i32,
+    );
+    for (register, variable) in registers {
+        let value = builder.use_var(*variable);
+        let value = if builder.func.dfg.value_type(value) == types::I64 {
+            value
+        } else {
+            builder.ins().uextend(types::I64, value)
+        };
+        let offset = std::mem::offset_of!(crate::JitDeoptState, registers)
+            .saturating_add(register.index().saturating_mul(8));
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, deopt_out, offset as i32);
     }
     let status = builder.ins().iconst(
         types::I32,
@@ -4509,7 +4575,7 @@ fn region_compare_intcc(op: RegionCompareOpCode) -> IntCC {
 fn lower_region_condition(
     builder: &mut FunctionBuilder<'_>,
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &BTreeMap<RegId, ir::Value>,
+    registers: &BTreeMap<RegId, Variable>,
     condition: RegionOperand,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let value = lower_region_operand(builder, locals, registers, condition)?;
@@ -4525,7 +4591,7 @@ fn lower_region_terminator(
     builder: &mut FunctionBuilder<'_>,
     blocks: &[ir::Block],
     locals: &BTreeMap<LocalId, Variable>,
-    registers: &BTreeMap<RegId, ir::Value>,
+    registers: &BTreeMap<RegId, Variable>,
     result_out: ir::Value,
     pending_status: Variable,
     pending_value: Variable,
@@ -4673,6 +4739,45 @@ mod tests {
         BinaryOp, FunctionFlags, FunctionId, InstructionKind, IrBuilder, IrConstant, IrParam,
         IrReturnType, IrSpan, LocalId, Operand, UnitId,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NATIVE_DYNAMIC_EFFECTS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn test_native_dynamic_code(
+        _vm_context: u64,
+        request: *mut crate::JitNativeDynamicCodeRequest,
+        out: *mut crate::JitCallResult,
+    ) -> i32 {
+        if request.is_null() || out.is_null() {
+            return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+        }
+        // SAFETY: Generated code owns both records for this synchronous call.
+        let request = unsafe { &*request };
+        let payload = if request.kind == crate::JitNativeDynamicCodeKind::REQUIRE_ONCE {
+            if request.source.payload != 91 {
+                return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+            }
+            123
+        } else if request.kind == crate::JitNativeDynamicCodeKind::REQUIRE {
+            NATIVE_DYNAMIC_EFFECTS.fetch_add(1, Ordering::SeqCst);
+            i64::MAX as u64
+        } else {
+            return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+        };
+        // SAFETY: `out` is checked and caller-owned.
+        unsafe {
+            out.write(crate::JitCallResult {
+                status: crate::JitCallStatus::RETURN,
+                detail: request.continuation_id,
+                value: crate::JitAbiSlot {
+                    tag: 3,
+                    flags: 0,
+                    payload,
+                },
+            });
+        }
+        crate::JitCallStatus::RETURN.0 as i32
+    }
 
     #[test]
     fn builds_and_verifies_standalone_trivial_add_clif_smoke() {
@@ -5588,34 +5693,6 @@ mod tests {
 
     #[test]
     fn include_executes_only_after_native_dynamic_compiler_returns_entry_result() {
-        extern "C" fn compile_and_invoke(
-            _vm_context: u64,
-            request: *mut crate::JitNativeDynamicCodeRequest,
-            out: *mut crate::JitCallResult,
-        ) -> i32 {
-            assert!(!request.is_null());
-            assert!(!out.is_null());
-            // SAFETY: Generated code owns both records for this synchronous
-            // native dynamic compilation/invocation.
-            let request = unsafe { &*request };
-            assert_eq!(request.abi_version, crate::JIT_RUNTIME_ABI_VERSION);
-            assert_eq!(request.kind, crate::JitNativeDynamicCodeKind::REQUIRE_ONCE);
-            assert_eq!(request.source.payload, 91);
-            // SAFETY: `out` is checked and caller-owned.
-            unsafe {
-                out.write(crate::JitCallResult {
-                    status: crate::JitCallStatus::RETURN,
-                    detail: request.continuation_id,
-                    value: crate::JitAbiSlot {
-                        tag: 3,
-                        flags: 0,
-                        payload: 123,
-                    },
-                });
-            }
-            crate::JitCallStatus::RETURN.0 as i32
-        }
-
         let (unit, function) = scalar_native_include_fixture();
         let mut backend = CraneliftNativeCompiler;
         let outcome = backend.compile_region(&NativeCompileRequest {
@@ -5623,7 +5700,7 @@ mod tests {
             unit: Some(&unit),
             function: Some(function),
             runtime_helpers: crate::JitRuntimeHelperAddresses {
-                native_dynamic_code: compile_and_invoke as *const () as usize,
+                native_dynamic_code: test_native_dynamic_code as *const () as usize,
                 ..crate::JitRuntimeHelperAddresses::default()
             },
         });
@@ -5703,6 +5780,138 @@ mod tests {
                 && range.continuation_id == continuation.id
                 && range.end > range.start
         }));
+    }
+
+    #[test]
+    fn baseline_native_continuation_resumes_exact_instruction() {
+        let (unit, function) = helper_overflow_fixture();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.native-transition.baseline"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        let handle = outcome.handle.expect("baseline handle");
+        let metadata = handle.region_state_metadata().expect("transition metadata");
+        assert_eq!(
+            metadata.compiler_tier,
+            crate::region_ir::NativeCompilerTier::Baseline
+        );
+        let transition = metadata
+            .native_transitions
+            .iter()
+            .find(|transition| transition.live_registers.len() == 2)
+            .expect("binary continuation");
+        let mut state = crate::JitNativeTransitionState {
+            function_id: function.raw(),
+            continuation_id: transition.continuation_id,
+            slot_count: metadata.local_count,
+            ..crate::JitNativeTransitionState::default()
+        };
+        for local in &transition.live_locals {
+            state.initialized_mask |= 1_u64 << local.raw();
+            state.slots[local.index()] = 41;
+        }
+        for (index, register) in transition.live_registers.iter().enumerate() {
+            state.initialized_register_mask |= 1_u64 << register.raw();
+            state.registers[register.index()] = if index == 0 { 41 } else { 1 };
+        }
+        assert_eq!(
+            handle
+                .invoke_i64_native_transition(&state, JIT_RUNTIME_ABI_HASH)
+                .expect("baseline continuation should execute"),
+            crate::JitI64InvokeOutcome::Returned(42)
+        );
+    }
+
+    #[test]
+    fn nested_callee_transition_uses_published_native_function_entry() {
+        let (unit, root, callee) = scalar_direct_call_fixture();
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.native-transition.nested"),
+            unit: Some(&unit),
+            function: Some(root),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+        let handle = outcome.handle.expect("compiled call graph");
+        let metadata = handle.region_state_metadata().expect("transition metadata");
+        let transition = metadata
+            .native_transitions
+            .iter()
+            .find(|transition| {
+                transition.function == callee && transition.live_registers.len() == 1
+            })
+            .expect("callee add continuation");
+        let mut state = crate::JitNativeTransitionState {
+            function_id: callee.raw(),
+            continuation_id: transition.continuation_id,
+            slot_count: metadata.local_count,
+            ..crate::JitNativeTransitionState::default()
+        };
+        for local in &transition.live_locals {
+            state.initialized_mask |= 1_u64 << local.raw();
+            state.slots[local.index()] = 41;
+        }
+        for register in &transition.live_registers {
+            state.initialized_register_mask |= 1_u64 << register.raw();
+            state.registers[register.index()] = 41;
+        }
+        assert_eq!(
+            handle
+                .invoke_i64_native_transition(&state, JIT_RUNTIME_ABI_HASH)
+                .expect("callee transition should execute"),
+            crate::JitI64InvokeOutcome::Returned(42)
+        );
+    }
+
+    #[test]
+    fn optimized_exit_after_effect_does_not_repeat_effect_in_baseline() {
+        NATIVE_DYNAMIC_EFFECTS.store(0, Ordering::SeqCst);
+        let (unit, function) = effect_then_overflow_fixture();
+        let helpers = crate::JitRuntimeHelperAddresses {
+            native_dynamic_code: test_native_dynamic_code as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        };
+        let mut backend = CraneliftNativeCompiler;
+        let baseline = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new("cl.transition.effect.baseline"),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: helpers,
+        });
+        let optimized_request =
+            JitCompileRequest::new("cl.transition.effect.optimized").with_opt_level(2);
+        let optimized = backend.compile_region(&NativeCompileRequest {
+            compile: &optimized_request,
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: helpers,
+        });
+        assert_eq!(baseline.status, JitCompileStatus::Compiled, "{baseline:?}");
+        assert_eq!(
+            optimized.status,
+            JitCompileStatus::Compiled,
+            "{optimized:?}"
+        );
+        let outcome = optimized
+            .handle
+            .expect("optimized handle")
+            .invoke_i64_with_native_transition(
+                &baseline.handle.expect("baseline handle"),
+                &[],
+                JIT_RUNTIME_ABI_HASH,
+            )
+            .expect("native-to-native transition should execute");
+        assert!(matches!(
+            outcome,
+            crate::JitI64InvokeOutcome::SideExit { status, .. }
+                if status == crate::JitCallStatus::RECOMPILE_REQUESTED.0 as i32
+        ));
+        assert_eq!(NATIVE_DYNAMIC_EFFECTS.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -6309,6 +6518,45 @@ mod tests {
                 dst: result,
                 kind: php_ir::instruction::IncludeKind::RequireOnce,
                 path: Operand::Constant(path),
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+        (builder.finish(), function)
+    }
+
+    fn effect_then_overflow_fixture() -> (php_ir::IrUnit, FunctionId) {
+        let mut builder = IrBuilder::new(UnitId::new(0));
+        let file = builder.add_file("native-transition-effect.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("effect_then_guard", FunctionFlags::default(), span);
+        builder.set_entry(function);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let block = builder.append_block(function);
+        let path = builder.add_constant(IrConstant::Int(5));
+        let one = builder.add_constant(IrConstant::Int(1));
+        let effect = builder.alloc_register(function);
+        let increment = builder.alloc_register(function);
+        let result = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Include {
+                dst: effect,
+                kind: php_ir::instruction::IncludeKind::Require,
+                path: Operand::Constant(path),
+            },
+            span,
+        );
+        builder.emit_load_const(function, block, increment, one, span);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Binary {
+                dst: result,
+                op: BinaryOp::Add,
+                lhs: Operand::Register(effect),
+                rhs: Operand::Register(increment),
             },
             span,
         );

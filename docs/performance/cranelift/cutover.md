@@ -267,3 +267,33 @@ It writes `target/cranelift-only/native-dynamic-code.{json,md}`, verifies the
 ABI, Region IR, generated callout, compile-once/cache/fork contracts and source
 invariants, executes focused native/concurrency/cache/error tests plus existing
 include/eval/autoload semantic fixtures, and checks every workspace target.
+
+## Prompt 10 native slow paths and version transitions
+
+Every compiled function now publishes a non-speculative baseline artifact and
+an exact generated entry for each legal instruction continuation. Resume IDs in
+the `0x20000000` namespace reconstruct live locals, live registers, pending
+exception/finally control, result destination, function identity, and source
+version from `JitNativeTransitionState`. Cranelift splits source blocks at
+instruction boundaries, so entering a continuation never repeats preceding
+output, mutation, calls, or other PHP-visible effects.
+
+Optimized `RECOMPILE_REQUESTED` exits use
+`invoke_i64_with_native_transition` to select a published baseline function
+entry, including a nested callee, and enter the exact continuation. The same
+metadata supports less-specialized versions. Loop promotion and guard exits
+are native-to-native: baseline loop OSR enters generated optimized code, while
+an optimized guard reconstructs state into a baseline generated entry. A
+version transition returns only native control statuses; it has no alternate
+executor target and never restarts a function after an observable effect.
+
+Run the gate with:
+
+```sh
+nix develop -c just cranelift-native-transitions
+```
+
+It writes `target/cranelift-only/native-version-transitions.{json,md}`, audits
+the state and exact-entry source contracts, proves nested callee routing and
+no effect replay, exercises native OSR/overflow metadata, retains PHP-visible
+overflow and cache-guard semantics, and checks all workspace targets.

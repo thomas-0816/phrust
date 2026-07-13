@@ -106,6 +106,7 @@ help:
       '  just cranelift-only-precondition Freeze and verify the native-only cutover prerequisites' \
       '  just cranelift-only-no-alternate-emitter Prove the retired native emitter is absent' \
       '  just cranelift-native-dynamic-code Verify native include/eval/declaration compilation' \
+      '  just cranelift-native-transitions Verify native-to-native guard exits and OSR' \
       '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
       '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
@@ -1734,6 +1735,25 @@ cranelift-native-dynamic-code:
     cargo test -p php_vm include_cache_preserves_include_once_request_tracking
     cargo test -p php_vm eval_
     cargo test -p php_vm autoload
+    cargo check --workspace --all-targets
+
+# Prompt 10 cutover gate: optimized exits reconstruct precise state and enter
+# exact baseline/less-specialized generated continuations without effect replay.
+cranelift-native-transitions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_transition_audit
+    scripts/verify/cranelift_native_transitions.py
+    scripts/verify/cranelift_only_stage_ratchet.py
+    cargo test -p php_jit --lib baseline_native_continuation_resumes_exact_instruction
+    cargo test -p php_jit --lib optimized_exit_after_effect_does_not_repeat_effect_in_baseline
+    cargo test -p php_jit --lib nested_callee_transition_uses_published_native_function_entry
+    cargo test -p php_jit --lib cranelift_loop_enters_through_native_osr_state
+    cargo test -p php_jit --lib cranelift_overflow_materializes_precise_region_continuation
+    cargo test -p php_vm expressions_integer_overflow_promotes_to_float
+    cargo test -p php_vm method_call_cache_guard_fails_on_receiver_change
+    cargo test -p php_vm property_fetch_cache_guard_fails_on_receiver_change
+    cargo test -p php_vm class_static_cache_guard_fails_on_resolved_class_change
     cargo check --workspace --all-targets
 
 jit-cranelift-smoke:
