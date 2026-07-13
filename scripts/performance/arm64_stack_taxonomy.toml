@@ -1,0 +1,335 @@
+schema_version = 1
+worker_thread = "php-worker-0"
+phrust_module_regex = "^(?:phrust-server|php_[a-z_]+)$"
+phrust_owner_symbol_regex = '(?:^|\$)php_(?:vm|runtime|server|executor|std|ir|ast|semantics|syntax|lexer)(?:::|\.)'
+generic_rust_symbol_regex = "^(?:core::|alloc::|std::|hashbrown::|indexmap::|smallvec::|parking_lot::|_RNv)"
+idle_symbol_regex = "(?:semaphore_wait_trap|__psynch_cvwait|__psynch_mutexwait|std::sync::mpmc|Receiver::recv)"
+
+[categories.allocator_and_deallocator]
+actionable = true
+
+[categories.value_clone_refcount_and_drop]
+actionable = true
+
+[categories.frame_register_local_storage]
+actionable = true
+
+[categories.dense_dispatch_core]
+actionable = true
+
+[categories.dense_semantic_helpers]
+actionable = true
+
+[categories.rich_dispatch_core]
+actionable = true
+
+[categories.call_argument_and_frame_binding]
+actionable = true
+
+[categories.builtin_adapter_and_builtin_body]
+actionable = true
+
+[categories.array_and_numeric_string]
+actionable = true
+
+[categories.string_hash_symbol_class_method_lookup]
+actionable = true
+
+[categories.object_property_and_class_runtime]
+actionable = true
+
+[categories.include_autoload_and_declaration_activation]
+actionable = true
+
+[categories.output_and_string_rendering]
+actionable = true
+
+[categories.native_jit_bridge_and_side_exit]
+actionable = true
+
+[categories.database_stream_crypto_regex_and_external_extensions]
+actionable = true
+
+[categories.server_request_session_and_response_lifecycle]
+actionable = true
+
+[categories.rust_runtime_locks_and_collections]
+actionable = true
+
+[categories.kernel_and_system_libraries]
+actionable = true
+
+[categories.unclassified_phrust]
+actionable = false
+
+[categories.unresolved]
+actionable = false
+
+[categories.idle]
+actionable = false
+
+# Rules are evaluated in file order. All configured fields on a rule must match.
+# Leaf rules precede owner rules so allocator, drop, kernel, and native leaves own
+# their exclusive samples even when their callers belong to another mechanism.
+
+[[rules]]
+id = "state-idle-worker-wait"
+category = "idle"
+target = "state"
+state = "idle"
+
+[[rules]]
+id = "state-unresolved-address"
+category = "unresolved"
+target = "state"
+state = "unresolved"
+
+[[rules]]
+id = "leaf-darwin-allocator"
+category = "allocator_and_deallocator"
+target = "leaf"
+symbol_regex = "(?i)(?:^|[$_:])(?:malloc|calloc|realloc|free|mmap|munmap|xzm|malloc_zone|szone|nano_)(?:$|[$_:])"
+
+[[rules]]
+id = "leaf-rust-allocator-growth"
+category = "allocator_and_deallocator"
+target = "leaf"
+symbol_regex = "(?:alloc::alloc|RawVec.*(?:grow|reserve)|finish_grow|handle_alloc_error)"
+
+[[rules]]
+id = "leaf-value-clone"
+category = "value_clone_refcount_and_drop"
+target = "leaf"
+symbol_regex = "php_runtime[.$:]+value[.$:]+Value.*(?:Clone|clone)"
+
+[[rules]]
+id = "leaf-value-drop"
+category = "value_clone_refcount_and_drop"
+target = "leaf"
+symbol_regex = "drop_in_place.*php_runtime[.$:]+value[.$:]+Value"
+
+[[rules]]
+id = "leaf-reference-count-or-cow"
+category = "value_clone_refcount_and_drop"
+target = "leaf"
+symbol_regex = "(?:alloc::rc::Rc|alloc::sync::Arc).*(?:clone|drop_slow|make_mut|increment|decrement)"
+
+[[rules]]
+id = "leaf-kernel-or-system-library"
+category = "kernel_and_system_libraries"
+target = "leaf"
+module_regex = '^(?:libsystem_|libdyld|libobjc|libc\+\+|dyld)'
+
+[[rules]]
+id = "leaf-dyld-system-stub"
+category = "kernel_and_system_libraries"
+target = "leaf"
+symbol_regex = '^(?:DYLD-STUB\$\$)?(?:memcpy|memmove|memcmp|memset|bzero)$'
+
+[[rules]]
+id = "leaf-native-copy-patch"
+category = "native_jit_bridge_and_side_exit"
+target = "leaf"
+module_regex = "(?i)(?:native-copy-patch|jit)"
+
+[[rules]]
+id = "leaf-sljit-codegen"
+category = "native_jit_bridge_and_side_exit"
+target = "leaf"
+symbol_regex = "^(?:sljit_|_?jit_)"
+
+[[rules]]
+id = "leaf-external-extension-library"
+category = "database_stream_crypto_regex_and_external_extensions"
+target = "leaf"
+module_regex = "(?i)(?:mysql|maria|pcre|ssl|crypto|sodium|ssh|zlib|curl|sqlite|icu)"
+
+[[rules]]
+id = "leaf-embedded-extension-body"
+category = "database_stream_crypto_regex_and_external_extensions"
+target = "leaf"
+symbol_regex = "(?i)^(?:pcre2_|mysql_|mariadb_|sqlite3_|curl_|SSL_|EVP_|sodium_|parse_regex|compile_regex)"
+
+[[rules]]
+id = "owner-frame-register-local"
+category = "frame_register_local_storage"
+target = "owner"
+source_regex = '^(?:frame|local_storage)\.rs$'
+
+[[rules]]
+id = "owner-dense-dispatch-loop"
+category = "dense_dispatch_core"
+target = "owner"
+source_regex = '^dense_dispatch\.rs$'
+
+[[rules]]
+id = "owner-dense-dispatch-symbol"
+category = "dense_dispatch_core"
+target = "owner"
+symbol_regex = "php_vm::vm::dense_dispatch::.*execute_bytecode_function"
+
+[[rules]]
+id = "owner-dense-semantic-helper"
+category = "dense_semantic_helpers"
+target = "owner"
+source_regex = '^(?:dense_runtime_adapters|operand_read|execution_optimization|scalar_handlers|value_support|iteration|quickening|tiering|instrumentation|dim_execution_support|execution_state)\.rs$'
+
+[[rules]]
+id = "owner-rich-dispatch"
+category = "rich_dispatch_core"
+target = "owner"
+source_regex = '^(?:rich_dispatch|rich_call_dispatch|rich_foreach_dispatch|rich_array_dispatch|rich_object_dispatch)\.rs$'
+
+[[rules]]
+id = "owner-call-and-argument-binding"
+category = "call_argument_and_frame_binding"
+target = "owner"
+source_regex = '^(?:calls|arguments|callable_builtins)\.rs$'
+
+[[rules]]
+id = "owner-builtin-adapter"
+category = "builtin_adapter_and_builtin_body"
+target = "owner"
+source_regex = '^(?:builtins|builtin_adapter|arginfo)\.rs$'
+
+[[rules]]
+id = "owner-builtin-crate"
+category = "builtin_adapter_and_builtin_body"
+target = "owner"
+symbol_regex = "^(?:php_std::|php_runtime::builtins::)"
+
+[[rules]]
+id = "owner-array-or-numeric-string"
+category = "array_and_numeric_string"
+target = "owner"
+source_regex = '^(?:array|numeric_string|array_access)\.rs$'
+
+[[rules]]
+id = "owner-array-symbol"
+category = "array_and_numeric_string"
+target = "owner"
+symbol_regex = "^php_runtime::array::"
+
+[[rules]]
+id = "owner-autoload-or-include"
+category = "include_autoload_and_declaration_activation"
+target = "owner"
+symbol_regex = "(?i)(?:execute_include|include_execution|autoload|declaration_activation|activate_declaration)"
+
+[[rules]]
+id = "owner-include-source"
+category = "include_autoload_and_declaration_activation"
+target = "owner"
+source_regex = '^(?:include_execution|declaration_activation|declarations)\.rs$'
+
+[[rules]]
+id = "owner-symbol-class-method-lookup"
+category = "string_hash_symbol_class_method_lookup"
+target = "owner"
+symbol_regex = "(?i)(?:lookup_(?:class|method|function)|normalize[dr]?_(?:class|function)|symbol_(?:map|intern|eq)|inline_cache|GlobalSymbolTable)"
+
+[[rules]]
+id = "owner-lookup-source"
+category = "string_hash_symbol_class_method_lookup"
+target = "owner"
+source_regex = '^(?:compiled_unit|symbol_resolution|inline_cache|inline_cache_access|class_relations|globals)\.rs$'
+
+[[rules]]
+id = "owner-object-property-class-runtime"
+category = "object_property_and_class_runtime"
+target = "owner"
+source_regex = '^(?:object|storage|property_execution|property_resolution|class_operations|runtime_class_support|class_context|method_dispatch|dense_method_dispatch|spl|exception_dispatch|shutdown_execution)\.rs$'
+
+[[rules]]
+id = "owner-object-runtime-symbol"
+category = "object_property_and_class_runtime"
+target = "owner"
+symbol_regex = "^(?:php_runtime::object::|php_vm::vm::property_)"
+
+[[rules]]
+id = "owner-output-and-string"
+category = "output_and_string_rendering"
+target = "owner"
+source_regex = '^(?:output|string|fmt|lossy)\.rs$'
+
+[[rules]]
+id = "owner-output-symbol"
+category = "output_and_string_rendering"
+target = "owner"
+symbol_regex = "^(?:php_runtime::output::|php_runtime::string::)"
+
+[[rules]]
+id = "owner-native-tier-bridge"
+category = "native_jit_bridge_and_side_exit"
+target = "owner"
+symbol_regex = "(?i)(?:copy_patch|native_(?:bridge|region)|side_exit|jit_bridge)"
+
+[[rules]]
+id = "owner-database-stream-extension"
+category = "database_stream_crypto_regex_and_external_extensions"
+target = "owner"
+symbol_regex = "(?i)^(?:php_runtime::(?:db|pcre|stream|crypto)|php_runtime::builtins::modules::(?:mysqli|pcre|curl|openssl))"
+
+[[rules]]
+id = "owner-server-lifecycle"
+category = "server_request_session_and_response_lifecycle"
+target = "owner"
+symbol_regex = "^php_(?:server|executor)::"
+
+[[rules]]
+id = "owner-server-request-profile"
+category = "server_request_session_and_response_lifecycle"
+target = "owner"
+source_regex = '^(?:php_request|request_profile|worker_pool|server|session|response)\.rs$'
+
+[[rules]]
+id = "leaf-generic-rust-runtime"
+category = "rust_runtime_locks_and_collections"
+target = "leaf"
+symbol_regex = "^(?:core::|alloc::|std::|hashbrown::|indexmap::|smallvec::|parking_lot::|_RNv)"
+
+[[rules]]
+id = "state-unclassified-phrust"
+category = "unclassified_phrust"
+target = "state"
+state = "fallback"
+
+[[origins]]
+id = "argument_or_frame_binding"
+symbol_regex = "(?i)(?:bind_arguments|read_dense_call_args|execute_function_with_dense_plan|CallStack|RegisterFile)"
+
+[[origins]]
+id = "builtin_call"
+symbol_regex = "(?i)(?:execute_internal_registry_builtin|execute_builtin_entry|php_runtime::builtins)"
+
+[[origins]]
+id = "array_or_dim_operation"
+symbol_regex = "(?i)(?:php_runtime::array|dense_(?:fetch|assign)_dim|dim_execution|foreach)"
+
+[[origins]]
+id = "symbol_class_method_lookup"
+symbol_regex = "(?i)(?:lookup_(?:class|method|function)|normalize[dr]?_class|inline_cache|GlobalSymbolTable)"
+
+[[origins]]
+id = "object_property_runtime"
+symbol_regex = "(?i)(?:php_runtime::object|property_|execute_(?:dense_)?(?:static_)?method_call)"
+
+[[origins]]
+id = "include_or_autoload"
+symbol_regex = "(?i)(?:execute_include|autoload|declaration_activation)"
+
+[[origins]]
+id = "output_or_rendering"
+symbol_regex = "(?i)(?:php_runtime::output|PhpString|format|write_str)"
+
+[[origins]]
+id = "native_execution"
+symbol_regex = "(?i)(?:copy_patch|native_(?:bridge|region)|side_exit|sljit)"
+
+[[origins]]
+id = "database_or_extension"
+symbol_regex = "(?i)(?:mysqli|mysql|pcre|regex|crypto|stream|curl|openssl)"
+
+[[origins]]
+id = "server_request_lifecycle"
+symbol_regex = "^php_(?:server|executor)::"

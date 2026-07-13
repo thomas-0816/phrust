@@ -94,6 +94,7 @@ help:
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just wordpress-root-profile Run optional local real WordPress request profile' \
       '  just wordpress-arm64-sample Capture external ARM64 WordPress CPU samples' \
+      '  just wordpress-arm64-accounting-gate Classify and gate ARM64 CPU samples' \
       '  just wordpress-reference-image Build pinned PHP-FPM/OPcache benchmark image' \
       '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
       '  just wordpress-root-tranche-gate Run strict c1-p50 performance acceptance gate' \
@@ -1158,6 +1159,10 @@ wordpress-root-profile:
 # External, instrumentation-free ARM64 CPU sampling of one pinned PHP worker.
 wordpress-arm64-sample *args:
     scripts/performance/arm64_work_accounting.py {{args}}
+
+# Exclusive, single-owner accounting over the latest external ARM64 sample run.
+wordpress-arm64-accounting-gate *args:
+    scripts/performance/arm64_stack_classifier.py --gate {{args}}
 
 wordpress-benchmark-self-test:
     scripts/performance/wordpress_root_benchmark.py --self-test
