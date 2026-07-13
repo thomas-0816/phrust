@@ -106,6 +106,7 @@ help:
       '  just wordpress-clone-churn-report Summarize clone/COW attribution from latest request profile' \
       '  just wordpress-array-hotpath-report Summarize array hotpath attribution from latest request profile' \
       '  just wordpress-call-hotpath-report Summarize call/frame attribution from latest request profile' \
+      '  just wordpress-exclusive-work-report Rank exact exclusive request work' \
       '  just wordpress-persistent-metadata-report Summarize persistent metadata attribution from latest request profile' \
       '  just wordpress-native-region-report Summarize native-region attribution from latest request profile' \
       '  just mysqli-integration   Run explicit live MySQLi integration gate' \
@@ -1235,6 +1236,9 @@ wordpress-array-hotpath-report:
 
 wordpress-call-hotpath-report:
     scripts/performance/call_hotpath_report.py
+
+wordpress-exclusive-work-report:
+    scripts/performance/exclusive_work_report.py
 
 wordpress-persistent-metadata-report:
     scripts/performance/persistent_metadata_report.py

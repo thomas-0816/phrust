@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 pub struct RuntimeLayoutStats {
     /// Runtime `Value` clones observed during execution.
     pub value_clones: u64,
+    /// Runtime `Value` clones by fixed clone-kind id.
+    pub value_clone_by_kind: [u64; VALUE_CLONE_KIND_COUNT],
     /// PHP byte-string backing allocations.
     pub string_allocations: u64,
     /// PHP array handle clones sharing copy-on-write storage.
@@ -95,6 +97,8 @@ pub struct RuntimeLayoutStats {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeLayoutSourceStats {
     pub value_clone_by_family: BTreeMap<&'static str, u64>,
+    pub value_clone_by_family_and_kind: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+    pub string_allocation_by_family: BTreeMap<&'static str, u64>,
     pub array_handle_clone_by_family: BTreeMap<&'static str, u64>,
     pub cow_separation_by_family: BTreeMap<&'static str, u64>,
     pub reference_cell_creation_by_family: BTreeMap<&'static str, u64>,
@@ -141,6 +145,8 @@ thread_local! {
 #[derive(Clone, Copy, Debug)]
 struct RuntimeLayoutSourceCounts {
     value_clones: [u64; LAYOUT_SOURCE_FAMILY_COUNT],
+    value_clone_by_kind: [[u64; VALUE_CLONE_KIND_COUNT]; LAYOUT_SOURCE_FAMILY_COUNT],
+    string_allocations: [u64; LAYOUT_SOURCE_FAMILY_COUNT],
     array_handle_clones: [u64; LAYOUT_SOURCE_FAMILY_COUNT],
     cow_separations: [u64; LAYOUT_SOURCE_FAMILY_COUNT],
     reference_cell_creations: [u64; LAYOUT_SOURCE_FAMILY_COUNT],
@@ -150,11 +156,77 @@ impl RuntimeLayoutSourceCounts {
     const fn new() -> Self {
         Self {
             value_clones: [0; LAYOUT_SOURCE_FAMILY_COUNT],
+            value_clone_by_kind: [[0; VALUE_CLONE_KIND_COUNT]; LAYOUT_SOURCE_FAMILY_COUNT],
+            string_allocations: [0; LAYOUT_SOURCE_FAMILY_COUNT],
             array_handle_clones: [0; LAYOUT_SOURCE_FAMILY_COUNT],
             cow_separations: [0; LAYOUT_SOURCE_FAMILY_COUNT],
             reference_cell_creations: [0; LAYOUT_SOURCE_FAMILY_COUNT],
         }
     }
+}
+
+fn family_kind_map(
+    counts: &[[u64; VALUE_CLONE_KIND_COUNT]; LAYOUT_SOURCE_FAMILY_COUNT],
+) -> BTreeMap<&'static str, BTreeMap<&'static str, u64>> {
+    LayoutSourceFamily::ALL
+        .iter()
+        .filter_map(|family| {
+            let kinds = ValueCloneKind::ALL
+                .iter()
+                .filter(|kind| counts[*family as usize][**kind as usize] != 0)
+                .map(|kind| (kind.name(), counts[*family as usize][*kind as usize]))
+                .collect::<BTreeMap<_, _>>();
+            (!kinds.is_empty()).then(|| (family.name(), kinds))
+        })
+        .collect()
+}
+
+/// Fixed clone kinds for diagnostic value-copy accounting.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValueCloneKind {
+    ScalarOrUninitialized = 0,
+    StringHandle,
+    ArrayHandle,
+    ObjectHandle,
+    ReferenceCellHandle,
+    ResourceHandle,
+    CallableBox,
+    FiberOrGeneratorHandle,
+    Other,
+}
+
+/// Number of fixed clone kinds.
+pub const VALUE_CLONE_KIND_COUNT: usize = 9;
+
+impl ValueCloneKind {
+    /// Stable JSON label for this clone kind.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ScalarOrUninitialized => "scalar_or_uninitialized",
+            Self::StringHandle => "string_handle",
+            Self::ArrayHandle => "array_handle",
+            Self::ObjectHandle => "object_handle",
+            Self::ReferenceCellHandle => "reference_cell_handle",
+            Self::ResourceHandle => "resource_handle",
+            Self::CallableBox => "callable_box",
+            Self::FiberOrGeneratorHandle => "fiber_or_generator_handle",
+            Self::Other => "other",
+        }
+    }
+
+    pub const ALL: [Self; VALUE_CLONE_KIND_COUNT] = [
+        Self::ScalarOrUninitialized,
+        Self::StringHandle,
+        Self::ArrayHandle,
+        Self::ObjectHandle,
+        Self::ReferenceCellHandle,
+        Self::ResourceHandle,
+        Self::CallableBox,
+        Self::FiberOrGeneratorHandle,
+        Self::Other,
+    ];
 }
 
 fn family_map(counts: &[u64; LAYOUT_SOURCE_FAMILY_COUNT]) -> BTreeMap<&'static str, u64> {
@@ -412,18 +484,30 @@ fn current_source_family() -> LayoutSourceFamily {
     })
 }
 
-fn record_value_clone_source() {
+fn record_value_clone_source(kind: ValueCloneKind) {
     if !source_attribution_enabled() {
         return;
     }
     let family = current_source_family();
     LAYOUT_SOURCE_COUNTS.with(|counts| {
-        counts.borrow_mut().value_clones[family as usize] += 1;
+        let mut counts = counts.borrow_mut();
+        counts.value_clones[family as usize] += 1;
+        counts.value_clone_by_kind[family as usize][kind as usize] += 1;
     });
     #[cfg(debug_assertions)]
     if family == LayoutSourceFamily::Unattributed {
         sample_unattributed_backtrace();
     }
+}
+
+fn record_string_allocation_source() {
+    if !source_attribution_enabled() {
+        return;
+    }
+    let family = current_source_family();
+    LAYOUT_SOURCE_COUNTS.with(|counts| {
+        counts.borrow_mut().string_allocations[family as usize] += 1;
+    });
 }
 
 /// Debug-only diagnosis for the `unattributed` clone bucket: when
@@ -539,24 +623,36 @@ fn record_reference_cell_creation_source() {
 }
 
 #[inline(always)]
-pub(crate) fn record_value_clone() {
+pub(crate) fn record_value_clone(kind: impl FnOnce() -> ValueCloneKind) {
     if stats_enabled() {
-        record_value_clone_slow();
+        record_value_clone_slow(kind());
     }
 }
 
 #[cold]
 #[inline(never)]
-fn record_value_clone_slow() {
-    LAYOUT_STATS.with(|stats| stats.borrow_mut().value_clones += 1);
-    record_value_clone_source();
+fn record_value_clone_slow(kind: ValueCloneKind) {
+    LAYOUT_STATS.with(|stats| {
+        let mut stats = stats.borrow_mut();
+        stats.value_clones += 1;
+        stats.value_clone_by_kind[kind as usize] += 1;
+    });
+    record_value_clone_source(kind);
 }
 
-layout_recorder!(
-    pub(crate) record_string_allocation,
-    record_string_allocation_slow,
-    string_allocations
-);
+#[inline(always)]
+pub(crate) fn record_string_allocation() {
+    if stats_enabled() {
+        record_string_allocation_slow();
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn record_string_allocation_slow() {
+    LAYOUT_STATS.with(|stats| stats.borrow_mut().string_allocations += 1);
+    record_string_allocation_source();
+}
 
 #[inline(always)]
 pub(crate) fn record_array_handle_clone() {
@@ -796,6 +892,12 @@ pub fn take_layout_stats() -> RuntimeLayoutStats {
     })
 }
 
+/// Returns a non-destructive snapshot for nested request-profile boundaries.
+#[must_use]
+pub fn snapshot_layout_stats() -> RuntimeLayoutStats {
+    LAYOUT_STATS.with(|stats| *stats.borrow())
+}
+
 /// Returns and clears source-attributed layout counters.
 #[must_use]
 pub fn take_layout_source_stats() -> RuntimeLayoutSourceStats {
@@ -805,6 +907,8 @@ pub fn take_layout_source_stats() -> RuntimeLayoutSourceStats {
         let taken = std::mem::replace(&mut *counts.borrow_mut(), RuntimeLayoutSourceCounts::new());
         RuntimeLayoutSourceStats {
             value_clone_by_family: family_map(&taken.value_clones),
+            value_clone_by_family_and_kind: family_kind_map(&taken.value_clone_by_kind),
+            string_allocation_by_family: family_map(&taken.string_allocations),
             array_handle_clone_by_family: family_map(&taken.array_handle_clones),
             cow_separation_by_family: family_map(&taken.cow_separations),
             reference_cell_creation_by_family: family_map(&taken.reference_cell_creations),
@@ -845,12 +949,34 @@ mod tests {
 
         let stats = layout_stats::take_layout_stats();
         assert!(stats.value_clones >= 1, "{stats:?}");
+        assert_eq!(
+            stats.value_clone_by_kind.iter().sum::<u64>(),
+            stats.value_clones,
+            "clone-kind counts must partition value clones"
+        );
         assert!(stats.string_allocations >= 1, "{stats:?}");
         assert!(stats.array_handle_clones >= 2, "{stats:?}");
         assert!(stats.cow_separations >= 1, "{stats:?}");
         assert_eq!(stats.reference_cell_creations, 1);
 
         let source_stats = layout_stats::take_layout_source_stats();
+        assert_eq!(
+            source_stats
+                .value_clone_by_family_and_kind
+                .values()
+                .flat_map(|kinds| kinds.values())
+                .sum::<u64>(),
+            stats.value_clones,
+            "source-family by clone-kind matrix must partition value clones"
+        );
+        assert_eq!(
+            source_stats
+                .string_allocation_by_family
+                .values()
+                .sum::<u64>(),
+            stats.string_allocations,
+            "string-allocation sources must partition allocations"
+        );
         assert!(
             source_stats
                 .value_clone_by_family
@@ -919,7 +1045,8 @@ mod tests {
         // indexing only. String labels and maps are export-time concerns.
         let source = include_str!("layout_stats.rs");
         for recorder in [
-            "fn record_value_clone_source()",
+            "fn record_value_clone_source(",
+            "fn record_string_allocation_source()",
             "fn record_array_handle_clone_source()",
             "fn record_cow_separation_source()",
             "fn record_reference_cell_creation_source()",

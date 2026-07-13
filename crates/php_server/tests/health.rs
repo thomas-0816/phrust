@@ -573,7 +573,7 @@ fn server_request_profile_source_attribution_mode_collects_attribution() {
     let profile: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
             .expect("parse profile json");
-    assert_eq!(profile["schema_version"], serde_json::Value::from(1));
+    assert_eq!(profile["schema_version"], serde_json::Value::from(2));
     assert_eq!(
         profile["attribution"]["vm_counters_collected"],
         serde_json::Value::from(true)
@@ -2222,18 +2222,34 @@ fn assert_named_profile_contains(profiles: &serde_json::Value, expected_name_fra
         "profile exclusive_nanos should not exceed inclusive_nanos: {entry}"
     );
     assert!(
-        entry.get("rich_instructions").is_some(),
-        "profile rich_instructions should be present: {entry}"
+        entry.get("inclusive_rich_instructions").is_some(),
+        "profile inclusive_rich_instructions should be present: {entry}"
     );
     assert!(
-        entry.get("dense_instructions").is_some(),
-        "profile dense_instructions should be present: {entry}"
+        entry.get("exclusive_rich_instructions").is_some(),
+        "profile exclusive_rich_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("inclusive_dense_instructions").is_some(),
+        "profile inclusive_dense_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("exclusive_dense_instructions").is_some(),
+        "profile exclusive_dense_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("inclusive_work").is_some() && entry.get("exclusive_work").is_some(),
+        "profile inclusive/exclusive work should be present: {entry}"
     );
 }
 
 fn assert_operation_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
     let entry = find_profile_entry(profiles, expected_name_fragment);
     assert_profile_count_and_inclusive_nanos(entry);
+    assert_eq!(
+        entry.get("accounting").and_then(serde_json::Value::as_str),
+        Some("secondary_overlapping_inclusive")
+    );
 }
 
 fn assert_counter_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {

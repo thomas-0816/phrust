@@ -77,7 +77,20 @@ impl Value {
 
 impl Clone for Value {
     fn clone(&self) -> Self {
-        crate::layout_stats::record_value_clone();
+        use crate::layout_stats::ValueCloneKind;
+
+        crate::layout_stats::record_value_clone(|| match self {
+            Self::Null | Self::Bool(_) | Self::Int(_) | Self::Float(_) | Self::Uninitialized => {
+                ValueCloneKind::ScalarOrUninitialized
+            }
+            Self::String(_) => ValueCloneKind::StringHandle,
+            Self::Array(_) => ValueCloneKind::ArrayHandle,
+            Self::Object(_) => ValueCloneKind::ObjectHandle,
+            Self::Reference(_) => ValueCloneKind::ReferenceCellHandle,
+            Self::Resource(_) => ValueCloneKind::ResourceHandle,
+            Self::Callable(_) => ValueCloneKind::CallableBox,
+            Self::Fiber(_) | Self::Generator(_) => ValueCloneKind::FiberOrGeneratorHandle,
+        });
         match self {
             Self::Null => Self::Null,
             Self::Bool(value) => Self::Bool(*value),

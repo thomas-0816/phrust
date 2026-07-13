@@ -94,8 +94,8 @@ pub mod api {
         CompiledClass, CompiledUnit, CompiledUnitBuildError, CompiledUnitLayoutStats,
     };
     pub use crate::counters::{
-        BoundaryProfile, JitCompileDescriptor, MethodCallProfile, OperationProfile,
-        PropertyFetchProfile, VmCounters,
+        BoundaryProfile, BoundaryWorkSnapshot, JitCompileDescriptor, MethodCallProfile,
+        OperationProfile, PropertyFetchProfile, VmCounters,
     };
     pub use crate::error::{VmError, VmErrorSeverity};
     pub use crate::include::{
@@ -135,7 +135,7 @@ pub mod experimental {
     };
     #[doc(hidden)]
     pub use crate::counters::{
-        BoundaryProfile, JitCompileDescriptor, OperationProfile, VmCounters,
+        BoundaryProfile, BoundaryWorkSnapshot, JitCompileDescriptor, OperationProfile, VmCounters,
     };
     #[doc(hidden)]
     pub use crate::deopt::{

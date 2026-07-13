@@ -127,14 +127,119 @@ pub struct MethodCallProfile {
     pub non_eligible_reasons: BTreeSet<String>,
 }
 
-/// Aggregated request-profile timing for one VM execution boundary.
+/// Compact monotonic work counters captured at request-profile boundaries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BoundaryWorkSnapshot {
+    pub value_clones: u64,
+    pub refcounted_value_clones: u64,
+    pub string_allocations: u64,
+    pub array_handle_clones: u64,
+    pub cow_separations: u64,
+    pub reference_cell_creations: u64,
+    pub frame_allocations: u64,
+    pub frame_reuses: u64,
+    pub register_files_allocated: u64,
+    pub register_files_reused: u64,
+    pub internal_function_dispatches: u64,
+    pub symbol_map_lookups: u64,
+    pub symbol_linear_fallbacks: u64,
+    pub symbol_intern_hits: u64,
+    pub symbol_intern_misses: u64,
+    pub string_hash_cache_hits: u64,
+    pub string_hash_cache_misses: u64,
+    pub symbol_eq_fast_hits: u64,
+    pub symbol_eq_byte_fallbacks: u64,
+    pub array_dim_fetches: u64,
+    pub numeric_string_classify_calls: u64,
+    pub object_allocations: u64,
+    pub property_accesses: u64,
+    pub includes: u64,
+    pub autoloads: u64,
+}
+
+impl BoundaryWorkSnapshot {
+    #[must_use]
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        macro_rules! sub {
+            ($field:ident) => {
+                self.$field.saturating_sub(earlier.$field)
+            };
+        }
+        Self {
+            value_clones: sub!(value_clones),
+            refcounted_value_clones: sub!(refcounted_value_clones),
+            string_allocations: sub!(string_allocations),
+            array_handle_clones: sub!(array_handle_clones),
+            cow_separations: sub!(cow_separations),
+            reference_cell_creations: sub!(reference_cell_creations),
+            frame_allocations: sub!(frame_allocations),
+            frame_reuses: sub!(frame_reuses),
+            register_files_allocated: sub!(register_files_allocated),
+            register_files_reused: sub!(register_files_reused),
+            internal_function_dispatches: sub!(internal_function_dispatches),
+            symbol_map_lookups: sub!(symbol_map_lookups),
+            symbol_linear_fallbacks: sub!(symbol_linear_fallbacks),
+            symbol_intern_hits: sub!(symbol_intern_hits),
+            symbol_intern_misses: sub!(symbol_intern_misses),
+            string_hash_cache_hits: sub!(string_hash_cache_hits),
+            string_hash_cache_misses: sub!(string_hash_cache_misses),
+            symbol_eq_fast_hits: sub!(symbol_eq_fast_hits),
+            symbol_eq_byte_fallbacks: sub!(symbol_eq_byte_fallbacks),
+            array_dim_fetches: sub!(array_dim_fetches),
+            numeric_string_classify_calls: sub!(numeric_string_classify_calls),
+            object_allocations: sub!(object_allocations),
+            property_accesses: sub!(property_accesses),
+            includes: sub!(includes),
+            autoloads: sub!(autoloads),
+        }
+    }
+
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        macro_rules! add {
+            ($field:ident) => {
+                self.$field = self.$field.saturating_add(other.$field)
+            };
+        }
+        add!(value_clones);
+        add!(refcounted_value_clones);
+        add!(string_allocations);
+        add!(array_handle_clones);
+        add!(cow_separations);
+        add!(reference_cell_creations);
+        add!(frame_allocations);
+        add!(frame_reuses);
+        add!(register_files_allocated);
+        add!(register_files_reused);
+        add!(internal_function_dispatches);
+        add!(symbol_map_lookups);
+        add!(symbol_linear_fallbacks);
+        add!(symbol_intern_hits);
+        add!(symbol_intern_misses);
+        add!(string_hash_cache_hits);
+        add!(string_hash_cache_misses);
+        add!(symbol_eq_fast_hits);
+        add!(symbol_eq_byte_fallbacks);
+        add!(array_dim_fetches);
+        add!(numeric_string_classify_calls);
+        add!(object_allocations);
+        add!(property_accesses);
+        add!(includes);
+        add!(autoloads);
+    }
+}
+
+/// Aggregated request-profile work for one VM execution boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BoundaryProfile {
     pub count: u64,
     pub inclusive_nanos: u64,
     pub exclusive_nanos: u64,
-    pub rich_instructions: u64,
-    pub dense_instructions: u64,
+    pub inclusive_rich_instructions: u64,
+    pub exclusive_rich_instructions: u64,
+    pub inclusive_dense_instructions: u64,
+    pub exclusive_dense_instructions: u64,
+    pub inclusive_work: BoundaryWorkSnapshot,
+    pub exclusive_work: BoundaryWorkSnapshot,
 }
 
 /// Aggregated request-profile timing for one operation family.
@@ -269,7 +374,10 @@ pub struct VmCounters {
     pub array_handle_clones: u64,
     pub cow_separations: u64,
     pub reference_cell_creations: u64,
+    pub value_clone_by_kind: BTreeMap<String, u64>,
     pub value_clone_by_source_family: BTreeMap<String, u64>,
+    pub value_clone_by_source_family_and_kind: BTreeMap<String, BTreeMap<String, u64>>,
+    pub string_allocation_by_source_family: BTreeMap<String, u64>,
     pub array_handle_clone_by_source_family: BTreeMap<String, u64>,
     pub cow_separation_by_source_family: BTreeMap<String, u64>,
     pub reference_cell_creation_by_source_family: BTreeMap<String, u64>,
@@ -749,16 +857,24 @@ impl VmCounters {
         path: &str,
         inclusive_nanos: u64,
         exclusive_nanos: u64,
-        rich_instructions: u64,
-        dense_instructions: u64,
+        inclusive_rich_instructions: u64,
+        exclusive_rich_instructions: u64,
+        inclusive_dense_instructions: u64,
+        exclusive_dense_instructions: u64,
+        inclusive_work: BoundaryWorkSnapshot,
+        exclusive_work: BoundaryWorkSnapshot,
     ) {
         record_boundary_profile(
             &mut self.include_profiles_by_path,
             path,
             inclusive_nanos,
             exclusive_nanos,
-            rich_instructions,
-            dense_instructions,
+            inclusive_rich_instructions,
+            exclusive_rich_instructions,
+            inclusive_dense_instructions,
+            exclusive_dense_instructions,
+            inclusive_work,
+            exclusive_work,
         );
     }
 
@@ -988,8 +1104,12 @@ impl VmCounters {
         is_method: bool,
         inclusive_nanos: u64,
         exclusive_nanos: u64,
-        rich_instructions: u64,
-        dense_instructions: u64,
+        inclusive_rich_instructions: u64,
+        exclusive_rich_instructions: u64,
+        inclusive_dense_instructions: u64,
+        exclusive_dense_instructions: u64,
+        inclusive_work: BoundaryWorkSnapshot,
+        exclusive_work: BoundaryWorkSnapshot,
     ) {
         let profiles = if is_method {
             &mut self.method_profiles_by_name
@@ -1001,8 +1121,12 @@ impl VmCounters {
             name,
             inclusive_nanos,
             exclusive_nanos,
-            rich_instructions,
-            dense_instructions,
+            inclusive_rich_instructions,
+            exclusive_rich_instructions,
+            inclusive_dense_instructions,
+            exclusive_dense_instructions,
+            inclusive_work,
+            exclusive_work,
         );
     }
 
@@ -1011,16 +1135,24 @@ impl VmCounters {
         name: &str,
         inclusive_nanos: u64,
         exclusive_nanos: u64,
-        rich_instructions: u64,
-        dense_instructions: u64,
+        inclusive_rich_instructions: u64,
+        exclusive_rich_instructions: u64,
+        inclusive_dense_instructions: u64,
+        exclusive_dense_instructions: u64,
+        inclusive_work: BoundaryWorkSnapshot,
+        exclusive_work: BoundaryWorkSnapshot,
     ) {
         record_boundary_profile(
             &mut self.builtin_profiles_by_name,
             name,
             inclusive_nanos,
             exclusive_nanos,
-            rich_instructions,
-            dense_instructions,
+            inclusive_rich_instructions,
+            exclusive_rich_instructions,
+            inclusive_dense_instructions,
+            exclusive_dense_instructions,
+            inclusive_work,
+            exclusive_work,
         );
     }
 
@@ -1166,6 +1298,15 @@ impl VmCounters {
 
     pub(crate) fn record_runtime_layout_stats(&mut self, stats: layout_stats::RuntimeLayoutStats) {
         self.value_clones += stats.value_clones;
+        for kind in layout_stats::ValueCloneKind::ALL {
+            let count = stats.value_clone_by_kind[kind as usize];
+            if count > 0 {
+                *self
+                    .value_clone_by_kind
+                    .entry(kind.name().to_owned())
+                    .or_default() += count;
+            }
+        }
         self.string_allocations += stats.string_allocations;
         self.array_handle_clones += stats.array_handle_clones;
         self.cow_separations += stats.cow_separations;
@@ -1233,6 +1374,14 @@ impl VmCounters {
         merge_static_counter_map(
             &mut self.value_clone_by_source_family,
             stats.value_clone_by_family,
+        );
+        merge_static_nested_counter_map(
+            &mut self.value_clone_by_source_family_and_kind,
+            stats.value_clone_by_family_and_kind,
+        );
+        merge_static_counter_map(
+            &mut self.string_allocation_by_source_family,
+            stats.string_allocation_by_family,
         );
         merge_static_counter_map(
             &mut self.array_handle_clone_by_source_family,
@@ -4993,17 +5142,31 @@ fn record_boundary_profile(
     name: &str,
     inclusive_nanos: u64,
     exclusive_nanos: u64,
-    rich_instructions: u64,
-    dense_instructions: u64,
+    inclusive_rich_instructions: u64,
+    exclusive_rich_instructions: u64,
+    inclusive_dense_instructions: u64,
+    exclusive_dense_instructions: u64,
+    inclusive_work: BoundaryWorkSnapshot,
+    exclusive_work: BoundaryWorkSnapshot,
 ) {
     let profile = profiles.entry(name.to_owned()).or_default();
     profile.count = profile.count.saturating_add(1);
     profile.inclusive_nanos = profile.inclusive_nanos.saturating_add(inclusive_nanos);
     profile.exclusive_nanos = profile.exclusive_nanos.saturating_add(exclusive_nanos);
-    profile.rich_instructions = profile.rich_instructions.saturating_add(rich_instructions);
-    profile.dense_instructions = profile
-        .dense_instructions
-        .saturating_add(dense_instructions);
+    profile.inclusive_rich_instructions = profile
+        .inclusive_rich_instructions
+        .saturating_add(inclusive_rich_instructions);
+    profile.exclusive_rich_instructions = profile
+        .exclusive_rich_instructions
+        .saturating_add(exclusive_rich_instructions);
+    profile.inclusive_dense_instructions = profile
+        .inclusive_dense_instructions
+        .saturating_add(inclusive_dense_instructions);
+    profile.exclusive_dense_instructions = profile
+        .exclusive_dense_instructions
+        .saturating_add(exclusive_dense_instructions);
+    profile.inclusive_work.saturating_add_assign(inclusive_work);
+    profile.exclusive_work.saturating_add_assign(exclusive_work);
 }
 
 fn record_operation_profile(
@@ -5768,6 +5931,18 @@ fn merge_static_counter_map(
     }
 }
 
+fn merge_static_nested_counter_map(
+    target: &mut BTreeMap<String, BTreeMap<String, u64>>,
+    source: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+) {
+    for (family, kinds) in source {
+        let target_kinds = target.entry(family.to_owned()).or_default();
+        for (kind, count) in kinds {
+            *target_kinds.entry(kind.to_owned()).or_default() += count;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::experimental::{
@@ -5819,6 +5994,7 @@ mod tests {
         counters.record_dense_bytecode_fallback_by_reference(AliasState::UnknownAliasing);
         counters.record_runtime_layout_stats(layout_stats::RuntimeLayoutStats {
             value_clones: 11,
+            value_clone_by_kind: [4, 2, 3, 1, 1, 0, 0, 0, 0],
             string_allocations: 7,
             array_handle_clones: 5,
             cow_separations: 3,
@@ -5862,6 +6038,11 @@ mod tests {
                 ("stack_register_local_move", 5),
                 ("return_value", 2),
             ]),
+            value_clone_by_family_and_kind: BTreeMap::from([(
+                "return_value",
+                BTreeMap::from([("array_handle", 2)]),
+            )]),
+            string_allocation_by_family: BTreeMap::from([("output_string_conversion", 4)]),
             array_handle_clone_by_family: BTreeMap::from([("array_element_read", 3)]),
             cow_separation_by_family: BTreeMap::from([("by_ref_argument_binding", 2)]),
             reference_cell_creation_by_family: BTreeMap::from([("by_ref_argument_binding", 1)]),

@@ -1,5 +1,5 @@
 use crate::perf_trace::PerfTraceEvent;
-use php_vm::api::{BoundaryProfile, OperationProfile, VmCounters};
+use php_vm::api::{BoundaryProfile, BoundaryWorkSnapshot, OperationProfile, VmCounters};
 use serde_json::{Map, Value};
 use std::{
     fs::{self, File},
@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SCHEMA_VERSION: u64 = 1;
+const SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug)]
 pub(crate) struct RequestProfileWriter {
@@ -134,6 +134,10 @@ fn attribution_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -> Va
     attribution.insert("arrays".to_string(), arrays_json(counters));
     attribution.insert("objects".to_string(), objects_json(counters));
     attribution.insert("clones".to_string(), clones_json(counters));
+    attribution.insert(
+        "exclusive_work_totals".to_string(),
+        boundary_work_json(total_boundary_work(counters)),
+    );
     attribution.insert("output".to_string(), output_json(counters));
     attribution.insert("metadata".to_string(), metadata_json(counters));
     attribution.insert("native".to_string(), native_json(counters));
@@ -255,8 +259,8 @@ fn accumulate_sampled_execution_time(
         .profiled_boundary_exclusive_nanos
         .saturating_add(profile.exclusive_nanos);
     let instructions = profile
-        .rich_instructions
-        .saturating_add(profile.dense_instructions);
+        .exclusive_rich_instructions
+        .saturating_add(profile.exclusive_dense_instructions);
     if instructions == 0 {
         split.unattributed_profiled_execution_nanos = split
             .unattributed_profiled_execution_nanos
@@ -265,7 +269,7 @@ fn accumulate_sampled_execution_time(
     }
     let rich_nanos = proportional_nanos(
         profile.exclusive_nanos,
-        profile.rich_instructions,
+        profile.exclusive_rich_instructions,
         instructions,
     );
     let dense_nanos = profile.exclusive_nanos.saturating_sub(rich_nanos);
@@ -691,6 +695,7 @@ fn objects_json(counters: &VmCounters) -> Value {
 fn clones_json(counters: &VmCounters) -> Value {
     object_from_pairs([
         ("value_clones", counters.value_clones),
+        ("string_allocations", counters.string_allocations),
         ("array_handle_clones", counters.array_handle_clones),
         ("cow_separations", counters.cow_separations),
         (
@@ -715,9 +720,24 @@ fn clones_json(counters: &VmCounters) -> Value {
         map_to_json(&counters.value_clone_by_reason, SortDirection::Descending),
     )
     .with_map(
+        "value_clone_by_kind",
+        map_to_json(&counters.value_clone_by_kind, SortDirection::Descending),
+    )
+    .with_map(
         "value_clone_by_source_family",
         map_to_json(
             &counters.value_clone_by_source_family,
+            SortDirection::Descending,
+        ),
+    )
+    .with_map(
+        "value_clone_by_source_family_and_kind",
+        nested_map_to_json(&counters.value_clone_by_source_family_and_kind),
+    )
+    .with_map(
+        "string_allocation_by_source_family",
+        map_to_json(
+            &counters.string_allocation_by_source_family,
             SortDirection::Descending,
         ),
     )
@@ -969,6 +989,28 @@ fn map_to_json(map: &std::collections::BTreeMap<String, u64>, _sort: SortDirecti
     Value::Array(values)
 }
 
+fn nested_map_to_json(
+    map: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>,
+) -> Value {
+    Value::Array(
+        map.iter()
+            .map(|(family, kinds)| {
+                let mut entry = Map::new();
+                entry.insert("source_family".to_string(), Value::from(family.clone()));
+                entry.insert(
+                    "count".to_string(),
+                    Value::from(kinds.values().copied().sum::<u64>()),
+                );
+                entry.insert(
+                    "clone_kinds".to_string(),
+                    map_to_json(kinds, SortDirection::Descending),
+                );
+                Value::Object(entry)
+            })
+            .collect(),
+    )
+}
+
 fn boundary_profiles_to_json(
     profiles: &std::collections::BTreeMap<String, BoundaryProfile>,
 ) -> Value {
@@ -995,12 +1037,28 @@ fn boundary_profiles_to_json(
                 Value::from(profile.exclusive_nanos),
             );
             entry.insert(
-                "rich_instructions".to_string(),
-                Value::from(profile.rich_instructions),
+                "inclusive_rich_instructions".to_string(),
+                Value::from(profile.inclusive_rich_instructions),
             );
             entry.insert(
-                "dense_instructions".to_string(),
-                Value::from(profile.dense_instructions),
+                "exclusive_rich_instructions".to_string(),
+                Value::from(profile.exclusive_rich_instructions),
+            );
+            entry.insert(
+                "inclusive_dense_instructions".to_string(),
+                Value::from(profile.inclusive_dense_instructions),
+            );
+            entry.insert(
+                "exclusive_dense_instructions".to_string(),
+                Value::from(profile.exclusive_dense_instructions),
+            );
+            entry.insert(
+                "inclusive_work".to_string(),
+                boundary_work_json(profile.inclusive_work),
+            );
+            entry.insert(
+                "exclusive_work".to_string(),
+                boundary_work_json(profile.exclusive_work),
             );
             let average_inclusive = profile
                 .inclusive_nanos
@@ -1019,6 +1077,91 @@ fn boundary_profiles_to_json(
         })
         .collect::<Vec<_>>();
     Value::Array(values)
+}
+
+fn boundary_work_json(work: BoundaryWorkSnapshot) -> Value {
+    object_from_pairs([
+        ("value_clones", work.value_clones),
+        ("refcounted_value_clones", work.refcounted_value_clones),
+        ("string_allocations", work.string_allocations),
+        ("array_handle_clones", work.array_handle_clones),
+        ("cow_separations", work.cow_separations),
+        ("reference_cell_creations", work.reference_cell_creations),
+        ("frame_allocations", work.frame_allocations),
+        ("frame_reuses", work.frame_reuses),
+        ("register_files_allocated", work.register_files_allocated),
+        ("register_files_reused", work.register_files_reused),
+        (
+            "internal_function_dispatches",
+            work.internal_function_dispatches,
+        ),
+        ("symbol_map_lookups", work.symbol_map_lookups),
+        ("symbol_linear_fallbacks", work.symbol_linear_fallbacks),
+        ("symbol_intern_hits", work.symbol_intern_hits),
+        ("symbol_intern_misses", work.symbol_intern_misses),
+        ("string_hash_cache_hits", work.string_hash_cache_hits),
+        ("string_hash_cache_misses", work.string_hash_cache_misses),
+        ("symbol_eq_fast_hits", work.symbol_eq_fast_hits),
+        ("symbol_eq_byte_fallbacks", work.symbol_eq_byte_fallbacks),
+        ("array_dim_fetches", work.array_dim_fetches),
+        (
+            "numeric_string_classify_calls",
+            work.numeric_string_classify_calls,
+        ),
+        ("object_allocations", work.object_allocations),
+        ("property_accesses", work.property_accesses),
+        ("includes", work.includes),
+        ("autoloads", work.autoloads),
+    ])
+    .into()
+}
+
+fn total_boundary_work(counters: &VmCounters) -> BoundaryWorkSnapshot {
+    let refcounted_value_clones = [
+        "string_handle",
+        "array_handle",
+        "object_handle",
+        "reference_cell_handle",
+        "resource_handle",
+        "callable_box",
+        "fiber_or_generator_handle",
+    ]
+    .iter()
+    .map(|kind| {
+        counters
+            .value_clone_by_kind
+            .get(*kind)
+            .copied()
+            .unwrap_or(0)
+    })
+    .sum();
+    BoundaryWorkSnapshot {
+        value_clones: counters.value_clones,
+        refcounted_value_clones,
+        string_allocations: counters.string_allocations,
+        array_handle_clones: counters.array_handle_clones,
+        cow_separations: counters.cow_separations,
+        reference_cell_creations: counters.reference_cell_creations,
+        frame_allocations: counters.frame_allocations,
+        frame_reuses: counters.frame_reuses,
+        register_files_allocated: counters.register_files_allocated,
+        register_files_reused: counters.register_files_reused,
+        internal_function_dispatches: counters.internal_function_dispatches,
+        symbol_map_lookups: counters.symbol_map_lookups,
+        symbol_linear_fallbacks: counters.symbol_linear_fallbacks,
+        symbol_intern_hits: counters.symbol_intern_hits,
+        symbol_intern_misses: counters.symbol_intern_misses,
+        string_hash_cache_hits: counters.string_hash_cache_hits,
+        string_hash_cache_misses: counters.string_hash_cache_misses,
+        symbol_eq_fast_hits: counters.symbol_eq_fast_hits,
+        symbol_eq_byte_fallbacks: counters.symbol_eq_byte_fallbacks,
+        array_dim_fetches: counters.array_dim_fetches,
+        numeric_string_classify_calls: counters.numeric_string_classify_calls,
+        object_allocations: counters.object_allocations,
+        property_accesses: counters.property_accesses,
+        includes: counters.includes,
+        autoloads: counters.autoloads,
+    }
 }
 
 fn operation_profiles_to_json(
@@ -1041,6 +1184,10 @@ fn operation_profiles_to_json(
             entry.insert(
                 "inclusive_nanos".to_string(),
                 Value::from(profile.inclusive_nanos),
+            );
+            entry.insert(
+                "accounting".to_string(),
+                Value::from("secondary_overlapping_inclusive"),
             );
             let average_inclusive = profile
                 .inclusive_nanos
@@ -1185,8 +1332,18 @@ mod tests {
                 count: 2,
                 inclusive_nanos: 200,
                 exclusive_nanos: 120,
-                rich_instructions: 20,
-                dense_instructions: 6,
+                inclusive_rich_instructions: 20,
+                exclusive_rich_instructions: 10,
+                inclusive_dense_instructions: 6,
+                exclusive_dense_instructions: 2,
+                inclusive_work: BoundaryWorkSnapshot {
+                    value_clones: 8,
+                    ..BoundaryWorkSnapshot::default()
+                },
+                exclusive_work: BoundaryWorkSnapshot {
+                    value_clones: 3,
+                    ..BoundaryWorkSnapshot::default()
+                },
             },
         );
         counters.function_profiles_by_name.insert(
@@ -1195,8 +1352,12 @@ mod tests {
                 count: 4,
                 inclusive_nanos: 400,
                 exclusive_nanos: 300,
-                rich_instructions: 40,
-                dense_instructions: 8,
+                inclusive_rich_instructions: 40,
+                exclusive_rich_instructions: 30,
+                inclusive_dense_instructions: 8,
+                exclusive_dense_instructions: 3,
+                inclusive_work: BoundaryWorkSnapshot::default(),
+                exclusive_work: BoundaryWorkSnapshot::default(),
             },
         );
         counters.method_profiles_by_name.insert(
@@ -1205,8 +1366,12 @@ mod tests {
                 count: 1,
                 inclusive_nanos: 300,
                 exclusive_nanos: 250,
-                rich_instructions: 30,
-                dense_instructions: 3,
+                inclusive_rich_instructions: 30,
+                exclusive_rich_instructions: 20,
+                inclusive_dense_instructions: 3,
+                exclusive_dense_instructions: 2,
+                inclusive_work: BoundaryWorkSnapshot::default(),
+                exclusive_work: BoundaryWorkSnapshot::default(),
             },
         );
         counters.builtin_profiles_by_name.insert(
@@ -1215,8 +1380,12 @@ mod tests {
                 count: 8,
                 inclusive_nanos: 80,
                 exclusive_nanos: 80,
-                rich_instructions: 8,
-                dense_instructions: 0,
+                inclusive_rich_instructions: 8,
+                exclusive_rich_instructions: 8,
+                inclusive_dense_instructions: 0,
+                exclusive_dense_instructions: 0,
+                inclusive_work: BoundaryWorkSnapshot::default(),
+                exclusive_work: BoundaryWorkSnapshot::default(),
             },
         );
         counters.array_operation_profiles_by_family.insert(
@@ -1275,11 +1444,25 @@ mod tests {
             Value::from(300)
         );
         assert_eq!(
-            profile["attribution"]["includes"]["include_profiles_by_path"][0]["rich_instructions"],
+            profile["attribution"]["includes"]["include_profiles_by_path"][0]["inclusive_rich_instructions"],
             Value::from(20)
         );
         assert_eq!(
-            profile["attribution"]["includes"]["include_profiles_by_path"][0]["dense_instructions"],
+            profile["attribution"]["includes"]["include_profiles_by_path"][0]["exclusive_dense_instructions"],
+            Value::from(2)
+        );
+        assert_eq!(
+            profile["attribution"]["includes"]["include_profiles_by_path"][0]["exclusive_work"]["value_clones"],
+            Value::from(3)
+        );
+        assert_eq!(profile["schema_version"], Value::from(2));
+        assert_eq!(
+            profile["attribution"]["includes"]["include_profiles_by_path"][0]
+                .get("rich_instructions"),
+            None
+        );
+        assert_eq!(
+            profile["attribution"]["includes"]["include_profiles_by_path"][0]["inclusive_dense_instructions"],
             Value::from(6)
         );
         assert_eq!(
@@ -1288,11 +1471,11 @@ mod tests {
         );
         assert_eq!(
             profile["attribution"]["execution"]["estimated_rich_execution_nanos"],
-            Value::from(649)
+            Value::from(679)
         );
         assert_eq!(
             profile["attribution"]["execution"]["estimated_dense_execution_nanos"],
-            Value::from(101)
+            Value::from(71)
         );
         assert_eq!(
             profile["attribution"]["execution"]["rich_fallback_functions_by_name"][0]["name"],
