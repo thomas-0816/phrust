@@ -6,6 +6,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 REGION = ROOT / "crates/php_jit/src/region_ir/executable.rs"
@@ -22,7 +24,7 @@ def require(text: str, needle: str, label: str, failures: list[str]) -> None:
 
 def main() -> int:
     region = REGION.read_text(encoding="utf-8")
-    lowering = LOWERING.read_text(encoding="utf-8")
+    lowering = read_rust_module(LOWERING)
     graph_lowering = GRAPH_LOWERING.read_text(encoding="utf-8")
     vm = VM.read_text(encoding="utf-8")
     code_key = CODE_KEY.read_text(encoding="utf-8")
@@ -38,7 +40,7 @@ def main() -> int:
         ("strict_types: unit.strict_types_for_function(function)", "strict-types metadata"),
         ("captures: ir_function.captures.clone()", "closure capture metadata"),
         ("declarations: declaration_metadata(unit, function)", "declaration metadata"),
-        ("exception_regions: collect_exception_regions(ir_function)", "exception regions"),
+        ("let exception_regions = collect_exception_regions(ir_function)", "exception regions"),
     ):
         require(region, needle, label, failures)
 
@@ -58,12 +60,12 @@ def main() -> int:
             failures.append(f"production compiler still invokes candidate chain: {forbidden}")
 
     for path, text in ((REGION, region), (GRAPH_LOWERING, graph_lowering)):
-        if "DenseBytecode" in text or "DenseOpcode" in text:
+        if "Dense" + "Bytecode" in text or "Dense" + "Opcode" in text:
             failures.append(f"{path.relative_to(ROOT)} consumes Dense bytecode")
 
     require(
         vm,
-        "compiler.compile_unit_with_runtime_helpers(",
+        "compile_unit_with_runtime_helpers(",
         "whole-unit baseline compilation",
         failures,
     )

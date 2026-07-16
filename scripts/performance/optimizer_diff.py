@@ -150,119 +150,6 @@ def run_sample(engine: Path, fixture: str, level: str, out_dir: Path) -> Sample:
     )
 
 
-def compile_optimizer_report(
-    engine: Path,
-    fixture: str,
-    level: str,
-    out_dir: Path,
-) -> dict[str, Any] | None:
-    report_path = out_dir / "optimizer-reports" / f"{safe_name(fixture)}.opt{level}.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
-        [
-            str(engine),
-            "compile",
-            "--json",
-            f"--opt-level={level}",
-            fixture,
-        ],
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    payload: dict[str, Any]
-    if completed.returncode == 0:
-        try:
-            payload = json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
-            payload = {
-                "ok": False,
-                "error": f"compile JSON parse failed: {error}",
-                "stderr": normalize(completed.stderr),
-            }
-    else:
-        payload = {
-            "ok": False,
-            "error": f"compile exited {completed.returncode}",
-            "stderr": normalize(completed.stderr),
-        }
-    report_path.write_text(pretty_json(payload), encoding="utf-8")
-    optimizer = payload.get("optimizer")
-    return optimizer if isinstance(optimizer, dict) else None
-
-
-def summarize_optimizer_reports(
-    reports: dict[str, dict[str, dict[str, Any] | None]],
-) -> dict[str, Any]:
-    by_pass: dict[str, dict[str, int]] = {}
-    changed: dict[str, int] = {}
-    reports_seen = 0
-    for levels in reports.values():
-        for report in levels.values():
-            if not report:
-                continue
-            reports_seen += 1
-            for pass_report in report.get("passes", []):
-                name = pass_report.get("name")
-                if not isinstance(name, str):
-                    continue
-                if pass_report.get("changed") is True:
-                    changed[name] = changed.get(name, 0) + 1
-                stats = pass_report.get("stats", {})
-                if not isinstance(stats, dict):
-                    continue
-                totals = by_pass.setdefault(name, {})
-                for key, value in stats.items():
-                    if isinstance(key, str) and isinstance(value, int):
-                        totals[key] = totals.get(key, 0) + value
-    return {
-        "reports_seen": reports_seen,
-        "changed_pass_fixture_counts": changed,
-        "stats_by_pass": by_pass,
-    }
-
-
-def optimizer_report_invariant_errors(
-    reports: dict[str, dict[str, dict[str, Any] | None]],
-) -> list[str]:
-    errors: list[str] = []
-    for fixture, levels in reports.items():
-        for level, report in levels.items():
-            if not report:
-                errors.append(f"{fixture} opt{level}: optimizer report missing")
-                continue
-            for pass_report in report.get("passes", []):
-                name = pass_report.get("name", "<unnamed>")
-                if not pass_report.get("enabled", False):
-                    continue
-                stats = pass_report.get("stats", {})
-                verifier_calls = stats.get("verifier_calls")
-                expected_verifier_calls = 1 if pass_report.get("changed") else 0
-                if verifier_calls != expected_verifier_calls:
-                    errors.append(
-                        f"{fixture} opt{level} {name}: verifier_calls={verifier_calls!r}, "
-                        f"expected {expected_verifier_calls}"
-                    )
-                if not str(name).endswith("_noop"):
-                    continue
-                if stats.get("scope_snapshots") != 0 or stats.get("snapshot_bytes") != 0:
-                    errors.append(
-                        f"{fixture} opt{level} {name}: no-op pass created a snapshot"
-                    )
-                scope = pass_report.get("scope")
-                if scope != {
-                    "blocks": [],
-                    "constants": False,
-                    "functions": [],
-                    "metadata": [],
-                    "source_mappings_may_change": False,
-                }:
-                    errors.append(f"{fixture} opt{level} {name}: no-op pass touched scope")
-    return errors
-
-
 def pretty_json(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True) + "\n"
 
@@ -396,25 +283,17 @@ def run_real(engine: Path, out_dir: Path) -> int:
 
     fixtures = fixture_paths()
     differences: list[Difference] = []
-    optimizer_reports: dict[str, dict[str, dict[str, Any] | None]] = {}
     for fixture in fixtures:
         samples = {level: run_sample(engine, fixture, level, out_dir) for level in LEVELS}
-        optimizer_reports[fixture] = {
-            level: compile_optimizer_report(engine, fixture, level, out_dir)
-            for level in LEVELS
-            if level != "0"
-        }
         baseline = samples["0"]
         for level in LEVELS[1:]:
             difference = compare_samples(baseline, samples[level], out_dir)
             if difference is not None:
                 differences.append(difference)
 
-    report_errors = optimizer_report_invariant_errors(optimizer_reports)
-
     summary = {
         "gate": "optimizer-diff",
-        "status": "fail" if differences or report_errors else "pass",
+        "status": "fail" if differences else "pass",
         "fixtures": fixtures,
         "levels": list(LEVELS),
         "comparisons": len(fixtures) * (len(LEVELS) - 1),
@@ -428,9 +307,8 @@ def run_real(engine: Path, out_dir: Path) -> int:
             for difference in differences
         ],
         "optimizer_evidence": {
-            "reports_dir": rel(out_dir / "optimizer-reports"),
-            "summary": summarize_optimizer_reports(optimizer_reports),
-            "invariant_errors": report_errors,
+            "pass_report_invariants": "covered by php_optimizer unit tests",
+            "product_compile_report": "not exposed by the native-only CLI",
         },
         "compared": [
             "stdout",
@@ -448,9 +326,7 @@ def run_real(engine: Path, out_dir: Path) -> int:
                 f"{','.join(difference.sections)}; see {rel(difference.diff_path)}",
                 file=sys.stderr,
             )
-    for error in report_errors:
-        print(f"[fail] optimizer report invariant: {error}", file=sys.stderr)
-    if differences or report_errors:
+    if differences:
         return 1
     print(
         f"[pass] optimizer-diff compared {len(fixtures)} fixture(s) across "

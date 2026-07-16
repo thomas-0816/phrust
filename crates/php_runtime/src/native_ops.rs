@@ -967,7 +967,8 @@ fn native_arithmetic(
             if rhs == 0 {
                 Err("modulo by zero".to_owned())
             } else {
-                Ok(Value::Int((lhs.as_f64() as i64) % rhs))
+                let lhs = lhs.as_f64() as i64;
+                Ok(Value::Int(lhs.checked_rem(rhs).unwrap_or(0)))
             }
         }
         NativeBinaryOp::Concat
@@ -1122,6 +1123,18 @@ mod tests {
         assert_eq!(status, NativeOperationStatus::RuntimeError);
         assert_eq!(context.diagnostic_id, Some("E_NATIVE_RUNTIME_PANIC"));
         assert_eq!(out, Value::Int(7));
+    }
+
+    #[test]
+    fn modulo_minimum_integer_by_negative_one_does_not_panic() {
+        assert_eq!(
+            native_arithmetic(
+                NativeBinaryOp::Mod,
+                NumericValue::Int(i64::MIN),
+                NumericValue::Int(-1),
+            ),
+            Ok(Value::Int(0))
+        );
     }
 
     #[test]

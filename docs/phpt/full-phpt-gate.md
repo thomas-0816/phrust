@@ -137,6 +137,12 @@ Set `PHPT_MANIFEST=<path>` to run the same Reference PHP plus Target PHP module
 comparison against a focused manifest without generating or rewriting source
 fixtures.
 
+Full-corpus runs remove each per-test work directory after recording its
+result so a 20k+ run cannot fill the disk with copied support trees. Set
+`PHPT_KEEP_WORK=1` only when a full-run investigation explicitly needs those
+temporary files. Focused module and file runs continue to retain their work
+directories by default.
+
 When debugging one failure cluster, narrow the module manifest without writing
 generated files into the source tree:
 

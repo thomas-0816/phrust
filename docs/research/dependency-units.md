@@ -74,14 +74,11 @@ string. Runtime include target sets and negative lookup observations are explici
 planner inputs so request-time behavior can enrich the report without making the
 IR planner execute filesystem or autoload logic.
 
-Reports are written by `just dependency-units-smoke` under:
-
-- `target/performance/dependency-units/dependency-units.json`
-- `target/performance/dependency-units/dependency-units.md`
-
-The JSON report also has a deterministic planner digest that can be supplied as
-an extra bytecode-cache fingerprint component in a later cache API change. FPE-40
-keeps this report-only.
+`just dependency-units-smoke` exercises the in-memory planner and its
+deterministic report digest through focused Rust tests. The former product CLI
+reporter was removed during the native-only cutover; generated planner reports
+are not part of the product surface. The digest can still be supplied as an
+extra cache-fingerprint component by future cache integration work.
 
 ## Invalidation Constraints
 

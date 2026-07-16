@@ -772,22 +772,24 @@ pub(in crate::builtins::modules) fn builtin_array_fill_keys(
 }
 
 pub(in crate::builtins::modules) fn builtin_array_intersect(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
         return Err(arity_error("array_intersect", "at least two argument(s)"));
     }
     let first = array_value_arg("array_intersect", &args[0])?;
     let others = array_list_arg("array_intersect", &args[1..])?;
-    Ok(Value::Array(array_intersect_by_value(&first, &others)?))
+    Ok(Value::Array(array_intersect_by_value_with_warnings(
+        context, &first, &others, &span,
+    )?))
 }
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_assoc(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
         return Err(arity_error(
@@ -797,9 +799,87 @@ pub(in crate::builtins::modules) fn builtin_array_intersect_assoc(
     }
     let first = array_value_arg("array_intersect_assoc", &args[0])?;
     let others = array_list_arg("array_intersect_assoc", &args[1..])?;
-    Ok(Value::Array(array_intersect_by_key_and_value(
-        &first, &others,
-    )?))
+    Ok(Value::Array(
+        array_intersect_by_key_and_value_with_warnings(context, &first, &others, &span)?,
+    ))
+}
+
+fn array_intersect_value_key(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+    span: &RuntimeSourceSpan,
+) -> Result<Vec<u8>, BuiltinError> {
+    if matches!(deref_value(value), Value::Array(_)) {
+        context.php_warning(
+            "E_PHP_RUNTIME_ARRAY_TO_STRING_WARNING",
+            "Array to string conversion",
+            span.clone(),
+        );
+        Ok(b"Array".to_vec())
+    } else {
+        array_compare_value_key(name, value)
+    }
+}
+
+fn array_intersect_by_value_with_warnings(
+    context: &mut BuiltinContext<'_>,
+    first: &PhpArray,
+    others: &[PhpArray],
+    span: &RuntimeSourceSpan,
+) -> Result<PhpArray, BuiltinError> {
+    let mut output = PhpArray::new();
+    for (key, value) in first.iter() {
+        let needle = array_intersect_value_key(context, "array_intersect", value, span)?;
+        let mut present_in_all = true;
+        for other in others {
+            let mut present = false;
+            for (_, candidate) in other.iter() {
+                if array_intersect_value_key(context, "array_intersect", candidate, span)? == needle
+                {
+                    present = true;
+                    break;
+                }
+            }
+            if !present {
+                present_in_all = false;
+                break;
+            }
+        }
+        if present_in_all {
+            output.insert(key.clone(), materialize_array_builtin_value(value));
+        }
+    }
+    Ok(output)
+}
+
+fn array_intersect_by_key_and_value_with_warnings(
+    context: &mut BuiltinContext<'_>,
+    first: &PhpArray,
+    others: &[PhpArray],
+    span: &RuntimeSourceSpan,
+) -> Result<PhpArray, BuiltinError> {
+    let mut output = PhpArray::new();
+    for (key, value) in first.iter() {
+        let needle = array_intersect_value_key(context, "array_intersect_assoc", value, span)?;
+        let mut present_in_all = true;
+        for other in others {
+            let Some(candidate) = other.get(&key) else {
+                present_in_all = false;
+                break;
+            };
+            if array_intersect_value_key(context, "array_intersect_assoc", candidate, span)?
+                != needle
+            {
+                present_in_all = false;
+                break;
+            }
+        }
+        if present_in_all {
+            output.insert(key.clone(), materialize_array_builtin_value(value));
+        }
+    }
+    Ok(output)
 }
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_key(
@@ -1190,7 +1270,14 @@ pub(in crate::builtins::modules) fn builtin_array_merge(
         for (key, value) in array.iter() {
             match key {
                 ArrayKey::Int(_) => {
-                    output.append(materialize_array_builtin_value(value));
+                    output
+                        .try_append(materialize_array_builtin_value(value))
+                        .map_err(|error| {
+                            BuiltinError::new(
+                                "E_PHP_RUNTIME_ARRAY_APPEND_OVERFLOW",
+                                error.to_string(),
+                            )
+                        })?;
                 }
                 ArrayKey::String(key) => {
                     output.insert(
@@ -1212,7 +1299,7 @@ pub(in crate::builtins::modules) fn builtin_array_merge_recursive(
     let mut output = crate::PhpArray::new();
     for arg in &args {
         let array = array_value_arg("array_merge_recursive", arg)?;
-        merge_recursive_into(&mut output, &array);
+        merge_recursive_into(&mut output, &array)?;
     }
     Ok(Value::Array(output))
 }
@@ -1285,6 +1372,18 @@ pub(in crate::builtins::modules) fn builtin_array_pad(
     expect_arity("array_pad", &args, 3)?;
     let array = array_value_arg("array_pad", &args[0])?;
     let target = int_arg("array_pad", &args[1])?;
+    const PHP_HASH_TABLE_MAX_SIZE: u64 = if usize::BITS >= 64 {
+        0x4000_0000
+    } else {
+        0x0200_0000
+    };
+    if target.unsigned_abs() > PHP_HASH_TABLE_MAX_SIZE {
+        return Err(argument_value_error(
+            "array_pad",
+            "#2 ($length)",
+            "must not exceed the maximum allowed array size",
+        ));
+    }
     let pad_value = materialize_array_builtin_value(&args[2]);
     let mut values = array
         .iter()
@@ -1393,4 +1492,32 @@ pub(in crate::builtins::modules) fn builtin_array_sort_requires_vm(
         "E_PHP_RUNTIME_CALLABLE_CONTEXT_REQUIRED",
         "array sort builtins require VM reference and callable dispatch",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OutputBuffer;
+
+    #[test]
+    fn array_pad_rejects_lengths_that_cannot_be_allocated() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        for target in [i64::MIN, i64::MAX] {
+            let error = builtin_array_pad(
+                &mut context,
+                vec![
+                    Value::Array(PhpArray::new()),
+                    Value::Int(target),
+                    Value::Null,
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect_err("oversized array padding must be rejected");
+            assert_eq!(
+                error.message(),
+                "array_pad(): Argument #2 ($length) must not exceed the maximum allowed array size"
+            );
+        }
+    }
 }

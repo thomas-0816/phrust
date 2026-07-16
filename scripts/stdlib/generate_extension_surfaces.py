@@ -416,6 +416,11 @@ def render_constant(extension: str, constant: dict[str, Any]) -> str:
     value = constant.get("value")
     if value is None:
         expression = f"ConstantDescriptor::new({name}, {owner})"
+    elif constant["name"] in PLATFORM_STRING_CONSTANTS:
+        expression = (
+            f"ConstantDescriptor::with_value({name}, {owner}, "
+            f"ConstantValue::String({PLATFORM_STRING_CONSTANTS[constant['name']]}))"
+        )
     else:
         expression = (
             f"ConstantDescriptor::with_value({name}, {owner}, {render_constant_value(value)})"
@@ -424,6 +429,18 @@ def render_constant(extension: str, constant: dict[str, Any]) -> str:
     if deprecation is not None:
         expression += f".deprecated({rust_string(deprecation)})"
     return expression
+
+
+# The canonical descriptors are extracted on one reference host. These values
+# must follow the Rust target instead of freezing the extraction host into the
+# generated standard-library surface.
+PLATFORM_STRING_CONSTANTS = {
+    "DIRECTORY_SEPARATOR": "crate::constants::DIRECTORY_SEPARATOR",
+    "PATH_SEPARATOR": "crate::constants::PATH_SEPARATOR",
+    "PHP_EOL": "crate::constants::PHP_EOL",
+    "PHP_OS": "crate::constants::PHP_OS",
+    "PHP_OS_FAMILY": "crate::constants::PHP_OS_FAMILY",
+}
 
 
 def render_constant_value(value: dict[str, Any]) -> str:

@@ -44,9 +44,32 @@ FORBIDDEN_SOURCE = (
     re.compile(r"\bJitMode\b|\bNoopJitBackend\b|\bCurrentJitBackend\b"),
     re.compile(r"\bExecutionFormat\b|\bQuickeningMode\b|\bSuperinstructionMode\b"),
     re.compile(
-        r"execute_bytecode_function|execute_dense_activation|"
-        r"execute_function_with_dense_plan|execute_ir_function|rich_dispatch"
+        r"\bDense(?:Opcode|BytecodeUnit|ExecutionPlan|IncludeMode|JumpThreadingMode)\b|"
+        r"\bBytecodeLayoutMode\b"
     ),
+    re.compile(
+        r"execute_bytecode_function|execute_dense_activation|"
+        r"execute_function_with_dense_plan|execute_ir_function|execute_instruction|"
+        r"dense_dispatch|rich_dispatch|deopt_to_dense|resume_to_interpreter"
+    ),
+    re.compile(r"\bNativeLeaf\b|leaf[_ -]recognizer|stencil backend", re.IGNORECASE),
+    re.compile(
+        r"\bJitNative" + r"Specialization\b|\bJitProperty(?:Load|Store)Metadata\b"
+    ),
+    re.compile(
+        r"\bValue(?:I64|Metadata|Value)?StatusOut\b|"
+        r"\bvalue_(?:i64_|metadata_|value_)?status_out_native\b"
+    ),
+    re.compile(
+        r"php_jit_array_(?:is_packed_ints|len|fetch_int_slow)|"
+        r"php_jit_property_load_monomorphic_fast"
+    ),
+    re.compile(
+        r"\bJitRuntimeHelperTable\b|\bJitHelperDispatch\b|"
+        r"jit_default_helper_" + r"dispatch"
+    ),
+    re.compile(r"pub\s+resume_(?:block|instruction)\b"),
+    re.compile(r"interpreter\s+(?:side[ -]exit|fallback|resume)", re.IGNORECASE),
     re.compile(r"InstructionKind::" + "Unsupported"),
     re.compile(r"jit" + r"-(?:copy-patch|cranelift)"),
     re.compile(r"experimental" + r"-jit"),

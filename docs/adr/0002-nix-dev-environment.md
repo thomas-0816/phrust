@@ -27,6 +27,14 @@ The dev shell provides:
   libzip.
 - Python 3 for deterministic metadata scripts.
 
+The shell installs the project compiler wrapper as Cargo's outer `RUSTC_WRAPPER`.
+It enables the pinned compiler's parallel frontend for Phrust workspace crates
+and then delegates to `sccache`. Cargo continues to schedule independent crates
+itself. A dependency-critical build tail can therefore show one `rustc` process
+while that process uses multiple compiler threads. Set `PHRUST_RUSTC_THREADS`
+to a positive integer to override the default of the smaller of 20 threads or
+the number of online CPUs.
+
 ## Consequences
 
 - Validation commands should run through `nix develop -c ...` once the flake

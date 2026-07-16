@@ -41,8 +41,6 @@ pub struct PhpExecutionInput {
     pub runtime_context: RuntimeContext,
     pub optimization_level: Option<OptimizationLevel>,
     pub collect_counters: bool,
-    pub collect_profile_spans: bool,
-    pub collect_layout_source_attribution: bool,
 }
 
 /// Per-request execution input for a compiled script.
@@ -53,8 +51,6 @@ pub struct PhpRequestExecutionInput {
     pub include_roots: Vec<PathBuf>,
     pub runtime_context: RuntimeContext,
     pub collect_counters: bool,
-    pub collect_profile_spans: bool,
-    pub collect_layout_source_attribution: bool,
 }
 
 /// Owned PHP execution output.

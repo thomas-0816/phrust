@@ -17,7 +17,7 @@ php_lexer -> php_syntax -> php_ast -> php_semantics/HIR -> php_ir -> php_runtime
 ```
 
 - Performance-owned crates and tools include `php_optimizer`,
-  `php_bytecode_cache`, `php_jit`, performance scripts under
+  `php_jit`, performance scripts under
   `scripts/performance/`, and performance fixtures under
   `tests/fixtures/performance/`.
 - Supporting layers include `php_ir`, `php_runtime`, `php_std`,
@@ -83,8 +83,8 @@ Current performance entry points include:
   class, method, and property changes.
 - Measurement risk: smoke-level measurements are useful for regressions and
   prioritization but not sufficient for broad speed claims.
-- Cache risk: bytecode-cache input is untrusted local data and must be
-  fingerprinted, versioned, verified, and safely ignored on corruption.
+- Cache risk: persistent PNA1 native artifacts are untrusted local data and
+  must be fingerprinted, versioned, verified, and safely ignored on corruption.
 - Native-code risk: generated code is subject to W^X, ABI, cache-validation,
   transition, and safepoint checks.
 
@@ -94,5 +94,5 @@ Current performance entry points include:
 - `docs/adr/0017-native-execution-architecture.md`
 - `docs/reference/performance-status.md`
 - `docs/performance/known-gaps.md`
-- `docs/performance/bytecode-cache.md`
+- `docs/performance/native-compile-cache.md`
 - `docs/performance/counter-families.md`

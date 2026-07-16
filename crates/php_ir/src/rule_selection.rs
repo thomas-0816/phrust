@@ -1,4 +1,4 @@
-//! Shared rule-selection metadata for dense bytecode and region IR.
+//! Shared rule-selection metadata for Region IR optimization.
 
 use std::collections::BTreeMap;
 
@@ -88,7 +88,7 @@ pub struct RuleSelection {
     pub id: RuleId,
     /// Selected rule kind.
     pub kind: RuleKind,
-    /// Original dense instruction indexes or region node indexes covered.
+    /// Original IR instruction or Region node indexes covered.
     pub source_indexes: Vec<u32>,
     /// Optional parent fused rule.
     pub parent: Option<RuleId>,

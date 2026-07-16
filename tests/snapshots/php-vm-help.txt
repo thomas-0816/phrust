@@ -2,6 +2,7 @@ Usage:
   php-vm run [native options] <file> [-- args...]
   php-vm run --clear-native-cache [--native-cache-dir PATH]
   php-vm compile <file> [--json] [--opt-level 0|1|2]
+  php-vm native-compile <file> [--function NAME] [--json] [--opt-level 0|1|2]
   php-vm dump-ir <file> [--with-source]
 
 Native options:

@@ -1,9 +1,10 @@
-//! Read-only method-cache probes used before iterative dense call transfer.
+//! Read-only method-cache probes used before native call-target selection.
 
 use super::*;
 
 impl InlineCacheTable {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn peek_method_call_target(
         &self,
         unit_key: u64,

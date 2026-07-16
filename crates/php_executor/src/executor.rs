@@ -12,7 +12,7 @@ use crate::pipeline::{
 use crate::request::include_loader_for_request;
 use php_runtime::api::{FilesystemCapabilities, RuntimeHttpResponseState};
 use php_source::SourceText;
-use php_vm::api::{CompiledUnit, Vm, VmOptions, VmWorkerState};
+use php_vm::api::{CompiledUnit, NativeCompileCacheStats, Vm, VmOptions, VmWorkerState};
 
 /// Transport-independent PHP executor.
 #[derive(Clone, Debug, Default)]
@@ -32,6 +32,15 @@ impl PhpExecutor {
     #[must_use]
     pub fn with_options(options: PhpExecutorOptions) -> Self {
         let worker_state = VmWorkerState::new(options.vm_options.tiering.clone());
+        Self::with_options_and_worker_state(options, worker_state)
+    }
+
+    /// Creates an executor backed by process-owned immutable native caches.
+    #[must_use]
+    pub fn with_options_and_worker_state(
+        options: PhpExecutorOptions,
+        worker_state: VmWorkerState,
+    ) -> Self {
         Self {
             options,
             worker_state,
@@ -44,6 +53,12 @@ impl PhpExecutor {
     /// not evict JIT handles, tiering hotness, or other worker-stable caches.
     pub fn reconfigure(&mut self, options: PhpExecutorOptions) {
         self.options = options;
+    }
+
+    /// Returns process-worker native compile cache counters.
+    #[must_use]
+    pub fn native_compile_cache_stats(&self) -> NativeCompileCacheStats {
+        self.worker_state.native_compile_cache_stats()
     }
 
     /// Compiles source into a reusable artifact.
@@ -123,7 +138,10 @@ impl PhpExecutor {
             }
         };
         let mut runtime_context = input.runtime_context;
-        let mut capabilities = FilesystemCapabilities::none().with_stdio(true);
+        let allow_standard_devices = runtime_context.filesystem.allows_standard_devices();
+        let mut capabilities = FilesystemCapabilities::none()
+            .with_stdio(true)
+            .with_standard_devices(allow_standard_devices);
         if let Some(loader) = &include_loader {
             capabilities = capabilities.with_allowed_roots(loader.allowed_roots().to_vec());
         }
@@ -136,8 +154,6 @@ impl PhpExecutor {
                 ))),
                 runtime_context,
                 collect_counters: input.collect_counters,
-                collect_profile_spans: input.collect_profile_spans,
-                collect_layout_source_attribution: input.collect_layout_source_attribution,
                 ..self.options.vm_options.clone()
             },
             self.worker_state.clone(),
@@ -179,8 +195,6 @@ impl PhpExecutor {
                 include_roots: input.include_roots,
                 runtime_context: input.runtime_context,
                 collect_counters: input.collect_counters,
-                collect_profile_spans: input.collect_profile_spans,
-                collect_layout_source_attribution: input.collect_layout_source_attribution,
             },
         )
     }
@@ -289,5 +303,19 @@ mod tests {
         );
         let executor = PhpExecutor::default();
         assert!(executor.prewarm_compiled(&compiled) > 0);
+
+        let worker = VmWorkerState::new(php_vm::api::TieringOptions::default());
+        let first = PhpExecutor::with_options_and_worker_state(
+            PhpExecutorOptions::default(),
+            worker.clone(),
+        );
+        let second =
+            PhpExecutor::with_options_and_worker_state(PhpExecutorOptions::default(), worker);
+        assert!(first.prewarm_compiled(&compiled) > 0);
+        let before = second.native_compile_cache_stats();
+        assert!(second.prewarm_compiled(&compiled) > 0);
+        let after = second.native_compile_cache_stats();
+        assert_eq!(after.misses, before.misses);
+        assert_eq!(after.hits, before.hits + 1);
     }
 }

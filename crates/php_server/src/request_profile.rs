@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SCHEMA_VERSION: u64 = 3;
+const SCHEMA_VERSION: u64 = 5;
 
 #[derive(Debug)]
 pub(crate) struct RequestProfileWriter {
@@ -83,8 +83,36 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
     let mut native = Map::new();
     if let Some(counters) = counters {
         native.insert(
+            "compile_attempts".to_owned(),
+            Value::from(counters.native_compile_attempts),
+        );
+        native.insert(
             "compile_successes".to_owned(),
             Value::from(counters.native_compile_successes),
+        );
+        native.insert(
+            "compile_failures".to_owned(),
+            Value::from(counters.native_compile_failures),
+        );
+        native.insert(
+            "compile_time_nanos".to_owned(),
+            Value::from(counters.native_compile_time_nanos),
+        );
+        native.insert(
+            "cache_hits".to_owned(),
+            Value::from(counters.native_cache_hits),
+        );
+        native.insert(
+            "cache_misses".to_owned(),
+            Value::from(counters.native_cache_misses),
+        );
+        native.insert(
+            "cache_compile_waits".to_owned(),
+            Value::from(counters.native_cache_compile_waits),
+        );
+        native.insert(
+            "cache_evictions".to_owned(),
+            Value::from(counters.native_cache_evictions),
         );
         native.insert(
             "execution_entries".to_owned(),
@@ -99,10 +127,67 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
             Value::from(counters.runtime_helper_calls),
         );
         native.insert(
+            "runtime_helper_calls_by_id".to_owned(),
+            counter_map_json(&counters.runtime_helper_calls_by_id),
+        );
+        native.insert(
+            "runtime_helper_time_nanos".to_owned(),
+            Value::from(counters.runtime_helper_time_nanos),
+        );
+        native.insert(
+            "runtime_helper_time_nanos_by_id".to_owned(),
+            counter_map_json(&counters.runtime_helper_time_nanos_by_id),
+        );
+        native.insert(
+            "execution_time_nanos".to_owned(),
+            Value::from(counters.native_execution_time_nanos),
+        );
+        native.insert(
+            "call_direct".to_owned(),
+            Value::from(counters.native_call_direct),
+        );
+        native.insert(
+            "call_dynamic".to_owned(),
+            Value::from(counters.native_call_dynamic),
+        );
+        native.insert(
+            "transition_count".to_owned(),
+            Value::from(counters.native_transition_count),
+        );
+        native.insert(
+            "transition_by_reason".to_owned(),
+            counter_map_json(&counters.native_transition_by_reason),
+        );
+        native.insert(
+            "transition_time_nanos".to_owned(),
+            Value::from(counters.native_transition_time_nanos),
+        );
+        native.insert(
+            "transition_time_nanos_by_reason".to_owned(),
+            counter_map_json(&counters.native_transition_time_nanos_by_reason),
+        );
+        native.insert(
+            "runtime_helper_object_release_fast_paths".to_owned(),
+            Value::from(counters.runtime_helper_object_release_fast_paths),
+        );
+        native.insert(
+            "runtime_helper_object_release_root_scans".to_owned(),
+            Value::from(counters.runtime_helper_object_release_root_scans),
+        );
+        native.insert(
             "versions_published".to_owned(),
             Value::from(counters.native_version_published),
         );
     }
     root.insert("native".to_owned(), Value::Object(native));
     Value::Object(root)
+}
+
+fn counter_map_json(values: &std::collections::BTreeMap<String, u64>) -> Value {
+    Value::Object(
+        values
+            .iter()
+            .map(|(name, value)| (name.clone(), Value::from(*value)))
+            .collect(),
+    )
 }

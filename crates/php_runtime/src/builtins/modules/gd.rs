@@ -1,8 +1,8 @@
 //! Bounded GD-compatible image helpers for common media flows.
 
 use super::core::{
-    argument_type_error, arity_error, deref_value, int_arg, read_file_value, resolve_runtime_path,
-    string_arg, string_array_key,
+    argument_type_error, argument_value_error, arity_error, deref_value, int_arg, read_file_value,
+    resolve_runtime_path, string_arg, string_array_key,
 };
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
@@ -411,11 +411,36 @@ fn builtin_imagescale(
         .map(|value| int_arg("imagescale", value))
         .transpose()?
         .unwrap_or(-1);
+    const GD_DIMENSION_MAX: i64 = i32::MAX as i64;
+    if width > GD_DIMENSION_MAX {
+        return Err(argument_value_error(
+            "imagescale",
+            "#2 ($width)",
+            "must be less than or equal to 2147483647",
+        ));
+    }
+    if height > GD_DIMENSION_MAX {
+        return Err(argument_value_error(
+            "imagescale",
+            "#3 ($height)",
+            "must be less than or equal to 2147483647",
+        ));
+    }
     if width <= 0 {
         return Ok(Value::Bool(false));
     }
     let height = if height <= 0 {
-        ((src_h as i64 * width) / src_w.max(1) as i64).max(1)
+        i64::from(src_h)
+            .checked_mul(width)
+            .map(|scaled| (scaled / i64::from(src_w.max(1))).max(1))
+            .filter(|height| *height <= GD_DIMENSION_MAX)
+            .ok_or_else(|| {
+                argument_value_error(
+                    "imagescale",
+                    "#2 ($width)",
+                    "produces an image height that exceeds the supported range",
+                )
+            })?
     } else {
         height
     };
@@ -1017,6 +1042,27 @@ mod tests {
             )
             .expect("save alpha"),
             Value::Bool(true)
+        );
+
+        let width_error = builtin_imagescale(
+            &mut context,
+            vec![image.clone(), Value::Int(i64::MAX), Value::Int(-1)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("oversized width is rejected before image allocation");
+        assert_eq!(
+            width_error.message(),
+            "imagescale(): Argument #2 ($width) must be less than or equal to 2147483647"
+        );
+        let height_error = builtin_imagescale(
+            &mut context,
+            vec![image, Value::Int(-1), Value::Int(i64::MAX)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("oversized height is rejected even when width is negative");
+        assert_eq!(
+            height_error.message(),
+            "imagescale(): Argument #3 ($height) must be less than or equal to 2147483647"
         );
     }
 }

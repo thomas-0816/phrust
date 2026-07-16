@@ -37,6 +37,14 @@
     },
     {
       "deprecation": null,
+      "name": "SOCK_DGRAM",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
       "name": "PHP_NORMAL_READ",
       "value": {
         "kind": "int",
@@ -85,6 +93,30 @@
     },
     {
       "deprecation": null,
+      "name": "SOL_UDP",
+      "value": {
+        "kind": "int",
+        "value": 17
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IPPROTO_IP",
+      "value": {
+        "kind": "int",
+        "value": 0
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SO_DEBUG",
+      "value": {
+        "kind": "int",
+        "value": 1
+      }
+    },
+    {
+      "deprecation": null,
       "name": "SO_REUSEADDR",
       "value": {
         "kind": "int",
@@ -105,6 +137,46 @@
       "value": {
         "kind": "int",
         "value": 1
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "TCP_DEFER_ACCEPT",
+      "value": {
+        "kind": "int",
+        "value": 9
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IP_MTU_DISCOVER",
+      "value": {
+        "kind": "int",
+        "value": 10
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "IP_PMTUDISC_DO",
+      "value": {
+        "kind": "int",
+        "value": 2
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MCAST_LEAVE_GROUP",
+      "value": {
+        "kind": "int",
+        "value": 45
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "MCAST_LEAVE_SOURCE_GROUP",
+      "value": {
+        "kind": "int",
+        "value": 47
       }
     },
     {
@@ -358,7 +430,49 @@
           "module": "sockets"
         }
       ],
+      "name": "socket_select",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
       "name": "socket_send",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_sendmsg",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "sockets",
+        "source": "ext/sockets/sockets.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "socket_set_nonblock",
       "visibility": "php"
     },
     {

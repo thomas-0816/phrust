@@ -70,17 +70,18 @@ optimizer module is below 500 lines.
 
 `just optimizer-diff` is the retained regression benchmark for small optimizer
 fixtures, selected medium runtime/stdlib fixtures, and the configured
-application corpus. In addition to output, diagnostics, exit status, and runtime
-counters, it archives each compile report under
-`target/performance/optimizer-diff/optimizer-reports/` and fails these ownership
-invariants:
+application corpus. It compares output, diagnostics, exit status, and runtime
+counters across O0, O1, and O2. The same recipe runs the `php_optimizer` unit
+tests, which enforce these ownership invariants directly:
 
 - a no-op pass creates a snapshot or reports a mutation scope;
 - an unchanged pass invokes the verifier;
 - a changed pass invokes the verifier other than exactly once.
 
-Aggregate snapshot bytes, snapshot counts, verifier calls, and transformations
-are written to `target/performance/optimizer-diff/summary.json`. Use
+The differential result is written to
+`target/performance/optimizer-diff/summary.json`. The native-only product CLI no
+longer emits internal optimizer reports, so the gate does not launch duplicate
+compile-only processes for every fixture. Use
 `just architecture-performance-baseline --scope compile --scope benchmarks`
 when wall time, peak RSS, and incremental compile measurements are required;
 the compiler row runs `optimizer-diff`, while the WordPress row runs the pinned

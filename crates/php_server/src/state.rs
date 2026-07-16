@@ -14,7 +14,7 @@ use php_executor::{
     IncludeCache, IncludeLoader, OptimizationLevel, PhpExecutionError, PhpExecutor,
     PhpExecutorOptions, PhpScriptCacheInput,
 };
-use php_vm::api::{CacheInstanceId, InlineCacheMode, VmError};
+use php_vm::api::{CacheInstanceId, InlineCacheMode, VmError, VmWorkerState};
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -66,7 +66,6 @@ pub(crate) struct ObservabilityState {
     pub(crate) perf_trace_vm_counters: bool,
     pub(crate) request_profile: Option<Arc<RequestProfileWriter>>,
     pub(crate) request_profile_vm_counters: bool,
-    pub(crate) request_profile_source_attribution: bool,
     pub(crate) request_profile_trigger_header: bool,
     pub(crate) debug: bool,
     pub(crate) error_format: DiagnosticOutputFormat,
@@ -119,6 +118,7 @@ pub(crate) struct ServerEngineState {
     pub(crate) include_cache: Arc<IncludeCache>,
     pub(crate) compile_optimization_level: OptimizationLevel,
     perf_ablation: ServerPerfAblation,
+    worker_state: VmWorkerState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +150,7 @@ impl ServerEngineState {
         } else {
             base_options.optimization_level
         };
+        let worker_state = VmWorkerState::new(base_options.vm_options.tiering.clone());
         Self {
             engine_profile,
             native_cache,
@@ -158,6 +159,7 @@ impl ServerEngineState {
             include_cache,
             compile_optimization_level,
             perf_ablation,
+            worker_state,
         }
     }
 
@@ -212,11 +214,15 @@ impl ServerEngineState {
         PersistentMetadataStats::default()
     }
 
+    pub(crate) fn executor(&self, options: PhpExecutorOptions) -> PhpExecutor {
+        PhpExecutor::with_options_and_worker_state(options, self.worker_state.clone())
+    }
+
     pub(crate) fn compile_script(
         &self,
         script_path: &Path,
     ) -> Result<CompiledScriptCacheLookup, PhpExecutionError> {
-        let executor = PhpExecutor::with_options(self.executor_options());
+        let executor = self.executor(self.executor_options());
         self.script_cache.get_or_compile_script(
             &executor,
             PhpScriptCacheInput {
@@ -323,7 +329,10 @@ pub(crate) fn preload_script_cache(
                 ))
             })
             .and_then(|lookup| {
-                let executor = PhpExecutor::with_options(state.services.engine.executor_options());
+                let executor = state
+                    .services
+                    .engine
+                    .executor(state.services.engine.executor_options());
                 prewarmed_entries =
                     prewarmed_entries.saturating_add(executor.prewarm_compiled(&lookup.compiled));
                 preload_include_cache_entry(state, &script_path).map_err(|error| {

@@ -31,9 +31,11 @@ const CLASSES: &[ClassDescriptor] = &[
     ClassDescriptor::new("DOMComment", "dom", ClassKind::Class),
     ClassDescriptor::new("DOMDocument", "dom", ClassKind::Class),
     ClassDescriptor::new("DOMElement", "dom", ClassKind::Class),
+    ClassDescriptor::new("DOMNamedNodeMap", "dom", ClassKind::Class),
     ClassDescriptor::new("DOMNode", "dom", ClassKind::Class),
     ClassDescriptor::new("DOMNodeList", "dom", ClassKind::Class),
     ClassDescriptor::new("DOMText", "dom", ClassKind::Class),
+    ClassDescriptor::new("DOMXPath", "dom", ClassKind::Class),
 ];
 
 const CONSTANTS: &[ConstantDescriptor] = &[];

@@ -290,6 +290,34 @@
           "module": "date"
         }
       ],
+      "name": "gmstrftime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
+      "name": "strftime",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "date",
+        "source": "ext/date/php_date.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "date"
+        }
+      ],
       "name": "strtotime",
       "visibility": "php"
     },

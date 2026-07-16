@@ -554,11 +554,19 @@ def main() -> int:
         if not rust_counter_measurements:
             print("[fail] no Rust VM counter samples were recorded", file=sys.stderr)
             failed = True
-        elif not any(
-            measurement["vm_counters"].get("literal_intern_hits", 0) > 0
+        elif any(
+            measurement["vm_counters"].get("native_execution_entries", 0) <= 0
+            or (
+                measurement["vm_counters"].get("native_compile_successes", 0)
+                + measurement["vm_counters"].get("native_cache_hits", 0)
+                <= 0
+            )
             for measurement in rust_counter_measurements
         ):
-            print("[fail] Rust VM counters recorded no literal intern hits", file=sys.stderr)
+            print(
+                "[fail] Rust VM counters did not prove native compilation/cache and execution",
+                file=sys.stderr,
+            )
             failed = True
 
     report = {

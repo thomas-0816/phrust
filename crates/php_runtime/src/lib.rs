@@ -51,7 +51,6 @@ mod gc;
 mod generator;
 mod globals;
 mod ini;
-mod jit_array;
 mod layout_stats;
 mod native_ops;
 mod numeric_string;
@@ -118,10 +117,11 @@ pub mod api {
     }
 
     pub use crate::array::{
-        ArrayEntry, ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary,
-        PhpArrayKeyKindSummary, PhpArrayKind, PhpArrayPackedIntReductionError,
-        PhpArrayPackedMetadata, PhpArrayShapeKind, PhpArrayShapeLookup,
-        PhpArrayShapeLookupFallback, PhpArrayShapeMetadata, PhpArrayValueMut, PhpArrayWriteIntent,
+        ArrayEntry, ArrayKey, PHP_ARRAY_APPEND_OVERFLOW_MESSAGE, PackedArrayValues, PhpArray,
+        PhpArrayAppendError, PhpArrayElementSummary, PhpArrayKeyKindSummary, PhpArrayKind,
+        PhpArrayPackedIntReductionError, PhpArrayPackedMetadata, PhpArrayShapeKind,
+        PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpArrayShapeMetadata, PhpArrayValueMut,
+        PhpArrayWriteIntent,
     };
     pub use crate::autoload::AutoloadRegistry;
     #[cfg(feature = "full-runtime")]
@@ -310,14 +310,6 @@ pub mod experimental {
     #[doc(hidden)]
     pub use crate::debug::*;
     #[doc(hidden)]
-    pub use crate::jit_array::{
-        PHP_JIT_ARRAY_LAYOUT_VERSION, PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT,
-        PHP_JIT_ARRAY_STATUS_FALLBACK, PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT,
-        PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK, PhpJitArrayAbiError,
-        php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints, php_jit_array_layout_guard,
-        php_jit_array_len, php_jit_record_array_lookup,
-    };
-    #[doc(hidden)]
     pub mod layout_stats {
         pub use crate::layout_stats::*;
     }
@@ -333,9 +325,7 @@ pub(crate) use crate::{
         ExtensionStateLayout, ExtensionStateLayoutBuilder, ExtensionStateSlot, RequestState,
     },
 };
-pub(crate) use array::{
-    ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary, PhpArrayKind, WeakArrayHandle,
-};
+pub(crate) use array::{ArrayKey, PackedArrayValues, PhpArray, WeakArrayHandle};
 #[cfg(feature = "full-runtime")]
 pub(crate) use builtins::{BuiltinError, FtpOptionValue};
 pub(crate) use callable::{

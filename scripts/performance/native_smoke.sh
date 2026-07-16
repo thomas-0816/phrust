@@ -11,21 +11,21 @@ cargo test -p php_jit
 cargo test -p php_vm native_entry
 cargo build -p php_vm_cli --bin php-vm --no-default-features --features runtime-telemetry
 
-# Product execution has no managed fallback. This broad PHP fixture is not yet
-# covered by the cutover compiler, so setup must fail with the precise native
-# lowering diagnostic instead of producing interpreter output.
-set +e
-"$VM" run tests/fixtures/performance/jit/rejected-fallback.php \
-    >"$OUT_DIR/native-only-rejected.out" \
-    2>"$OUT_DIR/native-only-rejected.err"
-exit_code=$?
-set -e
-if [[ "$exit_code" -eq 0 ]]; then
-    printf '%s\n' '[fail] unsupported product fixture unexpectedly executed' >&2
+# Exercise a fixture that was once rejected by the partial native compiler and
+# now covers calls, arrays, loops, and a builtin through production Cranelift.
+counters="$OUT_DIR/native-smoke-counters.json"
+"$VM" run --counters-json "$counters" \
+    tests/fixtures/performance/jit/rejected-fallback.php \
+    >"$OUT_DIR/native-smoke.out"
+printf '32\n' | cmp -s - "$OUT_DIR/native-smoke.out" || {
+    printf '%s\n' '[fail] native smoke output differs from the PHP fixture contract' >&2
     exit 1
-fi
-rg 'E_NATIVE_UNSUPPORTED_LOWERING.*instruction_kind=.*span=' \
-    "$OUT_DIR/native-only-rejected.err" >/dev/null
+}
+jq -e '
+  .schema_version == 6 and
+  .native_execution_entries > 0 and
+  ((.native_compile_successes + .native_cache_hits) > 0)
+' "$counters" >/dev/null
 
 python3 - <<'PY'
 import json
@@ -38,7 +38,9 @@ report = {
     "compiler_optional": False,
     "baseline_native_entry": "passed",
     "optimizing_native_entry": "passed",
-    "unsupported_lowering_fallback": False,
+    "native_execution_entries": "positive",
+    "native_compile_or_cache_entries": "positive",
+    "interpreter_fallback": "structurally unavailable",
 }
 Path("target/performance/native-smoke.json").write_text(
     json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

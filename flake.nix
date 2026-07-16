@@ -101,6 +101,14 @@
             export CARGO_TARGET_DIR="$PWD/target"
             export SCCACHE_DIR="$PWD/.cache/sccache"
             mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR"
+            phrust_workspace_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+            if [ -x "$phrust_workspace_root/scripts/development/parallel_php_vm_rustc.sh" ]; then
+              export RUSTC_WRAPPER="$phrust_workspace_root/scripts/development/parallel_php_vm_rustc.sh"
+            else
+              unset RUSTC_WRAPPER
+              printf '%s\n' '[skip] project rustc wrapper unavailable; using rustc directly' >&2
+            fi
+            unset phrust_workspace_root
           '';
 
           bannerHook = name: ''
@@ -121,9 +129,9 @@
                     commonHook
                     + ''
                       if command -v sccache >/dev/null 2>&1; then
-                        export RUSTC_WRAPPER="$(command -v sccache)"
+                        export PHRUST_RUSTC_CACHE_WRAPPER="$(command -v sccache)"
                       else
-                        unset RUSTC_WRAPPER
+                        unset PHRUST_RUSTC_CACHE_WRAPPER
                         printf '%s\n' '[skip] sccache unavailable; using host rustc directly' >&2
                       fi
                     ''
@@ -135,7 +143,7 @@
                 commonEnv
                 // {
                   packages = commonPackages ++ linuxPackages;
-                  RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
+                  PHRUST_RUSTC_CACHE_WRAPPER = "${pkgs.sccache}/bin/sccache";
                   CARGO_INCREMENTAL = "0";
                   LLVM_COV = "${pkgs.llvmPackages.llvm}/bin/llvm-cov";
                   LLVM_PROFDATA = "${pkgs.llvmPackages.llvm}/bin/llvm-profdata";

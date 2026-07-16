@@ -3,7 +3,8 @@
 use super::core::{argument_type_error, arity_error, int_arg, string_arg};
 use crate::builtins::{BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult};
 use crate::{
-    BuiltinError, ClassEntry, ClassFlags, ObjectRef, RuntimeSourceSpan, Value, normalize_class_name,
+    ArrayKey, BuiltinError, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString,
+    RuntimeSourceSpan, Value, normalize_class_name,
 };
 use std::convert::TryFrom;
 use std::io;
@@ -14,6 +15,8 @@ const SOCKET_ID_PROPERTY: &str = "__phrust_socket_id";
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("inet_ntop", builtin_inet_ntop, BuiltinCompatibility::Php),
     BuiltinEntry::new("inet_pton", builtin_inet_pton, BuiltinCompatibility::Php),
+    BuiltinEntry::new("ip2long", builtin_ip2long, BuiltinCompatibility::Php),
+    BuiltinEntry::new("long2ip", builtin_long2ip, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "socket_accept",
         builtin_socket_accept,
@@ -70,6 +73,21 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "socket_sendmsg",
+        builtin_socket_sendmsg,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_select",
+        builtin_socket_select,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_set_nonblock",
+        builtin_socket_set_nonblock,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "socket_set_option",
         builtin_socket_set_option,
         BuiltinCompatibility::Php,
@@ -120,18 +138,32 @@ fn builtin_socket_create(
     let tcp_stream = domain == i64::from(libc::AF_INET)
         && socket_type == i64::from(libc::SOCK_STREAM)
         && (protocol == 0 || protocol == i64::from(libc::IPPROTO_TCP));
+    let udp_datagram = domain == i64::from(libc::AF_INET)
+        && socket_type == i64::from(libc::SOCK_DGRAM)
+        && (protocol == 0 || protocol == i64::from(libc::IPPROTO_UDP));
     #[cfg(unix)]
     let unix_stream = domain == i64::from(libc::AF_UNIX)
         && socket_type == i64::from(libc::SOCK_STREAM)
         && protocol == 0;
+    #[cfg(unix)]
+    let unix_datagram = domain == i64::from(libc::AF_UNIX)
+        && socket_type == i64::from(libc::SOCK_DGRAM)
+        && protocol == 0;
     #[cfg(not(unix))]
     let unix_stream = false;
-    if !tcp_stream && !unix_stream {
+    #[cfg(not(unix))]
+    let unix_datagram = false;
+    if !tcp_stream && !udp_datagram && !unix_stream && !unix_datagram {
         context.socket_state().set_last_error(libc::EAFNOSUPPORT);
         return Ok(Value::Bool(false));
     }
-    let id = context.socket_state().create(domain, socket_type, protocol);
-    Ok(Value::Object(socket_object(id)))
+    match context.socket_state().create(domain, socket_type, protocol) {
+        Ok(id) => Ok(Value::Object(socket_object(id))),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn builtin_socket_bind(
@@ -170,10 +202,13 @@ fn builtin_socket_listen(
         return Err(arity_error("socket_listen", "one or two arguments"));
     }
     let socket_id = socket_id_arg("socket_listen", &args[0])?;
-    if let Some(value) = args.get(1) {
-        let _ = int_arg("socket_listen", value)?;
-    }
-    match context.socket_state().listen(socket_id) {
+    let backlog = args
+        .get(1)
+        .map(|value| int_arg("socket_listen", value))
+        .transpose()?
+        .unwrap_or(i64::from(i32::MAX));
+    let backlog = i32::try_from(backlog).unwrap_or(i32::MAX);
+    match context.socket_state().listen(socket_id, backlog) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(errno) => {
             context.socket_state().set_last_error(errno);
@@ -314,6 +349,115 @@ fn builtin_socket_send(
     }
 }
 
+fn builtin_socket_sendmsg(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 3 {
+        return Err(arity_error("socket_sendmsg", "three arguments"));
+    }
+    let socket_id = socket_id_arg("socket_sendmsg", &args[0])?;
+    let message = value_array("socket_sendmsg", "#2 ($message)", &args[1])?;
+    let iov = message.get(&string_key("iov")).ok_or_else(|| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_SOCKET_MESSAGE",
+            "socket_sendmsg(): Argument #2 ($message) must contain an iov key",
+        )
+    })?;
+    let iov = value_array("socket_sendmsg", "iov", iov)?;
+    let mut bytes = Vec::new();
+    for (_, value) in iov.iter() {
+        bytes.extend_from_slice(string_arg("socket_sendmsg", value)?.as_bytes());
+    }
+    let address = message
+        .get(&string_key("name"))
+        .map(|name| value_array("socket_sendmsg", "name", name))
+        .transpose()?
+        .and_then(|name| name.get(&string_key("path")).cloned())
+        .map(|path| string_arg("socket_sendmsg", &path).map(|path| path.to_string()))
+        .transpose()?;
+    let _flags = int_arg("socket_sendmsg", &args[2])?;
+    match context
+        .socket_state()
+        .send_message(socket_id, &bytes, address.as_deref())
+    {
+        Ok(written) => Ok(Value::Int(written as i64)),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn builtin_socket_set_nonblock(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("socket_set_nonblock", "one argument"));
+    }
+    let socket_id = socket_id_arg("socket_set_nonblock", &args[0])?;
+    match context.socket_state().set_nonblocking(socket_id, true) {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn builtin_socket_select(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(4..=5).contains(&args.len()) {
+        return Err(arity_error("socket_select", "four or five arguments"));
+    }
+    let read = value_array("socket_select", "#1 ($read)", &args[0])?;
+    let write = value_array("socket_select", "#2 ($write)", &args[1])?;
+    let except = value_array("socket_select", "#3 ($except)", &args[2])?;
+    if !write.is_empty() || !except.is_empty() {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_SOCKET_SELECT_WRITE_UNSUPPORTED",
+            "socket_select(): write and except descriptor polling is not implemented",
+        ));
+    }
+    let seconds = int_arg("socket_select", &args[3])?.max(0) as u64;
+    let microseconds = args
+        .get(4)
+        .map(|value| int_arg("socket_select", value))
+        .transpose()?
+        .unwrap_or(0)
+        .max(0) as u64;
+    let timeout = std::time::Duration::from_secs(seconds)
+        .saturating_add(std::time::Duration::from_micros(microseconds));
+    let mut entries = Vec::with_capacity(read.len());
+    for (key, value) in read.iter() {
+        entries.push((key, socket_id_arg("socket_select", value)?, value.clone()));
+    }
+    let ids = entries.iter().map(|(_, id, _)| *id).collect::<Vec<_>>();
+    let ready = match context.socket_state().poll_readable(&ids, timeout) {
+        Ok(ready) => ready,
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            return Ok(Value::Bool(false));
+        }
+    };
+    let mut selected = PhpArray::new();
+    for (key, id, value) in entries {
+        if ready.contains(&id) {
+            selected.insert(key, value);
+        }
+    }
+    if let Value::Reference(reference) = &args[0] {
+        reference.set(Value::Array(selected));
+    }
+    Ok(Value::Int(ready.len() as i64))
+}
+
 fn builtin_socket_recv(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -395,7 +539,7 @@ fn builtin_socket_getpeername(
 fn builtin_socket_set_option(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
         return Err(arity_error("socket_set_option", "four arguments"));
@@ -403,6 +547,27 @@ fn builtin_socket_set_option(
     let socket_id = socket_id_arg("socket_set_option", &args[0])?;
     let level = int_arg("socket_set_option", &args[1])?;
     let option = int_arg("socket_set_option", &args[2])?;
+    #[cfg(target_os = "linux")]
+    if level == i64::from(libc::IPPROTO_IP)
+        && matches!(
+            option as i32,
+            libc::MCAST_LEAVE_GROUP | libc::MCAST_LEAVE_SOURCE_GROUP
+        )
+        && !matches!(super::core::deref_value(&args[3]), Value::Array(_))
+    {
+        let option_name = if option as i32 == libc::MCAST_LEAVE_GROUP {
+            "MCAST_LEAVE_GROUP"
+        } else {
+            "MCAST_LEAVE_SOURCE_GROUP"
+        };
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!(
+                "socket_set_option(): Argument #4 ($value) must be of type array when argument #3 ($option) is {option_name}, {} given",
+                super::core::php_argument_type_name(&args[3])
+            ),
+        ));
+    }
     let value = socket_option_int("socket_set_option", &args[3])?;
     match context
         .socket_state()
@@ -411,6 +576,14 @@ fn builtin_socket_set_option(
         Ok(()) => Ok(Value::Bool(true)),
         Err(errno) => {
             context.socket_state().set_last_error(errno);
+            let message = io::Error::from_raw_os_error(errno).to_string();
+            let suffix = format!(" (os error {errno})");
+            let message = message.strip_suffix(&suffix).unwrap_or(&message);
+            context.php_warning(
+                "E_PHP_RUNTIME_SOCKET_OPTION",
+                format!("socket_set_option(): Unable to set socket option [{errno}]: {message}"),
+                span,
+            );
             Ok(Value::Bool(false))
         }
     }
@@ -518,9 +691,60 @@ fn builtin_socket_strerror(
         return Ok(Value::string("Success"));
     }
     let code = i32::try_from(code).unwrap_or(libc::EINVAL);
+    let message = io::Error::from_raw_os_error(code).to_string();
+    let rust_suffix = format!(" (os error {code})");
     Ok(Value::string(
-        io::Error::from_raw_os_error(code).to_string(),
+        message
+            .strip_suffix(&rust_suffix)
+            .unwrap_or(&message)
+            .to_owned(),
     ))
+}
+
+fn builtin_ip2long(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("ip2long", "one argument"));
+    }
+    let address = string_arg("ip2long", &args[0])?;
+    let Ok(address) = std::str::from_utf8(address.as_bytes()) else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(octets) = parse_php_ipv4(address) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Int(i64::from(u32::from_be_bytes(octets))))
+}
+
+fn builtin_long2ip(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("long2ip", "one argument"));
+    }
+    let address = int_arg("long2ip", &args[0])? as u32;
+    Ok(Value::string(std::net::Ipv4Addr::from(address).to_string()))
+}
+
+fn parse_php_ipv4(address: &str) -> Option<[u8; 4]> {
+    let mut octets = [0_u8; 4];
+    let mut parts = address.split('.');
+    for octet in &mut octets {
+        let part = parts.next()?;
+        if part.is_empty()
+            || (part.len() > 1 && part.starts_with('0'))
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        *octet = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(octets)
 }
 
 fn builtin_inet_pton(
@@ -610,6 +834,23 @@ fn socket_option_int(name: &str, value: &Value) -> Result<i64, BuiltinError> {
     }
 }
 
+fn string_key(value: &str) -> ArrayKey {
+    ArrayKey::String(PhpString::from(value))
+}
+
+fn value_array(name: &str, argument: &str, value: &Value) -> Result<PhpArray, BuiltinError> {
+    match super::core::deref_value(value) {
+        Value::Array(array) => Ok(array),
+        value => Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!(
+                "{name}(): Argument {argument} must be of type array, {} given",
+                super::core::php_argument_type_name(&value)
+            ),
+        )),
+    }
+}
+
 fn socket_object(id: i64) -> ObjectRef {
     let object = ObjectRef::new_with_display_name(&socket_runtime_class(), SOCKET_CLASS);
     object.set_property(SOCKET_ID_PROPERTY, Value::Int(id));
@@ -629,5 +870,28 @@ fn socket_runtime_class() -> ClassEntry {
         enum_backing_type: None,
         constructor_id: None,
         flags: ClassFlags::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_php_ipv4;
+
+    #[test]
+    fn php_ipv4_parser_accepts_only_four_canonical_decimal_octets() {
+        assert_eq!(parse_php_ipv4("127.0.0.1"), Some([127, 0, 0, 1]));
+        assert_eq!(parse_php_ipv4("255.255.255.255"), Some([255; 4]));
+        for rejected in [
+            "127.1",
+            "1.2.3",
+            "01.2.3.4",
+            "1.2.3.004",
+            "256.0.0.1",
+            "192.168.0xa.5",
+            "1.2.3.4 ",
+            "",
+        ] {
+            assert_eq!(parse_php_ipv4(rejected), None, "accepted {rejected:?}");
+        }
     }
 }

@@ -29,10 +29,6 @@ pub struct VmOptions {
     pub trace_includes: bool,
     /// Collect native/runtime counters in the execution result.
     pub collect_counters: bool,
-    /// Collect request-profile wall-clock spans.
-    pub collect_profile_spans: bool,
-    /// Collect per-family clone/COW source attribution.
-    pub collect_layout_source_attribution: bool,
     /// Allocate request-local inline-cache slots for native call sites.
     pub inline_caches: InlineCacheMode,
     /// Select baseline or optimizing Cranelift compilation.
@@ -68,8 +64,6 @@ impl Default for VmOptions {
             trace_runtime: false,
             trace_includes: trace_includes_from_env(),
             collect_counters: false,
-            collect_profile_spans: false,
-            collect_layout_source_attribution: false,
             inline_caches: InlineCacheMode::Off,
             native_optimization: NativeOptimizationPolicy::Baseline,
             native_threshold: tiering.function_entry_threshold,

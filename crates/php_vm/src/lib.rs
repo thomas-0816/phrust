@@ -42,7 +42,8 @@ pub mod api {
     pub use crate::inline_cache::{FunctionCallSiteSnapshot, InlineCacheMode};
     pub use crate::tiering::{TieringOptions, TieringStats};
     pub use crate::vm::{
-        NativeBlacklistMode, NativeOptimizationPolicy, Vm, VmOptions, VmResult, VmWorkerState,
+        NativeBlacklistMode, NativeCompileCacheStats, NativeCompileProbeReport,
+        NativeOptimizationPolicy, Vm, VmOptions, VmResult, VmWorkerState,
     };
     pub use php_jit::{
         CRANELIFT_VERSION, CraneliftHostIsaError, CraneliftHostIsaIdentity,

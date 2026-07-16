@@ -149,6 +149,7 @@ impl StreamMetadata {
 pub struct FilesystemCapabilities {
     allowed_roots: Vec<PathBuf>,
     allow_stdio: bool,
+    allow_standard_devices: bool,
 }
 
 impl FilesystemCapabilities {
@@ -158,6 +159,7 @@ impl FilesystemCapabilities {
         Self {
             allowed_roots: Vec::new(),
             allow_stdio: false,
+            allow_standard_devices: false,
         }
     }
 
@@ -173,6 +175,19 @@ impl FilesystemCapabilities {
     pub const fn with_stdio(mut self, allow_stdio: bool) -> Self {
         self.allow_stdio = allow_stdio;
         self
+    }
+
+    /// Allows the non-sensitive Linux null/zero/full character devices.
+    #[must_use]
+    pub const fn with_standard_devices(mut self, allow_standard_devices: bool) -> Self {
+        self.allow_standard_devices = allow_standard_devices;
+        self
+    }
+
+    /// Returns whether bounded standard-device streams are enabled.
+    #[must_use]
+    pub const fn allows_standard_devices(&self) -> bool {
+        self.allow_standard_devices
     }
 
     /// Returns whether a path is within an allowed local filesystem root.
@@ -420,6 +435,12 @@ enum StreamData {
         buffer: Vec<u8>,
         cursor: usize,
     },
+    StandardDevice {
+        kind: StandardDeviceKind,
+    },
+    SocketServer {
+        _socket_id: i64,
+    },
     Directory {
         path: PathBuf,
         entries: Vec<String>,
@@ -438,6 +459,13 @@ enum StreamData {
         mode: StreamFilterMode,
         name: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StandardDeviceKind {
+    Null,
+    Zero,
+    Full,
 }
 
 /// Reference-counted runtime resource handle.
@@ -566,9 +594,21 @@ impl ResourceRef {
                 buffer[*cursor..end].copy_from_slice(&filtered);
                 *cursor = end;
             }
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Null | StandardDeviceKind::Zero,
+            } => {}
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Full,
+            } => {
+                return Err(StreamOpenError::new(
+                    "E_PHP_RUNTIME_STREAM_WRITE",
+                    "No space left on device",
+                ));
+            }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
@@ -601,14 +641,24 @@ impl ResourceRef {
             | StreamData::Stdio { buffer, cursor }
             | StreamData::File { buffer, cursor, .. }
             | StreamData::GzipFile { buffer, cursor, .. } => {
+                if *cursor >= buffer.len() {
+                    return apply_stream_filters(&filters, Vec::new());
+                }
                 let end = (*cursor).saturating_add(length).min(buffer.len());
                 let bytes = buffer[*cursor..end].to_vec();
                 *cursor = end;
                 Ok(bytes)
             }
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Null,
+            } => Ok(Vec::new()),
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Zero | StandardDeviceKind::Full,
+            } => Ok(vec![0; length]),
             StreamData::Directory { .. }
             | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_READABLE",
                 "directory resource is not byte-readable",
@@ -646,9 +696,17 @@ impl ResourceRef {
                 *cursor = end;
                 Ok(bytes)
             }
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Null,
+            } => Ok(Vec::new()),
+            StreamData::StandardDevice { .. } => Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_UNBOUNDED_DEVICE_READ",
+                "line reads from an unbounded standard device are unsupported",
+            )),
             StreamData::Directory { .. }
             | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_READABLE",
                 "directory resource is not line-readable",
@@ -682,9 +740,17 @@ impl ResourceRef {
                 *cursor = buffer.len();
                 Ok(bytes)
             }
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Null,
+            } => Ok(Vec::new()),
+            StreamData::StandardDevice { .. } => Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_UNBOUNDED_DEVICE_READ",
+                "read-to-end from an unbounded standard device is unsupported",
+            )),
             StreamData::Directory { .. }
             | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_READABLE",
                 "directory resource is not byte-readable",
@@ -752,9 +818,13 @@ impl ResourceRef {
                 }
                 *cursor = target as usize;
             }
+            // Linux's null/zero/full drivers accept lseek and report position
+            // zero regardless of the requested offset.
+            StreamData::StandardDevice { .. } => {}
             StreamData::Directory { .. }
             | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_SEEKABLE",
@@ -790,9 +860,16 @@ impl ResourceRef {
                     *cursor = length;
                 }
             }
+            StreamData::StandardDevice { .. } => {
+                return Err(StreamOpenError::new(
+                    "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
+                    "standard device streams cannot be truncated",
+                ));
+            }
             StreamData::Directory { .. }
             | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
@@ -818,8 +895,10 @@ impl ResourceRef {
             | StreamData::File { cursor, .. }
             | StreamData::GzipFile { cursor, .. }
             | StreamData::Directory { cursor, .. } => *cursor,
-            StreamData::Context { .. }
+            StreamData::StandardDevice { .. }
+            | StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => 0,
         })
     }
@@ -841,8 +920,13 @@ impl ResourceRef {
             StreamData::Directory {
                 entries, cursor, ..
             } => *cursor >= entries.len(),
+            StreamData::StandardDevice {
+                kind: StandardDeviceKind::Null,
+            } => true,
+            StreamData::StandardDevice { .. } => false,
             StreamData::Context { .. }
             | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => true,
         })
     }
@@ -1088,6 +1172,17 @@ impl ResourceTable {
             StreamData::Stdio {
                 buffer: Vec::new(),
                 cursor: 0,
+            },
+        )
+    }
+
+    /// Registers a socket server whose kernel handle is owned by extension state.
+    pub fn register_socket_server(&mut self, socket_id: i64, uri: &str) -> ResourceRef {
+        self.register_stream_data(
+            StreamFlags::new(true, true, false),
+            StreamMetadata::new("unix_socket", "unix_socket", "r+", uri),
+            StreamData::SocketServer {
+                _socket_id: socket_id,
             },
         )
     }
@@ -1396,6 +1491,22 @@ fn open_file_stream(
         cwd.join(path)
     };
     let normalized = normalize_path(&absolute);
+    if let Some(kind) = standard_device_kind(&normalized) {
+        if !capabilities.allows_standard_devices() {
+            return Err(StreamOpenError::new(
+                "E_PHP_FILESYSTEM_CAPABILITY_DENIED",
+                format!(
+                    "standard device stream `{}` is disabled by runtime capabilities",
+                    normalized.display()
+                ),
+            ));
+        }
+        return Ok(table.register_stream_data(
+            parsed_mode.flags(),
+            StreamMetadata::new("plainfile", "STDIO", mode, normalized.to_string_lossy()),
+            StreamData::StandardDevice { kind },
+        ));
+    }
     if !capabilities.allows_path(&normalized) {
         return Err(StreamOpenError::new(
             "E_PHP_FILESYSTEM_CAPABILITY_DENIED",
@@ -1446,6 +1557,23 @@ fn open_file_stream(
             cursor,
         },
     ))
+}
+
+fn standard_device_kind(path: &Path) -> Option<StandardDeviceKind> {
+    #[cfg(target_os = "linux")]
+    {
+        match path.to_str()? {
+            "/dev/null" => Some(StandardDeviceKind::Null),
+            "/dev/zero" => Some(StandardDeviceKind::Zero),
+            "/dev/full" => Some(StandardDeviceKind::Full),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 #[cfg(feature = "full-runtime")]
@@ -1736,6 +1864,53 @@ mod tests {
             .seek_from(10, StreamSeekWhence::End)
             .expect("seek beyond end");
         assert_eq!(resource.tell().expect("tell after beyond end"), 16);
+        assert_eq!(
+            resource.read_bytes(4).expect("read beyond end"),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            resource.tell().expect("read beyond end preserves position"),
+            16
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn standard_device_streams_are_bounded_and_seekable_when_enabled() {
+        let registry = StreamWrapperRegistry::new();
+        let capabilities = FilesystemCapabilities::none().with_standard_devices(true);
+        let mut table = ResourceTable::new();
+
+        let zero = registry
+            .open(
+                &mut table,
+                "/dev/zero",
+                "rb",
+                Path::new("."),
+                &capabilities,
+                &[],
+            )
+            .expect("enabled zero device opens");
+        zero.seek_from(1024 * 1024, StreamSeekWhence::Set)
+            .expect("zero device accepts Linux seek semantics");
+        assert_eq!(zero.tell().expect("device position"), 0);
+        assert_eq!(zero.read_bytes(3).expect("bounded device read"), [0, 0, 0]);
+        assert!(!zero.eof().expect("zero is unbounded"));
+
+        let denied = registry.open(
+            &mut table,
+            "/dev/null",
+            "rb",
+            Path::new("."),
+            &FilesystemCapabilities::none(),
+            &[],
+        );
+        assert_eq!(
+            denied
+                .expect_err("device capability must be explicit")
+                .diagnostic_id(),
+            "E_PHP_FILESYSTEM_CAPABILITY_DENIED"
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ from the triage reports, never from editing this page.
 | dom | 833 | implement incrementally | Partial implementation with working basic operations; keep visible in triage, add surface as composer/framework tests require it. |
 | soap | 546 | permanent gap | Out of scope (network RPC stack); basic class plumbing exists but failures stay documented as extension-policy non-green unless scope changes. |
 | phar | 518 | implement (bounded MVP) | Required for Composer; define a read-only PHAR MVP after filesystem.streams is stable. |
-| opcache | 432 | permanent gap | phrust has its own bytecode cache and JIT; Zend Opcache/JIT observable behavior stays excluded from runtime correctness scope. |
+| opcache | 432 | permanent gap | phrust has its own native artifact cache and compiler; Zend Opcache/JIT observable behavior stays excluded from runtime correctness scope. |
 | intl | 414 | honest skip | Reports as not loaded (skipif parity with a reference build lacking intl) because the class surface (Collator, formatters) was phantom-registered without working methods; real grapheme/normalizer/transliterator functions still dispatch. Full intl needs the class surface. |
 | gd | 258 | permanent gap | Image processing stays outside core policy-green; working basics remain visible in triage. |
 | mbstring | 248 | implement (bounded MVP) | Required for Composer; bounded UTF-8 MVP exists, extend after standard.strings is stable. |

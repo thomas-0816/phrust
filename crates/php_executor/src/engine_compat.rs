@@ -172,7 +172,10 @@ where
         .write_all(result.output.as_bytes())
         .map_err(|error| error.to_string())?;
     match result.status.exit_status() {
-        ExitStatus::Success => Ok(vm_success_exit_code(&result)),
+        ExitStatus::Success => {
+            write_runtime_diagnostics(stderr, &input.source_path, &result.diagnostics)?;
+            Ok(vm_success_exit_code(&result))
+        }
         ExitStatus::CompileError => {
             if write_vm_compile_fatal_line(
                 stderr,
@@ -313,7 +316,8 @@ mod tests {
             stdout.contains(
                 "Fatal error: Uncaught Error: Access to undeclared static property C::$p"
             ),
-            "{stdout}"
+            "stdout={stdout} stderr={}",
+            String::from_utf8_lossy(&stderr)
         );
         assert_eq!(stderr, b"");
     }
@@ -375,6 +379,23 @@ mod tests {
     }
 
     #[test]
+    fn successful_runtime_warning_keeps_structured_stderr() {
+        let input = test_input("<?php $values = []; echo $values['missing'], 'ok';");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(stdout, b"ok");
+        let stderr = String::from_utf8(stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
     fn compatibility_entrypoint_uses_default_native_runtime_for_recursion() {
         let input = test_input(
             "<?php function f($i) { if ($i > 4) { echo 'stop'; return; } f($i + 1); } f(0);",
@@ -384,7 +405,13 @@ mod tests {
 
         let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
 
-        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(
+            status,
+            EXIT_SUCCESS,
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
         assert_eq!(stdout, b"stop");
         assert_eq!(stderr, b"");
     }
@@ -439,7 +466,13 @@ mod tests {
 
         let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
 
-        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(
+            status,
+            EXIT_SUCCESS,
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
         assert_eq!(stdout, b"ok");
         assert_eq!(stderr, b"");
         fs::remove_dir_all(root).expect("remove temp root");

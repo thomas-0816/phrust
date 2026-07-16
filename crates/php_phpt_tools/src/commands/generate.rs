@@ -50,6 +50,7 @@ pub(crate) fn generate_module_tests<W: Write>(
         summary: options.work_dir.join("unused-summary.md"),
         reuse_results: None,
         dev_reuse_pass: false,
+        cleanup_work: false,
         timeout: options.timeout,
         jobs: 1,
     };

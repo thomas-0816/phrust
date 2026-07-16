@@ -181,9 +181,9 @@ HINTS = {
         "XML-1",
     ),
     "dom": ExtensionHint(
-        "custom VM DOM classes over bounded XML data",
+        "native internal DOM classes over bounded XML data",
         "custom-subset",
-        "DOMDocument mutation/import/xpath/schema behavior and libxml errors",
+        "Live node ownership, import/adopt, schema/DTD, HTML, and libxml error parity",
         "DOM-1",
     ),
     "simplexml": ExtensionHint(

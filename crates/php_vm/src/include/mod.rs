@@ -29,8 +29,7 @@ pub use resolver::{
     LoadedCompilationDependency, ResolvedCompilationDependency, ResolvedIncludePath,
     negative_include_cache_enabled,
 };
-pub(crate) use source::resolution_path_targets;
 pub use source::{
     IncludeDependency, IncludeDirectoryVersion, IncludePathFileFingerprint, LoadedInclude,
-    ValidatedIncludeSource, fnv1a_64, include_directory_version, include_path_file_fingerprint,
+    ValidatedIncludeSource, fnv1a_64, include_directory_version,
 };

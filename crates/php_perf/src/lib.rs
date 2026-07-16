@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 /// Stable schema version for performance performance reports.
 pub const PERF_REPORT_SCHEMA_VERSION: u32 = 1;
 
-/// Stable schema version for Cranelift big-win JIT reports.
-
 /// Stable schema version for PHP VM internal phase timing sidecars.
 pub const PHASE_TIMING_REPORT_SCHEMA_VERSION: u32 = 1;
 
@@ -313,7 +311,7 @@ mod tests {
         report.counts.insert("source_bytes".to_string(), 42);
         report
             .flags
-            .insert("bytecode_cache".to_string(), "off".to_string());
+            .insert("native_cache".to_string(), "off".to_string());
 
         let json = report.to_stable_json().expect("serialize report");
 
@@ -329,7 +327,7 @@ mod tests {
             .with_git_commit("abc1234")
             .with_opt_flags(["--engine-preset=baseline"])
             .with_feature_flag("cranelift", true)
-            .with_feature_flag("bytecode-cache", true)
+            .with_feature_flag("native-cache", true)
             .with_extra("TZ", "UTC")
             .with_extra("LC_ALL", "C");
         let scenario = PerfScenario::new("performance.echo-loop", "Echo loop", "vm")
@@ -357,8 +355,8 @@ mod tests {
       "--engine-preset=baseline"
     ],
     "feature_flags": {
-      "bytecode-cache": true,
-      "cranelift": true
+      "cranelift": true,
+      "native-cache": true
     },
     "extra": {
       "LC_ALL": "C",

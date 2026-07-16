@@ -1335,6 +1335,36 @@ mod tests {
     }
 
     #[test]
+    fn run_file_passes_error_reporting_ini_mask_to_native_execution() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = temp_root("native-error-reporting-mask");
+        fs::create_dir_all(&root).expect("mkdir");
+        let script = root.join("fixture.php");
+        fs::write(&script, "<?php var_dump(error_reporting());").expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-n".to_string(),
+                "-d".to_string(),
+                "error_reporting=2047".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(String::from_utf8(stdout).expect("utf8"), "int(2047)\n");
+        assert_eq!(stderr, b"");
+    }
+
+    #[test]
     fn run_file_honors_display_errors_for_filter_default_startup_deprecation() {
         let _guard = ENV_LOCK
             .lock()

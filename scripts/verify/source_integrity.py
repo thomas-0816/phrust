@@ -75,7 +75,6 @@ VM_MOD_REQUIRED_SNIPPETS = [
     "impl Vm",
     "pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult",
     "compile_unit_with_runtime_helpers",
-    "invoke_i64_status_out",
 ]
 
 VM_RESULT_REQUIRED_SNIPPETS = [
@@ -85,7 +84,12 @@ VM_RESULT_REQUIRED_SNIPPETS = [
 ]
 
 VM_SUBMODULE_REQUIRED_SNIPPETS = {
-    "crates/php_vm/src/vm/jit_abi.rs": ["jit_runtime_helper_table"],
+    "crates/php_vm/src/vm/jit_abi.rs": [
+        "jit_native_call_dispatch_abi",
+        "jit_native_dynamic_code_abi",
+        "jit_native_runtime_fatal_abi",
+    ],
+    "crates/php_vm/src/vm/native_entry.rs": ["invoke_i64_with_native_unwind"],
     "crates/php_vm/src/vm/options.rs": [
         "pub struct VmOptions",
         "pub enum NativeOptimizationPolicy",

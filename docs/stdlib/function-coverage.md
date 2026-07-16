@@ -6,7 +6,7 @@ Reference status: `skipped` (REFERENCE_PHP is not set)
 
 | Status | Count |
 | --- | ---: |
-| implemented | 917 |
+| implemented | 926 |
 | partial | 130 |
 | stub | 0 |
 | missing | 0 |
@@ -19,7 +19,7 @@ Reference status: `skipped` (REFERENCE_PHP is not set)
 | core | functions | 62 | 0 | 0 | 0 | 0 |
 | core | classes | 0 | 40 | 0 | 0 | 0 |
 | core | constants | 88 | 0 | 0 | 0 | 0 |
-| standard | functions | 371 | 0 | 0 | 0 | 0 |
+| standard | functions | 378 | 0 | 0 | 0 | 0 |
 | standard | classes | 0 | 1 | 0 | 0 | 0 |
 | standard | constants | 136 | 0 | 0 | 0 | 0 |
 | json | functions | 5 | 0 | 0 | 0 | 0 |
@@ -28,7 +28,7 @@ Reference status: `skipped` (REFERENCE_PHP is not set)
 | pcre | functions | 11 | 0 | 0 | 0 | 0 |
 | pcre | classes | 0 | 0 | 0 | 0 | 0 |
 | pcre | constants | 19 | 0 | 0 | 0 | 0 |
-| date | functions | 15 | 0 | 0 | 0 | 0 |
+| date | functions | 17 | 0 | 0 | 0 | 0 |
 | date | classes | 0 | 5 | 0 | 0 | 0 |
 | date | constants | 14 | 0 | 0 | 0 | 0 |
 | spl | functions | 11 | 0 | 0 | 0 | 0 |

@@ -57,7 +57,16 @@ pub(crate) fn verify_source<W: Write, E: Write>(
                     }
                 }
             }
-            Err(error) => errors.push(format!("{}: {error}", entry.path)),
+            Err(error) => {
+                if is_host_generated_source_artifact(&entry.path) && !path.exists() {
+                    host_generated_skips.push(format!(
+                        "{}: host-generated artifact is absent on this platform",
+                        entry.path
+                    ));
+                } else {
+                    errors.push(format!("{}: {error}", entry.path));
+                }
+            }
         }
     }
     if !errors.is_empty() {

@@ -33,11 +33,33 @@ compiled calls, OSR, and the native cache.
 The persistent cache stores validated Cranelift machine code keyed by source,
 compiler version, target and CPU features, runtime ABI, helper ABI, and compile
 policy. Loading preserves W^X and validates all metadata before publication.
+Its audited `unsafe` boundary is confined to executable mappings, validated
+entry invocation, and Unix ownership/process probes in `native_cache.rs`.
+Cranelift runtime-operation ABI writes are confined to
+`cranelift_lowering/fallback_helpers.rs`; other lowering modules remain subject
+to the default no-`unsafe` performance audit.
 
 Process startup reports compiler version, target and CPU feature identity,
 runtime/helper ABI hashes, preset, cache mode/path, and loaded/compiled artifact
 counts. Product telemetry uses only the canonical native families documented in
 `docs/performance/counter-families.md`.
+
+The cutover foundation is reproducible with:
+
+```bash
+nix develop -c just cranelift-only-precondition
+```
+
+That gate verifies the detached SHA-pinned migration oracle, regenerates the
+current ABI/target/source identity under `target/cranelift-only/`, and runs the
+zero-exception final architecture ratchet. The external oracle binary is a test
+artifact only and is absent from the candidate Cargo graph.
+
+`just cranelift-exhaustive-lowering` also checks the authoritative Region IR
+builder itself: every source instruction variant must enter an explicit native
+lowering path and none may map directly to `MissingLowering`. This complements
+the generated coverage manifest so declared coverage cannot hide a missing
+implementation.
 
 ## Consequences
 

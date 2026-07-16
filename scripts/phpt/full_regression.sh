@@ -127,6 +127,11 @@ if [[ -n "${PHPT_DEV_REUSE_PASS:-}" && "${PHPT_DEV_REUSE_PASS:-}" != "0" ]]; the
   dev_reuse_args=(--dev-reuse-pass)
 fi
 
+cleanup_args=()
+if [[ "${PHPT_KEEP_WORK:-0}" != "1" ]]; then
+  cleanup_args=(--cleanup-work)
+fi
+
 printf 'TARGET_PHP=%s\n' "$target_php"
 printf 'PHPT_TARGET_MODE=%s\n' "$target_mode"
 printf 'PHPT_CORPUS_MANIFEST=%s\n' "$corpus"
@@ -134,6 +139,7 @@ printf 'PHPT_RUN_DIR=%s\n' "$run_dir"
 printf 'PHPT_JOBS=%s\n' "$phpt_jobs"
 printf 'PHPT_REUSE_RESULTS=%s\n' "${reuse_args[*]:-disabled}"
 printf 'PHPT_DEV_REUSE_PASS=%s\n' "${PHPT_DEV_REUSE_PASS:-0}"
+printf 'PHPT_KEEP_WORK=%s\n' "${PHPT_KEEP_WORK:-0}"
 
 set +e
 "$phpt_tool" run \
@@ -147,6 +153,7 @@ set +e
   --timeout-seconds "${PHPT_TIMEOUT_SECONDS:-30}" \
   ${reuse_args[@]+"${reuse_args[@]}"} \
   ${dev_reuse_args[@]+"${dev_reuse_args[@]}"} \
+  ${cleanup_args[@]+"${cleanup_args[@]}"} \
   ${job_args[@]+"${job_args[@]}"}
 run_status=$?
 set -e

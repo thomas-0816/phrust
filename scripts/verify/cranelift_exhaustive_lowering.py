@@ -36,6 +36,17 @@ def main() -> int:
             failures.append(f"missing exhaustive classifier: {function}")
     if "InstructionKind::RuntimeError" not in region or "RuntimeFatal" not in region:
         failures.append("RuntimeError is not represented as an explicit native fatal")
+    direct_missing = re.compile(
+        r"(?P<arms>(?:InstructionKind::\w+\s*\{[^{}]*\}\s*(?:\|\s*)?)+)"
+        r"=>\s*RegionInstructionKind::MissingLowering",
+        re.DOTALL,
+    )
+    for match in direct_missing.finditer(region):
+        variants = re.findall(r"InstructionKind::(\w+)", match.group("arms"))
+        failures.append(
+            "authoritative Region IR maps source instruction(s) directly to "
+            f"MissingLowering: {', '.join(variants)}"
+        )
     if not REPORT.is_file():
         failures.append("instruction coverage JSON was not generated")
     else:

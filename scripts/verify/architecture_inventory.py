@@ -85,7 +85,15 @@ def run(*command: str) -> str:
 
 
 def tracked_rust_files() -> list[Path]:
-    output = run("git", "ls-files", "*.rs")
+    output = run(
+        "git",
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        "*.rs",
+    )
     return [
         Path(line)
         for line in output.splitlines()

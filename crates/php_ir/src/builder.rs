@@ -418,7 +418,17 @@ impl IrBuilder {
 
     /// Finishes the unit.
     #[must_use]
-    pub fn finish(self) -> IrUnit {
+    pub fn finish(mut self) -> IrUnit {
+        let parameter_defaults = self
+            .unit
+            .functions
+            .iter()
+            .flat_map(|function| &function.params)
+            .filter_map(|parameter| parameter.default.clone())
+            .collect::<Vec<_>>();
+        for default in parameter_defaults {
+            self.intern_constant(default);
+        }
         self.unit
     }
 

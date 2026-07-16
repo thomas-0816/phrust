@@ -43,8 +43,10 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("gmdate", builtin_gmdate, BuiltinCompatibility::Php),
+    BuiltinEntry::new("gmstrftime", builtin_gmstrftime, BuiltinCompatibility::Php),
     BuiltinEntry::new("microtime", builtin_microtime, BuiltinCompatibility::Php),
     BuiltinEntry::new("strtotime", builtin_strtotime, BuiltinCompatibility::Php),
+    BuiltinEntry::new("strftime", builtin_strftime, BuiltinCompatibility::Php),
     BuiltinEntry::new("hrtime", builtin_hrtime, BuiltinCompatibility::Php),
     BuiltinEntry::new("time", builtin_time, BuiltinCompatibility::Php),
     BuiltinEntry::new(
@@ -141,6 +143,51 @@ pub(in crate::builtins::modules) fn builtin_gmdate(
         .unwrap_or_else(datetime::current_timestamp);
     Ok(Value::string(datetime::format_timestamp(
         timestamp, "GMT", &format,
+    )))
+}
+
+fn builtin_strftime(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    builtin_strftime_in_timezone(context, args, span, None, "strftime")
+}
+
+fn builtin_gmstrftime(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    builtin_strftime_in_timezone(context, args, span, Some("GMT"), "gmstrftime")
+}
+
+fn builtin_strftime_in_timezone(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+    timezone: Option<&str>,
+    function: &str,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 2 {
+        return Err(arity_error(function, "one or two argument(s)"));
+    }
+    let format = string_arg(function, &args[0])?.to_string_lossy();
+    let timestamp = args
+        .get(1)
+        .map(|value| int_arg(function, value))
+        .transpose()?
+        .unwrap_or_else(datetime::current_timestamp);
+    context.php_deprecation(
+        "E_PHP_RUNTIME_STRFTIME_DEPRECATED",
+        format!(
+            "Function {function}() is deprecated since 8.1, use IntlDateFormatter::format() instead"
+        ),
+        span,
+    );
+    let timezone = timezone.unwrap_or_else(|| context.default_timezone());
+    Ok(Value::string(datetime::format_strftime_timestamp(
+        timestamp, timezone, &format,
     )))
 }
 pub(in crate::builtins::modules) fn builtin_date_create(
@@ -260,7 +307,7 @@ pub(in crate::builtins::modules) fn builtin_hrtime(
     ]))
 }
 pub(in crate::builtins::modules) fn builtin_strtotime(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -273,7 +320,10 @@ pub(in crate::builtins::modules) fn builtin_strtotime(
         .map(|value| int_arg("strtotime", value))
         .transpose()?
         .unwrap_or_else(datetime::current_timestamp);
-    Ok(datetime::parse_datetime_text(&text, base).map_or(Value::Bool(false), Value::Int))
+    Ok(
+        datetime::parse_datetime_text_in_timezone(&text, base, context.default_timezone())
+            .map_or(Value::Bool(false), Value::Int),
+    )
 }
 
 fn nullable_string_arg(value: &Value) -> Result<String, BuiltinError> {

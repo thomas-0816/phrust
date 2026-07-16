@@ -7,7 +7,7 @@ Performance does not add production shared memory code.
 
 | Option | Scope | Benefits | Risks |
 | --- | --- | --- | --- |
-| Disk bytecode cache | Existing Performance request/process boundary | Simple invalidation, easy inspection, no shared mutable memory | Filesystem latency, per-process reads, dependency invalidation still conservative |
+| PNA1 native artifact cache | Existing process-restart boundary | Reuses validated native code, simple inspection, no shared mutable memory | Filesystem latency, target/ABI coupling, dependency invalidation still conservative |
 | Memory-mapped file | Future cache reader over immutable cache files | Kernel page cache sharing, lower copy overhead, simple read-only mapping model | File truncation races, platform-specific mmap semantics, needs strict header/version checks |
 | Process-local cache | In-memory cache inside one long-lived worker | Fastest simple lookup, no cross-process synchronization | Duplication across workers, request isolation concerns, daemon lifecycle invalidation required |
 | Shared memory cache | Future SAPI/FPM/daemon shared arena | Cross-worker reuse, potential preload support | Hardest security model, stale dependency risk, permissions, crash recovery, ABI/version compatibility |
@@ -23,11 +23,11 @@ single trusted process lifetime. Any future design must keep:
 - read-only mappings for runtime consumers;
 - per-user or per-project permissions so unrelated projects cannot inject cache
   entries;
-- no executable memory in the cache format.
+- W^X publication with no writable-and-executable mapping.
 
 ## Invalidation Risks
 
-The current disk cache keys source content and compile configuration. A shared
+The current native cache keys source/IR content and compile configuration. A shared
 cache needs stronger dependency tracking before it can safely cache includes,
 autoload maps, preload state, or framework-generated files. Cache invalidation
 must include:
@@ -37,11 +37,11 @@ must include:
 - include path and working-directory-sensitive resolution inputs;
 - Composer map fingerprints;
 - PHP target and engine ABI/schema versions;
-- optimizer, quickening, and JIT feature flags.
+- compiler policy and runtime/helper ABI identities.
 
 ## Recommendation
 
-future runtime should prototype immutable mmap reads over the existing disk cache
+Future runtime research should prototype immutable mmap reads over the PNA1
 format before attempting mutable shared memory. PHPT runtime or a dedicated SAPI
 layer can evaluate a shared arena after daemon lifecycle, preload semantics,
 and dependency invalidation are specified.

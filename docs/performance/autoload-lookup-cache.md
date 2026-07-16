@@ -60,7 +60,10 @@ The Performance counter JSON includes:
 - `invalidations_by_reason.autoload_lookup_epoch_or_guard`
 - `invalidations_by_reason.autoload_positive_target_missing`
 
-The `inline-cache-smoke` gate requires visible autoload lookup hits and misses.
+The retained cache data model is covered by `inline-cache-model-tests` during
+the native-only cutover. Product-native lookup counters and hit-rate gates must
+be re-established by Prompt 16 before this historical evidence is used for a
+new performance claim.
 
 ## Bootstrap Lookup Coverage (status evidence)
 

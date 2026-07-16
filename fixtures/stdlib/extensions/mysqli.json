@@ -81,6 +81,14 @@
     },
     {
       "deprecation": null,
+      "name": "MYSQLI_REPORT_ALL",
+      "value": {
+        "kind": "int",
+        "value": 255
+      }
+    },
+    {
+      "deprecation": null,
       "name": "MYSQLI_OPT_CONNECT_TIMEOUT",
       "value": {
         "kind": "int",

@@ -6,12 +6,13 @@ type-bound slot during registry assembly. Request creation walks that frozen
 layout once; builtin calls use the stored slot index and a checked downcast.
 There is no name lookup or state allocation in the call path.
 
-The VM's request-local `BuiltinAdapterState` owns one `BuiltinRequestState` per
-execution request. `ExecutionState` owns that adapter as a single subsystem;
-it does not expose extension state as flat execution fields. A `BuiltinContext`
-created by VM dispatch borrows the typed request-state owner. The owned context
-constructor exists for isolated builtin tests, but its enum representation is
-exclusive: a context is either the owner or a borrower and never stores both.
+The VM's request-local `NativeExecutionContext` owns one `BuiltinRequestState`
+and one `NativeRegisteredExtensionRequestState` per execution request. Native
+builtin dispatch borrows both typed owners into a `BuiltinContext`; include
+children temporarily take the owners and return them to the parent, so one PHP
+request observes one continuous extension state. The owned context constructor
+exists for isolated builtin tests, but its enum representation is exclusive: a
+context is either the owner or a borrower and never stores both.
 
 ## Migrated Views
 

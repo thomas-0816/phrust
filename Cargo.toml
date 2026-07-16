@@ -3,7 +3,6 @@ resolver = "3"
 exclude = ["crates/php_bench"]
 members = [
     "crates/php_ast",
-    "crates/php_bytecode_cache",
     "crates/php_diagnostics",
     "crates/php_executor",
     "crates/php_extensions",
@@ -71,3 +70,13 @@ incremental = false
 inherits = "release"
 debug = "line-tables-only"
 strip = false
+
+# Fast native-only real-application bring-up. This deliberately avoids LTO and
+# keeps incremental artifacts; canonical performance runs use `profiling` or
+# `release` instead.
+[profile.cutover]
+inherits = "dev"
+opt-level = 2
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256

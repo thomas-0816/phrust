@@ -2504,6 +2504,34 @@
           "module": "core"
         }
       ],
+      "name": "error_clear_last",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
+      "name": "error_get_last",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "core"
+        }
+      ],
       "name": "error_log",
       "visibility": "php"
     },
@@ -2645,6 +2673,20 @@
         }
       ],
       "name": "fgets",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "filesystem"
+        }
+      ],
+      "name": "file",
       "visibility": "php"
     },
     {
@@ -3527,6 +3569,20 @@
       "implementations": [
         {
           "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "ip2long",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
           "module": "core"
         }
       ],
@@ -3992,6 +4048,20 @@
         }
       ],
       "name": "log1p",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "sockets"
+        }
+      ],
+      "name": "long2ip",
       "visibility": "php"
     },
     {
@@ -5561,6 +5631,20 @@
         }
       ],
       "name": "stream_set_timeout",
+      "visibility": "php"
+    },
+    {
+      "arginfo": {
+        "extension": "standard",
+        "source": "ext/standard/basic_functions.stub.php"
+      },
+      "implementations": [
+        {
+          "kind": "runtime",
+          "module": "streams"
+        }
+      ],
+      "name": "stream_socket_server",
       "visibility": "php"
     },
     {

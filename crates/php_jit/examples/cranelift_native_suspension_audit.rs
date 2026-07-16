@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     markdown.push_str("| Resume implementation | generated native continuation entry |\n");
     markdown.push_str("| Invalidation | owning generation or safe-boundary transition |\n");
-    markdown.push_str("| Interpreter resume dispatch | forbidden |\n");
+    markdown.push_str("| Retired resume dispatcher | absent |\n");
     fs::write(output.join("native-suspensions.json"), json)?;
     fs::write(output.join("native-suspensions.md"), markdown)?;
     println!(

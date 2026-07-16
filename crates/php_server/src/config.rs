@@ -105,7 +105,6 @@ pub struct ObservabilityConfig {
     pub perf_trace_vm_counters: bool,
     pub request_profile: Option<PathBuf>,
     pub request_profile_vm_counters: bool,
-    pub request_profile_source_attribution: bool,
     pub request_profile_trigger_header: bool,
 }
 
@@ -309,9 +308,6 @@ impl ServerConfig {
         let mut request_profile_vm_counters = file_config
             .bool("request_profile_vm_counters")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_VM_COUNTERS"));
-        let mut request_profile_source_attribution = file_config
-            .bool("request_profile_source_attribution")?
-            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_SOURCE_ATTRIBUTION"));
         let mut request_profile_trigger_header = file_config
             .bool("request_profile_trigger_header")?
             .unwrap_or_else(|| {
@@ -458,7 +454,6 @@ impl ServerConfig {
                     request_profile = Some(PathBuf::from(required_value(&arg, &mut args)?))
                 }
                 "--request-profile-vm-counters" => request_profile_vm_counters = true,
-                "--request-profile-source-attribution" => request_profile_source_attribution = true,
                 "--request-profile-trigger-header" => request_profile_trigger_header = true,
                 "--enable-network-requests" => network_requests_enabled = true,
                 "--debug" => debug = true,
@@ -530,7 +525,6 @@ impl ServerConfig {
                 perf_trace_vm_counters,
                 request_profile,
                 request_profile_vm_counters,
-                request_profile_source_attribution,
                 request_profile_trigger_header,
             },
             sessions_uploads: SessionsUploadsConfig {
@@ -623,7 +617,6 @@ impl ServerConfig {
                 perf_trace_vm_counters: false,
                 request_profile: None,
                 request_profile_vm_counters: false,
-                request_profile_source_attribution: false,
                 request_profile_trigger_header: true,
             },
             sessions_uploads: SessionsUploadsConfig {
@@ -682,7 +675,6 @@ Options:\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
   --request-profile <dir>      write JSON request profiles for opted-in PHP requests\n\
   --request-profile-vm-counters  collect heavy VM counters for profiled requests\n\
-  --request-profile-source-attribution  collect per-clone source attribution (slow)\n\
   --request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1 (default)\n\
   --enable-network-requests    allow PHP cURL requests to external hosts\n\
   --debug                      emit structured server debug events to stderr\n\

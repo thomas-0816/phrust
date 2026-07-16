@@ -474,16 +474,10 @@ fn server_request_profile_alone_stays_in_summary_mode() {
     let profile: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
             .expect("parse profile json");
-    // A request profile alone must not pay VM hot counters or per-clone
-    // source attribution; it still records phase timings.
-    assert_eq!(
-        profile["attribution"]["vm_counters_collected"],
-        serde_json::Value::from(false)
-    );
-    assert_eq!(
-        profile["attribution"]["source_attribution_collected"],
-        serde_json::Value::from(false)
-    );
+    // A request profile alone must not pay native hot-counter overhead; it
+    // still records phase timings.
+    assert_eq!(profile["schema_version"], serde_json::Value::from(5));
+    assert_eq!(profile["native"], serde_json::json!({}));
     assert!(profile["phases_nanos"].is_object());
 
     fs::remove_dir_all(profile_dir).expect("remove profile dir");
@@ -526,7 +520,7 @@ fn server_request_profile_without_trigger_header_does_not_write_profile() {
 }
 
 #[test]
-fn server_request_profile_source_attribution_mode_collects_attribution() {
+fn server_request_profile_vm_counter_mode_collects_native_counters() {
     let docroot = temp_docroot();
     fs::write(
         docroot.join("lib.php"),
@@ -545,7 +539,7 @@ fn server_request_profile_source_attribution_mode_collects_attribution() {
         &[
             "--request-profile",
             &profile_arg,
-            "--request-profile-source-attribution",
+            "--request-profile-vm-counters",
         ],
     );
 
@@ -573,62 +567,81 @@ fn server_request_profile_source_attribution_mode_collects_attribution() {
     let profile: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
             .expect("parse profile json");
-    assert_eq!(profile["schema_version"], serde_json::Value::from(2));
-    assert_eq!(
-        profile["attribution"]["vm_counters_collected"],
-        serde_json::Value::from(true)
-    );
-    assert!(profile["attribution"]["calls"].is_object());
-    assert!(profile["attribution"]["arrays"].is_object());
-    assert!(profile["attribution"]["objects"].is_object());
-    assert!(profile["attribution"]["clones"].is_object());
-    assert!(profile["attribution"]["output"].is_object());
-    assert_named_profile_contains(
-        &profile["attribution"]["includes"]["include_profiles_by_path"],
-        "lib.php",
-    );
-    assert_named_profile_contains(
-        &profile["attribution"]["calls"]["function_profiles_by_name"],
-        "profile_helper",
-    );
-    assert_named_profile_contains(
-        &profile["attribution"]["calls"]["method_profiles_by_name"],
-        "ProfileThing::name",
-    );
-    assert_named_profile_contains(
-        &profile["attribution"]["calls"]["builtin_profiles_by_name"],
-        "strtoupper",
-    );
-    assert_operation_profile_contains(
-        &profile["attribution"]["arrays"]["operation_profiles_by_family"],
-        "dim_fetch",
-    );
-    assert_operation_profile_contains(
-        &profile["attribution"]["objects"]["operation_profiles_by_family"],
-        "property_fetch",
-    );
-    assert_operation_profile_contains(
-        &profile["attribution"]["output"]["operation_profiles_by_family"],
-        "echo",
-    );
-    assert_operation_profile_contains(
-        &profile["attribution"]["output"]["operation_profiles_by_family"],
-        "output_buffer_builtin",
-    );
+    assert_eq!(profile["schema_version"], serde_json::Value::from(5));
     assert!(
-        profile["attribution"]["calls"]["direct_call_source_reads"]
+        profile["native"]["execution_entries"]
             .as_u64()
             .is_some_and(|count| count > 0),
-        "direct caller-source binding must be visible in the request profile: {profile}"
+        "native execution must be visible in the request profile: {profile}"
+    );
+    for counter in [
+        "compile_successes",
+        "compile_time_nanos",
+        "cache_hits",
+        "cache_misses",
+        "cache_compile_waits",
+        "cache_evictions",
+        "region_side_exits",
+        "runtime_helper_calls",
+        "runtime_helper_time_nanos",
+        "execution_time_nanos",
+        "call_direct",
+        "call_dynamic",
+        "transition_count",
+        "transition_time_nanos",
+        "runtime_helper_object_release_fast_paths",
+        "runtime_helper_object_release_root_scans",
+        "versions_published",
+    ] {
+        assert!(
+            profile["native"][counter].is_u64(),
+            "native counter {counter} must be present: {profile}"
+        );
+    }
+    for counter in [
+        "runtime_helper_calls_by_id",
+        "runtime_helper_time_nanos_by_id",
+        "transition_by_reason",
+        "transition_time_nanos_by_reason",
+    ] {
+        assert!(
+            profile["native"][counter].is_object(),
+            "native counter {counter} must be present: {profile}"
+        );
+    }
+    let helper_calls = profile["native"]["runtime_helper_calls"]
+        .as_u64()
+        .expect("runtime helper call total");
+    let helper_call_sum = profile["native"]["runtime_helper_calls_by_id"]
+        .as_object()
+        .expect("runtime helper call breakdown")
+        .values()
+        .map(|value| value.as_u64().expect("runtime helper count"))
+        .sum::<u64>();
+    assert!(
+        helper_calls > 0,
+        "fixture must cross native helpers: {profile}"
     );
     assert_eq!(
-        profile["attribution"]["calls"]["direct_call_owned_value_buffers"],
-        serde_json::Value::from(0),
-        "eligible direct calls must not materialize owned value buffers"
+        helper_calls, helper_call_sum,
+        "helper count totals: {profile}"
     );
-    assert_counter_profile_contains(
-        &profile["attribution"]["clones"]["value_clone_by_reason"],
-        "call_argument_snapshot",
+    let helper_time = profile["native"]["runtime_helper_time_nanos"]
+        .as_u64()
+        .expect("runtime helper time total");
+    let helper_time_sum = profile["native"]["runtime_helper_time_nanos_by_id"]
+        .as_object()
+        .expect("runtime helper time breakdown")
+        .values()
+        .map(|value| value.as_u64().expect("runtime helper time"))
+        .sum::<u64>();
+    assert!(
+        helper_time > 0,
+        "fixture must measure native helpers: {profile}"
+    );
+    assert_eq!(
+        helper_time, helper_time_sum,
+        "helper time totals: {profile}"
     );
 
     fs::remove_dir_all(profile_dir).expect("remove profile dir");
@@ -932,6 +945,26 @@ fn server_execution_deadline_leaves_short_script_unaffected() {
 }
 
 #[test]
+fn server_set_time_limit_zero_disables_mutable_native_deadline() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("deadline-reset.php"),
+        "<?php set_time_limit(0); $i = 0; while ($i < 5) { usleep(1000); $i++; } echo \"done\\n\";\n",
+    )
+    .expect("write deadline reset fixture");
+    let mut child = start_server(&docroot, &["--max-execution-ms", "1"]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/deadline-reset.php");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(response_body(&response), "done\n");
+}
+
+#[test]
 fn server_reports_disabled_execution_deadline_metric() {
     let docroot = temp_docroot();
     fs::write(docroot.join("short.php"), "<?php echo \"short\\n\";\n")
@@ -965,6 +998,22 @@ fn server_applies_php_response_header() {
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert_response_contains_header(&response, "x-test", "yes");
     assert!(response.ends_with("ok\n"), "{response}");
+}
+
+#[test]
+fn server_preserves_php_response_state_from_included_script() {
+    let docroot = fixture_docroot("fixtures/server/php");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/include_header.php");
+
+    stop_child(child);
+
+    assert!(response.starts_with("HTTP/1.1 302 Found"), "{response}");
+    assert_response_contains_header(&response, "location", "/included-next");
+    assert_response_contains_header(&response, "x-include-state", "preserved");
+    assert!(response.ends_with("included\n"), "{response}");
 }
 
 #[test]
@@ -2211,80 +2260,6 @@ fn response_header_values<'a>(response: &'a str, expected_name: &str) -> Vec<&'a
 
 fn response_body(response: &str) -> &str {
     response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
-}
-
-fn assert_named_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
-    let entry = find_profile_entry(profiles, expected_name_fragment);
-    assert_profile_count_and_inclusive_nanos(entry);
-    let exclusive = entry
-        .get("exclusive_nanos")
-        .and_then(serde_json::Value::as_u64)
-        .expect("profile exclusive_nanos");
-    let inclusive = entry
-        .get("inclusive_nanos")
-        .and_then(serde_json::Value::as_u64)
-        .expect("profile inclusive_nanos");
-    assert!(
-        exclusive <= inclusive,
-        "profile exclusive_nanos should not exceed inclusive_nanos: {entry}"
-    );
-    assert!(
-        entry.get("inclusive_work").is_some() && entry.get("exclusive_work").is_some(),
-        "profile inclusive/exclusive work should be present: {entry}"
-    );
-}
-
-fn assert_operation_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
-    let entry = find_profile_entry(profiles, expected_name_fragment);
-    assert_profile_count_and_inclusive_nanos(entry);
-    assert_eq!(
-        entry.get("accounting").and_then(serde_json::Value::as_str),
-        Some("secondary_overlapping_inclusive")
-    );
-}
-
-fn assert_counter_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
-    let entry = find_profile_entry(profiles, expected_name_fragment);
-    let count = entry
-        .get("count")
-        .and_then(serde_json::Value::as_u64)
-        .expect("profile count");
-    assert!(count > 0, "profile count should be positive: {entry}");
-}
-
-fn find_profile_entry<'a>(
-    profiles: &'a serde_json::Value,
-    expected_name_fragment: &str,
-) -> &'a serde_json::Value {
-    let entries = profiles.as_array().expect("profile entries array");
-    let Some(entry) = entries.iter().find(|entry| {
-        entry
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|name| name.contains(expected_name_fragment))
-    }) else {
-        panic!("missing profile entry containing {expected_name_fragment}: {profiles}");
-    };
-    entry
-}
-
-fn assert_profile_count_and_inclusive_nanos(entry: &serde_json::Value) {
-    assert!(
-        entry
-            .get("count")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-            > 0,
-        "profile count should be nonzero: {entry}"
-    );
-    assert!(
-        entry
-            .get("inclusive_nanos")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-            > 0,
-        "profile inclusive_nanos should be nonzero: {entry}"
-    );
 }
 
 fn header_line_matches(line: &str, expected_name: &str, expected_value: &str) -> bool {

@@ -32,7 +32,7 @@
 
 ## Verification
 
-- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR=/private/tmp/phrust-phpt-xmlreader-selected-expand-rerun nix develop -c just phpt-dev-module MODULE=xmlreader`
+- `REFERENCE_PHP="$PWD/third_party/php-src/sapi/cli/php" PHP_SRC_DIR="$PWD/third_party/php-src" PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR="$PWD/target/phpt-work/xmlreader-selected" nix develop -c just phpt-dev-module MODULE=xmlreader`
   - Reference: PASS 5, non-green 0.
   - Target: PASS 5, non-green 0.
 - `nix develop -c cargo test -q -p php_runtime xml::tests`

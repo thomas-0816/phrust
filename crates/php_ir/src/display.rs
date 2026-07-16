@@ -285,6 +285,7 @@ fn format_constant(constant: &IrConstant) -> String {
         IrConstant::NamedConstant(name) => format!("const {name}"),
         IrConstant::ClassConstant {
             class_name,
+            display_class_name: _,
             constant_name,
         } => format!("class_const {class_name}::{constant_name}"),
         IrConstant::Array(entries) => {
@@ -427,9 +428,21 @@ fn format_instruction(kind: &InstructionKind) -> String {
         InstructionKind::LoadConst { dst, constant } => {
             format!("load_const r{} const:{}", dst.raw(), constant.raw())
         }
-        InstructionKind::FetchConst { dst, name } => {
-            format!("fetch_const r{} {:?}", dst.raw(), name)
-        }
+        InstructionKind::FetchConst {
+            dst,
+            name,
+            fallback,
+        } => fallback.as_ref().map_or_else(
+            || format!("fetch_const r{} {:?}", dst.raw(), name),
+            |fallback| {
+                format!(
+                    "fetch_const r{} {:?} fallback {:?}",
+                    dst.raw(),
+                    name,
+                    fallback
+                )
+            },
+        ),
         InstructionKind::RegisterConstant { name, value } => {
             format!("register_constant {:?} {}", name, format_operand(value))
         }
@@ -1457,6 +1470,7 @@ mod tests {
             InstructionKind::FetchConst {
                 dst: RegId::new(0),
                 name: "ANSWER".to_string(),
+                fallback: None,
             },
             InstructionKind::DeclareFunction {
                 name: "runtime_declared".to_string(),

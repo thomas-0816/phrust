@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ABI = ROOT / "crates/php_jit/src/abi.rs"
@@ -32,9 +34,9 @@ def main() -> int:
     failures: list[str] = []
     abi = ABI.read_text(encoding="utf-8")
     region = REGION.read_text(encoding="utf-8")
-    lowering = LOWERING.read_text(encoding="utf-8")
+    lowering = read_rust_module(LOWERING)
     coordinator = COORDINATOR.read_text(encoding="utf-8")
-    vm_abi = VM_ABI.read_text(encoding="utf-8")
+    vm_abi = read_rust_module(VM_ABI)
 
     for required in (
         "JitNativeDynamicCodeKind",
@@ -68,7 +70,7 @@ def main() -> int:
     if "jit_native_dynamic_code_abi" not in vm_abi:
         failures.append("VM does not publish native dynamic-code ABI")
     forbidden = re.compile(
-        "execute_" + "dense|rich_" + "dispatch|execute_" + "ir|execute_instruction"
+        "execute_" + "dense|rich_" + "dispatch|execute_" + "ir|execute_" + "instruction"
     )
     if forbidden.search(lowering + coordinator):
         failures.append("native dynamic-code compiler references an instruction executor")

@@ -13,10 +13,6 @@ diagnostics:
   - id: E_PHP_INCOMPATIBLE_MODIFIERS
     severity: error
     phase: modifier_validation
-    span: 114..119
-  - id: E_PHP_INCOMPATIBLE_MODIFIERS
-    severity: error
-    phase: modifier_validation
     span: 166..174
 symbols:
   - class PropertyInvalid

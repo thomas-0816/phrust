@@ -32,6 +32,7 @@ pub struct VmCounters {
     pub native_cache_rebuilds: u64,
     pub native_cache_invalid_artifacts: u64,
     pub native_cache_compile_waits: u64,
+    pub native_cache_evictions: u64,
     pub native_cache_bytes_loaded: u64,
     pub native_cache_bytes_written: u64,
 
@@ -46,8 +47,14 @@ pub struct VmCounters {
     pub native_version_retired: u64,
     pub native_transition_count: u64,
     pub native_transition_by_reason: BTreeMap<String, u64>,
+    pub native_transition_time_nanos: u64,
+    pub native_transition_time_nanos_by_reason: BTreeMap<String, u64>,
     pub runtime_helper_calls: u64,
     pub runtime_helper_calls_by_id: BTreeMap<String, u64>,
+    pub runtime_helper_time_nanos: u64,
+    pub runtime_helper_time_nanos_by_id: BTreeMap<String, u64>,
+    pub runtime_helper_object_release_fast_paths: u64,
+    pub runtime_helper_object_release_root_scans: u64,
     pub gc_safepoint_polls: u64,
     pub gc_safepoint_collections: u64,
 }
@@ -58,7 +65,7 @@ impl VmCounters {
         format!(
             concat!(
                 "{{\n",
-                "  \"schema_version\": 4,\n",
+                "  \"schema_version\": 6,\n",
                 "  \"native_compile_attempts\": {},\n",
                 "  \"native_compile_successes\": {},\n",
                 "  \"native_compile_failures\": {},\n",
@@ -69,16 +76,29 @@ impl VmCounters {
                 "  \"native_cache_writes\": {},\n",
                 "  \"native_cache_rebuilds\": {},\n",
                 "  \"native_cache_invalid_artifacts\": {},\n",
+                "  \"native_cache_compile_waits\": {},\n",
+                "  \"native_cache_evictions\": {},\n",
+                "  \"native_cache_bytes_loaded\": {},\n",
+                "  \"native_cache_bytes_written\": {},\n",
                 "  \"native_execution_entries\": {},\n",
                 "  \"native_execution_time_nanos\": {},\n",
                 "  \"native_region_entries\": {},\n",
                 "  \"native_region_side_exits\": {},\n",
+                "  \"native_region_side_exits_by_reason\": {},\n",
                 "  \"native_call_direct\": {},\n",
                 "  \"native_call_dynamic\": {},\n",
                 "  \"native_version_published\": {},\n",
                 "  \"native_version_retired\": {},\n",
                 "  \"native_transition_count\": {},\n",
+                "  \"native_transition_by_reason\": {},\n",
+                "  \"native_transition_time_nanos\": {},\n",
+                "  \"native_transition_time_nanos_by_reason\": {},\n",
                 "  \"runtime_helper_calls\": {},\n",
+                "  \"runtime_helper_calls_by_id\": {},\n",
+                "  \"runtime_helper_time_nanos\": {},\n",
+                "  \"runtime_helper_time_nanos_by_id\": {},\n",
+                "  \"runtime_helper_object_release_fast_paths\": {},\n",
+                "  \"runtime_helper_object_release_root_scans\": {},\n",
                 "  \"gc_safepoint_polls\": {},\n",
                 "  \"gc_safepoint_collections\": {}\n",
                 "}}\n"
@@ -93,20 +113,61 @@ impl VmCounters {
             self.native_cache_writes,
             self.native_cache_rebuilds,
             self.native_cache_invalid_artifacts,
+            self.native_cache_compile_waits,
+            self.native_cache_evictions,
+            self.native_cache_bytes_loaded,
+            self.native_cache_bytes_written,
             self.native_execution_entries,
             self.native_execution_time_nanos,
             self.native_region_entries,
             self.native_region_side_exits,
+            counter_map_json(&self.native_region_side_exits_by_reason),
             self.native_call_direct,
             self.native_call_dynamic,
             self.native_version_published,
             self.native_version_retired,
             self.native_transition_count,
+            counter_map_json(&self.native_transition_by_reason),
+            self.native_transition_time_nanos,
+            counter_map_json(&self.native_transition_time_nanos_by_reason),
             self.runtime_helper_calls,
+            counter_map_json(&self.runtime_helper_calls_by_id),
+            self.runtime_helper_time_nanos,
+            counter_map_json(&self.runtime_helper_time_nanos_by_id),
+            self.runtime_helper_object_release_fast_paths,
+            self.runtime_helper_object_release_root_scans,
             self.gc_safepoint_polls,
             self.gc_safepoint_collections,
         )
     }
+}
+
+fn counter_map_json(values: &BTreeMap<String, u64>) -> String {
+    let entries = values
+        .iter()
+        .map(|(name, value)| format!("\"{}\":{value}", json_escape(name)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{entries}}}")
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(escaped, "\\u{:04x}", character as u32);
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]
@@ -129,5 +190,28 @@ mod tests {
         ] {
             assert!(json.contains(family), "missing {family}: {json}");
         }
+    }
+
+    #[test]
+    fn counter_json_serializes_helper_breakdowns() {
+        let mut counters = VmCounters {
+            runtime_helper_calls: 2,
+            runtime_helper_time_nanos: 17,
+            ..VmCounters::default()
+        };
+        counters
+            .runtime_helper_calls_by_id
+            .insert("native_\"binary\"".to_owned(), 2);
+        counters
+            .runtime_helper_time_nanos_by_id
+            .insert("native_\"binary\"".to_owned(), 17);
+
+        let parsed: serde_json::Value = serde_json::from_str(&counters.to_json()).unwrap();
+        assert_eq!(parsed["schema_version"], 6);
+        assert_eq!(parsed["runtime_helper_calls_by_id"]["native_\"binary\""], 2);
+        assert_eq!(
+            parsed["runtime_helper_time_nanos_by_id"]["native_\"binary\""],
+            17
+        );
     }
 }

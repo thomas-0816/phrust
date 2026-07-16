@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ABI = ROOT / "crates/php_jit/src/abi.rs"
@@ -34,7 +36,7 @@ def main() -> int:
     failures: list[str] = []
     abi = ABI.read_text(encoding="utf-8")
     region = REGION.read_text(encoding="utf-8")
-    lowering = LOWERING.read_text(encoding="utf-8")
+    lowering = read_rust_module(LOWERING)
     metadata = METADATA.read_text(encoding="utf-8")
 
     for required in (

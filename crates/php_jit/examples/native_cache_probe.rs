@@ -1,5 +1,5 @@
 use php_ir::builder::IrBuilder;
-use php_ir::{FunctionFlags, InstructionKind, IrConstant, IrReturnType, IrSpan, Operand, UnitId};
+use php_ir::{FunctionFlags, InstructionKind, IrConstant, IrSpan, Operand, UnitId};
 use php_jit::{
     JIT_HELPER_REGISTRY_ABI_HASH, JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus,
     JitEngine, NativeArtifactCache, NativeArtifactImage, NativeCacheConfig, NativeCacheIdentity,
@@ -60,10 +60,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     code_offset: 0,
                     code_len: code.len() as u64,
                     arity: 0,
-                    abi: NativeFunctionAbi::I64StatusOut,
+                    abi: NativeFunctionAbi::PackedI64StatusOut,
                 },
             );
             if let Some(metadata) = handle.region_state_metadata() {
+                let mut seen = std::collections::BTreeSet::new();
                 image.continuations = metadata
                     .native_pc_ranges
                     .iter()
@@ -73,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         code_offset: u64::from(range.start),
                     })
                     .filter(|entry| entry.code_offset < image.code.len() as u64)
+                    .filter(|entry| seen.insert((entry.function_id, entry.continuation_id)))
                     .collect();
             }
             Ok(image)
@@ -105,7 +107,6 @@ fn probe_unit() -> php_ir::IrUnit {
     let span = IrSpan::new(file, 0, 18);
     let constant = builder.intern_constant(IrConstant::Int(42));
     let function = builder.start_function("main", FunctionFlags::default(), span);
-    builder.set_return_type(function, Some(IrReturnType::Int));
     let block = builder.append_block(function);
     let value = builder.alloc_register(function);
     builder.emit(

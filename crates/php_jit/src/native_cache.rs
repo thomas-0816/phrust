@@ -1,7 +1,7 @@
 //! Restart-persistent validated native machine-code artifacts.
 
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -196,12 +196,14 @@ pub struct NativeFunctionImage {
 #[repr(u8)]
 pub enum NativeFunctionAbi {
     I64StatusOut = 1,
+    PackedI64StatusOut = 2,
 }
 
 impl NativeFunctionAbi {
     fn from_raw(raw: u8) -> Result<Self, NativeCacheError> {
         match raw {
             1 => Ok(Self::I64StatusOut),
+            2 => Ok(Self::PackedI64StatusOut),
             _ => Err(NativeCacheError::InvalidHeader(format!(
                 "unknown native function ABI {raw}"
             ))),
@@ -316,6 +318,20 @@ pub struct NativeArtifactImage {
     pub signature_metadata: Vec<u8>,
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CachedRegionMetadataEnvelope {
+    format: String,
+    entries: Vec<CachedRegionMetadataEntry>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CachedRegionMetadataEntry {
+    function_id: u32,
+    metadata: crate::JitRegionStateMetadata,
+}
+
 impl NativeArtifactImage {
     #[must_use]
     pub fn minimal(
@@ -343,6 +359,313 @@ impl NativeArtifactImage {
             signature_metadata: Vec::new(),
         }
     }
+
+    /// Builds one PNA1 image from the exact machine code retained by the
+    /// production Cranelift compilation records.
+    ///
+    /// AMD64 helper calls are routed through artifact-local trampolines. The
+    /// trampoline's immediate is an `Abs64` helper relocation resolved by the
+    /// loader, so no process address is persisted and the original `call
+    /// rel32` remains in range even when the RX mapping is far from the host
+    /// executable.
+    pub fn from_compile_records(
+        identity: NativeCacheIdentity,
+        records: &[crate::JitUnitCompileRecord],
+    ) -> Result<Self, NativeCacheError> {
+        if !identity.target_triple.contains("x86_64") {
+            return Err(NativeCacheError::UnsupportedPlatform);
+        }
+
+        enum PendingTarget {
+            Internal(u32),
+            Helper(String),
+        }
+        struct PendingRelocation {
+            offset: u64,
+            kind: NativeRelocationKind,
+            target: PendingTarget,
+            addend: i64,
+        }
+
+        let mut code = Vec::new();
+        let mut functions = Vec::new();
+        let mut internal_symbols = Vec::new();
+        let mut pending_relocations = Vec::new();
+        let mut helper_names = BTreeSet::new();
+        let mut cached_metadata = Vec::new();
+        let mut emitted_graphs = BTreeMap::<usize, (u64, BTreeMap<php_ir::FunctionId, u32>)>::new();
+        let mut emitted_symbol_ids = BTreeSet::new();
+        let mut next_symbol_id = records
+            .iter()
+            .map(|record| record.function.raw())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| NativeCacheError::SizeLimit {
+                what: "internal symbol count",
+                actual: u64::from(u32::MAX),
+                limit: u64::from(u32::MAX - 1),
+            })?;
+
+        for record in records {
+            let handle = record.result.handle.as_ref().ok_or_else(|| {
+                NativeCacheError::InvalidHeader(format!(
+                    "function {} has no native handle",
+                    record.function.raw()
+                ))
+            })?;
+            let relocatable = handle.relocatable_code().ok_or_else(|| {
+                NativeCacheError::InvalidRelocation(format!(
+                    "function {} has no relocation-aware machine-code image",
+                    record.function.raw()
+                ))
+            })?;
+            let mut metadata = handle.region_state_metadata().cloned().ok_or_else(|| {
+                NativeCacheError::InvalidHeader(format!(
+                    "function {} has no native state metadata",
+                    record.function.raw()
+                ))
+            })?;
+            for entry in &mut metadata.function_entries {
+                // PNA1 never persists process addresses. They are rebound to
+                // validated function entries after the RX mapping is created.
+                entry.address = 0;
+            }
+            cached_metadata.push(CachedRegionMetadataEntry {
+                function_id: record.function.raw(),
+                metadata,
+            });
+            let graph_key = relocatable as *const crate::JitRelocatableCode as usize;
+            let (graph_offset, _graph_symbols) =
+                if let Some((offset, symbols)) = emitted_graphs.get(&graph_key) {
+                    (*offset, symbols.clone())
+                } else {
+                    align_vec(&mut code, 16);
+                    let graph_offset = code.len() as u64;
+                    code.extend_from_slice(&relocatable.code);
+
+                    let mut graph_symbols = BTreeMap::new();
+                    for function in &relocatable.functions {
+                        let stable_id = if function.function == record.function {
+                            record.function.raw()
+                        } else {
+                            let stable_id = next_symbol_id;
+                            next_symbol_id = next_symbol_id.checked_add(1).ok_or_else(|| {
+                                NativeCacheError::SizeLimit {
+                                    what: "internal symbol count",
+                                    actual: u64::from(u32::MAX),
+                                    limit: u64::from(u32::MAX - 1),
+                                }
+                            })?;
+                            stable_id
+                        };
+                        graph_symbols.insert(function.function, stable_id);
+                        emitted_symbol_ids.insert(stable_id);
+                        internal_symbols.push(NativeSymbol {
+                            stable_id,
+                            code_offset: graph_offset.saturating_add(function.code_offset),
+                        });
+                    }
+
+                    for relocation in &relocatable.relocations {
+                        let kind = match relocation.kind {
+                            crate::JitRelocatableKind::Abs64 => NativeRelocationKind::Abs64,
+                            crate::JitRelocatableKind::X86PcRel4 => NativeRelocationKind::X86PcRel4,
+                            crate::JitRelocatableKind::X86CallPcRel4 => {
+                                NativeRelocationKind::X86CallPcRel4
+                            }
+                            crate::JitRelocatableKind::Arm64Call => {
+                                return Err(NativeCacheError::InvalidRelocation(
+                                    "Arm64 relocation in an AMD64 cache image".to_owned(),
+                                ));
+                            }
+                        };
+                        let target = match &relocation.target {
+                            crate::JitRelocatableTarget::InternalFunction(function) => {
+                                let stable_id =
+                                    graph_symbols.get(function).copied().ok_or_else(|| {
+                                        NativeCacheError::UnknownInternalSymbol(function.raw())
+                                    })?;
+                                PendingTarget::Internal(stable_id)
+                            }
+                            crate::JitRelocatableTarget::Helper(name) => {
+                                helper_names.insert(name.clone());
+                                PendingTarget::Helper(name.clone())
+                            }
+                        };
+                        pending_relocations.push(PendingRelocation {
+                            offset: graph_offset.saturating_add(relocation.offset),
+                            kind,
+                            target,
+                            addend: relocation.addend,
+                        });
+                    }
+                    emitted_graphs.insert(graph_key, (graph_offset, graph_symbols.clone()));
+                    (graph_offset, graph_symbols)
+                };
+
+            let root = relocatable
+                .functions
+                .iter()
+                .find(|function| function.function == record.function)
+                .or_else(|| {
+                    relocatable
+                        .functions
+                        .iter()
+                        .find(|function| function.function == relocatable.root)
+                })
+                .ok_or_else(|| {
+                    NativeCacheError::InvalidHeader(format!(
+                        "function {} is absent from its relocatable graph",
+                        record.function.raw()
+                    ))
+                })?;
+            functions.push(NativeFunctionImage {
+                function_id: record.function.raw(),
+                code_offset: graph_offset.saturating_add(root.code_offset),
+                code_len: root.code_len,
+                arity: root.arity,
+                abi: NativeFunctionAbi::PackedI64StatusOut,
+            });
+            if !emitted_symbol_ids.contains(&record.function.raw()) {
+                emitted_symbol_ids.insert(record.function.raw());
+                internal_symbols.push(NativeSymbol {
+                    stable_id: record.function.raw(),
+                    code_offset: graph_offset.saturating_add(root.code_offset),
+                });
+            }
+        }
+
+        let mut helper_imports = Vec::new();
+        let mut helper_stubs = BTreeMap::new();
+        for name in helper_names {
+            let helper = crate::lookup_helper_by_name(&name).ok_or_else(|| {
+                NativeCacheError::InvalidRelocation(format!(
+                    "Cranelift imported unregistered helper `{name}`"
+                ))
+            })?;
+            helper_imports.push(NativeHelperImport {
+                stable_id: helper.id.0,
+                name: name.clone(),
+            });
+            align_vec(&mut code, 16);
+            let code_offset = code.len() as u64;
+            // movabs rax, <helper>; jmp rax
+            code.extend_from_slice(&[0x48, 0xb8]);
+            code.extend_from_slice(&0_u64.to_le_bytes());
+            code.extend_from_slice(&[0xff, 0xe0]);
+            let stable_id = next_symbol_id;
+            next_symbol_id =
+                next_symbol_id
+                    .checked_add(1)
+                    .ok_or_else(|| NativeCacheError::SizeLimit {
+                        what: "internal symbol count",
+                        actual: u64::from(u32::MAX),
+                        limit: u64::from(u32::MAX - 1),
+                    })?;
+            internal_symbols.push(NativeSymbol {
+                stable_id,
+                code_offset,
+            });
+            helper_stubs.insert(name, (stable_id, helper.id.0, code_offset + 2));
+        }
+
+        let mut relocations = helper_stubs
+            .values()
+            .map(|(_, helper_id, immediate_offset)| NativeRelocation {
+                offset: *immediate_offset,
+                kind: NativeRelocationKind::Abs64,
+                target: NativeRelocationTarget::Helper(*helper_id),
+                addend: 0,
+            })
+            .collect::<Vec<_>>();
+        for relocation in pending_relocations {
+            let target = match relocation.target {
+                PendingTarget::Internal(stable_id) => {
+                    NativeRelocationTarget::InternalSymbol(stable_id)
+                }
+                PendingTarget::Helper(name) => {
+                    let (stub_id, _, _) = helper_stubs[&name];
+                    NativeRelocationTarget::InternalSymbol(stub_id)
+                }
+            };
+            relocations.push(NativeRelocation {
+                offset: relocation.offset,
+                kind: relocation.kind,
+                target,
+                addend: relocation.addend,
+            });
+        }
+        relocations.sort_by_key(|relocation| relocation.offset);
+
+        let signature_metadata = serde_json::to_vec(&CachedRegionMetadataEnvelope {
+            format: "PRM3".to_owned(),
+            entries: cached_metadata,
+        })
+        .map_err(|error| {
+            NativeCacheError::InvalidSection(format!(
+                "failed to encode native state metadata: {error}"
+            ))
+        })?;
+
+        Ok(Self {
+            identity,
+            code,
+            read_only_data: Vec::new(),
+            functions,
+            continuations: Vec::new(),
+            relocations,
+            helper_imports,
+            internal_symbols,
+            traps: Vec::new(),
+            root_maps: Vec::new(),
+            resume_entries: Vec::new(),
+            exception_metadata: Vec::new(),
+            signature_metadata,
+        })
+    }
+}
+
+fn align_vec(bytes: &mut Vec<u8>, alignment: usize) {
+    let padding = (alignment - bytes.len() % alignment) % alignment;
+    bytes.resize(bytes.len().saturating_add(padding), 0);
+}
+
+fn decode_region_metadata(
+    bytes: &[u8],
+) -> Result<BTreeMap<u32, crate::JitRegionStateMetadata>, NativeCacheError> {
+    if bytes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let envelope =
+        serde_json::from_slice::<CachedRegionMetadataEnvelope>(bytes).map_err(|error| {
+            NativeCacheError::InvalidSection(format!("invalid native state metadata: {error}"))
+        })?;
+    if envelope.format != "PRM3" {
+        return Err(NativeCacheError::InvalidSection(
+            "unsupported native state metadata format".to_owned(),
+        ));
+    }
+    let mut metadata = BTreeMap::new();
+    for entry in envelope.entries {
+        if entry
+            .metadata
+            .function_entries
+            .iter()
+            .any(|function| function.address != 0)
+        {
+            return Err(NativeCacheError::InvalidSection(
+                "native state metadata contains a persisted process address".to_owned(),
+            ));
+        }
+        if metadata.insert(entry.function_id, entry.metadata).is_some() {
+            return Err(NativeCacheError::InvalidSection(format!(
+                "duplicate native state metadata for function {}",
+                entry.function_id
+            )));
+        }
+    }
+    Ok(metadata)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -673,6 +996,7 @@ impl NativeArtifactCache {
 pub struct NativeLoadedArtifact {
     image: NativeArtifactImage,
     mapping: ExecutableMapping,
+    region_metadata: BTreeMap<u32, crate::JitRegionStateMetadata>,
 }
 
 impl fmt::Debug for NativeLoadedArtifact {
@@ -690,16 +1014,46 @@ impl NativeLoadedArtifact {
         image: NativeArtifactImage,
         resolve_helper: &impl Fn(u32) -> Option<usize>,
     ) -> Result<Self, NativeCacheError> {
+        let mut region_metadata = decode_region_metadata(&image.signature_metadata)?;
         let mut mapping = ExecutableMapping::new(image.code.len())?;
         mapping.bytes_mut()[..image.code.len()].copy_from_slice(&image.code);
         apply_relocations(&mut mapping, &image, resolve_helper)?;
         mapping.make_executable()?;
-        Ok(Self { image, mapping })
+        for metadata in region_metadata.values_mut() {
+            for function_entry in &mut metadata.function_entries {
+                let function = image
+                    .functions
+                    .iter()
+                    .find(|function| function.function_id == function_entry.function.raw())
+                    .ok_or(NativeCacheError::UnknownInternalSymbol(
+                        function_entry.function.raw(),
+                    ))?;
+                function_entry.address = mapping
+                    .address
+                    .checked_add(function.code_offset as usize)
+                    .ok_or_else(|| {
+                        NativeCacheError::InvalidSection(
+                            "cached function address overflow".to_owned(),
+                        )
+                    })?;
+            }
+        }
+        Ok(Self {
+            image,
+            mapping,
+            region_metadata,
+        })
     }
 
     #[must_use]
     pub fn image(&self) -> &NativeArtifactImage {
         &self.image
+    }
+
+    /// Returns the address-rebound state metadata for one cached root.
+    #[must_use]
+    pub fn region_metadata(&self, function_id: u32) -> Option<&crate::JitRegionStateMetadata> {
+        self.region_metadata.get(&function_id)
     }
 
     pub fn entry_address(&self, function_id: u32) -> Result<usize, NativeCacheError> {
@@ -727,7 +1081,10 @@ impl NativeLoadedArtifact {
                 "cache probe supports only zero-arity entries".to_owned(),
             ));
         }
-        if function.abi != NativeFunctionAbi::I64StatusOut {
+        if !matches!(
+            function.abi,
+            NativeFunctionAbi::I64StatusOut | NativeFunctionAbi::PackedI64StatusOut
+        ) {
             return Err(NativeCacheError::InvalidHeader(
                 "cached entry does not use the status/out ABI".to_owned(),
             ));
@@ -738,13 +1095,33 @@ impl NativeLoadedArtifact {
         // SAFETY: PNA validation proved the entry range and signature metadata;
         // the mapping was writable only before its RX transition.
         let status = unsafe {
-            let entry: extern "C" fn(
-                *mut i64,
-                *mut crate::JitDeoptState,
-                i32,
-                *const crate::JitDeoptState,
-            ) -> i32 = std::mem::transmute(address);
-            entry(&mut out, &mut state, -1, std::ptr::null())
+            match function.abi {
+                NativeFunctionAbi::I64StatusOut => {
+                    let entry: extern "C" fn(
+                        *mut i64,
+                        *mut crate::JitDeoptState,
+                        i32,
+                        *const crate::JitDeoptState,
+                    ) -> i32 = std::mem::transmute(address);
+                    entry(&mut out, &mut state, -1, std::ptr::null())
+                }
+                NativeFunctionAbi::PackedI64StatusOut => {
+                    let entry: extern "C" fn(
+                        *const i64,
+                        *mut i64,
+                        *mut crate::JitDeoptState,
+                        i32,
+                        *const crate::JitDeoptState,
+                    ) -> i32 = std::mem::transmute(address);
+                    entry(
+                        std::ptr::NonNull::<i64>::dangling().as_ptr(),
+                        &mut out,
+                        &mut state,
+                        -1,
+                        std::ptr::null(),
+                    )
+                }
+            }
         };
         if status == crate::JitCallStatus::RETURN.0 as i32 {
             Ok(out)

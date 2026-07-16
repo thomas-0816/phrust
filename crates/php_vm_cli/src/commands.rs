@@ -8,7 +8,7 @@ use php_executor::{
 };
 use php_optimizer::OptimizationLevel;
 use php_runtime::api::RuntimeContext;
-use php_vm::api::NativeCacheMode;
+use php_vm::api::{NativeCacheMode, NativeOptimizationPolicy, Vm, VmOptions};
 use serde_json::json;
 use std::env;
 use std::fs;
@@ -91,6 +91,7 @@ where
     match args[0].as_str() {
         "run" => run_command(&args[1..], stdin, stdin_is_terminal, stdout, stderr),
         "compile" => compile_command(&args[1..], stdout, stderr),
+        "native-compile" => native_compile_command(&args[1..], stdout, stderr),
         "dump-ir" => dump_ir_command(&args[1..], stdout, stderr),
         command => Err(format!("unknown php-vm command `{command}`")),
     }
@@ -163,10 +164,6 @@ fn parse_run_options(args: &[String]) -> Result<NativeRunOptions, String> {
             "--trace" => options.trace = true,
             "--trace-runtime" => options.trace_runtime = true,
             "--trace-includes" => options.trace_includes = true,
-            "--debug" => {}
-            "--debug-log" | "--error-format" => {
-                let _ = value(name)?;
-            }
             "--engine-preset" => {
                 options.profile =
                     EngineProfileName::parse(&value(name)?).map_err(|error| error.to_string())?;
@@ -276,11 +273,13 @@ where
         PhpRequestExecutionInput {
             real_path: Some(real_path),
             cwd,
-            include_roots: Vec::new(),
+            // CLI scripts may use PHP's system temporary directory for
+            // tempnam(), uploads, and file-backed extension APIs. Keep this
+            // capability scoped to the CLI request; server requests retain
+            // their configured document/include roots.
+            include_roots: vec![std::env::temp_dir()],
             runtime_context,
             collect_counters: options.counters_json.is_some(),
-            collect_profile_spans: false,
-            collect_layout_source_attribution: false,
         },
     );
     let execute_ms = execute_started.elapsed().as_secs_f64() * 1_000.0;
@@ -333,10 +332,9 @@ where
                 "total_ms": total_started.elapsed().as_secs_f64() * 1_000.0
             }
         });
-        write_parented(
-            &path,
-            serde_json::to_string_pretty(&report).unwrap().as_bytes(),
-        )?;
+        let report = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("timings report serialization failed: {error}"))?;
+        write_parented(&path, report.as_bytes())?;
     }
     Ok(execution_exit_code(&output))
 }
@@ -383,6 +381,7 @@ where
                     stdout,
                     "{}",
                     json!({
+                        "ok": true,
                         "status": "ok",
                         "path": source_path,
                         "functions": compiled.ir_unit().functions.len(),
@@ -409,6 +408,142 @@ where
         }
         Err(PhpExecutionError::Engine(error)) => Err(error),
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct NativeCompileOptions {
+    path: String,
+    function: Option<String>,
+    json_output: bool,
+    opt_level: OptimizationLevel,
+}
+
+fn parse_native_compile_options(args: &[String]) -> Result<NativeCompileOptions, String> {
+    let mut path = None;
+    let mut function = None;
+    let mut json_output = false;
+    let mut opt_level = OptimizationLevel::O0;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json_output = true,
+            "--function" => {
+                index += 1;
+                function = Some(
+                    args.get(index)
+                        .ok_or("native-compile --function requires a value")?
+                        .to_owned(),
+                );
+            }
+            "--opt-level" => {
+                index += 1;
+                opt_level = parse_opt_level(
+                    args.get(index)
+                        .ok_or("native-compile --opt-level requires a value")?,
+                )?;
+            }
+            arg if let Some(value) = arg.strip_prefix("--function=") => {
+                function = Some(value.to_owned());
+            }
+            arg if let Some(value) = arg.strip_prefix("--opt-level=") => {
+                opt_level = parse_opt_level(value)?;
+            }
+            arg if arg.starts_with('-') => {
+                return Err(format!("unsupported native-compile option `{arg}`"));
+            }
+            arg if path.is_none() => path = Some(arg.to_owned()),
+            arg => return Err(format!("unexpected native-compile argument `{arg}`")),
+        }
+        index += 1;
+    }
+    Ok(NativeCompileOptions {
+        path: path.ok_or("php-vm native-compile requires <path.php>")?,
+        function,
+        json_output,
+        opt_level,
+    })
+}
+
+fn native_compile_command<W, E>(
+    args: &[String],
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, String>
+where
+    W: Write,
+    E: Write,
+{
+    let options = parse_native_compile_options(args)?;
+    let (source, _, source_path) = php_executor::read_script(Path::new(&options.path))?;
+    let executor = PhpExecutor::new();
+    let compiled = match executor.compile_source(PhpCompileInput {
+        source,
+        source_path: source_path.clone(),
+        optimization_level: Some(options.opt_level),
+    }) {
+        Ok(compiled) => compiled,
+        Err(PhpExecutionError::Compile(output)) => {
+            write_output_diagnostics(stderr, &output)?;
+            return Ok(EXIT_COMPILE_ERROR);
+        }
+        Err(PhpExecutionError::Engine(error)) => return Err(error),
+    };
+    let vm = Vm::with_options(VmOptions {
+        native_optimization: if options.opt_level == OptimizationLevel::O2 {
+            NativeOptimizationPolicy::Optimizing
+        } else {
+            NativeOptimizationPolicy::Baseline
+        },
+        ..VmOptions::default()
+    });
+    let report = vm.probe_cranelift(&compiled.executable_unit(), options.function.as_deref())?;
+    let (ok, status, reason) = match &report.result.status {
+        php_jit::JitCompileStatus::Compiled => (true, "compiled", None),
+        php_jit::JitCompileStatus::Rejected { reason } => {
+            (false, "rejected", Some(reason.as_str()))
+        }
+    };
+    if options.json_output {
+        writeln!(
+            stdout,
+            "{}",
+            json!({
+                "ok": ok,
+                "status": status,
+                "path": source_path,
+                "function_id": report.function.raw(),
+                "function": report.function_name,
+                "reason": reason,
+                "diagnostics": report.result.diagnostics,
+                "native_only": true,
+                "executed": false,
+            })
+        )
+        .map_err(|error| error.to_string())?;
+    } else if ok {
+        writeln!(
+            stdout,
+            "native compiled path={} function={} function_id={} executed=false",
+            source_path,
+            report.function_name,
+            report.function.raw()
+        )
+        .map_err(|error| error.to_string())?;
+    } else {
+        writeln!(
+            stderr,
+            "native compile rejected path={} function={} function_id={}: {}",
+            source_path,
+            report.function_name,
+            report.function.raw(),
+            reason.unwrap_or("unknown native rejection")
+        )
+        .map_err(|error| error.to_string())?;
+        for diagnostic in &report.result.diagnostics {
+            writeln!(stderr, "{diagnostic}").map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(if ok { EXIT_SUCCESS } else { EXIT_COMPILE_ERROR })
 }
 
 fn dump_ir_command<W, E>(args: &[String], stdout: &mut W, stderr: &mut E) -> Result<i32, String>
@@ -451,14 +586,19 @@ fn write_output_diagnostics<E: Write>(
     stderr: &mut E,
     output: &PhpExecutionOutput,
 ) -> Result<(), String> {
-    if !output.diagnostics_text.is_empty() {
+    if error_format_from_env() == DiagnosticOutputFormat::Json && !output.diagnostics.is_empty() {
+        for diagnostic in &output.diagnostics {
+            write_diagnostic_envelope(stderr, diagnostic, DiagnosticOutputFormat::Json)?;
+        }
+    } else if !output.diagnostics_text.is_empty() {
         write!(stderr, "{}", output.diagnostics_text).map_err(|error| error.to_string())?;
         if !output.diagnostics_text.ends_with('\n') {
             writeln!(stderr).map_err(|error| error.to_string())?;
         }
-    }
-    for diagnostic in &output.runtime_diagnostics {
-        writeln!(stderr, "{}", diagnostic.to_json()).map_err(|error| error.to_string())?;
+    } else if output.status == PhpExecutionStatus::Success {
+        for diagnostic in &output.runtime_diagnostics {
+            writeln!(stderr, "{}", diagnostic.to_json()).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
@@ -512,7 +652,7 @@ fn write_parented(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm run [native options] <file> [-- args...]\n  php-vm run --clear-native-cache [--native-cache-dir PATH]\n  php-vm compile <file> [--json] [--opt-level 0|1|2]\n  php-vm dump-ir <file> [--with-source]\n\nNative options:\n  --engine-preset baseline|default\n  --opt-level 0|1|2\n  --native-cache off|read|write|read-write\n  --native-cache-dir PATH\n  --clear-native-cache\n  --native-cache-stats\n  --counters-json PATH\n  --timings-json PATH\n  --trace --trace-runtime --trace-includes\n  --env KEY=VALUE"
+        "Usage:\n  php-vm run [native options] <file> [-- args...]\n  php-vm run --clear-native-cache [--native-cache-dir PATH]\n  php-vm compile <file> [--json] [--opt-level 0|1|2]\n  php-vm native-compile <file> [--function NAME] [--json] [--opt-level 0|1|2]\n  php-vm dump-ir <file> [--with-source]\n\nNative options:\n  --engine-preset baseline|default\n  --opt-level 0|1|2\n  --native-cache off|read|write|read-write\n  --native-cache-dir PATH\n  --clear-native-cache\n  --native-cache-stats\n  --counters-json PATH\n  --timings-json PATH\n  --trace --trace-runtime --trace-includes\n  --env KEY=VALUE"
     )
     .map_err(|error| error.to_string())
 }
@@ -529,6 +669,9 @@ mod tests {
             concat!("--super", "instructions=on"),
             concat!("--den", "se-cache=on"),
             concat!("--", "jit=cranelift"),
+            concat!("--de", "bug"),
+            concat!("--debug", "-log=/tmp/debug.jsonl"),
+            concat!("--error", "-format=json"),
         ] {
             let error = parse_run_options(&[option.to_owned(), "fixture.php".to_owned()])
                 .expect_err("removed option");
@@ -559,5 +702,25 @@ mod tests {
             Some(PathBuf::from("/tmp/phrust-cache"))
         );
         assert!(options.native_cache_stats);
+    }
+
+    #[test]
+    fn native_compile_probe_options_parse_without_execution() {
+        assert_eq!(
+            parse_native_compile_options(&[
+                "--json".to_owned(),
+                "--function=Widget::run".to_owned(),
+                "--opt-level".to_owned(),
+                "2".to_owned(),
+                "fixture.php".to_owned(),
+            ])
+            .expect("native compile options"),
+            NativeCompileOptions {
+                path: "fixture.php".to_owned(),
+                function: Some("Widget::run".to_owned()),
+                json_output: true,
+                opt_level: OptimizationLevel::O2,
+            }
+        );
     }
 }

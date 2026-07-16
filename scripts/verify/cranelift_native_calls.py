@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ABI = ROOT / "crates/php_jit/src/abi.rs"
@@ -42,8 +44,8 @@ def main() -> int:
     failures: list[str] = []
     abi = ABI.read_text(encoding="utf-8")
     region = REGION.read_text(encoding="utf-8")
-    lowering = LOWERING.read_text(encoding="utf-8")
-    trampoline = TRAMPOLINE.read_text(encoding="utf-8")
+    lowering = read_rust_module(LOWERING)
+    trampoline = read_rust_module(TRAMPOLINE)
 
     for required in (
         "JitNativeCallFrame",
@@ -71,7 +73,9 @@ def main() -> int:
         if not re.search(rf"pub {field}:", abi):
             failures.append(f"native frame lacks {field}")
     for call in CALL_FORMS:
-        pattern = rf"InstructionKind::{call}\b[\s\S]{{0,900}}RegionInstructionKind::NativeCall"
+        # Call match arms also build argument metadata and direct-call guards.
+        # Keep the bound finite so this remains an arm-local source contract.
+        pattern = rf"InstructionKind::{call}\b[\s\S]{{0,6000}}RegionInstructionKind::NativeCall"
         if not re.search(pattern, region):
             failures.append(f"{call} does not enter RegionNativeCall")
     if "lower_native_call_trampoline" not in lowering:

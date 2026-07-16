@@ -88,10 +88,17 @@ def run(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
     trace_path = out_dir / "perf-trace.jsonl"
     process: subprocess.Popen[str] | None = None
     try:
-        process, address = start_server(server, docroot, out_dir, log_path, trace_path)
+        process, address = start_server(
+            server,
+            docroot,
+            out_dir,
+            log_path,
+            trace_path,
+            max_execution_ms=max(1, int(args.timeout_seconds * 1000)),
+        )
         for _ in range(max(args.warmups, 0)):
-            request_root(address, args.timeout_seconds)
-        sample = request_root(address, args.timeout_seconds)
+            request_root(address, args.timeout_seconds, profile=False)
+        sample = request_root(address, args.timeout_seconds, profile=True)
     except Exception as error:
         return fail_report(str(error), args, out_dir, log_path, trace_path)
     finally:
@@ -133,6 +140,8 @@ def start_server(
     out_dir: Path,
     log_path: Path,
     trace_path: Path,
+    *,
+    max_execution_ms: int,
 ) -> tuple[subprocess.Popen[str], str]:
     log = log_path.open("w+", encoding="utf-8")
     command = [
@@ -143,12 +152,18 @@ def start_server(
         str(docroot),
         "--front-controller",
         "index.php",
+        "--max-execution-ms",
+        str(max_execution_ms),
+        "--native-cache",
+        "read-write",
+        "--native-cache-dir",
+        str(out_dir / "native-cache"),
         "--perf-trace",
         str(trace_path),
         "--perf-trace-vm-counters",
         "--request-profile",
         str(out_dir),
-        "--request-profile-source-attribution",
+        "--request-profile-vm-counters",
     ]
     process = subprocess.Popen(
         command, cwd=REPO_ROOT, text=True, stdout=log, stderr=subprocess.STDOUT
@@ -178,13 +193,21 @@ def stop_server(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
 
 
-def request_root(address: str, timeout_seconds: float) -> dict[str, Any]:
+def request_root(
+    address: str,
+    timeout_seconds: float,
+    *,
+    profile: bool,
+) -> dict[str, Any]:
     host, port_text = address.rsplit(":", 1)
     started = time.perf_counter_ns()
     connection = http.client.HTTPConnection(
         host, int(port_text), timeout=timeout_seconds
     )
-    connection.request("GET", "/", headers={"Host": "127.0.0.1"})
+    headers = {"Host": "127.0.0.1"}
+    if profile:
+        headers["x-phrust-request-profile"] = "1"
+    connection.request("GET", "/", headers=headers)
     response = connection.getresponse()
     body = response.read()
     connection.close()
@@ -196,99 +219,50 @@ def request_root(address: str, timeout_seconds: float) -> dict[str, Any]:
 
 
 def summarize_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    attribution = as_dict(profile.get("attribution"))
-    summary = as_dict(attribution.get("summary_counters"))
     phases = as_dict(profile.get("phases_nanos"))
-    includes = as_dict(attribution.get("includes"))
-    calls = as_dict(attribution.get("calls"))
-    arrays = as_dict(attribution.get("arrays"))
-    objects = as_dict(attribution.get("objects"))
-    clones = as_dict(attribution.get("clones"))
-    native = as_dict(attribution.get("native"))
+    native = as_dict(profile.get("native"))
     return {
         "schema_version": int(profile.get("schema_version", 0)),
         "phases_nanos": phases,
-        "core_counters": {
-            "vm_value_clones": summary.get("vm_value_clones", 0),
-            "vm_array_handle_clones": summary.get("vm_array_handle_clones", 0),
-            "vm_function_calls": summary.get("vm_function_calls", 0),
-            "vm_method_calls": summary.get("vm_method_calls", 0),
-            "vm_internal_function_dispatches": summary.get(
-                "vm_internal_function_dispatches", 0
+        "native_counters": {
+            "compile_attempts": native.get("compile_attempts", 0),
+            "compile_successes": native.get("compile_successes", 0),
+            "compile_failures": native.get("compile_failures", 0),
+            "compile_time_nanos": native.get("compile_time_nanos", 0),
+            "cache_hits": native.get("cache_hits", 0),
+            "cache_misses": native.get("cache_misses", 0),
+            "cache_compile_waits": native.get("cache_compile_waits", 0),
+            "cache_evictions": native.get("cache_evictions", 0),
+            "execution_entries": native.get("execution_entries", 0),
+            "region_side_exits": native.get("region_side_exits", 0),
+            "runtime_helper_calls": native.get("runtime_helper_calls", 0),
+            "runtime_helper_calls_by_id": as_dict(
+                native.get("runtime_helper_calls_by_id")
             ),
-            "vm_include_rich_instructions_executed": summary.get(
-                "vm_include_rich_instructions_executed", 0
+            "runtime_helper_time_nanos": native.get(
+                "runtime_helper_time_nanos", 0
             ),
-            "vm_bytecode_instructions_executed": summary.get(
-                "vm_bytecode_instructions_executed", 0
+            "runtime_helper_time_nanos_by_id": as_dict(
+                native.get("runtime_helper_time_nanos_by_id")
             ),
+            "execution_time_nanos": native.get("execution_time_nanos", 0),
+            "call_direct": native.get("call_direct", 0),
+            "call_dynamic": native.get("call_dynamic", 0),
+            "transition_count": native.get("transition_count", 0),
+            "transition_by_reason": as_dict(native.get("transition_by_reason")),
+            "transition_time_nanos": native.get("transition_time_nanos", 0),
+            "transition_time_nanos_by_reason": as_dict(
+                native.get("transition_time_nanos_by_reason")
+            ),
+            "runtime_helper_object_release_fast_paths": native.get(
+                "runtime_helper_object_release_fast_paths", 0
+            ),
+            "runtime_helper_object_release_root_scans": native.get(
+                "runtime_helper_object_release_root_scans", 0
+            ),
+            "versions_published": native.get("versions_published", 0),
         },
-        "top": {
-            "value_clone_by_reason": top_entries(clones.get("value_clone_by_reason")),
-            "value_clone_by_source_family": top_entries(
-                clones.get("value_clone_by_source_family")
-            ),
-            "value_clone_by_kind": top_entries(clones.get("value_clone_by_kind")),
-            "string_allocation_by_source_family": top_entries(
-                clones.get("string_allocation_by_source_family")
-            ),
-            "array_handle_clone_by_source_family": top_entries(
-                clones.get("array_handle_clone_by_source_family")
-            ),
-            "cow_separation_by_source_family": top_entries(
-                clones.get("cow_separation_by_source_family")
-            ),
-            "reference_cell_creation_by_source_family": top_entries(
-                clones.get("reference_cell_creation_by_source_family")
-            ),
-            "include_fallback_by_reason": top_entries(
-                includes.get("include_fallback_by_reason")
-            ),
-            "dense_include_entry_fallback_by_reason": top_entries(
-                includes.get("dense_include_entry_fallback_by_reason")
-            ),
-            "builtin_fast_stub_fallback_by_reason": top_entries(
-                calls.get("builtin_fast_stub_fallback_by_reason")
-            ),
-            "array_fast_path_fallback_by_reason": top_entries(
-                arrays.get("array_fast_path_fallback_by_reason")
-            ),
-            "property_ic_fallback_reasons": top_entries(
-                objects.get("property_ic_fallback_reasons")
-            ),
-            "native_eligibility_rejections_by_reason": top_entries(
-                native.get("native_eligibility_rejections_by_reason")
-            ),
-        },
-        "exclusive_boundaries": top_exclusive_boundaries(calls, includes),
     }
-
-
-def top_exclusive_boundaries(
-    calls: dict[str, Any], includes: dict[str, Any], limit: int = 10
-) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    for key in (
-        "function_profiles_by_name",
-        "method_profiles_by_name",
-        "builtin_profiles_by_name",
-    ):
-        entries.extend(top_entries(calls.get(key), limit=1_000_000))
-    entries.extend(
-        top_entries(includes.get("include_profiles_by_path"), limit=1_000_000)
-    )
-    return sorted(
-        entries,
-        key=lambda entry: int(entry.get("exclusive_nanos", 0)),
-        reverse=True,
-    )[:limit]
-
-
-def top_entries(value: Any, limit: int = 10) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    entries = [entry for entry in value if isinstance(entry, dict)]
-    return entries[:limit]
 
 
 def as_dict(value: Any) -> dict[str, Any]:
@@ -316,23 +290,13 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
                 f"- Body bytes: {http['body_bytes']}",
                 f"- Wall time: {http['wall_ms']:.3f} ms",
                 "",
-                "## Core Counters",
+                "## Native Counters",
                 "",
             ]
         )
-        for key, value in report["summary"]["core_counters"].items():
+        for key, value in report["summary"]["native_counters"].items():
             lines.append(f"- `{key}`: {value}")
-        lines.extend(["", "## Top Attribution", ""])
-        for family, entries in report["summary"]["top"].items():
-            lines.append(f"### `{family}`")
-            if entries:
-                for entry in entries:
-                    lines.append(
-                        f"- `{entry.get('name', '')}`: {entry.get('count', 0)}"
-                    )
-            else:
-                lines.append("- none")
-            lines.append("")
+        lines.append("")
     lines.extend(["## Artifacts", ""])
     for key, value in report.get("artifacts", {}).items():
         lines.append(f"- `{key}`: `{value}`")
@@ -397,59 +361,42 @@ def rel(path: Path) -> str:
 
 def self_test() -> int:
     profile = {
-        "schema_version": 2,
+        "schema_version": 5,
         "phases_nanos": {"php_vm_execution": 123},
-        "attribution": {
-            "summary_counters": {"vm_value_clones": 5, "vm_function_calls": 2},
-            "clones": {
-                "value_clone_by_reason": [{"name": "return_value", "count": 5}],
-                "value_clone_by_source_family": [{"name": "return_value", "count": 5}],
-                "value_clone_by_kind": [{"name": "array_handle", "count": 5}],
-                "string_allocation_by_source_family": [
-                    {"name": "return_value", "count": 2}
-                ],
-                "array_handle_clone_by_source_family": [
-                    {"name": "array_element_read", "count": 3}
-                ],
-                "cow_separation_by_source_family": [
-                    {"name": "array_element_write", "count": 2}
-                ],
-                "reference_cell_creation_by_source_family": [
-                    {"name": "by_ref_argument_binding", "count": 1}
-                ],
-            },
-            "includes": {
-                "include_fallback_by_reason": [{"name": "unsupported", "count": 1}],
-                "include_profiles_by_path": [
-                    {"name": "plugin.php", "exclusive_nanos": 20}
-                ],
-            },
-            "calls": {
-                "function_profiles_by_name": [{"name": "render", "exclusive_nanos": 40}]
-            },
-            "arrays": {},
-            "objects": {},
-            "native": {},
+        "native": {
+            "compile_attempts": 1,
+            "compile_successes": 1,
+            "compile_failures": 0,
+            "compile_time_nanos": 99,
+            "cache_hits": 2,
+            "cache_misses": 1,
+            "cache_compile_waits": 0,
+            "cache_evictions": 0,
+            "execution_entries": 1,
+            "region_side_exits": 0,
+            "runtime_helper_calls": 7,
+            "runtime_helper_calls_by_id": {"binary": 4, "echo": 3},
+            "runtime_helper_time_nanos": 70,
+            "runtime_helper_time_nanos_by_id": {"binary": 50, "echo": 20},
+            "execution_time_nanos": 123,
+            "call_direct": 2,
+            "call_dynamic": 1,
+            "transition_count": 2,
+            "transition_by_reason": {"same_unit": 2},
+            "transition_time_nanos": 30,
+            "transition_time_nanos_by_reason": {"same_unit": 30},
+            "runtime_helper_object_release_fast_paths": 3,
+            "runtime_helper_object_release_root_scans": 1,
+            "versions_published": 1,
         },
     }
     summary = summarize_profile(profile)
-    assert summary["core_counters"]["vm_value_clones"] == 5
-    assert summary["schema_version"] == 2
-    assert summary["top"]["value_clone_by_reason"][0]["name"] == "return_value"
-    assert summary["top"]["value_clone_by_source_family"][0]["name"] == "return_value"
-    assert (
-        summary["top"]["array_handle_clone_by_source_family"][0]["name"]
-        == "array_element_read"
-    )
-    assert (
-        summary["top"]["cow_separation_by_source_family"][0]["name"]
-        == "array_element_write"
-    )
-    assert (
-        summary["top"]["reference_cell_creation_by_source_family"][0]["name"]
-        == "by_ref_argument_binding"
-    )
-    assert summary["exclusive_boundaries"][0]["name"] == "render"
+    assert summary["schema_version"] == 5
+    assert summary["native_counters"]["cache_hits"] == 2
+    assert summary["native_counters"]["execution_entries"] == 1
+    assert summary["native_counters"]["runtime_helper_calls"] == 7
+    assert summary["native_counters"]["runtime_helper_calls_by_id"]["binary"] == 4
+    assert summary["native_counters"]["runtime_helper_time_nanos_by_id"]["echo"] == 20
     print("[pass] root_profile self-test")
     return 0
 

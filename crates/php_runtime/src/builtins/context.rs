@@ -14,12 +14,18 @@ use curl::multi::{Easy2Handle, Multi};
 use imap::{ClientBuilder, ConnectionMode};
 use ldap3::result::LdapError;
 use ldap3::{LdapConn, Scope, SearchEntry};
+use socket2::{Domain, Protocol, Socket, Type};
 use ssh2::{HashType, Session as Ssh2BackendSession, Sftp as Ssh2BackendSftp};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{Cursor, Read, Write};
+use std::net::UdpSocket;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 #[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::linux::net::SocketAddrExt;
+#[cfg(unix)]
+use std::os::unix::net::{SocketAddr as UnixSocketAddr, UnixDatagram, UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,11 +36,15 @@ use suppaftp::{FtpStream, Mode, Status};
 
 mod legacy_extension_state;
 mod service_views;
+#[cfg(unix)]
+mod socket_sys;
+mod text_state;
 pub use legacy_extension_state::*;
 pub(in crate::builtins) use service_views::{
     CurlBuiltinServices, JsonBuiltinServices, PcreBuiltinServices, PcreCallbackServiceAccess,
     PcreCallbackServices, PcreServiceAccess,
 };
+pub use text_state::*;
 
 pub(in crate::builtins) struct BuiltinIoContext<'a> {
     output: &'a mut OutputBuffer,

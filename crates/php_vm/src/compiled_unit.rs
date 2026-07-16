@@ -6,10 +6,9 @@ use php_ir::ids::FunctionId;
 use php_ir::module::{ClassEntry, normalize_class_name, normalized_class_name};
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
-use php_runtime::api::RuntimeDiagnostic;
 use php_source::{BytePos, LineIndex};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ops::Deref,
     sync::{
         Arc, OnceLock,
@@ -166,29 +165,30 @@ impl SymbolIndex {
 #[derive(Debug)]
 struct PreparedUnit {
     ir_verification_errors: OnceLock<usize>,
-    class_validation: OnceLock<Result<(), Box<PreparedClassValidationError>>>,
+    continuation_instructions: OnceLock<Arc<BTreeMap<(u32, u32), php_ir::Instruction>>>,
+    ir_fingerprint: OnceLock<String>,
+    dependency_identity: OnceLock<String>,
     ir_verification_runs: AtomicU64,
+    continuation_index_runs: AtomicU64,
+    ir_fingerprint_runs: AtomicU64,
+    dependency_identity_runs: AtomicU64,
     class_validation_runs: AtomicU64,
-    function_facts: Box<[OnceLock<PreparedFunctionFacts>]>,
 }
 
 impl PreparedUnit {
-    fn new(function_count: usize) -> Self {
+    fn new() -> Self {
         Self {
             ir_verification_errors: OnceLock::new(),
-            class_validation: OnceLock::new(),
+            continuation_instructions: OnceLock::new(),
+            ir_fingerprint: OnceLock::new(),
+            dependency_identity: OnceLock::new(),
             ir_verification_runs: AtomicU64::new(0),
+            continuation_index_runs: AtomicU64::new(0),
+            ir_fingerprint_runs: AtomicU64::new(0),
+            dependency_identity_runs: AtomicU64::new(0),
             class_validation_runs: AtomicU64::new(0),
-            function_facts: (0..function_count).map(|_| OnceLock::new()).collect(),
         }
     }
-}
-
-/// Immutable class-validation failure retained with a compiled artifact.
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedClassValidationError {
-    pub(crate) message: String,
-    pub(crate) diagnostic: Option<RuntimeDiagnostic>,
 }
 
 /// Number of immutable preparation passes performed for a compiled unit.
@@ -196,6 +196,12 @@ pub(crate) struct PreparedClassValidationError {
 pub struct PreparedUnitStats {
     /// IR verification passes.
     pub ir_verification_runs: u64,
+    /// Native continuation-source indexes built.
+    pub continuation_index_runs: u64,
+    /// Stable full-IR fingerprints computed.
+    pub ir_fingerprint_runs: u64,
+    /// Stable dependency identities computed.
+    pub dependency_identity_runs: u64,
     /// Static class-table validation passes.
     pub class_validation_runs: u64,
 }
@@ -217,15 +223,6 @@ pub struct CompiledUnitLayoutStats {
     pub indexed_symbols: usize,
     /// Name bytes duplicated by lookup indexes (always zero).
     pub duplicated_symbol_name_bytes: usize,
-}
-
-/// Function-invariant execution facts shared by all requests for a unit.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PreparedFunctionFacts {
-    pub(crate) observes_argument_vector: bool,
-    pub(crate) has_try_or_finally: bool,
-    pub(crate) may_hold_destructor_sensitive_value: bool,
-    pub(crate) has_inline_blocker: bool,
 }
 
 impl CompiledUnit {
@@ -272,7 +269,6 @@ impl CompiledUnit {
     }
 
     fn with_source_slots(unit: IrUnit, sources: Vec<Option<Arc<str>>>) -> Self {
-        let function_count = unit.functions.len();
         let function_lookup = SymbolIndex::new(
             unit.function_table
                 .iter()
@@ -328,7 +324,7 @@ impl CompiledUnit {
                 class_lookup,
                 unit_class_lookup,
                 sources,
-                prepared: PreparedUnit::new(function_count),
+                prepared: PreparedUnit::new(),
             }),
         }
     }
@@ -422,22 +418,63 @@ impl CompiledUnit {
         })
     }
 
-    /// Returns cached static class validation, computing it at most once.
-    pub(crate) fn prepared_class_validation(
+    pub(crate) fn prepared_continuation_instructions(
         &self,
-        prepare: impl FnOnce() -> Result<(), Box<PreparedClassValidationError>>,
-    ) -> Result<(), Box<PreparedClassValidationError>> {
+    ) -> Arc<BTreeMap<(u32, u32), php_ir::Instruction>> {
         self.inner
             .prepared
-            .class_validation
+            .continuation_instructions
             .get_or_init(|| {
                 self.inner
                     .prepared
-                    .class_validation_runs
+                    .continuation_index_runs
                     .fetch_add(1, Ordering::Relaxed);
-                prepare()
+                let mut instructions = BTreeMap::new();
+                let metadata = php_jit::region_ir::CompileMetadata::default();
+                for function_index in 0..self.inner.unit.functions.len() {
+                    let function = FunctionId::new(function_index as u32);
+                    if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
+                        &self.inner.unit,
+                        function,
+                        &metadata,
+                    ) {
+                        for instruction in
+                            region.blocks.iter().flat_map(|block| &block.instructions)
+                        {
+                            instructions.insert(
+                                (function.raw(), instruction.continuation_id),
+                                php_ir::Instruction {
+                                    id: instruction.id,
+                                    span: instruction.span,
+                                    kind: instruction.source_kind.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+                Arc::new(instructions)
             })
             .clone()
+    }
+
+    pub(crate) fn prepared_ir_fingerprint(&self) -> &str {
+        self.inner.prepared.ir_fingerprint.get_or_init(|| {
+            self.inner
+                .prepared
+                .ir_fingerprint_runs
+                .fetch_add(1, Ordering::Relaxed);
+            php_jit::stable_ir_fingerprint(&self.inner.unit)
+        })
+    }
+
+    pub(crate) fn prepared_dependency_identity(&self) -> &str {
+        self.inner.prepared.dependency_identity.get_or_init(|| {
+            self.inner
+                .prepared
+                .dependency_identity_runs
+                .fetch_add(1, Ordering::Relaxed);
+            php_jit::stable_dependency_identity(&self.inner.unit)
+        })
     }
 
     /// Preparation counters for validation and diagnostics.
@@ -449,24 +486,27 @@ impl CompiledUnit {
                 .prepared
                 .ir_verification_runs
                 .load(Ordering::Relaxed),
+            continuation_index_runs: self
+                .inner
+                .prepared
+                .continuation_index_runs
+                .load(Ordering::Relaxed),
+            ir_fingerprint_runs: self
+                .inner
+                .prepared
+                .ir_fingerprint_runs
+                .load(Ordering::Relaxed),
+            dependency_identity_runs: self
+                .inner
+                .prepared
+                .dependency_identity_runs
+                .load(Ordering::Relaxed),
             class_validation_runs: self
                 .inner
                 .prepared
                 .class_validation_runs
                 .load(Ordering::Relaxed),
         }
-    }
-
-    /// Returns immutable per-function facts, scanning a function at most once.
-    pub(crate) fn prepared_function_facts(
-        &self,
-        function: FunctionId,
-        prepare: impl FnOnce() -> PreparedFunctionFacts,
-    ) -> PreparedFunctionFacts {
-        let Some(facts) = self.inner.prepared.function_facts.get(function.index()) else {
-            return prepare();
-        };
-        *facts.get_or_init(prepare)
     }
 
     /// Finds a user function by normalized name.
@@ -556,14 +596,6 @@ impl CompiledUnit {
                 normalize_class_name(&self.inner.unit.classes[*index].name) == normalized.as_ref()
             })?;
         Some(CompiledClass::in_unit(self.clone(), index))
-    }
-
-    pub(crate) fn class_handle(&self, index: usize) -> Option<CompiledClass> {
-        self.inner
-            .unit
-            .classes
-            .get(index)
-            .map(|_| CompiledClass::in_unit(self.clone(), index))
     }
 
     /// Returns the VM lookup table.
@@ -710,6 +742,28 @@ mod tests {
             },
             span: IrSpan::default(),
         }
+    }
+
+    #[test]
+    fn continuation_instruction_index_is_shared_per_compiled_unit() {
+        let compiled = CompiledUnit::new(IrUnit::new(UnitId::new(0)));
+
+        let first = compiled.prepared_continuation_instructions();
+        let second = compiled.prepared_continuation_instructions();
+        let first_ir_fingerprint = compiled.prepared_ir_fingerprint();
+        let second_ir_fingerprint = compiled.prepared_ir_fingerprint();
+        let first_dependency_identity = compiled.prepared_dependency_identity();
+        let second_dependency_identity = compiled.prepared_dependency_identity();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(std::ptr::eq(first_ir_fingerprint, second_ir_fingerprint));
+        assert!(std::ptr::eq(
+            first_dependency_identity,
+            second_dependency_identity
+        ));
+        assert_eq!(compiled.prepared_unit_stats().continuation_index_runs, 1);
+        assert_eq!(compiled.prepared_unit_stats().ir_fingerprint_runs, 1);
+        assert_eq!(compiled.prepared_unit_stats().dependency_identity_runs, 1);
     }
 
     #[test]

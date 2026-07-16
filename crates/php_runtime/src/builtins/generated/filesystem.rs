@@ -85,6 +85,14 @@ pub const FUNCTIONS: &[GeneratedBuiltinDescriptor] = &[
         variadic: false,
     },
     GeneratedBuiltinDescriptor {
+        name: "file",
+        extension: "standard",
+        return_type: Some("array|false"),
+        required_parameters: 1,
+        total_parameters: 3,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
         name: "file_exists",
         extension: "standard",
         return_type: Some("bool"),

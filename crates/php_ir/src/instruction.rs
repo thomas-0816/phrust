@@ -225,8 +225,14 @@ pub enum InstructionKind {
     Nop,
     /// `dst = constants[constant]`.
     LoadConst { dst: RegId, constant: ConstId },
-    /// `dst = global_constant(name)`.
-    FetchConst { dst: RegId, name: String },
+    /// `dst = global_constant(name)`, optionally falling back to the global
+    /// name for an unqualified constant fetch inside a namespace.
+    FetchConst {
+        dst: RegId,
+        name: String,
+        #[serde(default)]
+        fallback: Option<String>,
+    },
     /// Registers a global constant at runtime.
     RegisterConstant { name: String, value: Operand },
     /// Registers a function declaration when execution reaches it.

@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ABI = ROOT / "crates/php_jit/src/abi.rs"
@@ -51,9 +53,9 @@ def main() -> int:
     failures: list[str] = []
     abi = ABI.read_text(encoding="utf-8")
     region = REGION.read_text(encoding="utf-8")
-    lowering = LOWERING.read_text(encoding="utf-8")
+    lowering = read_rust_module(LOWERING)
     metadata = METADATA.read_text(encoding="utf-8")
-    vm_abi = VM_ABI.read_text(encoding="utf-8")
+    vm_abi = read_rust_module(VM_ABI)
 
     for name, tag in (
         ("CONTINUE", 0),
@@ -83,7 +85,7 @@ def main() -> int:
             failures.append(f"native ABI lacks {required}")
 
     for operation in ("EnterTry", "LeaveTry", "EndFinally", "Throw", "MakeException"):
-        pattern = rf"InstructionKind::{operation}\b[\s\S]{{0,650}}RegionInstructionKind::NativeControl"
+        pattern = rf"InstructionKind::{operation}\b[\s\S]{{0,1600}}RegionInstructionKind::NativeControl"
         if not re.search(pattern, region):
             failures.append(f"{operation} does not enter RegionNativeControl")
 

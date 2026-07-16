@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ABI = ROOT / "crates/php_jit/src/abi.rs"
@@ -21,7 +23,7 @@ def main() -> int:
     failures: list[str] = []
     abi = ABI.read_text(encoding="utf-8")
     api = API.read_text(encoding="utf-8")
-    lowering = LOWERING.read_text(encoding="utf-8")
+    lowering = read_rust_module(LOWERING)
     executable = EXECUTABLE.read_text(encoding="utf-8")
 
     for required in (
@@ -65,7 +67,7 @@ def main() -> int:
         r"pub fn invoke_i64_with_native_transition\([\s\S]+?\n    }\n", api
     )
     forbidden = re.compile(
-        "execute_" + "dense|rich_" + "dispatch|execute_" + "ir|execute_instruction"
+        "execute_" + "dense|rich_" + "dispatch|execute_" + "ir|execute_" + "instruction"
     )
     if method is None:
         failures.append("native transition method is missing")

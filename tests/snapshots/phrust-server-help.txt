@@ -35,7 +35,6 @@ Options:
 --perf-trace-vm-counters     include heavy VM counters in perf trace rows
 --request-profile <dir>      write JSON request profiles for opted-in PHP requests
 --request-profile-vm-counters  collect heavy VM counters for profiled requests
---request-profile-source-attribution  collect per-clone source attribution (slow)
 --request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1 (default)
 --enable-network-requests    allow PHP cURL requests to external hosts
 --debug                      emit structured server debug events to stderr

@@ -2,15 +2,20 @@
 
 use crate::JitFunctionHandle;
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use cranelift_module::default_libcall_names;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, TryLockError};
 
-const DEFAULT_CODE_LIMIT: usize = 64 * 1024 * 1024;
-const DEFAULT_GENERATION_LIMIT: usize = 1024 * 1024;
+// Whole-unit baseline publication intentionally compiles dormant declarations
+// before a source unit becomes executable. A complete WordPress install keeps
+// slightly more than 256 MiB of generated code live during one request, so the
+// process owner needs headroom while remaining strictly bounded.
+const DEFAULT_CODE_LIMIT: usize = 512 * 1024 * 1024;
+const DEFAULT_GENERATION_LIMIT: usize = 16 * 1024 * 1024;
+const GENERATION_ARENA_RESERVE: usize = 32 * 1024 * 1024;
 
 /// Stable process-cache identity for one compiled specialization.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -379,6 +384,19 @@ impl CraneliftCodeManager {
             .finish(settings::Flags::new(flags))
             .map_err(|error| CraneliftCodeManagerError::NativeTarget(error.to_string()))?;
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        // Cranelift encodes x86-64 calls between locally defined functions as
+        // rel32. Its default memory provider may mmap individual functions
+        // more than 2 GiB apart, which makes finalization panic for large
+        // dynamic applications. One bounded contiguous arena per generation
+        // keeps every local target in range; imported helpers use absolute
+        // indirect calls in the lowering layer.
+        let arena =
+            ArenaMemoryProvider::new_with_size(GENERATION_ARENA_RESERVE).map_err(|error| {
+                CraneliftCodeManagerError::NativeTarget(format!(
+                    "failed to reserve contiguous Cranelift code arena: {error}"
+                ))
+            })?;
+        builder.memory_provider(Box::new(arena));
         let helper_lookup = Arc::clone(helpers);
         builder.symbol_lookup_fn(Box::new(move |symbol| {
             helper_lookup

@@ -20,6 +20,9 @@ struct PropertyLayout {
     slot_names: Vec<String>,
     /// storage name -> slot index.
     slot_by_name: HashMap<String, u32>,
+    /// PHP array-cast key for each declared slot. Private and protected
+    /// properties use Zend's NUL-delimited visibility encoding.
+    array_cast_names: Vec<String>,
     /// var_dump labels for every class property name (including statics and
     /// virtual hook properties, matching the previous per-object map).
     debug_labels: HashMap<String, String>,
@@ -72,9 +75,32 @@ fn build_declared_slots(class: &ClassEntry, layout: &PropertyLayout) -> Vec<Opti
 /// defaults always come from the caller's class entry.
 fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
     let mut slot_names = Vec::new();
+    let mut array_cast_names = Vec::new();
     for property in &class.properties {
         if is_backed_instance_property(property) && !slot_names.contains(&property.name) {
             slot_names.push(property.name.clone());
+            let cast_name = if property.flags.is_private {
+                property
+                    .name
+                    .strip_prefix("private:")
+                    .and_then(|rest| rest.split_once(':'))
+                    .map_or_else(
+                        || format!("\0{display_name}\0{}", property.name),
+                        |(owner, name)| {
+                            let owner = if owner.eq_ignore_ascii_case(&class.name) {
+                                display_name
+                            } else {
+                                owner
+                            };
+                            format!("\0{owner}\0{name}")
+                        },
+                    )
+            } else if property.flags.is_protected {
+                format!("\0*\0{}", property.name)
+            } else {
+                property.name.clone()
+            };
+            array_cast_names.push(cast_name);
         }
     }
     let debug_labels: HashMap<String, String> = class
@@ -90,10 +116,11 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
     LAYOUT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let candidates = cache.entry(class.name.to_string()).or_default();
-        if let Some(existing) = candidates
-            .iter()
-            .find(|layout| layout.slot_names == slot_names && layout.debug_labels == debug_labels)
-        {
+        if let Some(existing) = candidates.iter().find(|layout| {
+            layout.slot_names == slot_names
+                && layout.array_cast_names == array_cast_names
+                && layout.debug_labels == debug_labels
+        }) {
             return Rc::clone(existing);
         }
         let slot_by_name = slot_names
@@ -105,6 +132,7 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
             layout_id: next_layout_id(),
             slot_names,
             slot_by_name,
+            array_cast_names,
             debug_labels,
         });
         candidates.push(Rc::clone(&layout));
@@ -203,6 +231,25 @@ impl ObjectStorage {
             .iter()
             .zip(&self.declared_slots)
             .filter_map(|(name, slot)| slot.as_ref().map(|value| (name.clone(), value.clone())));
+        let dynamic = self.dynamic_order.iter().filter_map(|name| {
+            self.dynamic_properties
+                .get(name)
+                .map(|value| (name.clone(), value.clone()))
+        });
+        declared.chain(dynamic).collect()
+    }
+
+    fn array_cast_snapshot(&self) -> Vec<(String, Value)> {
+        let declared = self
+            .layout
+            .array_cast_names
+            .iter()
+            .zip(&self.declared_slots)
+            .filter_map(|(name, slot)| {
+                slot.as_ref()
+                    .filter(|value| !matches!(value, Value::Uninitialized))
+                    .map(|value| (name.clone(), value.clone()))
+            });
         let dynamic = self.dynamic_order.iter().filter_map(|name| {
             self.dynamic_properties
                 .get(name)
@@ -358,6 +405,7 @@ impl ObjectRef {
             layout_id: 0,
             slot_names: Vec::new(),
             slot_by_name: HashMap::new(),
+            array_cast_names: Vec::new(),
             debug_labels: HashMap::new(),
         });
         let mut dynamic_order = Vec::with_capacity(properties.len());
@@ -608,6 +656,14 @@ impl ObjectRef {
         self.cell.storage.borrow().snapshot()
     }
 
+    /// Returns properties using PHP's object-to-array key encoding.
+    /// Uninitialized typed properties are omitted, protected keys are
+    /// `\0*\0name`, and private keys are `\0DeclaringClass\0name`.
+    #[must_use]
+    pub fn array_cast_snapshot(&self) -> Vec<(String, Value)> {
+        self.cell.storage.borrow().array_cast_snapshot()
+    }
+
     /// Visits every present property value (declared slots, then dynamic
     /// properties) without materializing a snapshot vector. Covers the same
     /// value set as [`Self::properties_snapshot`]; property names and order
@@ -628,6 +684,22 @@ impl ObjectRef {
             .storage
             .try_borrow()
             .map(|storage| storage.snapshot())
+    }
+
+    /// Tests present property values without cloning property names or values.
+    /// Returns a borrow error instead of panicking when object storage is
+    /// already mutably borrowed by a re-entrant runtime operation.
+    pub fn try_any_property_value(
+        &self,
+        mut predicate: impl FnMut(&Value) -> bool,
+    ) -> Result<bool, BorrowError> {
+        let storage = self.cell.storage.try_borrow()?;
+        Ok(storage
+            .declared_slots
+            .iter()
+            .flatten()
+            .chain(storage.dynamic_properties.values())
+            .any(&mut predicate))
     }
 
     /// Identity of this object's class layout, used as the declared-slot

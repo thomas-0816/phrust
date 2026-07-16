@@ -1,37 +1,214 @@
 //! Native PHP execution coordinator.
 
 mod jit_abi;
+mod native_compile_cache;
+mod native_entry;
 mod options;
 mod result;
 
+pub use native_compile_cache::NativeCompileCacheStats;
 pub use options::{NativeBlacklistMode, NativeOptimizationPolicy, VmOptions};
 pub use result::VmResult;
 
 use crate::compiled_unit::CompiledUnit;
 use jit_abi::{
-    jit_array_fetch_int_slow_abi, jit_array_len_abi, jit_concat_string_string_fast,
-    jit_count_known_abi, jit_native_call_dispatch_abi, jit_native_dynamic_code_abi,
-    jit_property_load_monomorphic_fast, jit_record_array_lookup_abi, jit_runtime_helper_table,
-    jit_strlen_known_abi,
+    NativeExecutionContext, activate_native_context, jit_native_array_fetch_abi,
+    jit_native_array_insert_abi, jit_native_array_new_abi, jit_native_array_spread_abi,
+    jit_native_array_unset_abi, jit_native_binary_abi, jit_native_call_dispatch_abi,
+    jit_native_cast_abi, jit_native_compare_abi, jit_native_constant_fetch_abi,
+    jit_native_dynamic_code_abi, jit_native_echo_abi, jit_native_exception_new_abi,
+    jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi,
+    jit_native_foreach_next_abi, jit_native_local_fetch_abi, jit_native_local_store_abi,
+    jit_native_object_clone_abi, jit_native_object_clone_with_abi, jit_native_object_new_abi,
+    jit_native_property_assign_abi, jit_native_property_fetch_abi, jit_native_reference_bind_abi,
+    jit_native_return_check_abi, jit_native_runtime_fatal_abi, jit_native_truthy_abi,
+    jit_native_unary_abi, jit_native_value_lifecycle_abi,
 };
 use php_runtime::api::{OutputBuffer, Value};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+fn validate_native_class_table(unit: &php_ir::IrUnit) -> Result<(), String> {
+    let find_class = |name: &str| {
+        let normalized = php_ir::module::normalize_class_name(name);
+        unit.classes.iter().find(|class| class.name == normalized)
+    };
+    for class in unit
+        .classes
+        .iter()
+        .filter(|class| !class.flags.is_conditional)
+    {
+        if let Some(parent_name) = class.parent.as_deref()
+            && let Some(parent) = find_class(parent_name)
+        {
+            if parent.flags.is_final || parent.flags.is_enum {
+                return Err(format!(
+                    "Class {} cannot extend final class {}",
+                    class.display_name, parent.display_name
+                ));
+            }
+            for method in &class.methods {
+                let mut ancestor = Some(parent);
+                while let Some(current) = ancestor {
+                    if current.methods.iter().any(|candidate| {
+                        candidate.name.eq_ignore_ascii_case(&method.name)
+                            && candidate.flags.is_final
+                    }) {
+                        return Err(format!(
+                            "Cannot override final method {}::{}()",
+                            current.display_name, method.name
+                        ));
+                    }
+                    ancestor = current.parent.as_deref().and_then(&find_class);
+                }
+            }
+        }
+
+        if class.flags.is_abstract || class.flags.is_interface || class.flags.is_trait {
+            continue;
+        }
+        let implements = |name: &str| {
+            let mut current = Some(class);
+            while let Some(candidate) = current {
+                if let Some(method) = candidate
+                    .methods
+                    .iter()
+                    .find(|method| method.name.eq_ignore_ascii_case(name))
+                {
+                    return Some(method);
+                }
+                current = candidate.parent.as_deref().and_then(&find_class);
+            }
+            None
+        };
+        let mut required = Vec::new();
+        let mut ancestor = class.parent.as_deref().and_then(&find_class);
+        while let Some(current) = ancestor {
+            required.extend(
+                current
+                    .methods
+                    .iter()
+                    .filter(|method| method.flags.is_abstract)
+                    .map(|method| (current, method)),
+            );
+            ancestor = current.parent.as_deref().and_then(&find_class);
+        }
+        for interface_name in &class.interfaces {
+            if let Some(interface) = find_class(interface_name) {
+                required.extend(interface.methods.iter().map(|method| (interface, method)));
+            }
+        }
+        for (owner, method) in required {
+            let Some(implementation) = implements(&method.name) else {
+                return Err(format!(
+                    "Class {} contains an abstract method {}::{}()",
+                    class.display_name, owner.display_name, method.name
+                ));
+            };
+            if implementation.flags.is_abstract {
+                return Err(format!(
+                    "Class {} contains an abstract method {}::{}()",
+                    class.display_name, owner.display_name, method.name
+                ));
+            }
+            if owner.flags.is_interface
+                && (implementation.flags.is_private || implementation.flags.is_protected)
+            {
+                return Err(format!(
+                    "Access level to {}::{}() must be public",
+                    class.display_name, method.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Process-owned state shared by native request coordinators.
 #[derive(Clone, Debug, Default)]
-pub struct VmWorkerState;
+pub struct VmWorkerState {
+    native_compiles: Arc<native_compile_cache::NativeCompileCache>,
+}
 
 impl VmWorkerState {
     #[must_use]
     pub fn new(_tiering: crate::tiering::TieringOptions) -> Self {
-        Self
+        Self::default()
     }
+
+    /// Returns worker-stable native compile-record cache counters.
+    #[must_use]
+    pub fn native_compile_cache_stats(&self) -> NativeCompileCacheStats {
+        self.native_compiles.stats()
+    }
+
+    fn compile_native(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
+        let external_signatures_hash = external_function_signatures_hash(external_signatures);
+        let key = native_compile_cache::NativeCompileCacheKey::new(
+            unit.cache_identity(),
+            function,
+            options.native_optimization.is_optimizing(),
+            external_signatures_hash,
+        );
+        self.native_compiles.get_or_compile(key, || {
+            compile_native_function_graph(
+                unit.unit(),
+                function,
+                options,
+                unit.prepared_ir_fingerprint(),
+                &format!(
+                    "{}-external-signatures-{external_signatures_hash:016x}",
+                    unit.prepared_dependency_identity()
+                ),
+                external_signatures,
+            )
+        })
+    }
+}
+
+fn external_function_signatures_hash(signatures: &[php_jit::JitExternalFunctionSignature]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for signature in signatures {
+        for byte in signature.name.bytes() {
+            hash =
+                (hash ^ u64::from(byte.to_ascii_lowercase())).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        for parameter in &signature.params {
+            for byte in parameter.name.bytes() {
+                hash = (hash ^ u64::from(byte.to_ascii_lowercase()))
+                    .wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            hash = (hash ^ u64::from(parameter.by_ref)).wrapping_mul(0x0000_0100_0000_01b3);
+            hash = (hash ^ u64::from(parameter.variadic)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 /// Coordinates mandatory native compilation and outer result assembly.
 pub struct Vm {
     options: VmOptions,
-    _worker_state: VmWorkerState,
+    worker_state: VmWorkerState,
+}
+
+/// Native-only compilation result for one selected authoritative IR function.
+#[derive(Clone, Debug)]
+pub struct NativeCompileProbeReport {
+    pub function: php_ir::FunctionId,
+    pub function_name: String,
+    pub result: php_jit::JitCompileResult,
 }
 
 impl Default for Vm {
@@ -56,7 +233,7 @@ impl Vm {
     pub fn with_options_and_worker_state(options: VmOptions, worker_state: VmWorkerState) -> Self {
         Self {
             options,
-            _worker_state: worker_state,
+            worker_state,
         }
     }
 
@@ -64,36 +241,112 @@ impl Vm {
     #[must_use]
     pub fn prewarm_cranelift(&self, unit: &CompiledUnit) -> u64 {
         let entry = unit.unit().entry;
-        let Some(function) = unit.unit().functions.get(entry.index()) else {
+        if unit.unit().functions.get(entry.index()).is_none() {
             return 0;
-        };
-        let mut compiler = php_jit::JitEngine::new();
-        compiler
-            .compile_unit_with_runtime_helpers(
-                unit.unit(),
-                php_jit::JitCompileRequest::new(format!("unit.{}", unit.unit().id.raw()))
-                    .with_function_name(function.name.clone())
-                    .with_opt_level(if self.options.native_optimization.is_optimizing() {
-                        2
-                    } else {
-                        0
-                    }),
-                runtime_helper_addresses(),
-            )
-            .map_or(0, |records| {
-                records
+        }
+        self.compile_native(unit, entry).map_or(0, |records| {
+            records
+                .0
+                .iter()
+                .filter(|record| {
+                    matches!(record.result.status, php_jit::JitCompileStatus::Compiled)
+                })
+                .count() as u64
+        })
+    }
+
+    /// Compiles one selected function with the production Cranelift helper ABI
+    /// without entering PHP code.
+    pub fn probe_cranelift(
+        &self,
+        unit: &CompiledUnit,
+        function_name: Option<&str>,
+    ) -> Result<NativeCompileProbeReport, String> {
+        if self.options.verify_ir && unit.prepared_ir_verification_errors() > 0 {
+            return Err(format!(
+                "IR verifier failed with {} error(s)",
+                unit.prepared_ir_verification_errors()
+            ));
+        }
+        validate_native_class_table(unit.unit())?;
+        let selected_function = if let Some(name) = function_name {
+            Some(
+                unit.unit()
+                    .functions
                     .iter()
-                    .filter(|record| {
-                        matches!(record.result.status, php_jit::JitCompileStatus::Compiled)
-                    })
-                    .count() as u64
-            })
+                    .position(|function| function.name.eq_ignore_ascii_case(name))
+                    .map(|index| php_ir::FunctionId::new(index as u32))
+                    .ok_or_else(|| format!("native compile probe function not found: {name}"))?,
+            )
+        } else {
+            None
+        };
+        let function = selected_function.unwrap_or(unit.unit().entry);
+        let function_entry = unit.unit().functions.get(function.index()).ok_or_else(|| {
+            format!(
+                "native compile probe function {} is missing",
+                function.raw()
+            )
+        })?;
+        let function_name = function_entry.name.clone();
+        let mut compiler = php_jit::JitEngine::new();
+        let request = php_jit::JitCompileRequest::new(format!(
+            "probe.unit.{}.function.{}",
+            unit.unit().id.raw(),
+            function.raw()
+        ))
+        .with_function_name(function_name.clone())
+        .with_opt_level(if self.options.native_optimization.is_optimizing() {
+            2
+        } else {
+            0
+        });
+        let (function, function_name, result) = if selected_function.is_some() {
+            let result = compiler
+                .compile_function_with_runtime_helpers(
+                    unit.unit(),
+                    function,
+                    request,
+                    runtime_helper_addresses(),
+                )
+                .map_err(|error| error.to_string())?;
+            (function, function_name, result)
+        } else {
+            let records = compiler
+                .compile_unit_with_runtime_helpers(unit.unit(), request, runtime_helper_addresses())
+                .map_err(|error| error.to_string())?;
+            let record = records
+                .iter()
+                .find(|record| !matches!(record.result.status, php_jit::JitCompileStatus::Compiled))
+                .or_else(|| records.iter().find(|record| record.function == function))
+                .ok_or_else(|| "native compile probe produced no function record".to_owned())?;
+            let function_name = unit
+                .unit()
+                .functions
+                .get(record.function.index())
+                .map_or("<missing>", |function| function.name.as_str())
+                .to_owned();
+            (record.function, function_name, record.result.clone())
+        };
+        Ok(NativeCompileProbeReport {
+            function,
+            function_name,
+            result,
+        })
     }
 
     /// Compile every function from authoritative IR and enter the published
     /// Cranelift entry. There is no alternate execution engine.
     #[must_use]
     pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
+        self.execute_with_external_function_signatures(unit, &[])
+    }
+
+    pub(super) fn execute_with_external_function_signatures(
+        &self,
+        unit: impl Into<CompiledUnit>,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> VmResult {
         let unit = unit.into();
         let output = OutputBuffer::default();
         let entry = unit.unit().entry;
@@ -109,14 +362,25 @@ impl Vm {
                 ),
             );
         }
+        if let Err(error) = validate_native_class_table(unit.unit()) {
+            return VmResult::compile_error(output, error);
+        }
 
+        let worker_cache_before = self.worker_state.native_compile_cache_stats();
         let mut cache_load_time = Duration::ZERO;
         let mut native_compile_time = Duration::ZERO;
-        let cache = match self.native_cache() {
-            Ok(cache) => cache,
-            Err(error) => {
-                return VmResult::compile_error(output, format!("E_NATIVE_CACHE_SETUP: {error}"));
-            }
+        let cache_candidate = native_cache_candidate(unit.unit(), entry);
+        let cache = match cache_candidate {
+            true => match self.native_cache() {
+                Ok(cache) => cache,
+                Err(error) => {
+                    return VmResult::compile_error(
+                        output,
+                        format!("E_NATIVE_CACHE_SETUP: {error}"),
+                    );
+                }
+            },
+            false => None,
         };
         let cache_identity = cache
             .as_ref()
@@ -125,45 +389,49 @@ impl Vm {
         let mut cached_compile_error = None;
 
         if let (Some(cache), Some(identity)) = (&cache, &cache_identity) {
-            if cache.config().mode.can_write() && native_cache_candidate(unit.unit(), entry) {
+            if cache.config().mode.can_write() {
                 let cache_started = Instant::now();
-                let result = cache.get_or_compile(
-                    identity,
-                    |_| None,
-                    || {
-                        let compile_started = Instant::now();
-                        let records = match self.compile_native(&unit, function) {
-                            Ok(records) => records,
-                            Err(error) => {
-                                native_compile_time += compile_started.elapsed();
-                                cached_compile_error = Some(error.clone());
-                                return Err(php_jit::NativeCacheError::InvalidHeader(error));
-                            }
-                        };
-                        native_compile_time += compile_started.elapsed();
-                        let image = cache_image(identity.clone(), entry, &records);
-                        cached_compile_records = Some(records);
-                        image
-                    },
-                );
-                cache_load_time += cache_started.elapsed().saturating_sub(native_compile_time);
-                if let Ok((artifact, _)) = result {
-                    let result = match artifact.invoke_i64_status_out(entry.raw()) {
-                        Ok(value) => VmResult::success(output, Some(Value::Int(value))),
-                        Err(error) => VmResult::compile_error(
-                            output,
-                            format!(
-                                "E_NATIVE_CACHE_ENTRY: cached entry invocation failed: {error}"
-                            ),
-                        ),
+                let result = cache.get_or_compile(identity, resolve_native_cache_helper, || {
+                    let compile_started = Instant::now();
+                    let (records, disposition) = match self
+                        .compile_native_with_external_function_signatures(
+                            &unit,
+                            entry,
+                            external_signatures,
+                        ) {
+                        Ok(records) => records,
+                        Err(error) => {
+                            native_compile_time += compile_started.elapsed();
+                            cached_compile_error = Some(error.clone());
+                            return Err(php_jit::NativeCacheError::InvalidHeader(error));
+                        }
                     };
-                    return self.attach_native_cache_metrics(
-                        result,
-                        cache,
-                        cache_load_time,
-                        native_compile_time,
-                    );
-                }
+                    if disposition.compiled() {
+                        native_compile_time += compile_started.elapsed();
+                    }
+                    let image = cache_image(identity.clone(), entry, &records);
+                    cached_compile_records = Some(records);
+                    image
+                });
+                cache_load_time += cache_started.elapsed().saturating_sub(native_compile_time);
+                let cache_error = match result {
+                    Ok((artifact, _)) => {
+                        let result = self.execute_cached_entry(
+                            &unit,
+                            std::sync::Arc::new(artifact),
+                            entry,
+                            output,
+                        );
+                        return self.attach_native_cache_metrics(
+                            result,
+                            cache,
+                            cache_load_time,
+                            native_compile_time,
+                            worker_cache_before,
+                        );
+                    }
+                    Err(error) => error,
+                };
                 if let Some(error) = cached_compile_error {
                     let result =
                         VmResult::compile_error(output, format!("E_NATIVE_COMPILE_SETUP: {error}"));
@@ -172,27 +440,37 @@ impl Vm {
                         cache,
                         cache_load_time,
                         native_compile_time,
+                        worker_cache_before,
                     );
                 }
+                let result = VmResult::compile_error(
+                    output,
+                    format!("E_NATIVE_CACHE_ARTIFACT: {cache_error}"),
+                );
+                return self.attach_native_cache_metrics(
+                    result,
+                    cache,
+                    cache_load_time,
+                    native_compile_time,
+                    worker_cache_before,
+                );
             } else if cache.config().mode.can_read() {
                 let cache_started = Instant::now();
-                let loaded = cache.load(identity, |_| None);
+                let loaded = cache.load(identity, resolve_native_cache_helper);
                 cache_load_time += cache_started.elapsed();
                 if let Ok(Some(artifact)) = loaded {
-                    let result = match artifact.invoke_i64_status_out(entry.raw()) {
-                        Ok(value) => VmResult::success(output, Some(Value::Int(value))),
-                        Err(error) => VmResult::compile_error(
-                            output,
-                            format!(
-                                "E_NATIVE_CACHE_ENTRY: cached entry invocation failed: {error}"
-                            ),
-                        ),
-                    };
+                    let result = self.execute_cached_entry(
+                        &unit,
+                        std::sync::Arc::new(artifact),
+                        entry,
+                        output,
+                    );
                     return self.attach_native_cache_metrics(
                         result,
                         cache,
                         cache_load_time,
                         native_compile_time,
+                        worker_cache_before,
                     );
                 }
             }
@@ -201,8 +479,17 @@ impl Vm {
         let compile_started = Instant::now();
         let records = match cached_compile_records {
             Some(records) => records,
-            None => match self.compile_native(&unit, function) {
-                Ok(records) => records,
+            None => match self.compile_native_with_external_function_signatures(
+                &unit,
+                entry,
+                external_signatures,
+            ) {
+                Ok((records, disposition)) => {
+                    if disposition.compiled() {
+                        native_compile_time += compile_started.elapsed();
+                    }
+                    records
+                }
                 Err(error) => {
                     native_compile_time += compile_started.elapsed();
                     let result =
@@ -212,13 +499,11 @@ impl Vm {
                         cache.as_ref(),
                         cache_load_time,
                         native_compile_time,
+                        worker_cache_before,
                     );
                 }
             },
         };
-        if native_compile_time.is_zero() {
-            native_compile_time += compile_started.elapsed();
-        }
         let Some(entry_record) = records.iter().find(|record| record.function == entry) else {
             let result =
                 VmResult::compile_error(output, "E_NATIVE_COMPILE_SETUP: entry record missing");
@@ -227,6 +512,7 @@ impl Vm {
                 cache.as_ref(),
                 cache_load_time,
                 native_compile_time,
+                worker_cache_before,
             );
         };
         if let Some(rejected) = records
@@ -256,6 +542,7 @@ impl Vm {
                 cache.as_ref(),
                 cache_load_time,
                 native_compile_time,
+                worker_cache_before,
             );
         }
         let compiled = &entry_record.result;
@@ -272,42 +559,233 @@ impl Vm {
                 cache.as_ref(),
                 cache_load_time,
                 native_compile_time,
+                worker_cache_before,
             );
         };
-        let result = match handle.invoke_i64(&[], php_jit::JIT_RUNTIME_ABI_HASH) {
-            Ok(value) => VmResult::success(output, Some(Value::Int(value))),
-            Err(error) => VmResult::compile_error(
-                output,
-                format!("E_NATIVE_ENTRY: native entry invocation failed: {error:?}"),
-            ),
+        let native_entries = records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .result
+                    .handle
+                    .as_ref()
+                    .cloned()
+                    .map(|handle| (record.function, handle))
+            })
+            .collect();
+        let mut context = NativeExecutionContext::new(
+            &unit,
+            unit.cache_identity(),
+            &self.options,
+            &self.worker_state,
+            output,
+            native_entries,
+        );
+        context.install_root_dynamic_unit(unit.clone());
+        let native_execution_started_at =
+            self.options.collect_counters.then(std::time::Instant::now);
+        let guard = activate_native_context(&mut context);
+        let outcome = handle.invoke_i64_with_native_unwind(
+            &[],
+            php_jit::JIT_RUNTIME_ABI_HASH,
+            |types, value| {
+                let class = context
+                    .decode_result(value)
+                    .ok()
+                    .and_then(native_exception_fields)
+                    .map(|(class, _, _)| class);
+                class.is_some_and(|class| {
+                    types.iter().any(|type_| {
+                        type_.eq_ignore_ascii_case(&class)
+                            || type_.eq_ignore_ascii_case("Throwable")
+                            || (type_.eq_ignore_ascii_case("Exception")
+                                && class.ends_with("Exception"))
+                            || (type_.eq_ignore_ascii_case("Error")
+                                && (class == "Error" || class.ends_with("Error")))
+                    })
+                })
+            },
+        );
+        let (exception_handled, exception_handler_error) = match &outcome {
+            Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
+                if *status == php_jit::JitCallStatus::THROW.0 as i32 =>
+            {
+                match context.handle_uncaught_throwable(*value) {
+                    Ok(handled) => (handled, None),
+                    Err(error) => (false, Some(error)),
+                }
+            }
+            _ => (false, None),
         };
+        let mut shutdown_throwable = None;
+        let shutdown_error = exception_handler_error.or_else(|| {
+            context.run_shutdown_callbacks().err().and_then(|error| {
+                if error == "E_PHP_RETHROW"
+                    && let Some(throwable) = context.take_pending_throwable()
+                {
+                    shutdown_throwable = Some(throwable);
+                    None
+                } else {
+                    Some(error)
+                }
+            })
+        });
+        context.output.flush_all_buffers();
+        drop(guard);
+        context.publish_include_globals();
+        let native_execution_time_nanos = native_execution_started_at.map_or(0, |started_at| {
+            started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+        });
+        let mut runtime_counters = context.runtime_counters();
+        runtime_counters.native_execution_entries =
+            runtime_counters.native_execution_entries.saturating_add(1);
+        runtime_counters.native_region_entries =
+            runtime_counters.native_region_entries.saturating_add(1);
+        runtime_counters.native_execution_time_nanos = native_execution_time_nanos;
+        let http_response = std::mem::take(&mut context.http_response);
+        let upload_registry = std::mem::take(&mut context.upload_registry);
+        let session = std::mem::take(&mut context.session);
+        let process_exit_terminates_process = context.process_exit_terminates_process();
+        let mut result = if let Some(throwable) = shutdown_throwable {
+            native_uncaught_throwable_result(context.output, Some(throwable))
+        } else if let Some(error) = shutdown_error {
+            VmResult::runtime_error(
+                context.output,
+                context.diagnostic,
+                format!("E_NATIVE_SHUTDOWN: {error}"),
+            )
+        } else if exception_handled {
+            VmResult::success(context.output, Some(Value::Null))
+        } else {
+            match outcome {
+                Ok(php_jit::JitI64InvokeOutcome::Returned(value)) => {
+                    match context.decode_result(value) {
+                        Ok(value) => {
+                            let mut result = VmResult::success(context.output, Some(value));
+                            result.diagnostics.extend(context.diagnostic);
+                            result
+                        }
+                        Err(error) => VmResult::runtime_error(
+                            context.output,
+                            context.diagnostic,
+                            format!("E_NATIVE_VALUE: {error}"),
+                        ),
+                    }
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
+                    if status == php_jit::JitCallStatus::EXIT.0 as i32 =>
+                {
+                    let exit_code = match context.decode_result(value) {
+                        Ok(Value::String(value)) => {
+                            context.output.write_bytes(value.as_bytes());
+                            0
+                        }
+                        Ok(Value::Int(value)) => i32::try_from(value).unwrap_or(0),
+                        Ok(Value::Bool(value)) => i32::from(value),
+                        _ => 0,
+                    };
+                    VmResult::success_exit(context.output, exit_code)
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
+                    if status == php_jit::JitCallStatus::THROW.0 as i32 =>
+                {
+                    let throwable = context.decode_result(value).ok();
+                    native_uncaught_throwable_result(context.output, throwable)
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                    if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
+                {
+                    let message = context
+                        .diagnostic
+                        .as_ref()
+                        .map_or("native runtime operation failed", |diagnostic| {
+                            diagnostic.message()
+                        })
+                        .to_owned();
+                    if context.diagnostic.as_ref().is_some_and(|diagnostic| {
+                        diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
+                    }) && context
+                        .output
+                        .as_bytes()
+                        .windows(b"Fatal error".len())
+                        .any(|window| window == b"Fatal error")
+                    {
+                        VmResult::fatal(context.output, context.diagnostic, message)
+                    } else {
+                        VmResult::runtime_error(context.output, context.diagnostic, message)
+                    }
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                    if status == php_jit::JitCallStatus::RETURN_REFERENCE.0 as i32 =>
+                {
+                    VmResult::success(context.output, None)
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. }) => {
+                    VmResult::runtime_error(
+                        context.output,
+                        context.diagnostic,
+                        format!("native entry returned status {status}"),
+                    )
+                }
+                Err(error) => VmResult::compile_error(
+                    context.output,
+                    format!("E_NATIVE_ENTRY: native entry invocation failed: {error:?}"),
+                ),
+            }
+        };
+        result.process_exit_terminates_process = process_exit_terminates_process;
+        result.http_response = Some(Box::new(http_response));
+        result.upload_registry = Some(Box::new(upload_registry));
+        result.session = Some(Box::new(session));
+        if self.options.collect_counters {
+            result.counters = Some(Box::new(runtime_counters));
+        }
+        if self.options.trace {
+            result.trace.push(format!(
+                "vm-trace: function={}({}) native_entry=cranelift output_len={}",
+                function.name,
+                entry.raw(),
+                result.output.as_bytes().len()
+            ));
+        }
         self.attach_optional_native_cache_metrics(
             result,
             cache.as_ref(),
             cache_load_time,
             native_compile_time,
+            worker_cache_before,
         )
     }
 
     fn compile_native(
         &self,
         unit: &CompiledUnit,
-        function: &php_ir::IrFunction,
-    ) -> Result<Vec<php_jit::JitUnitCompileRecord>, String> {
-        let mut compiler = php_jit::JitEngine::new();
-        compiler
-            .compile_unit_with_runtime_helpers(
-                unit.unit(),
-                php_jit::JitCompileRequest::new(format!("unit.{}", unit.unit().id.raw()))
-                    .with_function_name(function.name.clone())
-                    .with_opt_level(if self.options.native_optimization.is_optimizing() {
-                        2
-                    } else {
-                        0
-                    }),
-                runtime_helper_addresses(),
-            )
-            .map_err(|error| error.to_string())
+        function: php_ir::FunctionId,
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
+        self.worker_state
+            .compile_native(unit, function, &self.options, &[])
+    }
+
+    fn compile_native_with_external_function_signatures(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
+        self.worker_state
+            .compile_native(unit, function, &self.options, external_signatures)
     }
 
     fn native_cache(
@@ -330,12 +808,14 @@ impl Vm {
         cache: Option<&php_jit::NativeArtifactCache>,
         cache_load_time: Duration,
         native_compile_time: Duration,
+        worker_cache_before: NativeCompileCacheStats,
     ) -> VmResult {
         self.attach_native_metrics(
             result,
             cache.map(php_jit::NativeArtifactCache::stats),
             cache_load_time,
             native_compile_time,
+            worker_cache_before,
         )
     }
 
@@ -345,12 +825,14 @@ impl Vm {
         cache: &php_jit::NativeArtifactCache,
         cache_load_time: Duration,
         native_compile_time: Duration,
+        worker_cache_before: NativeCompileCacheStats,
     ) -> VmResult {
         self.attach_native_metrics(
             result,
             Some(cache.stats()),
             cache_load_time,
             native_compile_time,
+            worker_cache_before,
         )
     }
 
@@ -360,27 +842,37 @@ impl Vm {
         cache_stats: Option<php_jit::NativeCacheStats>,
         cache_load_time: Duration,
         native_compile_time: Duration,
+        worker_cache_before: NativeCompileCacheStats,
     ) -> VmResult {
+        let worker_cache = self
+            .worker_state
+            .native_compile_cache_stats()
+            .saturating_delta(worker_cache_before);
         result.native_cache_load_nanos =
             cache_load_time.as_nanos().min(u128::from(u64::MAX)) as u64;
-        result.native_compile_nanos =
-            native_compile_time.as_nanos().min(u128::from(u64::MAX)) as u64;
+        result.native_compile_nanos = worker_cache
+            .compile_time_nanos
+            .max(native_compile_time.as_nanos().min(u128::from(u64::MAX)) as u64);
         if self.options.native_cache_stats
             && let Some(stats) = cache_stats
         {
             result.native_cache_stats = Some(Box::new(stats));
         }
         if self.options.collect_counters {
-            let mut counters = crate::counters::VmCounters::default();
-            let compiled = !native_compile_time.is_zero();
+            let mut counters = result
+                .counters
+                .take()
+                .map_or_else(crate::counters::VmCounters::default, |counters| *counters);
             let executed = result.status.is_success();
-            counters.native_compile_attempts = u64::from(compiled);
-            counters.native_compile_successes = u64::from(compiled && executed);
-            counters.native_compile_failures = u64::from(compiled && !executed);
+            counters.native_compile_attempts = worker_cache.misses;
+            counters.native_compile_successes = worker_cache.insertions;
+            counters.native_compile_failures = worker_cache.compile_failures;
             counters.native_compile_time_nanos = result.native_compile_nanos;
-            counters.native_execution_entries = u64::from(executed);
-            counters.native_region_entries = u64::from(executed);
-            counters.native_version_published = u64::from(compiled && executed);
+            counters.native_execution_entries =
+                counters.native_execution_entries.max(u64::from(executed));
+            counters.native_region_entries =
+                counters.native_region_entries.max(u64::from(executed));
+            counters.native_version_published = worker_cache.insertions;
             if let Some(stats) = cache_stats {
                 counters.native_cache_hits = stats.hits;
                 counters.native_cache_misses = stats.misses;
@@ -397,33 +889,231 @@ impl Vm {
     }
 }
 
-fn native_cache_candidate(unit: &php_ir::IrUnit, entry: php_ir::FunctionId) -> bool {
-    if unit.functions.len() != 1 {
-        return false;
+pub(super) fn compile_native_function_graph(
+    unit: &php_ir::IrUnit,
+    function: php_ir::FunctionId,
+    options: &VmOptions,
+    ir_fingerprint: &str,
+    dependency_identity: &str,
+    external_signatures: &[php_jit::JitExternalFunctionSignature],
+) -> Result<Vec<php_jit::JitUnitCompileRecord>, String> {
+    let function_name = unit
+        .functions
+        .get(function.index())
+        .ok_or_else(|| format!("native function {} is missing", function.raw()))?
+        .name
+        .clone();
+    let mut compiler = php_jit::JitEngine::new();
+    compiler
+        .compile_unit_with_runtime_helpers(
+            unit,
+            php_jit::JitCompileRequest::new(format!("unit.{}", unit.id.raw()))
+                .with_function_name(function_name)
+                .with_ir_fingerprint(ir_fingerprint)
+                .with_dependency_identity(dependency_identity)
+                .with_external_function_signatures(external_signatures.to_vec())
+                .with_opt_level(if options.native_optimization.is_optimizing() {
+                    2
+                } else {
+                    0
+                }),
+            runtime_helper_addresses(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn native_exception_fields(value: Value) -> Option<(String, String, String)> {
+    if let Value::Object(object) = value {
+        let string = |value: Value| match value {
+            Value::String(value) => Some(String::from_utf8_lossy(value.as_bytes()).into_owned()),
+            Value::Null => Some(String::new()),
+            _ => None,
+        };
+        let message = object
+            .get_property("message")
+            .and_then(string)
+            .unwrap_or_default();
+        let file = object
+            .get_property("file")
+            .and_then(string)
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        return Some((object.display_name(), message, file));
     }
-    let Some(function) = unit.functions.get(entry.index()) else {
-        return false;
+    let Value::Array(array) = value else {
+        return None;
     };
-    function.params.is_empty()
-        && function.blocks.iter().all(|block| {
-            block.instructions.iter().all(|instruction| {
-                matches!(
-                    instruction.kind,
-                    php_ir::InstructionKind::Nop
-                        | php_ir::InstructionKind::LoadConst { .. }
-                        | php_ir::InstructionKind::Move { .. }
-                        | php_ir::InstructionKind::LoadLocal { .. }
-                        | php_ir::InstructionKind::LoadLocalQuiet { .. }
-                        | php_ir::InstructionKind::StoreLocal { .. }
-                )
-            }) && block.terminator.as_ref().is_some_and(|terminator| {
-                matches!(
-                    terminator.kind,
-                    php_ir::instruction::TerminatorKind::Jump { .. }
-                        | php_ir::instruction::TerminatorKind::Return { .. }
-                )
-            })
+    let field = |name: &str| {
+        array.get(&php_runtime::api::ArrayKey::String(
+            php_runtime::api::PhpString::from_bytes(name.as_bytes().to_vec()),
+        ))
+    };
+    let string = |value: &Value| match value {
+        Value::String(value) => Some(String::from_utf8_lossy(value.as_bytes()).into_owned()),
+        Value::Null => Some(String::new()),
+        _ => None,
+    };
+    let raw_class = string(field("class")?)?;
+    let class = match raw_class.to_ascii_lowercase().as_str() {
+        "exception" => "Exception".to_owned(),
+        "runtimeexception" => "RuntimeException".to_owned(),
+        "error" => "Error".to_owned(),
+        "typeerror" => "TypeError".to_owned(),
+        "valueerror" => "ValueError".to_owned(),
+        "argumentcounterror" => "ArgumentCountError".to_owned(),
+        "divisionbyzeroerror" => "DivisionByZeroError".to_owned(),
+        _ => raw_class,
+    };
+    Some((class, string(field("message")?)?, string(field("file")?)?))
+}
+
+fn native_exception_detailed_output(
+    value: &Value,
+    class: &str,
+    message: &str,
+    file: &str,
+) -> Option<String> {
+    let Value::Array(exception) = value else {
+        return None;
+    };
+    let key = |name: &str| {
+        php_runtime::api::ArrayKey::String(php_runtime::api::PhpString::from_bytes(
+            name.as_bytes().to_vec(),
+        ))
+    };
+    let Value::Int(line) = exception.get(&key("line"))? else {
+        return None;
+    };
+    let line = usize::try_from(*line).ok()?;
+    let trace = match exception.get(&key("trace")) {
+        Some(Value::Array(trace)) => trace,
+        _ => {
+            return Some(format!(
+                "\nFatal error: Uncaught {class}: {message} in {file}:{line}\nStack trace:\n#0 {{main}}\n  thrown in {file} on line {line}\n"
+            ));
+        }
+    };
+    let frames = trace
+        .iter()
+        .filter_map(|(_, value)| {
+            let Value::Array(frame) = value else {
+                return None;
+            };
+            let string = |name: &str| match frame.get(&key(name)) {
+                Some(Value::String(value)) => {
+                    Some(String::from_utf8_lossy(value.as_bytes()).into_owned())
+                }
+                _ => None,
+            };
+            let internal = matches!(frame.get(&key("internal")), Some(Value::Bool(true)));
+            let frame_line = match frame.get(&key("line")) {
+                Some(Value::Int(value)) => usize::try_from(*value).ok(),
+                _ => None,
+            };
+            let function = string("function")?;
+            let frame_file = string("file");
+            let args = match frame.get(&key("args")) {
+                Some(Value::Array(args)) => args
+                    .iter()
+                    .map(|(_, value)| native_trace_argument(value))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => String::new(),
+            };
+            if !internal && (frame_file.is_none() || frame_line.is_none()) {
+                return None;
+            }
+            Some((frame_file, frame_line, function, args, internal))
         })
+        .collect::<Vec<_>>();
+    if frames.is_empty() {
+        return Some(format!(
+            "\nFatal error: Uncaught {class}: {message} in {file}:{line}\nStack trace:\n#0 {{main}}\n  thrown in {file} on line {line}\n"
+        ));
+    }
+    let detailed_message = match &frames[0] {
+        (_, _, _, _, true) => format!("{message} in {file}:{line}"),
+        (Some(call_file), Some(call_line), _, _, false) => format!(
+            "{message}, called in {call_file} on line {call_line} and defined in {file}:{line}"
+        ),
+        _ => format!("{message} in {file}:{line}"),
+    };
+    let mut output = format!("\nFatal error: Uncaught {class}: {detailed_message}\nStack trace:\n");
+    for (index, (frame_file, frame_line, function, args, internal)) in frames.iter().enumerate() {
+        if *internal {
+            output.push_str(&format!(
+                "#{index} [internal function]: {function}({args})\n"
+            ));
+        } else if let (Some(frame_file), Some(frame_line)) = (frame_file, frame_line) {
+            output.push_str(&format!(
+                "#{index} {frame_file}({frame_line}): {function}({args})\n"
+            ));
+        }
+    }
+    output.push_str(&format!(
+        "#{} {{main}}\n  thrown in {file} on line {line}\n",
+        frames.len()
+    ));
+    Some(output)
+}
+
+fn native_uncaught_throwable_result(
+    mut output: php_runtime::api::OutputBuffer,
+    throwable: Option<Value>,
+) -> VmResult {
+    let (class, message, file) = throwable
+        .clone()
+        .and_then(native_exception_fields)
+        .unwrap_or_else(|| {
+            (
+                "Exception".to_owned(),
+                "unknown exception".to_owned(),
+                "<unknown>".to_owned(),
+            )
+        });
+    let rendered = throwable
+        .as_ref()
+        .and_then(|value| native_exception_detailed_output(value, &class, &message, &file))
+        .unwrap_or_else(|| {
+            format!(
+                "\nFatal error: Uncaught {class}: {message}\nStack trace:\n#0 {{main}}\n  thrown in {file}\n"
+            )
+        });
+    output.write_bytes(rendered);
+    let diagnostic = php_runtime::api::RuntimeDiagnostic::new(
+        "E_PHP_VM_UNCAUGHT_THROWABLE",
+        php_runtime::api::RuntimeSeverity::FatalError,
+        format!("Uncaught {class}: {message}"),
+        php_runtime::api::RuntimeSourceSpan {
+            file: Some(file),
+            start: 0,
+            end: 0,
+        },
+        Vec::new(),
+        None,
+    );
+    VmResult::fatal(output, Some(diagnostic), "uncaught throwable")
+}
+
+fn native_trace_argument(value: &Value) -> String {
+    match value {
+        Value::String(value) => format!("'{}'", String::from_utf8_lossy(value.as_bytes())),
+        Value::Array(_) => "Array".to_owned(),
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) => value.to_f64().to_string(),
+        Value::Bool(true) => "true".to_owned(),
+        Value::Bool(false) => "false".to_owned(),
+        Value::Null | Value::Uninitialized => "NULL".to_owned(),
+        Value::Object(object) => format!("Object({})", object.display_name()),
+        _ => "...".to_owned(),
+    }
+}
+
+fn native_cache_candidate(unit: &php_ir::IrUnit, entry: php_ir::FunctionId) -> bool {
+    // Relocation-aware PNA1 images retain every compiled function, helper
+    // import, and state-metadata record. Declaration-heavy include units are
+    // therefore first-class cache candidates instead of being forced through
+    // a helper-free leaf allowlist.
+    unit.functions.get(entry.index()).is_some()
 }
 
 fn native_cache_identity(
@@ -434,8 +1124,8 @@ fn native_cache_identity(
     let optimization_tier = options.native_optimization.as_str().to_owned();
     Ok(php_jit::NativeCacheIdentity {
         source_hash: format!("compiled-source-v1-{:016x}", unit.artifact_identity()),
-        ir_hash: php_jit::stable_ir_fingerprint(unit.unit()),
-        dependency_graph_hash: php_jit::stable_dependency_identity(unit.unit()),
+        ir_hash: unit.prepared_ir_fingerprint().to_owned(),
+        dependency_graph_hash: unit.prepared_dependency_identity().to_owned(),
         build_id: option_env!("PHRUST_BUILD_ID")
             .unwrap_or(env!("PHRUST_AUTO_BUILD_ID"))
             .to_owned(),
@@ -456,49 +1146,52 @@ fn native_cache_identity(
 
 fn cache_image(
     identity: php_jit::NativeCacheIdentity,
-    entry: php_ir::FunctionId,
+    _entry: php_ir::FunctionId,
     records: &[php_jit::JitUnitCompileRecord],
 ) -> Result<php_jit::NativeArtifactImage, php_jit::NativeCacheError> {
-    let record = records
-        .iter()
-        .find(|record| record.function == entry)
-        .ok_or_else(|| {
-            php_jit::NativeCacheError::InvalidHeader("entry record missing".to_owned())
-        })?;
-    let handle = record.result.handle.as_ref().ok_or_else(|| {
-        php_jit::NativeCacheError::InvalidHeader("entry has no native handle".to_owned())
-    })?;
-    let code = handle.copy_relocation_free_machine_code().ok_or_else(|| {
-        php_jit::NativeCacheError::InvalidRelocation(
-            "entry requires relocation-aware cache emission".to_owned(),
-        )
-    })?;
-    Ok(php_jit::NativeArtifactImage::minimal(
-        identity,
-        code.clone(),
-        php_jit::NativeFunctionImage {
-            function_id: entry.raw(),
-            code_offset: 0,
-            code_len: code.len() as u64,
-            arity: 0,
-            abi: php_jit::NativeFunctionAbi::I64StatusOut,
-        },
-    ))
+    php_jit::NativeArtifactImage::from_compile_records(identity, records)
 }
 
 fn runtime_helper_addresses() -> php_jit::JitRuntimeHelperAddresses {
     php_jit::JitRuntimeHelperAddresses {
-        helper_table: jit_runtime_helper_table() as *const _ as usize,
-        packed_array_len: jit_array_len_abi as *const () as usize,
-        packed_array_fetch_int_slow: jit_array_fetch_int_slow_abi as *const () as usize,
-        known_strlen: jit_strlen_known_abi as *const () as usize,
-        known_count: jit_count_known_abi as *const () as usize,
-        string_concat: jit_concat_string_string_fast as *const () as usize,
-        property_load: jit_property_load_monomorphic_fast as *const () as usize,
-        record_array_lookup: jit_record_array_lookup_abi as *const () as usize,
         native_call_dispatch: jit_native_call_dispatch_abi as *const () as usize,
         native_dynamic_code: jit_native_dynamic_code_abi as *const () as usize,
+        native_unary: jit_native_unary_abi as *const () as usize,
+        native_binary: jit_native_binary_abi as *const () as usize,
+        native_compare: jit_native_compare_abi as *const () as usize,
+        native_cast: jit_native_cast_abi as *const () as usize,
+        native_echo: jit_native_echo_abi as *const () as usize,
+        native_local_fetch: jit_native_local_fetch_abi as *const () as usize,
+        native_local_store: jit_native_local_store_abi as *const () as usize,
+        native_value_lifecycle: jit_native_value_lifecycle_abi as *const () as usize,
+        native_reference_bind: jit_native_reference_bind_abi as *const () as usize,
+        native_return_check: jit_native_return_check_abi as *const () as usize,
+        native_exception_new: jit_native_exception_new_abi as *const () as usize,
+        native_array_new: jit_native_array_new_abi as *const () as usize,
+        native_object_new: jit_native_object_new_abi as *const () as usize,
+        native_property_fetch: jit_native_property_fetch_abi as *const () as usize,
+        native_property_assign: jit_native_property_assign_abi as *const () as usize,
+        native_object_clone: jit_native_object_clone_abi as *const () as usize,
+        native_object_clone_with: jit_native_object_clone_with_abi as *const () as usize,
+        native_array_insert: jit_native_array_insert_abi as *const () as usize,
+        native_array_fetch: jit_native_array_fetch_abi as *const () as usize,
+        native_array_unset: jit_native_array_unset_abi as *const () as usize,
+        native_array_spread: jit_native_array_spread_abi as *const () as usize,
+        native_foreach_init: jit_native_foreach_init_abi as *const () as usize,
+        native_foreach_next: jit_native_foreach_next_abi as *const () as usize,
+        native_foreach_cleanup: jit_native_foreach_cleanup_abi as *const () as usize,
+        native_constant_fetch: jit_native_constant_fetch_abi as *const () as usize,
+        native_truthy: jit_native_truthy_abi as *const () as usize,
+        native_runtime_fatal: jit_native_runtime_fatal_abi as *const () as usize,
+        native_execution_poll: jit_native_execution_poll_abi as *const () as usize,
     }
+}
+
+fn resolve_native_cache_helper(stable_id: u32) -> Option<usize> {
+    php_jit::resolve_helper_address(
+        php_runtime::api::JitHelperId(stable_id),
+        runtime_helper_addresses(),
+    )
 }
 
 #[cfg(test)]
@@ -506,7 +1199,8 @@ mod tests {
     use super::*;
     use php_ir::builder::IrBuilder;
     use php_ir::{
-        FunctionFlags, InstructionKind, IrConstant, IrReturnType, IrSpan, Operand, UnitId,
+        ClassEntry, ClassFlags, ClassId, FunctionFlags, InstructionKind, IrConstant, IrReturnType,
+        IrSpan, Operand, UnitId,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -533,6 +1227,133 @@ mod tests {
         CompiledUnit::new(builder.finish())
     }
 
+    fn looping_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(992));
+        let file = builder.add_file("native-deadline-vm.php");
+        let span = IrSpan::new(file, 0, 24);
+        let function = builder.start_function("main", FunctionFlags::default(), span);
+        let block = builder.append_block(function);
+        builder.terminate_jump(function, block, block, span);
+        builder.set_entry(function);
+        CompiledUnit::new(builder.finish())
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn native_compile_probe_uses_production_helpers_without_execution() {
+        let report = Vm::new()
+            .probe_cranelift(&returning_unit(42), Some("main"))
+            .expect("native compile probe");
+        assert_eq!(report.function_name, "main");
+        assert!(matches!(
+            report.result.status,
+            php_jit::JitCompileStatus::Compiled
+        ));
+        assert!(
+            Vm::new()
+                .probe_cranelift(&returning_unit(42), Some("missing"))
+                .expect_err("unknown function must be strict")
+                .contains("function not found")
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn native_loop_poll_reports_stable_execution_timeout() {
+        let result = Vm::with_options(VmOptions {
+            runtime_context: php_runtime::api::RuntimeContext::controlled_cli(
+                "native-deadline-vm.php",
+                Vec::new(),
+            )
+            .with_execution_time_limit(Some(Duration::ZERO)),
+            ..VmOptions::default()
+        })
+        .execute(looping_unit());
+
+        assert_eq!(
+            result.status.exit_status(),
+            php_runtime::api::ExitStatus::RuntimeError
+        );
+        assert_eq!(result.diagnostics.len(), 1, "{result:#?}");
+        assert_eq!(result.diagnostics[0].id(), "E_PHP_VM_EXECUTION_TIMEOUT");
+    }
+
+    #[test]
+    fn declaration_units_are_native_cache_candidates() {
+        let unit = returning_unit(42);
+        assert!(native_cache_candidate(unit.unit(), unit.unit().entry));
+
+        let mut declaration_unit = unit.unit().clone();
+        declaration_unit.classes.push(ClassEntry {
+            id: ClassId::new(0),
+            name: "cacheddeclaration".to_owned(),
+            display_name: "CachedDeclaration".to_owned(),
+            parent: None,
+            parent_display_name: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor: None,
+            flags: ClassFlags::default(),
+            span: IrSpan::new(declaration_unit.files[0].id, 6, 32),
+        });
+        assert!(native_cache_candidate(
+            &declaration_unit,
+            declaration_unit.entry
+        ));
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn worker_cache_skips_region_rebuild_and_invalidates_exactly() {
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let unit = returning_unit(73);
+        let options = VmOptions::default();
+
+        let first = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        let second = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        assert_eq!(first.return_value, Some(Value::Int(73)));
+        assert_eq!(second.return_value, Some(Value::Int(73)));
+        assert_eq!(second.native_compile_nanos, 0);
+        let warm_stats = worker.native_compile_cache_stats();
+        assert_eq!(warm_stats.entries, 1);
+        assert_eq!(warm_stats.hits, 1);
+        assert_eq!(warm_stats.misses, 1);
+        assert_eq!(warm_stats.insertions, 1);
+        assert_eq!(warm_stats.evictions, 0);
+        assert_eq!(warm_stats.compile_waits, 0);
+        assert_eq!(warm_stats.compile_failures, 0);
+        assert!(warm_stats.compile_time_nanos > 0);
+
+        // A separately built artifact must not borrow handles merely because
+        // its source and IR happen to be equal.
+        let replacement = returning_unit(73);
+        let replacement_result =
+            Vm::with_options_and_worker_state(options, worker.clone()).execute(replacement);
+        assert_eq!(replacement_result.return_value, Some(Value::Int(73)));
+
+        // Optimization policy is part of the cache key even for the same
+        // immutable compiled-unit allocation.
+        let optimizing = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            ..VmOptions::default()
+        };
+        let optimizing_result =
+            Vm::with_options_and_worker_state(optimizing, worker.clone()).execute(unit);
+        assert_eq!(optimizing_result.return_value, Some(Value::Int(73)));
+        let stats = worker.native_compile_cache_stats();
+        assert_eq!(stats.entries, 3);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 3);
+        assert_eq!(stats.insertions, 3);
+    }
+
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn vm_reloads_native_artifact_without_compilation() {
@@ -552,7 +1373,11 @@ mod tests {
             ..VmOptions::default()
         })
         .execute(unit.clone());
-        assert_eq!(first.return_value, Some(Value::Int(42)));
+        assert_eq!(
+            first.return_value,
+            Some(Value::Int(42)),
+            "cache population result: {first:#?}"
+        );
         assert_eq!(first.native_cache_stats.unwrap().writes, 1);
 
         let second = Vm::with_options(VmOptions {
@@ -562,7 +1387,48 @@ mod tests {
             ..VmOptions::default()
         })
         .execute(unit);
-        assert_eq!(second.return_value, Some(Value::Int(42)));
+        assert_eq!(
+            second.return_value,
+            Some(Value::Int(42)),
+            "cached execution result: {second:#?}"
+        );
+        assert_eq!(second.native_cache_stats.unwrap().hits, 1);
+        assert_eq!(second.native_compile_nanos, 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn vm_reloads_helper_using_native_artifact_without_compilation() {
+        let directory = std::env::temp_dir().join(format!(
+            "phrust-vm-pna-helper-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut ir = returning_unit(91).unit().clone();
+        ir.functions[ir.entry.index()].return_type = None;
+        let unit = CompiledUnit::from(ir);
+        let first = Vm::with_options(VmOptions {
+            native_cache: php_jit::NativeCacheMode::ReadWrite,
+            native_cache_dir: directory.clone(),
+            native_cache_stats: true,
+            ..VmOptions::default()
+        })
+        .execute(unit.clone());
+        assert_eq!(first.return_value, Some(Value::Int(91)), "{first:#?}");
+        assert_eq!(first.native_cache_stats.unwrap().writes, 1);
+
+        let second = Vm::with_options(VmOptions {
+            native_cache: php_jit::NativeCacheMode::Read,
+            native_cache_dir: directory.clone(),
+            native_cache_stats: true,
+            ..VmOptions::default()
+        })
+        .execute(unit);
+        assert_eq!(second.return_value, Some(Value::Int(91)), "{second:#?}");
         assert_eq!(second.native_cache_stats.unwrap().hits, 1);
         assert_eq!(second.native_compile_nanos, 0);
         std::fs::remove_dir_all(directory).unwrap();

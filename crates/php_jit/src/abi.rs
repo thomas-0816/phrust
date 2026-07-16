@@ -1,4 +1,4 @@
-//! Safe VM/JIT ABI boundary types.
+//! Safe native compiler/runtime ABI boundary types.
 //!
 //! These types are intentionally handle-based. They do not expose raw pointers,
 //! Rust references, frame internals, GC cells, refcount state, or COW storage to
@@ -7,19 +7,20 @@
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use php_ir::{BlockId, FunctionId, InstrId, LocalId, RegId};
+use php_ir::{FunctionId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 9;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 17;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x09c1_a817_0000_0009;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a817_0000_0026;
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
-pub const JIT_DEOPT_MAX_SLOTS: usize = 64;
+pub const JIT_DEOPT_MAX_SLOTS: usize = 256;
+pub const JIT_DEOPT_LOCAL_MASK_WORDS: usize = JIT_DEOPT_MAX_SLOTS / u64::BITS as usize;
 pub const JIT_DEOPT_MAX_REGISTERS: usize = 64;
 
 /// Caller-owned state buffer populated before a native side exit returns.
@@ -34,8 +35,11 @@ pub struct JitDeoptState {
     pub slot_count: u32,
     /// Native source-version identity reconstructed at a transition.
     pub native_version: u32,
-    /// Bit `n` is set when `slots[n]` contains a materialized value.
+    /// Bit `n` is set when `slots[n]` contains a materialized value for the
+    /// first 64 locals.
     pub initialized_mask: u64,
+    /// Initialization masks for locals 64 through 255, in ascending chunks.
+    pub initialized_masks_high: [u64; JIT_DEOPT_LOCAL_MASK_WORDS - 1],
     /// Materialized scalar locals indexed by their VM local ID.
     pub slots: [i64; JIT_DEOPT_MAX_SLOTS],
     /// Explicit PHP control resumed at a catch/finally native entry.
@@ -59,6 +63,7 @@ impl Default for JitDeoptState {
             slot_count: 0,
             native_version: 0,
             initialized_mask: 0,
+            initialized_masks_high: [0; JIT_DEOPT_LOCAL_MASK_WORDS - 1],
             slots: [0; JIT_DEOPT_MAX_SLOTS],
             control_status: JitCallStatus::CONTINUE,
             control_reserved: 0,
@@ -69,6 +74,35 @@ impl Default for JitDeoptState {
             delegation_handle: 0,
             initialized_register_mask: 0,
             registers: [0; JIT_DEOPT_MAX_REGISTERS],
+        }
+    }
+}
+
+impl JitDeoptState {
+    #[must_use]
+    pub fn local_initialized(&self, local: LocalId) -> bool {
+        let index = local.index();
+        if index >= JIT_DEOPT_MAX_SLOTS {
+            return false;
+        }
+        let bit = 1_u64 << (index % u64::BITS as usize);
+        if index < u64::BITS as usize {
+            self.initialized_mask & bit != 0
+        } else {
+            self.initialized_masks_high[index / u64::BITS as usize - 1] & bit != 0
+        }
+    }
+
+    pub fn mark_local_initialized(&mut self, local: LocalId) {
+        let index = local.index();
+        if index >= JIT_DEOPT_MAX_SLOTS {
+            return;
+        }
+        let bit = 1_u64 << (index % u64::BITS as usize);
+        if index < u64::BITS as usize {
+            self.initialized_mask |= bit;
+        } else {
+            self.initialized_masks_high[index / u64::BITS as usize - 1] |= bit;
         }
     }
 }
@@ -106,12 +140,6 @@ impl JitCallStatus {
     pub const RECOMPILE_REQUESTED: Self = Self(9);
     /// Boundary validation failed before generated code was entered.
     pub const ABI_MISMATCH: Self = Self(10);
-
-    /// Compatibility spellings retained for callers while all native entry
-    /// points migrate to the explicit control-status vocabulary.
-    pub const YIELD: Self = Self::SUSPEND_GENERATOR;
-    pub const FIBER_SUSPEND: Self = Self::SUSPEND_FIBER;
-    pub const DEOPT: Self = Self::RECOMPILE_REQUESTED;
 
     #[must_use]
     pub const fn is_terminal_return(self) -> bool {
@@ -161,8 +189,8 @@ pub struct JitNativeControlRecord {
     pub value: JitAbiSlot,
     /// Opaque VM-owned throwable handle when `status` is `THROW`.
     pub exception_handle: u64,
-    /// Resume target selected by explicit native unwind, or `u32::MAX`.
-    pub resume_block: u32,
+    /// Native continuation selected by explicit unwind, or `u32::MAX`.
+    pub resume_continuation_id: u32,
     pub handler_depth: u32,
 }
 
@@ -219,7 +247,9 @@ impl JitNativeDestructorPoint {
 
 /// Native suspension family stored in generator/fiber heap state.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize,
+)]
 pub struct JitNativeSuspendKind(pub u32);
 
 impl JitNativeSuspendKind {
@@ -486,6 +516,8 @@ pub struct JitNativeCallFrame {
     pub function_id: u32,
     pub region_id: u32,
     pub continuation_id: u32,
+    pub source_block_id: u32,
+    pub source_instruction_id: u32,
     pub result_slot: u32,
     pub local_count: u32,
     pub temporary_count: u32,
@@ -515,6 +547,8 @@ impl Default for JitNativeCallFrame {
             function_id: u32::MAX,
             region_id: u32::MAX,
             continuation_id: u32::MAX,
+            source_block_id: u32::MAX,
+            source_instruction_id: u32::MAX,
             result_slot: u32::MAX,
             local_count: 0,
             temporary_count: 0,
@@ -545,7 +579,9 @@ pub type JitNativeDispatchTrampoline = unsafe extern "C" fn(
 
 /// Dynamic source/declaration operation executed from generated code.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize,
+)]
 pub struct JitNativeDynamicCodeKind(pub u32);
 
 impl JitNativeDynamicCodeKind {
@@ -557,6 +593,8 @@ impl JitNativeDynamicCodeKind {
     pub const DECLARE_FUNCTION: Self = Self(6);
     pub const DECLARE_CLASS: Self = Self(7);
     pub const MAKE_CLOSURE: Self = Self(8);
+    pub const REGISTER_CONSTANT: Self = Self(9);
+    pub const EMIT_DIAGNOSTIC: Self = Self(10);
 }
 
 /// Native compile/publication request for dynamic PHP code.
@@ -611,7 +649,7 @@ impl Default for JitNativeDynamicCodeRequest {
 /// Runtime dynamic compiler/invoker. Successful return means the requested
 /// PHP code ran through a published native entry. Compile errors use
 /// `RUNTIME_ERROR`; a missing compiler uses `COMPILE_REQUIRED` and may never
-/// fall back to interpreter execution.
+/// execute the dynamic unit before native compilation succeeds.
 pub type JitNativeDynamicCodeTrampoline = unsafe extern "C" fn(
     vm_context: u64,
     request: *mut JitNativeDynamicCodeRequest,
@@ -654,93 +692,6 @@ impl JitNativeIndirectionEntry {
         (self.generation.load(Ordering::Acquire) == expected_generation)
             .then(|| self.address.load(Ordering::Acquire))
             .filter(|address| *address != 0)
-    }
-}
-
-/// Stable helper IDs. Append-only within an ABI version.
-pub mod helper_id {
-    pub const ARRAY_LEN: u32 = 1;
-    pub const ARRAY_FETCH_INT: u32 = 2;
-    pub const STRLEN: u32 = 3;
-    pub const COUNT: u32 = 4;
-    pub const CONCAT: u32 = 5;
-    pub const RECORD_LOOKUP: u32 = 6;
-    pub const PROPERTY_LOAD: u32 = 7;
-    pub const BUILTIN_DISPATCH: u32 = 8;
-}
-
-/// One versioned helper entry point. The dispatcher validates `helper_id`,
-/// argument count, opaque handles and the ABI version before touching VM state.
-pub type JitHelperDispatch = unsafe extern "C" fn(
-    vm_context: u64,
-    helper_id: u32,
-    args: *const JitAbiSlot,
-    arg_count: u32,
-    out: *mut JitCallResult,
-) -> i32;
-
-/// Published runtime helper contract. `struct_size` permits append-only growth
-/// without generated code reading beyond the table supplied by an older VM.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct JitRuntimeHelperTable {
-    pub abi_version: u32,
-    pub struct_size: u32,
-    pub abi_hash: u64,
-    pub dispatch: Option<JitHelperDispatch>,
-}
-
-impl JitRuntimeHelperTable {
-    #[must_use]
-    pub const fn new(dispatch: JitHelperDispatch) -> Self {
-        Self {
-            abi_version: JIT_RUNTIME_ABI_VERSION,
-            struct_size: std::mem::size_of::<Self>() as u32,
-            abi_hash: JIT_RUNTIME_ABI_HASH,
-            dispatch: Some(dispatch),
-        }
-    }
-}
-
-/// Default typed-deopt dispatcher used until a VM publishes service-specific
-/// opaque-slot implementations through the same table contract.
-pub unsafe extern "C" fn jit_default_helper_dispatch(
-    _vm_context: u64,
-    helper_id: u32,
-    args: *const JitAbiSlot,
-    arg_count: u32,
-    out: *mut JitCallResult,
-) -> i32 {
-    if out.is_null() || (arg_count != 0 && args.is_null()) {
-        return crate::JIT_HELPER_STATUS_FALLBACK;
-    }
-    let known = matches!(
-        helper_id,
-        helper_id::ARRAY_LEN
-            | helper_id::ARRAY_FETCH_INT
-            | helper_id::STRLEN
-            | helper_id::COUNT
-            | helper_id::CONCAT
-            | helper_id::RECORD_LOOKUP
-            | helper_id::PROPERTY_LOAD
-            | helper_id::BUILTIN_DISPATCH
-    );
-    let result = JitCallResult {
-        status: if known {
-            JitCallStatus::DEOPT
-        } else {
-            JitCallStatus::ABI_MISMATCH
-        },
-        detail: helper_id,
-        value: JitAbiSlot::default(),
-    };
-    // SAFETY: `out` was checked non-null and the ABI requires one writable
-    // result record for this synchronous call.
-    unsafe { out.write(result) };
-    if known {
-        crate::JIT_HELPER_STATUS_FALLBACK
-    } else {
-        -1
     }
 }
 
@@ -931,10 +882,10 @@ pub enum JitBailoutKind {
     GuardFailed,
     /// Encountered a value outside the primitive subset.
     UnsupportedValue,
-    /// Runtime callout requested interpreter fallback.
+    /// Runtime callout requested a generic native path.
     RuntimeCallout,
-    /// Deoptimization requested by invalidation or missing metadata.
-    Deopt,
+    /// A less-specialized native continuation was requested.
+    NativeTransition,
 }
 
 impl JitBailoutKind {
@@ -945,12 +896,12 @@ impl JitBailoutKind {
             Self::GuardFailed => "guard_failed",
             Self::UnsupportedValue => "unsupported_value",
             Self::RuntimeCallout => "runtime_callout",
-            Self::Deopt => "deopt",
+            Self::NativeTransition => "native_transition",
         }
     }
 }
 
-/// Stable reason codes for JIT side exits back to the interpreter.
+/// Stable reason codes for native version exits.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SideExitReason {
@@ -997,10 +948,10 @@ impl SideExitReason {
 pub struct JitSideExit {
     /// Stable reason.
     pub reason: SideExitReason,
-    /// Optional block to resume in baseline native code.
-    pub resume_block: Option<BlockId>,
-    /// Optional instruction to resume in baseline native code.
-    pub resume_instruction: Option<InstrId>,
+    /// Optional baseline-native continuation entry.
+    pub continuation_id: Option<u32>,
+    /// Optional stable IR/source position associated with the continuation.
+    pub source_position: Option<u32>,
     /// Optional helper status or guard code.
     pub status_code: Option<i32>,
 }
@@ -1011,17 +962,21 @@ impl JitSideExit {
     pub const fn new(reason: SideExitReason) -> Self {
         Self {
             reason,
-            resume_block: None,
-            resume_instruction: None,
+            continuation_id: None,
+            source_position: None,
             status_code: None,
         }
     }
 
     /// Adds a baseline-native resume point.
     #[must_use]
-    pub const fn with_resume(mut self, block: BlockId, instruction: InstrId) -> Self {
-        self.resume_block = Some(block);
-        self.resume_instruction = Some(instruction);
+    pub const fn with_native_continuation(
+        mut self,
+        continuation_id: u32,
+        source_position: u32,
+    ) -> Self {
+        self.continuation_id = Some(continuation_id);
+        self.source_position = Some(source_position);
         self
     }
 
@@ -1033,15 +988,15 @@ impl JitSideExit {
     }
 }
 
-/// Bailout/deoptimization metadata returned to the VM.
+/// Native version-exit metadata returned to the VM.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitBailout {
     /// Bailout family.
     pub kind: JitBailoutKind,
-    /// Optional block to resume in baseline native code.
-    pub resume_block: Option<BlockId>,
-    /// Optional instruction to resume in baseline native code.
-    pub resume_instruction: Option<InstrId>,
+    /// Optional baseline-native continuation entry.
+    pub continuation_id: Option<u32>,
+    /// Optional stable IR/source position associated with the continuation.
+    pub source_position: Option<u32>,
     /// Stable debug reason.
     pub reason: String,
 }
@@ -1052,17 +1007,21 @@ impl JitBailout {
     pub fn new(kind: JitBailoutKind, reason: impl Into<String>) -> Self {
         Self {
             kind,
-            resume_block: None,
-            resume_instruction: None,
+            continuation_id: None,
+            source_position: None,
             reason: reason.into(),
         }
     }
 
     /// Adds a baseline-native resume point.
     #[must_use]
-    pub const fn with_resume(mut self, block: BlockId, instruction: InstrId) -> Self {
-        self.resume_block = Some(block);
-        self.resume_instruction = Some(instruction);
+    pub const fn with_native_continuation(
+        mut self,
+        continuation_id: u32,
+        source_position: u32,
+    ) -> Self {
+        self.continuation_id = Some(continuation_id);
+        self.source_position = Some(source_position);
         self
     }
 }
@@ -1128,7 +1087,7 @@ impl JitRuntimeCallout {
 pub enum JitRuntimeCalloutResult {
     /// Callout returned a normal ABI value.
     Returned(JitAbiValue),
-    /// Callout requested interpreter fallback/deopt.
+    /// Callout requested a generic or less-specialized native continuation.
     Bailout(JitBailout),
     /// Callout propagated a PHP exception/error.
     Exception(JitExceptionMarker),
@@ -1139,7 +1098,7 @@ pub enum JitRuntimeCalloutResult {
 pub enum JitRegionResult {
     /// Region produced a normal PHP value.
     Returned(JitAbiValue),
-    /// Region bailed out to interpreter execution.
+    /// Region requested a generic or less-specialized native continuation.
     Bailout(JitBailout),
     /// Region propagated an exception marker to the VM.
     Exception(JitExceptionMarker),
@@ -1330,10 +1289,10 @@ pub struct JitCExit {
     pub reason_code: u32,
     /// Value returned or associated with the exit.
     pub value: JitCValue,
-    /// Interpreter resume block; `u32::MAX` means no resume point.
-    pub resume_block: u32,
-    /// Interpreter resume instruction; `u32::MAX` means no resume point.
-    pub resume_instruction: u32,
+    /// Baseline-native continuation ID; `u32::MAX` means no continuation.
+    pub continuation_id: u32,
+    /// Stable IR/source position; `u32::MAX` means no associated position.
+    pub source_position: u32,
     /// Reserved for ABI-compatible expansion.
     pub reserved: u32,
 }
@@ -1346,8 +1305,8 @@ impl JitCExit {
             tag: JitCExitTag::Returned,
             reason_code: 0,
             value,
-            resume_block: u32::MAX,
-            resume_instruction: u32::MAX,
+            continuation_id: u32::MAX,
+            source_position: u32::MAX,
             reserved: 0,
         }
     }
@@ -1359,8 +1318,8 @@ impl JitCExit {
             tag: JitCExitTag::Bailout,
             reason_code,
             value,
-            resume_block: u32::MAX,
-            resume_instruction: u32::MAX,
+            continuation_id: u32::MAX,
+            source_position: u32::MAX,
             reserved: 0,
         }
     }
@@ -1373,9 +1332,13 @@ impl JitCExit {
 
     /// Adds a baseline-native resume point.
     #[must_use]
-    pub const fn with_resume(mut self, block: BlockId, instruction: InstrId) -> Self {
-        self.resume_block = block.raw();
-        self.resume_instruction = instruction.raw();
+    pub const fn with_native_continuation(
+        mut self,
+        continuation_id: u32,
+        source_position: u32,
+    ) -> Self {
+        self.continuation_id = continuation_id;
+        self.source_position = source_position;
         self
     }
 }
@@ -1384,48 +1347,22 @@ impl JitCExit {
 mod tests {
     use std::mem::{align_of, size_of};
 
-    use php_ir::{BlockId, FunctionId, InstrId};
+    use php_ir::{FunctionId, LocalId};
 
     use super::{
         JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitCExit, JitCExitTag, JitCFrameView,
-        JitCValue, JitCValueTag, JitCallResult, JitCallStatus, JitFrameHandle, JitFrameView,
+        JitCValue, JitCValueTag, JitCallStatus, JitDeoptState, JitFrameHandle, JitFrameView,
         JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
         JitNativeControlRecord, JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest,
         JitNativeExceptionHandler, JitNativeFiberState, JitNativeFrameHeader,
         JitNativeGeneratorState, JitNativeIndirectionEntry, JitNativePcMetadata,
         JitNativeRootEntry, JitNativeSuspensionGenerationPolicy, JitOpaqueHandle,
-        JitOpaqueValueKind, JitSideExit, JitVmContextHandle, SideExitReason, helper_id,
-        jit_default_helper_dispatch,
+        JitOpaqueValueKind, JitSideExit, JitVmContextHandle, SideExitReason,
     };
 
     #[test]
-    fn default_helper_dispatch_rejects_invalid_buffers_and_deopts_known_ids() {
-        // SAFETY: null-buffer cases are the explicit negative ABI contract and
-        // the positive case supplies one live caller-owned output record.
-        unsafe {
-            assert_eq!(
-                jit_default_helper_dispatch(
-                    0,
-                    helper_id::STRLEN,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null_mut()
-                ),
-                crate::JIT_HELPER_STATUS_FALLBACK
-            );
-            let mut out = JitCallResult::default();
-            assert_eq!(
-                jit_default_helper_dispatch(0, helper_id::STRLEN, std::ptr::null(), 0, &mut out,),
-                crate::JIT_HELPER_STATUS_FALLBACK
-            );
-            assert_eq!(out.status, JitCallStatus::DEOPT);
-            assert_eq!(out.detail, helper_id::STRLEN);
-        }
-    }
-
-    #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 9);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 17);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);
@@ -1466,6 +1403,8 @@ mod tests {
         assert_eq!(JitNativeDynamicCodeKind::DECLARE_FUNCTION.0, 6);
         assert_eq!(JitNativeDynamicCodeKind::DECLARE_CLASS.0, 7);
         assert_eq!(JitNativeDynamicCodeKind::MAKE_CLOSURE.0, 8);
+        assert_eq!(JitNativeDynamicCodeKind::REGISTER_CONSTANT.0, 9);
+        assert_eq!(JitNativeDynamicCodeKind::EMIT_DIAGNOSTIC.0, 10);
     }
 
     #[test]
@@ -1509,9 +1448,11 @@ mod tests {
 
     #[test]
     fn native_call_frame_and_generation_indirection_are_stable() {
-        let mut frame = JitNativeCallFrame::default();
-        frame.function_id = 7;
-        frame.continuation_id = 11;
+        let mut frame = JitNativeCallFrame {
+            function_id: 7,
+            continuation_id: 11,
+            ..JitNativeCallFrame::default()
+        };
         frame.target.kind = JitNativeCallKind::METHOD;
         frame.argument_count = 2;
         assert_eq!(frame.abi_version, JIT_RUNTIME_ABI_VERSION);
@@ -1565,12 +1506,11 @@ mod tests {
         assert_eq!(c_view.local_count, 5);
         assert_eq!(c_view.reserved, 0);
 
-        let exit =
-            JitCExit::bailout(9, JitCValue::int(42)).with_resume(BlockId::new(7), InstrId::new(8));
+        let exit = JitCExit::bailout(9, JitCValue::int(42)).with_native_continuation(7, 8);
         assert_eq!(exit.tag, JitCExitTag::Bailout);
         assert_eq!(exit.reason_code, 9);
-        assert_eq!(exit.resume_block, 7);
-        assert_eq!(exit.resume_instruction, 8);
+        assert_eq!(exit.continuation_id, 7);
+        assert_eq!(exit.source_position, 8);
     }
 
     #[test]
@@ -1592,14 +1532,26 @@ mod tests {
 
         let metadata = JitSideExit::new(SideExitReason::HelperStatus)
             .with_status(1)
-            .with_resume(BlockId::new(2), InstrId::new(3));
+            .with_native_continuation(2, 3);
         assert_eq!(metadata.reason, SideExitReason::HelperStatus);
         assert_eq!(metadata.status_code, Some(1));
-        assert_eq!(metadata.resume_block, Some(BlockId::new(2)));
-        assert_eq!(metadata.resume_instruction, Some(InstrId::new(3)));
+        assert_eq!(metadata.continuation_id, Some(2));
+        assert_eq!(metadata.source_position, Some(3));
 
         let exit = JitCExit::side_exit(SideExitReason::HelperStatus, JitCValue::null());
         assert_eq!(exit.tag, JitCExitTag::Bailout);
         assert_eq!(exit.reason_code, SideExitReason::HelperStatus.code());
+    }
+
+    #[test]
+    fn deopt_state_tracks_locals_across_all_mask_words() {
+        let mut state = JitDeoptState::default();
+        for index in [0, 63, 64, 125, 191, 255] {
+            let local = LocalId::new(index);
+            assert!(!state.local_initialized(local));
+            state.mark_local_initialized(local);
+            assert!(state.local_initialized(local));
+        }
+        assert!(!state.local_initialized(LocalId::new(256)));
     }
 }

@@ -201,7 +201,7 @@ def performance_contract_violations(files: dict[str, str]) -> list[Violation]:
             'pass.stats["scope_snapshots"]',
             "restore the optimizer scoped-snapshot regression assertion",
         ),
-        "crates/php_vm/src/include/tests.rs": (
+        "crates/php_executor/src/include_compiler.rs": (
             "include_cache_invalidates_compiled_include_after_file_edit",
             "restore include-cache changed-file correctness coverage",
         ),
@@ -326,7 +326,7 @@ def collect_violations() -> list[Violation]:
             "crates/php_bench/benches/perf_hotpaths.rs",
             "crates/php_optimizer/src/transaction.rs",
             "crates/php_optimizer/src/tests.rs",
-            "crates/php_vm/src/include/tests.rs",
+            "crates/php_executor/src/include_compiler.rs",
             "justfile",
         )
     }

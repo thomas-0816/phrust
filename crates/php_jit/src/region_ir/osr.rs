@@ -14,7 +14,7 @@ pub struct RegionOsrEntry {
     pub entry: EntryId,
     /// Node carrying the `Entry` operation.
     pub node: NodeId,
-    /// Optional fake/control predecessor that models interpreter entry.
+    /// Optional fake/control predecessor that models baseline-native loop entry.
     pub fake_control_predecessor: Option<NodeId>,
     /// VM slots that must be live at entry.
     pub live_slots: Vec<VmSlotId>,

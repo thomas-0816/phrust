@@ -77,6 +77,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phrust-binary", default=os.environ.get("PHP_VM_CLI", "target/debug/php-vm"))
     parser.add_argument("--phrust-server", default=os.environ.get("PHRUST_SERVER", "target/debug/phrust-server"))
     parser.add_argument("--db-dsn-env", default="PHRUST_MYSQL_TEST_DSN")
+    parser.add_argument(
+        "--native-cache",
+        choices=("off", "read", "write", "read-write"),
+        default=os.environ.get("PHRUST_WORDPRESS_NATIVE_CACHE", "off"),
+    )
+    parser.add_argument(
+        "--native-cache-dir",
+        default=os.environ.get(
+            "PHRUST_WORDPRESS_NATIVE_CACHE_DIR",
+            "target/wordpress-real/native-cache",
+        ),
+    )
     parser.add_argument("--stop-on-fail", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("PHRUST_WORDPRESS_TIMEOUT_SECONDS", "30")))
     parser.add_argument("--phase", choices=PHASES, action="append", default=[])
@@ -106,6 +118,16 @@ def run_smoke(args: argparse.Namespace, out_dir: Path) -> tuple[dict[str, Any], 
         out="",
     )
     preflight = build_preflight_report(preflight_args)
+    native_cache_dir = repo_path(args.native_cache_dir)
+    preflight["inputs"]["native_cache_mode"] = args.native_cache
+    preflight["inputs"]["native_cache_dir"] = (
+        str(native_cache_dir) if native_cache_dir is not None else None
+    )
+    preflight["inputs"]["native_cache_started_empty"] = (
+        native_cache_dir is None
+        or not native_cache_dir.exists()
+        or not any(native_cache_dir.iterdir())
+    )
     json_dump(preflight, out_dir / "preflight.json")
 
     transcript_path = out_dir / "http-transcript.jsonl"
@@ -285,17 +307,21 @@ def run_web_phase(
     try:
         request = request_for_phase(phase)
         response = perform_request(server["base_url"], request, args.timeout_seconds)
+        response_body = response.pop("_body")
         append_jsonl(transcript_path, {"phase": phase, "request": request, "response": response})
         log_text = server_log.read_text(encoding="utf-8", errors="replace")
-        if response["http_status"] >= 500:
-            diagnostics = extract_diagnostics(log_text, response["body_excerpt"])
+        contract_error = web_response_contract_error(
+            phase, response["http_status"], response_body
+        )
+        if contract_error is not None:
+            diagnostics = extract_diagnostics(log_text, response_body)
             first_failure = command_failure(
                 phase,
                 None,
                 response["http_status"],
                 request,
-                response["body_excerpt"],
-                log_text,
+                response_body,
+                f"{contract_error}\n{log_text}",
                 diagnostics,
             )
             return {"phase": phase, "status": "fail", "request": request, "response": response, "first_failure": first_failure}
@@ -329,7 +355,14 @@ def start_server(args: argparse.Namespace, server_log: Path) -> dict[str, Any]:
         "json",
         "--max-execution-ms",
         str(max(1, args.timeout_seconds) * 1000),
+        "--native-cache",
+        args.native_cache,
     ]
+    if args.native_cache != "off":
+        native_cache_dir = repo_path(args.native_cache_dir)
+        assert native_cache_dir is not None
+        native_cache_dir.mkdir(parents=True, exist_ok=True)
+        command.extend(("--native-cache-dir", str(native_cache_dir)))
     log_handle = server_log.open("a", encoding="utf-8")
     process = subprocess.Popen(
         command,
@@ -399,6 +432,71 @@ def request_for_phase(phase: str) -> dict[str, Any]:
     return {"method": "GET", "path": "/", "headers": {}, "body": None}
 
 
+def web_response_contract_error(phase: str, http_status: int, body: str) -> str | None:
+    if http_status >= 400:
+        return f"WordPress {phase} returned HTTP {http_status}"
+    if not body.strip():
+        return f"WordPress {phase} returned an empty response body"
+
+    normalized = body.lower()
+    error_signatures = (
+        "<title>wordpress &rsaquo; error</title>",
+        'id="error-page"',
+        "wp-die-message",
+        "error establishing a database connection",
+    )
+    signature = next(
+        (signature for signature in error_signatures if signature in normalized), None
+    )
+    if signature is not None:
+        return f"WordPress {phase} returned an error page ({signature})"
+
+    required_all: dict[str, tuple[str, ...]] = {
+        "db-install": ("success!", "wordpress has been installed"),
+        "admin-login-page": ('id="loginform"', 'name="log"', 'name="pwd"'),
+    }
+    missing = [
+        marker
+        for marker in required_all.get(phase, ())
+        if marker not in normalized
+    ]
+    if missing:
+        return (
+            f"WordPress {phase} response is missing required marker(s): "
+            + ", ".join(missing)
+        )
+
+    required_any: dict[str, tuple[str, ...]] = {
+        "web-frontpage": (
+            "wordpress",
+            "/wp-content/",
+            "wp-site-blocks",
+            'id="weblog_title"',
+        ),
+        "web-install-page": (
+            'id="weblog_title"',
+            "already installed",
+            "setup configuration file",
+            "before getting started",
+        ),
+        "post-install-frontpage": (
+            "/wp-content/",
+            "wp-site-blocks",
+            'content="wordpress ',
+            "phrust smoke",
+        ),
+    }
+    alternatives = required_any.get(phase)
+    if alternatives is not None and not any(
+        marker in normalized for marker in alternatives
+    ):
+        return (
+            f"WordPress {phase} response contains none of the required markers: "
+            + ", ".join(alternatives)
+        )
+    return None
+
+
 def perform_request(base_url: str, request: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
     body = request.get("body")
     data = body.encode("utf-8") if isinstance(body, str) else None
@@ -415,6 +513,7 @@ def perform_request(base_url: str, request: dict[str, Any], timeout_seconds: int
                 "http_status": response.status,
                 "headers": dict(response.headers.items()),
                 "body_excerpt": excerpt(response_body),
+                "_body": response_body,
             }
     except HTTPError as error:
         response_body = error.read().decode("utf-8", errors="replace")
@@ -422,6 +521,7 @@ def perform_request(base_url: str, request: dict[str, Any], timeout_seconds: int
             "http_status": error.code,
             "headers": dict(error.headers.items()),
             "body_excerpt": excerpt(response_body),
+            "_body": response_body,
         }
 
 

@@ -54,7 +54,7 @@ REFERENCE_PHP=third_party/php-src/sapi/cli/php nix develop -c just benchmark-smo
 
 The benchmark smoke uses the product-native engine. Policy behavior is covered
 by `just default-profile-smoke`, `just optimizer-diff`,
-`just inline-cache-smoke`, `just cache-roundtrip`, and `just native-smoke`.
+`just inline-cache-model-tests`, `just cache-roundtrip`, and `just native-smoke`.
 
 ## Troubleshooting
 

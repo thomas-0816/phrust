@@ -66,4 +66,58 @@ impl VmResult {
             native_compile_nanos: 0,
         }
     }
+
+    pub(crate) fn runtime_error(
+        output: OutputBuffer,
+        diagnostic: Option<RuntimeDiagnostic>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: ExecutionStatus::runtime_error(message),
+            output,
+            diagnostics: diagnostic.into_iter().collect(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
+            return_value: None,
+            process_exit_code: None,
+            process_exit_terminates_process: false,
+            trace: Vec::new(),
+            counters: None,
+            tiering_stats: None,
+            native_cache_stats: None,
+            native_cache_load_nanos: 0,
+            native_compile_nanos: 0,
+        }
+    }
+
+    pub(crate) fn fatal(
+        output: OutputBuffer,
+        diagnostic: Option<RuntimeDiagnostic>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: ExecutionStatus::fatal(message),
+            output,
+            diagnostics: diagnostic.into_iter().collect(),
+            http_response: None,
+            upload_registry: None,
+            session: None,
+            return_value: None,
+            process_exit_code: None,
+            process_exit_terminates_process: false,
+            trace: Vec::new(),
+            counters: None,
+            tiering_stats: None,
+            native_cache_stats: None,
+            native_cache_load_nanos: 0,
+            native_compile_nanos: 0,
+        }
+    }
+
+    pub(crate) fn success_exit(output: OutputBuffer, exit_code: i32) -> Self {
+        let mut result = Self::success(output, None);
+        result.process_exit_code = Some(exit_code);
+        result
+    }
 }

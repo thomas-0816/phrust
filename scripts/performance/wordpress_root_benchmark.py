@@ -173,7 +173,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="HTTP observable compared after timing; repeat as needed",
     )
     parser.add_argument("--database-identity", default=os.environ.get("PHRUST_WORDPRESS_DB_IDENTITY", ""))
-    parser.add_argument("--timeout-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=float(os.environ.get("PHRUST_WORDPRESS_TIMEOUT_SECONDS", "120")),
+    )
     parser.add_argument("--metrics-token", default=os.environ.get("PHRUST_METRICS_TOKEN", ""))
     parser.add_argument(
         "--engine-preset",
@@ -741,6 +745,8 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
         "immutable",
         "--engine-preset",
         args.engine_preset,
+        "--max-execution-ms",
+        str(max(1, int(args.timeout_seconds * 1000))),
     ]
     preload_manifest = out_dir / "phrust-script-cache-preload.txt"
     preload_manifest.write_text("index.php\n", encoding="utf-8")
@@ -761,7 +767,6 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
                 "--request-profile",
                 str(profile_dir),
                 "--request-profile-vm-counters",
-                "--request-profile-source-attribution",
             ]
         )
         artifacts.update({"request_profiles": rel(profile_dir), "trace": rel(trace_path)})
@@ -1962,8 +1967,8 @@ def self_test() -> int:
     assert "requires --mode clean" in " ".join(validate_configuration(invalid_ab))
     assert cranelift_dependency_version()
     source_abi = native_source_abi_identity()
-    assert source_abi["version"] == 9
-    assert source_abi["hash"] == 0x09C1_A817_0000_0009
+    assert source_abi["version"] == 17
+    assert source_abi["hash"] == 0x0DC1_A817_0000_0026
     host_cpu = cpu_identity()
     assert len(host_cpu["feature_fingerprint_sha256"]) == 64
     ab_off = {

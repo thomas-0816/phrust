@@ -24,7 +24,7 @@ before changing a subsystem.
 - [Performance](../performance/README.md), including
   [methodology](../performance/methodology.md),
   [native optimization gates](../performance/optimization-gates.md), and
-  [bytecode cache](../performance/bytecode-cache.md).
+  [native compile cache](../performance/native-compile-cache.md).
 
 Architecture docs describe stable contracts and boundaries. Implementation
 history, one-off benchmark captures, and local run evidence belong under

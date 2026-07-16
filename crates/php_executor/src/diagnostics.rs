@@ -135,6 +135,12 @@ pub(crate) fn execution_output_from_vm(
                 }
             }
         }
+        ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported
+            if result
+                .output
+                .as_bytes()
+                .windows(b"Fatal error:".len())
+                .any(|window| window == b"Fatal error:") => {}
         ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported => {
             let _ = write_runtime_diagnostics(&mut diagnostics, path, &result.diagnostics);
             let _ = writeln!(diagnostics, "{path}: {}", result.status);
@@ -595,6 +601,12 @@ pub(crate) fn write_runtime_diagnostics<W: Write>(
             diagnostic.to_json()
         )
         .map_err(|error| error.to_string())?;
+        if !diagnostic.stack_trace().is_empty() {
+            writeln!(stderr, "call_stack:").map_err(|error| error.to_string())?;
+            for frame in diagnostic.stack_trace() {
+                writeln!(stderr, "  at {}", frame.function()).map_err(|error| error.to_string())?;
+            }
+        }
     }
     Ok(())
 }

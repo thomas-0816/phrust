@@ -44,7 +44,8 @@
 
 - `crates/php_runtime/src/datetime.rs`
 - `crates/php_runtime/src/builtins/modules/date.rs`
-- `crates/php_vm/src/vm/mod.rs`
+- `crates/php_vm/src/vm/jit_abi/internal_classes/date_time.rs`
+- `crates/php_vm/src/vm/jit_abi/native_builtins.rs`
 - `docs/stdlib/known-gaps.md`
 
 ## Target Gates

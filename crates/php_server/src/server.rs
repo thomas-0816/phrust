@@ -419,9 +419,6 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             perf_trace_vm_counters: config.observability.perf_trace_vm_counters,
             request_profile,
             request_profile_vm_counters: config.observability.request_profile_vm_counters,
-            request_profile_source_attribution: config
-                .observability
-                .request_profile_source_attribution,
             request_profile_trigger_header: config.observability.request_profile_trigger_header,
             debug: config.observability.debug,
             error_format: config.observability.error_format,
@@ -453,6 +450,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     preload_script_cache(&state, script_cache_preload.as_deref(), strict_preload)?;
     let native_isa = php_vm::api::cranelift_host_isa_identity()
         .map_err(|error| ServerError::Io(std::io::Error::other(error)))?;
+    // phrust-diagnostics-allow: approved top-level native startup metadata stderr
     eprintln!(
         "native_startup compiler=cranelift compiler_version={} runtime_abi={:016x} helper_abi={:016x} target={} cpu_features={:016x} cache_mode={} cache_path={} preset={} artifacts_loaded=0 artifacts_compiled={}",
         php_vm::api::CRANELIFT_VERSION,

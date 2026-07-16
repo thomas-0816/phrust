@@ -1109,15 +1109,7 @@ pub(crate) fn execution_stage(
     } else {
         perf_trace_counter_mode(&state)
     };
-    let collect_profile_spans = profile_requested && collect_vm_profile_spans_for_request(&state);
-    execute_compiled_php_with_state(
-        &state,
-        lookup,
-        script_path,
-        runtime_context,
-        mode,
-        collect_profile_spans,
-    )
+    execute_compiled_php_with_state(&state, lookup, script_path, runtime_context, mode)
 }
 
 /// Counter mode for requests that did not ask for a profile (only relevant
@@ -1144,32 +1136,22 @@ pub(crate) fn request_profile_requested(state: &AppState, headers: &HeaderMap) -
 }
 
 /// How much VM accounting a request pays. `--request-profile` alone stays in
-/// `Summary` (phase/boundary JSON only); VM hot counters and per-clone source
-/// attribution are explicit opt-ins because they distort the measured request.
+/// `Summary` (phase JSON only); native hot counters are an explicit opt-in
+/// because they distort the measured request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestCounterMode {
     Off,
     Summary,
     VmCounters,
-    SourceAttributedLayout,
 }
 
 impl RequestCounterMode {
     pub(crate) fn collects_vm_counters(self) -> bool {
-        matches!(self, Self::VmCounters | Self::SourceAttributedLayout)
-    }
-
-    pub(crate) fn collects_source_attribution(self) -> bool {
-        matches!(self, Self::SourceAttributedLayout)
+        matches!(self, Self::VmCounters)
     }
 }
 
 pub(crate) fn request_counter_mode(state: &AppState) -> RequestCounterMode {
-    if state.observability.request_profile.is_some()
-        && state.observability.request_profile_source_attribution
-    {
-        return RequestCounterMode::SourceAttributedLayout;
-    }
     if state.observability.request_profile.is_some()
         && state.observability.request_profile_vm_counters
     {
@@ -1184,17 +1166,12 @@ pub(crate) fn request_counter_mode(state: &AppState) -> RequestCounterMode {
     RequestCounterMode::Off
 }
 
-pub(crate) fn collect_vm_profile_spans_for_request(state: &AppState) -> bool {
-    state.observability.request_profile.is_some()
-}
-
 pub(crate) fn execute_compiled_php_with_state(
     state: &AppState,
     lookup: CompiledScriptCacheLookup,
     script_path: PathBuf,
     runtime_context: RuntimeContext,
     mode: RequestCounterMode,
-    collect_profile_spans: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
     state
         .services
@@ -1223,8 +1200,6 @@ pub(crate) fn execute_compiled_php_with_state(
             include_roots: include_roots_for_docroot(&state.route_config.docroot),
             runtime_context,
             collect_counters: mode.collects_vm_counters(),
-            collect_profile_spans,
-            collect_layout_source_attribution: mode.collects_source_attribution(),
         },
     );
     Ok(output)
@@ -1249,7 +1224,7 @@ fn execute_compiled_with_request_executor(
         if refresh {
             *cached = Some(CachedRequestExecutor {
                 key,
-                executor: PhpExecutor::with_options(options.clone()),
+                executor: state.services.engine.executor(options.clone()),
             });
         }
         match cached.as_mut() {
@@ -1257,7 +1232,11 @@ fn execute_compiled_with_request_executor(
                 cached.executor.reconfigure(options);
                 cached.executor.execute_compiled(compiled, input)
             }
-            None => PhpExecutor::with_options(options).execute_compiled(compiled, input),
+            None => state
+                .services
+                .engine
+                .executor(options)
+                .execute_compiled(compiled, input),
         }
     })
 }
@@ -1308,6 +1287,15 @@ pub(crate) fn append_vm_counters_to_trace(
         ("native_cache_misses", counters.native_cache_misses),
         ("native_cache_writes", counters.native_cache_writes),
         (
+            "native_cache_compile_waits",
+            counters.native_cache_compile_waits,
+        ),
+        ("native_cache_evictions", counters.native_cache_evictions),
+        (
+            "native_compile_time_nanos",
+            counters.native_compile_time_nanos,
+        ),
+        (
             "native_execution_entries",
             counters.native_execution_entries,
         ),
@@ -1324,7 +1312,23 @@ pub(crate) fn append_vm_counters_to_trace(
         ),
         ("native_version_retired", counters.native_version_retired),
         ("native_transition_count", counters.native_transition_count),
+        (
+            "native_transition_time_nanos",
+            counters.native_transition_time_nanos,
+        ),
         ("runtime_helper_calls", counters.runtime_helper_calls),
+        (
+            "runtime_helper_time_nanos",
+            counters.runtime_helper_time_nanos,
+        ),
+        (
+            "runtime_helper_object_release_fast_paths",
+            counters.runtime_helper_object_release_fast_paths,
+        ),
+        (
+            "runtime_helper_object_release_root_scans",
+            counters.runtime_helper_object_release_root_scans,
+        ),
         ("gc_safepoint_polls", counters.gc_safepoint_polls),
         (
             "gc_safepoint_collections",

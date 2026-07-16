@@ -12,7 +12,12 @@ pub fn normalize_class_name(name: &str) -> String {
 /// Preserves PHP-visible class spelling while removing a leading root slash.
 #[must_use]
 pub fn display_class_name(name: &str) -> String {
-    name.trim_start_matches('\\').to_owned()
+    let name = name.trim_start_matches('\\');
+    if name.eq_ignore_ascii_case("stdclass") {
+        "stdClass".to_owned()
+    } else {
+        name.to_owned()
+    }
 }
 
 /// Runtime class table entry.
@@ -58,4 +63,16 @@ pub struct ClassFlags {
     pub is_interface: bool,
     /// Enum metadata entry.
     pub is_enum: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_class_name;
+
+    #[test]
+    fn stdclass_uses_its_canonical_internal_spelling() {
+        assert_eq!(display_class_name("stdclass"), "stdClass");
+        assert_eq!(display_class_name("\\STDCLASS"), "stdClass");
+        assert_eq!(display_class_name("UserClass"), "UserClass");
+    }
 }

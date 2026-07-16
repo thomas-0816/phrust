@@ -23,6 +23,10 @@
     },
     {
       "kind": "class",
+      "name": "DOMNamedNodeMap"
+    },
+    {
+      "kind": "class",
       "name": "DOMNode"
     },
     {
@@ -32,6 +36,10 @@
     {
       "kind": "class",
       "name": "DOMText"
+    },
+    {
+      "kind": "class",
+      "name": "DOMXPath"
     }
   ],
   "constants": [],

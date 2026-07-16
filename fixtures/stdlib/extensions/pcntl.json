@@ -92,6 +92,14 @@
     },
     {
       "deprecation": null,
+      "name": "SIGCONT",
+      "value": {
+        "kind": "int",
+        "value": 18
+      }
+    },
+    {
+      "deprecation": null,
       "name": "SIGINT",
       "value": {
         "kind": "int",
@@ -104,6 +112,14 @@
       "value": {
         "kind": "int",
         "value": 15
+      }
+    },
+    {
+      "deprecation": null,
+      "name": "SIGSTOP",
+      "value": {
+        "kind": "int",
+        "value": 19
       }
     },
     {

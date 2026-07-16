@@ -458,6 +458,23 @@ only and must not introduce network downloads or committed vendor trees.
 `PHPRUST_COMPOSER_FIXTURE_DIR` points at an existing local project and writes
 its normalized gap report under `target/runtime-semantics/composer-smoke`.
 
+The selected external Composer application acceptance is the pinned
+`wordpress/php-ai-client` smoke:
+
+```bash
+REFERENCE_PHP="$PWD/third_party/php-src/sapi/cli/php" \
+  nix develop -c just php-ai-client-smoke
+```
+
+The gate is offline and requires a clean `1.3.1` checkout at revision
+`631704201d15ffeff7091ad3bc7156db74054956` with its locked Composer vendor
+tree installed. The default local checkout is `third_party/php-ai-client` and
+is never committed. Missing default checkout/reference prerequisites are
+reported as skips; explicitly configured `PHRUST_PHP_AI_CLIENT_DIR` or
+`REFERENCE_PHP` values are strict. The native candidate runs with its cache
+disabled, must match PHP 8.5.7 byte-for-byte, and writes native-only counters
+and hashes under `target/integration/php-ai-client-smoke/`.
+
 Optional local stress probes are also available:
 
 ```bash
