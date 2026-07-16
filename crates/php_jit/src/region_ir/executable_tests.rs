@@ -106,6 +106,54 @@ fn namespaced_builtin_reference_argument_load_is_quiet() {
 }
 
 #[test]
+fn malformed_conditional_terminator_returns_contextual_compile_error() {
+    let mut builder = IrBuilder::new(UnitId::new(98));
+    let file = builder.add_file("missing-fallthrough.php");
+    let span = IrSpan::new(file, 4, 12);
+    let function = builder.start_function("missing_fallthrough", FunctionFlags::default(), span);
+    let block = builder.append_block(function);
+    let condition = builder.intern_constant(IrConstant::Bool(true));
+    builder.terminate_jump_if_false(function, block, Operand::Constant(condition), block, span);
+
+    let error = build_baseline_region(&builder.finish(), function)
+        .expect_err("last-block conditional terminator must be rejected");
+    assert_eq!(error.code, "JIT_REGION_REJECT_FALLTHROUGH");
+    assert!(error.detail.contains("function=missing_fallthrough"));
+    assert!(error.detail.contains("block=0"));
+    assert!(error.detail.contains("span=0:4-12"));
+}
+
+#[test]
+fn invalid_operand_returns_instruction_context_before_cranelift() {
+    let mut builder = IrBuilder::new(UnitId::new(99));
+    let file = builder.add_file("invalid-operand.php");
+    let span = IrSpan::new(file, 8, 19);
+    let function = builder.start_function("invalid_operand", FunctionFlags::default(), span);
+    let block = builder.append_block(function);
+    let dst = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::Move {
+            dst,
+            src: Operand::Register(RegId::new(99)),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(dst)), span);
+
+    let error = build_baseline_region(&builder.finish(), function)
+        .expect_err("invalid operand must be rejected before publication");
+    assert_eq!(error.code, "JIT_REGION_REJECT_INVALID_IR");
+    assert!(error.detail.contains("function=0"), "{}", error.detail);
+    assert!(error.detail.contains("block=0"), "{}", error.detail);
+    assert!(error.detail.contains("instruction=0"), "{}", error.detail);
+    assert!(error.detail.contains("span=0:8-19"), "{}", error.detail);
+    assert!(error.detail.contains("operand/state"), "{}", error.detail);
+    assert!(error.detail.contains("register 99"), "{}", error.detail);
+}
+
+#[test]
 fn builds_verified_multiblock_region_from_php_ir() {
     let mut builder = IrBuilder::new(UnitId::new(91));
     let file = builder.add_file("region.php");
@@ -195,12 +243,6 @@ fn object_class_and_dynamic_static_property_enter_native_region_ir() {
         region.blocks[0].instructions[2].kind,
         RegionInstructionKind::FetchObjectClassName { .. }
     ));
-    assert!(
-        region.blocks[0]
-            .instructions
-            .iter()
-            .all(|instruction| !matches!(instruction.kind, RegionInstructionKind::MissingLowering))
-    );
 }
 
 #[test]
@@ -360,11 +402,6 @@ fn formerly_missing_instruction_families_enter_native_region_ir() {
         instruction.kind,
         RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::EmitDiagnostic)
     )));
-    assert!(
-        instructions
-            .iter()
-            .all(|instruction| !matches!(instruction.kind, RegionInstructionKind::MissingLowering))
-    );
 }
 
 #[test]
@@ -721,11 +758,6 @@ fn every_ir_call_form_enters_the_unified_native_call_model() {
         .filter(|instruction| matches!(instruction.kind, RegionInstructionKind::NativeCall(_)))
         .collect::<Vec<_>>();
     assert_eq!(native_calls.len(), 10);
-    assert!(
-        native_calls
-            .iter()
-            .all(|instruction| !matches!(instruction.kind, RegionInstructionKind::MissingLowering))
-    );
     let offsets = native_calls
         .iter()
         .map(|instruction| match &instruction.kind {
@@ -803,13 +835,6 @@ fn exception_instructions_enter_the_native_control_model() {
         .count();
     assert_eq!(controls, 5);
     assert_eq!(region.exception_regions.len(), 1);
-    assert!(
-        !region
-            .blocks
-            .iter()
-            .flat_map(|block| &block.instructions)
-            .any(|instruction| matches!(instruction.kind, RegionInstructionKind::MissingLowering))
-    );
 }
 
 #[test]

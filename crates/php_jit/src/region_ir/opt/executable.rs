@@ -269,7 +269,6 @@ const fn instruction_is_motion_barrier(kind: &RegionInstructionKind) -> bool {
             | RegionInstructionKind::NativeDynamicCode(_)
             | RegionInstructionKind::RuntimeFatal { .. }
             | RegionInstructionKind::CompileTimeFatal { .. }
-            | RegionInstructionKind::MissingLowering
     )
 }
 

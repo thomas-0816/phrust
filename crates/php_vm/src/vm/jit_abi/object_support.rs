@@ -1,5 +1,15 @@
 use super::*;
 
+fn native_object_dereference_value(mut value: Value) -> Value {
+    for _ in 0..16 {
+        let Value::Reference(reference) = value else {
+            break;
+        };
+        value = reference.get();
+    }
+    value
+}
+
 pub(super) fn native_metadata_object(
     class_name: &str,
     properties: impl IntoIterator<Item = (String, Value)>,
@@ -529,6 +539,7 @@ pub(super) fn execute_native_array_object(
                     .first()
                     .map(|value| context.decode(*value))
                     .transpose()?
+                    .map(native_object_dereference_value)
                     .and_then(|value| match value {
                         Value::String(name) => Some(name.to_string_lossy()),
                         _ => None,
@@ -548,6 +559,7 @@ pub(super) fn execute_native_array_object(
                         .get(1)
                         .map(|value| context.decode(*value))
                         .transpose()?
+                        .map(native_object_dereference_value)
                         .and_then(|value| match value {
                             Value::String(name) => Some(name.to_string_lossy()),
                             _ => None,
@@ -764,6 +776,7 @@ pub(super) fn execute_native_array_object(
                             .get(1)
                             .map(|value| context.decode(*value))
                             .transpose()?
+                            .map(native_object_dereference_value)
                             .and_then(|value| match value {
                                 Value::String(value) => Some(value.to_string_lossy()),
                                 _ => None,
@@ -828,6 +841,7 @@ pub(super) fn execute_native_array_object(
                             .get(1)
                             .map(|value| context.decode(*value))
                             .transpose()?
+                            .map(native_object_dereference_value)
                             .and_then(|value| match value {
                                 Value::String(value) => Some(value.to_string_lossy()),
                                 _ => None,
@@ -1042,6 +1056,7 @@ pub(super) fn execute_native_array_object(
                             .get(1)
                             .map(|value| context.decode(*value))
                             .transpose()?
+                            .map(native_object_dereference_value)
                             .and_then(|value| match value {
                                 Value::String(value) => Some(value.to_string_lossy()),
                                 _ => None,
@@ -1058,7 +1073,37 @@ pub(super) fn execute_native_array_object(
                                     .iter()
                                     .any(|entry| entry.name.eq_ignore_ascii_case(&requested))
                             })
-                            || native_external_method(context, &owner, &requested).is_some();
+                            || native_external_method(context, &owner, &requested).is_some()
+                            || php_std::generated::arginfo::method_metadata_in_hierarchy(
+                                &owner, &requested,
+                            )
+                            .is_some();
+                        context.encode(Value::Bool(exists))
+                    }
+                    "hasproperty" => {
+                        let owner = string_property("name").unwrap_or_default();
+                        let requested = arguments
+                            .get(1)
+                            .map(|value| context.decode(*value))
+                            .transpose()?
+                            .map(native_object_dereference_value)
+                            .and_then(|value| match value {
+                                Value::String(value) => Some(value.to_string_lossy()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let exists = context
+                            .unit
+                            .classes
+                            .iter()
+                            .find(|class| class.name == normalize_class_name(&owner))
+                            .is_some_and(|class| {
+                                class.properties.iter().any(|entry| entry.name == requested)
+                            })
+                            || php_std::generated::arginfo::property_metadata_in_hierarchy(
+                                &owner, &requested,
+                            )
+                            .is_some();
                         context.encode(Value::Bool(exists))
                     }
                     "newinstance" => {

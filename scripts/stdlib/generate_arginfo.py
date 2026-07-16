@@ -12,7 +12,7 @@ from pathlib import Path
 
 CLASS_RE = re.compile(
     r"\b(?P<kind>class|interface|trait|enum)\s+"
-    r"(?P<name>[A-Za-z_\\][A-Za-z0-9_\\]*)[^{;]*\{",
+    r"(?P<name>[A-Za-z_\\][A-Za-z0-9_\\]*)(?P<header>[^{;]*)\{",
     re.DOTALL,
 )
 NAMESPACE_RE = re.compile(
@@ -75,11 +75,25 @@ class ConstantMetadata:
 
 
 @dataclass(frozen=True)
+class PropertyMetadata:
+    class_name: str
+    name: str
+    extension: str
+    source: str
+    visibility: str
+    is_static: bool
+    is_readonly: bool
+
+
+@dataclass(frozen=True)
 class ClassMetadata:
     name: str
     kind: str
     extension: str
     source: str
+    parent: str | None
+    interfaces: tuple[str, ...]
+    enum_backing_type: str | None
 
 
 @dataclass(frozen=True)
@@ -87,6 +101,7 @@ class GeneratedMetadata:
     functions: tuple[FunctionMetadata, ...]
     classes: tuple[ClassMetadata, ...]
     methods: tuple[MethodMetadata, ...]
+    properties: tuple[PropertyMetadata, ...]
     constants: tuple[ConstantMetadata, ...]
     override_count: int
     gaps: tuple[str, ...]
@@ -100,6 +115,9 @@ class ClassRange:
     body_end: int
     full_start: int
     full_end: int
+    parent: str | None
+    interfaces: tuple[str, ...]
+    enum_backing_type: str | None
 
 
 def main() -> int:
@@ -121,6 +139,7 @@ def main() -> int:
     print(f"functions={len(metadata.functions)}")
     print(f"classes={len(metadata.classes)}")
     print(f"methods={len(metadata.methods)}")
+    print(f"properties={len(metadata.properties)}")
     print(f"constants={len(metadata.constants)}")
     print(f"overrides={metadata.override_count}")
     print(f"extractor_gaps={len(metadata.gaps)}")
@@ -134,6 +153,7 @@ def collect_metadata(php_src: Path) -> GeneratedMetadata:
     functions: dict[str, FunctionMetadata] = {}
     classes: dict[str, ClassMetadata] = {}
     methods: dict[tuple[str, str], MethodMetadata] = {}
+    properties: dict[tuple[str, str], PropertyMetadata] = {}
     constants: dict[tuple[str | None, str], ConstantMetadata] = {}
     gaps: set[str] = set()
 
@@ -151,6 +171,9 @@ def collect_metadata(php_src: Path) -> GeneratedMetadata:
                 kind=class_range.kind,
                 extension=extension,
                 source=relative,
+                parent=class_range.parent,
+                interfaces=class_range.interfaces,
+                enum_backing_type=class_range.enum_backing_type,
             )
             body = text[class_range.body_start : class_range.body_end]
             for match in FUNCTION_RE.finditer(body):
@@ -167,6 +190,93 @@ def collect_metadata(php_src: Path) -> GeneratedMetadata:
                 methods[(class_key, method.name.lower())] = method
             for constant in parse_constants(body, relative, extension, class_range.name, gaps):
                 constants[(class_key, constant.name)] = constant
+            for property_meta in parse_properties(
+                body, relative, extension, class_range.name
+            ):
+                properties[(class_key, property_meta.name)] = property_meta
+            if class_range.kind == "enum":
+                for case in parse_enum_cases(
+                    body, relative, extension, class_range.name
+                ):
+                    constants[(class_key, case.name)] = case
+                # PHP exposes these engine-provided readonly properties even
+                # though enum stubs do not declare them explicitly.
+                implicit_properties = ["name"]
+                if class_range.enum_backing_type is not None:
+                    implicit_properties.append("value")
+                for property_name in implicit_properties:
+                    properties[(class_key, property_name)] = PropertyMetadata(
+                        class_name=class_range.name,
+                        name=property_name,
+                        extension=extension,
+                        source=relative,
+                        visibility="public",
+                        is_static=False,
+                        is_readonly=True,
+                    )
+                implicit_methods = [
+                    MethodMetadata(
+                        class_name=class_range.name,
+                        name="cases",
+                        extension=extension,
+                        source=relative,
+                        return_type="array",
+                        params=(),
+                        is_static=True,
+                    )
+                ]
+                if class_range.enum_backing_type is not None:
+                    parameter = ParamMetadata(
+                        name="value",
+                        type_decl=class_range.enum_backing_type,
+                        default_value=None,
+                        optional=False,
+                        by_ref=False,
+                        variadic=False,
+                    )
+                    implicit_methods.extend(
+                        [
+                            MethodMetadata(
+                                class_name=class_range.name,
+                                name="from",
+                                extension=extension,
+                                source=relative,
+                                return_type=class_range.name,
+                                params=(parameter,),
+                                is_static=True,
+                            ),
+                            MethodMetadata(
+                                class_name=class_range.name,
+                                name="tryFrom",
+                                extension=extension,
+                                source=relative,
+                                return_type=f"?{class_range.name}",
+                                params=(parameter,),
+                                is_static=True,
+                            ),
+                        ]
+                    )
+                for method in implicit_methods:
+                    methods[(class_key, method.name.lower())] = method
+            if class_range.name == "Closure":
+                methods[(class_key, "__invoke")] = MethodMetadata(
+                    class_name="Closure",
+                    name="__invoke",
+                    extension=extension,
+                    source=relative,
+                    return_type="mixed",
+                    params=(
+                        ParamMetadata(
+                            name="args",
+                            type_decl="mixed",
+                            default_value=None,
+                            optional=False,
+                            by_ref=False,
+                            variadic=True,
+                        ),
+                    ),
+                    is_static=False,
+                )
 
         for match in FUNCTION_RE.finditer(text):
             if is_inside_ranges(match.start(), class_ranges):
@@ -188,6 +298,7 @@ def collect_metadata(php_src: Path) -> GeneratedMetadata:
         functions=tuple(functions[key] for key in sorted(functions)),
         classes=tuple(classes[key] for key in sorted(classes)),
         methods=tuple(methods[key] for key in sorted(methods)),
+        properties=tuple(properties[key] for key in sorted(properties)),
         constants=tuple(constants[key] for key in sorted(constants, key=constant_sort_key)),
         override_count=0,
         gaps=tuple(sorted(gaps)),
@@ -218,6 +329,13 @@ def find_class_ranges(text: str, relative: str, gaps: set[str]) -> list[ClassRan
         if close_brace is None:
             gaps.add(f"{relative}: unmatched class body for {match.group('name')}")
             continue
+        parent, interfaces = parse_class_hierarchy(
+            namespace_at(text, match.start()), match.group("kind"), match.group("header")
+        )
+        enum_backing_type = None
+        if match.group("kind") == "enum":
+            backing = re.search(r":\s*(int|string)\b", match.group("header"))
+            enum_backing_type = backing.group(1) if backing else None
         ranges.append(
             ClassRange(
                 name=qualify_name(namespace_at(text, match.start()), match.group("name")),
@@ -226,9 +344,38 @@ def find_class_ranges(text: str, relative: str, gaps: set[str]) -> list[ClassRan
                 body_end=close_brace,
                 full_start=match.start(),
                 full_end=close_brace + 1,
+                parent=parent,
+                interfaces=interfaces,
+                enum_backing_type=enum_backing_type,
             )
         )
     return ranges
+
+
+def parse_class_hierarchy(
+    namespace: str | None, kind: str, header: str
+) -> tuple[str | None, tuple[str, ...]]:
+    parent = None
+    interfaces: list[str] = []
+    extends = re.search(r"\bextends\s+(.+?)(?=\bimplements\b|$)", header, re.DOTALL)
+    if extends:
+        names = [
+            qualify_name(namespace, name.strip())
+            for name in extends.group(1).split(",")
+            if name.strip()
+        ]
+        if kind == "interface":
+            interfaces.extend(names)
+        elif names:
+            parent = names[0]
+    implements = re.search(r"\bimplements\s+(.+)$", header, re.DOTALL)
+    if implements:
+        interfaces.extend(
+            qualify_name(namespace, name.strip())
+            for name in implements.group(1).split(",")
+            if name.strip()
+        )
+    return parent, tuple(interfaces)
 
 
 def namespace_at(text: str, position: int) -> str | None:
@@ -241,8 +388,9 @@ def namespace_at(text: str, position: int) -> str | None:
 
 
 def qualify_name(namespace: str | None, raw_name: str) -> str:
+    absolute = raw_name.startswith("\\")
     name = raw_name.strip("\\")
-    if "\\" in name or namespace is None:
+    if absolute or "\\" in name or namespace is None:
         return name
     return f"{namespace}\\{name}"
 
@@ -406,6 +554,59 @@ def parse_constants(
     return constants
 
 
+def parse_properties(
+    body: str, relative: str, extension: str, owner: str
+) -> list[PropertyMetadata]:
+    properties = []
+    for statement in body.split(";"):
+        stripped = " ".join(statement.strip().split())
+        if "$" not in stripped or "function " in stripped:
+            continue
+        visibility = "public"
+        for candidate in ("public", "protected", "private"):
+            if f" {candidate} " in f" {stripped} ":
+                visibility = candidate
+                break
+        name_part = stripped.rsplit("$", 1)[-1].split("=", 1)[0].strip()
+        match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", name_part)
+        if match is None:
+            continue
+        properties.append(
+            PropertyMetadata(
+                class_name=owner,
+                name=match.group(0),
+                extension=extension,
+                source=relative,
+                visibility=visibility,
+                is_static=" static " in f" {stripped} ",
+                is_readonly=" readonly " in f" {stripped} ",
+            )
+        )
+    return properties
+
+
+def parse_enum_cases(
+    body: str, relative: str, extension: str, owner: str
+) -> list[ConstantMetadata]:
+    cases = []
+    for statement in body.split(";"):
+        stripped = statement.strip()
+        match = re.match(r"case\s+([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+        if match is None:
+            continue
+        cases.append(
+            ConstantMetadata(
+                owner=owner,
+                name=match.group(1),
+                extension=extension,
+                source=relative,
+                type_decl=owner,
+                value="UNKNOWN",
+            )
+        )
+    return cases
+
+
 def parse_const_body(
     body: str,
     relative: str,
@@ -523,6 +724,9 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
         "    pub kind: &'static str,",
         "    pub extension: &'static str,",
         "    pub source: &'static str,",
+        "    pub parent: Option<&'static str>,",
+        "    pub interfaces: &'static [&'static str],",
+        "    pub enum_backing_type: Option<&'static str>,",
         "}",
         "",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
@@ -534,6 +738,17 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
         "    pub return_type: &'static str,",
         "    pub params: &'static [GeneratedParamMetadata],",
         "    pub is_static: bool,",
+        "}",
+        "",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
+        "pub struct GeneratedPropertyMetadata {",
+        "    pub class_name: &'static str,",
+        "    pub name: &'static str,",
+        "    pub extension: &'static str,",
+        "    pub source: &'static str,",
+        "    pub visibility: &'static str,",
+        "    pub is_static: bool,",
+        "    pub is_readonly: bool,",
         "}",
         "",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
@@ -549,6 +764,7 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
         f"pub const GENERATED_ARGINFO_FUNCTION_COUNT: usize = {len(metadata.functions)};",
         f"pub const GENERATED_ARGINFO_CLASS_COUNT: usize = {len(metadata.classes)};",
         f"pub const GENERATED_ARGINFO_METHOD_COUNT: usize = {len(metadata.methods)};",
+        f"pub const GENERATED_ARGINFO_PROPERTY_COUNT: usize = {len(metadata.properties)};",
         f"pub const GENERATED_ARGINFO_CONSTANT_COUNT: usize = {len(metadata.constants)};",
         f"pub const GENERATED_ARGINFO_OVERRIDE_COUNT: usize = {metadata.override_count};",
         "",
@@ -574,6 +790,24 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
                 f'        kind: "{rust_escape(class_meta.kind)}",',
                 f'        extension: "{rust_escape(class_meta.extension)}",',
                 f'        source: "{rust_escape(class_meta.source)}",',
+                "        parent: "
+                + (
+                    f'Some("{rust_escape(class_meta.parent)}"),'
+                    if class_meta.parent is not None
+                    else "None,"
+                ),
+                "        interfaces: &["
+                + ", ".join(
+                    f'"{rust_escape(interface)}"'
+                    for interface in class_meta.interfaces
+                )
+                + "],",
+                "        enum_backing_type: "
+                + (
+                    f'Some("{rust_escape(class_meta.enum_backing_type)}"),'
+                    if class_meta.enum_backing_type is not None
+                    else "None,"
+                ),
                 "    },",
             ]
         )
@@ -581,9 +815,24 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
     for method in metadata.methods:
         lines.extend(write_method(method))
     lines.extend(
-        ["];",
-         "",
-         "pub const GENERATED_CONSTANTS: &[GeneratedConstantMetadata] = &["]
+        ["];", "", "pub const GENERATED_PROPERTIES: &[GeneratedPropertyMetadata] = &["]
+    )
+    for property_meta in metadata.properties:
+        lines.extend(
+            [
+                "    GeneratedPropertyMetadata {",
+                f'        class_name: "{rust_escape(property_meta.class_name)}",',
+                f'        name: "{rust_escape(property_meta.name)}",',
+                f'        extension: "{rust_escape(property_meta.extension)}",',
+                f'        source: "{rust_escape(property_meta.source)}",',
+                f'        visibility: "{rust_escape(property_meta.visibility)}",',
+                f"        is_static: {str(property_meta.is_static).lower()},",
+                f"        is_readonly: {str(property_meta.is_readonly).lower()},",
+                "    },",
+            ]
+        )
+    lines.extend(
+        ["];", "", "pub const GENERATED_CONSTANTS: &[GeneratedConstantMetadata] = &["]
     )
     for constant in metadata.constants:
         owner = (
@@ -636,6 +885,48 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
             "        .collect()",
             "}",
             "",
+            "pub fn property_metadata(",
+            "    class_name: &str,",
+            "    property_name: &str,",
+            ") -> Option<&'static GeneratedPropertyMetadata> {",
+            "    GENERATED_PROPERTIES.iter().find(|property| {",
+            "        property.class_name.eq_ignore_ascii_case(class_name)",
+            "            && property.name == property_name",
+            "    })",
+            "}",
+            "",
+            "fn class_hierarchy(class_name: &str) -> Vec<&'static str> {",
+            "    let mut pending = vec![class_name];",
+            "    let mut seen = std::collections::BTreeSet::new();",
+            "    let mut hierarchy = Vec::new();",
+            "    while let Some(name) = pending.pop() {",
+            "        let Some(class) = class_metadata(name) else { continue; };",
+            "        if !seen.insert(class.name.to_ascii_lowercase()) { continue; }",
+            "        hierarchy.push(class.name);",
+            "        pending.extend(class.interfaces.iter().copied());",
+            "        if let Some(parent) = class.parent { pending.push(parent); }",
+            "    }",
+            "    hierarchy",
+            "}",
+            "",
+            "pub fn method_metadata_in_hierarchy(",
+            "    class_name: &str,",
+            "    method_name: &str,",
+            ") -> Option<&'static GeneratedMethodMetadata> {",
+            "    class_hierarchy(class_name)",
+            "        .into_iter()",
+            "        .find_map(|owner| method_metadata(owner, method_name))",
+            "}",
+            "",
+            "pub fn property_metadata_in_hierarchy(",
+            "    class_name: &str,",
+            "    property_name: &str,",
+            ") -> Option<&'static GeneratedPropertyMetadata> {",
+            "    class_hierarchy(class_name)",
+            "        .into_iter()",
+            "        .find_map(|owner| property_metadata(owner, property_name))",
+            "}",
+            "",
             "pub fn constant_metadata(",
             "    owner: Option<&str>,",
             "    name: &str,",
@@ -647,6 +938,15 @@ def write_rust(path: Path, metadata: GeneratedMetadata) -> None:
             "                .is_some_and(|constant_owner| constant_owner.eq_ignore_ascii_case(owner))",
             "        }) && constant.name == name",
             "    })",
+            "}",
+            "",
+            "pub fn constant_metadata_in_hierarchy(",
+            "    class_name: &str,",
+            "    name: &str,",
+            ") -> Option<&'static GeneratedConstantMetadata> {",
+            "    class_hierarchy(class_name)",
+            "        .into_iter()",
+            "        .find_map(|owner| constant_metadata(Some(owner), name))",
             "}",
         ]
     )

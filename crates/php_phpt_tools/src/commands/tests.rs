@@ -1418,6 +1418,15 @@ fn classifies_known_failure_evolution_as_related_changes() {
 
 #[test]
 fn normalizes_run_specific_paths_for_failure_fingerprints() {
+    let left = "/tmp/phrust/third_party/php-src/ext/phar/files/write.phar: invalid UTF-8";
+    let right =
+        "/tmp/phrust-sibling/phrust1/third_party/php-src/ext/phar/files/write.phar: invalid UTF-8";
+
+    assert_eq!(
+        normalize_failure_detail_for_fingerprint(left),
+        normalize_failure_detail_for_fingerprint(right)
+    );
+
     let left = "stderr=/tmp/repo/target/phpt-work/full-runs/a/work/target/case-1-2/test.php: E\nthread 'main' (123) panicked";
     let right = "stderr=/tmp/repo/target/phpt-work/full-runs/b/work/target/case-9-8/test.php: E\nthread 'main' (456) panicked";
 

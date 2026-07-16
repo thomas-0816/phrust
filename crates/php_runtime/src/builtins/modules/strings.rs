@@ -948,6 +948,19 @@ pub(in crate::builtins::modules) fn builtin_pack(
 
     for spec in specs {
         match spec.code {
+            b'n' | b'v' => {
+                let count = if spec.count_all {
+                    values.len()
+                } else {
+                    spec.count.unwrap_or(1)
+                };
+                for _ in 0..count {
+                    let value = values
+                        .next()
+                        .ok_or_else(|| value_error("pack", "not enough arguments"))?;
+                    output.extend_from_slice(&pack_u16_bytes(spec.code, int_arg("pack", value)?));
+                }
+            }
             b'l' | b'I' | b'V' => {
                 let count = if spec.count_all {
                     values.len()
@@ -1008,6 +1021,28 @@ pub(in crate::builtins::modules) fn builtin_unpack(
 
     for spec in specs {
         match spec.code {
+            b'n' | b'v' => {
+                let count = if spec.count_all {
+                    (data.len().saturating_sub(cursor)) / 2
+                } else {
+                    spec.count.unwrap_or(1)
+                };
+                for index in 0..count {
+                    let end = cursor.checked_add(2).ok_or_else(|| {
+                        value_error("unpack", "Type value overflows internal cursor")
+                    })?;
+                    if end > data.len() {
+                        return Err(BuiltinError::new(
+                            "E_PHP_RUNTIME_BUILTIN_VALUE",
+                            "Type value overflows input data string",
+                        ));
+                    }
+                    let value = unpack_u16_value(spec.code, &data.as_bytes()[cursor..end]);
+                    cursor = end;
+                    let key = unpack_result_key(&spec, index, &mut next_numeric_key);
+                    output.insert(key, Value::Int(value));
+                }
+            }
             b'l' | b'I' | b'V' => {
                 let count = if spec.count_all {
                     (data.len().saturating_sub(cursor)) / 4

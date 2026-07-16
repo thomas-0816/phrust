@@ -3,6 +3,7 @@ use super::*;
 mod date_time;
 mod dom;
 mod mysqli;
+mod pdo;
 mod phar;
 mod simple_xml;
 mod spl_iterators;
@@ -15,6 +16,8 @@ use date_time::{
     execute_native_date_time_instruction,
 };
 use mysqli::{construct_native_mysqli_class, execute_native_mysqli_instruction};
+use pdo::pdo_mysql_class_constant;
+pub(super) use pdo::pdo_mysql_deprecated_constant;
 use phar::execute_native_phar_instruction;
 pub(super) use simple_xml::{
     construct_native_simple_xml, execute_native_simple_xml_instruction, native_simple_xml_count,
@@ -74,6 +77,7 @@ pub(super) fn execute_native_internal_builtin(
 
 pub(super) fn native_internal_class_constant(class_name: &str, constant: &str) -> Option<Value> {
     date_time_class_constant(class_name, constant)
+        .or_else(|| pdo_mysql_class_constant(class_name, constant))
         .or_else(|| spl_iterator_class_constant(class_name, constant))
         .or_else(|| xml_reader_class_constant(class_name, constant))
 }

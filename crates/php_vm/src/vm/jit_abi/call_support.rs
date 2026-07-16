@@ -140,7 +140,7 @@ pub(super) fn invoke_native_function_with_metadata_strict(
                     context.decode(*value)?,
                 );
             } else {
-                return Err(format!("Unknown named parameter ${name}"));
+                return Err(format!("E_PHP_THROW:Error:Unknown named parameter ${name}"));
             }
         } else {
             if saw_named {
@@ -388,6 +388,15 @@ pub(super) fn bind_native_builtin_arguments(
     arguments: &[i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
 ) -> Result<Vec<i64>, String> {
+    if native_builtins::native_builtin_is_unavailable_target_function(name)
+        || (name.eq_ignore_ascii_case("print")
+            && metadata
+                .is_some_and(|arguments| arguments.iter().any(|argument| argument.name.is_some())))
+    {
+        return Err(format!(
+            "E_PHP_THROW:Error:Call to undefined function {name}()"
+        ));
+    }
     let Some(call_metadata) = metadata else {
         return Ok(arguments.to_vec());
     };
@@ -407,7 +416,7 @@ pub(super) fn bind_native_builtin_arguments(
                 .params
                 .iter()
                 .position(|parameter| parameter.name.eq_ignore_ascii_case(name))
-                .ok_or_else(|| format!("Unknown named parameter ${name}"))?;
+                .ok_or_else(|| format!("E_PHP_THROW:Error:Unknown named parameter ${name}"))?;
             assigned[index] = Some(*value);
         } else {
             while positional < assigned.len() && assigned[positional].is_some() {

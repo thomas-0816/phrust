@@ -106,7 +106,23 @@ const FUNCTIONS: &[FunctionDescriptor] = &[
         false,
     ),
     FunctionDescriptor::generated(
+        "gmmktime",
+        "date",
+        SymbolVisibility::PhpVisible,
+        Some("date"),
+        None,
+        false,
+    ),
+    FunctionDescriptor::generated(
         "gmstrftime",
+        "date",
+        SymbolVisibility::PhpVisible,
+        Some("date"),
+        None,
+        false,
+    ),
+    FunctionDescriptor::generated(
+        "mktime",
         "date",
         SymbolVisibility::PhpVisible,
         Some("date"),

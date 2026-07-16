@@ -14,8 +14,7 @@ use ::openssl::pkey::{PKey, Private, Public};
 use ::openssl::rsa::Rsa;
 use ::openssl::sign::{Signer, Verifier};
 use ::openssl::symm::{Cipher, Crypter, Mode};
-use ::openssl::x509::X509;
-use ::openssl::x509::X509NameRef;
+use ::openssl::x509::{X509, X509NameRef};
 use base64::{Engine, engine::general_purpose};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
@@ -1237,7 +1236,64 @@ fn x509_from_value(
     let Some(bytes) = openssl_input_bytes(context, function, value, span)? else {
         return Ok(None);
     };
-    Ok(X509::from_pem(&bytes).ok())
+    Ok(X509::from_pem(&bytes)
+        .ok()
+        .filter(x509_has_rfc5280_time_encoding))
+}
+
+fn x509_has_rfc5280_time_encoding(certificate: &X509) -> bool {
+    certificate
+        .to_der()
+        .is_ok_and(|der| der_has_rfc5280_time_encoding(&der))
+}
+
+fn der_has_rfc5280_time_encoding(der: &[u8]) -> bool {
+    fn validate_items(mut input: &[u8]) -> Option<bool> {
+        while !input.is_empty() {
+            let tag = *input.first()?;
+            input = &input[1..];
+            let first_length = *input.first()?;
+            input = &input[1..];
+            let length = if first_length & 0x80 == 0 {
+                usize::from(first_length)
+            } else {
+                let octets = usize::from(first_length & 0x7f);
+                if octets == 0 || octets > std::mem::size_of::<usize>() || input.len() < octets {
+                    return None;
+                }
+                let mut length = 0_usize;
+                for byte in &input[..octets] {
+                    length = length.checked_mul(256)?.checked_add(usize::from(*byte))?;
+                }
+                input = &input[octets..];
+                length
+            };
+            let (value, rest) = input.split_at_checked(length)?;
+            input = rest;
+
+            match tag {
+                // RFC 5280 requires seconds and a trailing Z in certificate
+                // UTCTime and GeneralizedTime values.
+                0x17 if value.len() != 13
+                    || !value[..12].iter().all(u8::is_ascii_digit)
+                    || value[12] != b'Z' =>
+                {
+                    return Some(false);
+                }
+                0x18 if value.len() != 15
+                    || !value[..14].iter().all(u8::is_ascii_digit)
+                    || value[14] != b'Z' =>
+                {
+                    return Some(false);
+                }
+                tag if tag & 0x20 != 0 && !validate_items(value)? => return Some(false),
+                _ => {}
+            }
+        }
+        Some(true)
+    }
+
+    validate_items(der).unwrap_or(false)
 }
 
 fn openssl_pkey_option_int(options: Option<&Value>, name: &str) -> Option<i64> {
@@ -1662,5 +1718,18 @@ mod tests {
             .expect("x509 verify"),
             Value::Int(1)
         );
+    }
+
+    #[test]
+    fn x509_time_encoding_requires_seconds() {
+        assert!(der_has_rfc5280_time_encoding(
+            b"\x30\x0f\x17\x0d140107000000Z"
+        ));
+        assert!(!der_has_rfc5280_time_encoding(
+            b"\x30\x0d\x17\x0b1401070000Z"
+        ));
+        assert!(der_has_rfc5280_time_encoding(
+            b"\x30\x11\x18\x0f20500107000000Z"
+        ));
     }
 }

@@ -35,6 +35,12 @@ pub(super) fn native_call_target_metadata(target: &RegionCallTarget) -> (u32, u3
             0,
             0,
         ),
+        RegionCallTarget::Semantic { operation } => (
+            crate::JitNativeCallKind::SEMANTIC_OPERATION.0,
+            operation.operation_id().raw(),
+            0,
+            0,
+        ),
     }
 }
 

@@ -85,6 +85,14 @@ pub const FUNCTIONS: &[GeneratedBuiltinDescriptor] = &[
         variadic: false,
     },
     GeneratedBuiltinDescriptor {
+        name: "gmmktime",
+        extension: "date",
+        return_type: Some("int|false"),
+        required_parameters: 1,
+        total_parameters: 6,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
         name: "gmstrftime",
         extension: "date",
         return_type: Some("string|false"),
@@ -106,6 +114,14 @@ pub const FUNCTIONS: &[GeneratedBuiltinDescriptor] = &[
         return_type: Some("string|float"),
         required_parameters: 0,
         total_parameters: 1,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
+        name: "mktime",
+        extension: "date",
+        return_type: Some("int|false"),
+        required_parameters: 1,
+        total_parameters: 6,
         variadic: false,
     },
     GeneratedBuiltinDescriptor {

@@ -211,6 +211,34 @@ pub fn current_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
+/// Builds a Unix timestamp from PHP-style date components, including overflow
+/// normalization for month, day, and time fields.
+pub fn timestamp_from_components(
+    mut year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    timezone: &str,
+) -> Option<i64> {
+    if (0..=69).contains(&year) {
+        year += 2000;
+    } else if (70..=100).contains(&year) {
+        year += 1900;
+    }
+    let zero_based_month = month.checked_sub(1)?;
+    year = year.checked_add(zero_based_month.div_euclid(12))?;
+    let month = u8::try_from(zero_based_month.rem_euclid(12) + 1).ok()?;
+    let year = i32::try_from(year).ok()?;
+    let days = days_from_civil(year, month, 1).checked_add(day.checked_sub(1)?)?;
+    days.checked_mul(86_400)?
+        .checked_add(hour.checked_mul(3_600)?)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?
+        .checked_sub(timezone_offset_seconds(timezone))
+}
+
 /// Formats a timestamp with a PHP-date-format MVP.
 #[must_use]
 pub fn format_timestamp(timestamp: i64, timezone: &str, format: &str) -> String {

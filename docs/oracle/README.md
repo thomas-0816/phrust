@@ -12,6 +12,9 @@ Generated artifacts:
 
 - `target/oracle/api/php-source-api-symbols.jsonl`
 - `target/oracle/api/php-source-api-summary.md`
+- `target/native-surface/{functions,methods,classes,constants}.jsonl`
+- `target/native-surface/language-operations.json`
+- `target/native-surface/summary.md`
 - `fixtures/runtime_semantics/oracle_generated/{smoke,full}/*.php`
 - `tests/oracle/manifests/generated-probes.jsonl`
 - `target/oracle/probes/{smoke,full}/runtime-semantics-diff-report.json`
@@ -22,6 +25,7 @@ Commands:
 
 - `just oracle-api-index`
 - `just oracle-api-summary`
+- `just native-surface-inventory`
 - `just oracle-probe-generate`
 - `just oracle-probe-smoke`
 - `just oracle-probe-full`
@@ -39,6 +43,12 @@ broader runtime, stdlib, PHPT, and application-smoke reports under `target/`.
 
 `oracle-next-gap-prompt` reads `target/oracle/gap-report.json` and emits one
 family-level implementation prompt for the highest-priority open gap family.
+
+`native-surface-inventory` joins the canonical API index and runtime registry
+with Region IR/Cranelift source, generated probe results, and PHPT symbol
+manifests. Registration alone is reported as `registered_unprobed`; headline
+support counts require an executed reference-compatible probe. The generated
+ranked queue is the input for native PHP surface closure waves.
 
 Use `PHP_SRC_DIR` and `REFERENCE_PHP` to point at the read-only pinned PHP
 oracle. For local development in this workspace, the intended source oracle is

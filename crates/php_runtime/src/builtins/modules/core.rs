@@ -1523,11 +1523,28 @@ pub(in crate::builtins::modules) fn pack_u32_bytes(code: u8, value: i64) -> [u8;
     }
 }
 
+pub(in crate::builtins::modules) fn pack_u16_bytes(code: u8, value: i64) -> [u8; 2] {
+    match code {
+        b'n' => (value as u16).to_be_bytes(),
+        b'v' => (value as u16).to_le_bytes(),
+        _ => unreachable!("checked pack format"),
+    }
+}
+
 pub(in crate::builtins::modules) fn unpack_u32_value(code: u8, bytes: &[u8]) -> i64 {
     let bytes: [u8; 4] = bytes.try_into().expect("checked unpack width");
     match code {
         b'l' => i64::from(i32::from_le_bytes(bytes)),
         b'I' | b'V' => i64::from(u32::from_le_bytes(bytes)),
+        _ => unreachable!("checked unpack format"),
+    }
+}
+
+pub(in crate::builtins::modules) fn unpack_u16_value(code: u8, bytes: &[u8]) -> i64 {
+    let bytes: [u8; 2] = bytes.try_into().expect("checked unpack width");
+    match code {
+        b'n' => i64::from(u16::from_be_bytes(bytes)),
+        b'v' => i64::from(u16::from_le_bytes(bytes)),
         _ => unreachable!("checked unpack format"),
     }
 }

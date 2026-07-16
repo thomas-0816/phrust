@@ -833,8 +833,22 @@ fn materialize_builtin_argument(value: &Value) -> Value {
 fn weak_coerce(atom: ArgType, value: &Value) -> Option<Value> {
     match atom {
         ArgType::Bool => to_bool(value).ok().map(Value::Bool),
-        ArgType::Int => to_int(value).ok().map(Value::Int),
-        ArgType::Float => to_float(value).ok().map(Value::float),
+        ArgType::Int
+            if matches!(
+                value,
+                Value::Null | Value::Bool(_) | Value::Float(_) | Value::String(_)
+            ) =>
+        {
+            to_int(value).ok().map(Value::Int)
+        }
+        ArgType::Float
+            if matches!(
+                value,
+                Value::Null | Value::Bool(_) | Value::Int(_) | Value::String(_)
+            ) =>
+        {
+            to_float(value).ok().map(Value::float)
+        }
         ArgType::String if !matches!(value, Value::Resource(_)) => {
             to_string(value).ok().map(Value::String)
         }
@@ -1214,6 +1228,20 @@ mod tests {
     }
 
     #[test]
+    fn weak_int_coercion_rejects_arrays() {
+        let metadata = crate::generated::arginfo::function_metadata("token_name").expect("token");
+        let info = FunctionArgInfo::from_generated(metadata).expect("runtime arginfo");
+        let error = ArgumentValidator::new(CoercionMode::Weak)
+            .validate(&info, &[Value::Array(Default::default())], span())
+            .expect_err("arrays must not weakly coerce to internal int parameters");
+
+        assert_eq!(
+            error.diagnostic().message(),
+            "token_name(): Argument #1 ($id) must be of type int, array given"
+        );
+    }
+
+    #[test]
     fn weak_int_float_union_keeps_decimal_numeric_strings_as_float() {
         let metadata = crate::generated::arginfo::function_metadata("range").expect("range");
         let info = FunctionArgInfo::from_generated(metadata).expect("runtime arginfo");
@@ -1280,13 +1308,55 @@ mod tests {
             crate::generated::arginfo::GENERATED_ARGINFO_METHOD_COUNT
         );
         assert_eq!(
+            crate::generated::arginfo::GENERATED_PROPERTIES.len(),
+            crate::generated::arginfo::GENERATED_ARGINFO_PROPERTY_COUNT
+        );
+        assert_eq!(
             crate::generated::arginfo::GENERATED_CONSTANTS.len(),
             crate::generated::arginfo::GENERATED_ARGINFO_CONSTANT_COUNT
         );
         assert!(!crate::generated::arginfo::GENERATED_FUNCTIONS.is_empty());
         assert!(!crate::generated::arginfo::GENERATED_CLASSES.is_empty());
         assert!(!crate::generated::arginfo::GENERATED_METHODS.is_empty());
+        assert!(!crate::generated::arginfo::GENERATED_PROPERTIES.is_empty());
         assert!(!crate::generated::arginfo::GENERATED_CONSTANTS.is_empty());
+    }
+
+    #[test]
+    fn generated_internal_members_follow_php_class_hierarchy() {
+        assert!(
+            crate::generated::arginfo::method_metadata_in_hierarchy(
+                "ArgumentCountError",
+                "getMessage"
+            )
+            .is_some()
+        );
+        assert!(
+            crate::generated::arginfo::method_metadata_in_hierarchy(
+                "AppendIterator",
+                "getInnerIterator"
+            )
+            .is_some()
+        );
+        assert!(
+            crate::generated::arginfo::property_metadata_in_hierarchy("ReflectionObject", "name")
+                .is_some()
+        );
+        assert!(
+            crate::generated::arginfo::property_metadata_in_hierarchy("Error", "message").is_some()
+        );
+        assert!(crate::generated::arginfo::property_metadata("RoundingMode", "name").is_some());
+        assert!(crate::generated::arginfo::property_metadata("PropertyHookType", "name").is_some());
+        assert!(
+            crate::generated::arginfo::property_metadata("PropertyHookType", "value").is_some()
+        );
+        assert!(
+            crate::generated::arginfo::constant_metadata_in_hierarchy(
+                "ReflectionObject",
+                "IS_IMPLICIT_ABSTRACT"
+            )
+            .is_some()
+        );
     }
 
     #[test]

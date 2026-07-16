@@ -21,6 +21,8 @@ pub mod opt;
 mod osr;
 pub mod ownership;
 mod rules;
+mod semantic_lowering;
+mod semantic_ops;
 pub mod ssa;
 pub mod templates;
 pub mod value_flow;
@@ -61,6 +63,10 @@ pub use ownership::{
     helper_ownership_contract, value_copy_requires_retain, value_release_required,
 };
 pub use rules::{dump_region_rule_selection, select_region_rules};
+pub use semantic_ops::{
+    RegionClassName, RegionPropertyName, RegionSemanticContext, RegionSemanticOp,
+    RegionSemanticOperationId,
+};
 pub use ssa::{
     ExecutableSsaGraph, SsaCertainty, SsaOwnership, SsaValueClass, SsaValueFact,
     build_executable_ssa,

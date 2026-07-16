@@ -375,6 +375,9 @@ pub(in crate::builtins::modules) fn builtin_ftell(
     expect_arity("ftell", &args, 1)?;
     Ok(
         resource_arg(&args[0]).map_or(Value::Bool(false), |resource| {
+            if !resource.flags().seekable {
+                return Value::Bool(false);
+            }
             resource
                 .tell()
                 .map_or(Value::Bool(false), |offset| Value::Int(offset as i64))
@@ -1121,5 +1124,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stored, Value::Array(options));
+    }
+
+    #[test]
+    fn ftell_returns_false_for_non_seekable_standard_streams() {
+        let mut output = OutputBuffer::new();
+        let mut resources = ResourceTable::new();
+        let stdin = resources.register_stdin(Vec::new());
+        let mut context = context(&mut output, &mut resources);
+
+        assert_eq!(
+            builtin_ftell(
+                &mut context,
+                vec![Value::Resource(stdin)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("ftell standard input"),
+            Value::Bool(false)
+        );
     }
 }

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,51 @@ SMOKE_AREAS = {
     "name_resolution",
     "frontend_lowering",
 }
+EXTERNAL_EXTENSION_CLASSES = {
+    "curl": "network",
+    "ftp": "network",
+    "imap": "network",
+    "ldap": "network",
+    "mysqli": "database",
+    "openssl": "crypto_certificates",
+    "pcntl": "process_ipc",
+    "pdo": "database",
+    "pdo_mysql": "database",
+    "pdo_pgsql": "database",
+    "pgsql": "database",
+    "readline": "process_ipc",
+    "sockets": "network",
+    "ssh2": "network",
+    "sysvmsg": "process_ipc",
+    "sysvsem": "process_ipc",
+    "sysvshm": "process_ipc",
+}
+HERMETIC_EXTENSIONS = {
+    "bcmath",
+    "calendar",
+    "ctype",
+    "filter",
+    "gmp",
+    "hash",
+    "iconv",
+    "json",
+    "mbstring",
+    "pcre",
+    "sodium",
+    "tokenizer",
+}
+HERMETIC_STANDARD_SOURCE_MARKERS = {
+    "array",
+    "base64",
+    "crc32",
+    "html",
+    "math",
+    "quot_print",
+    "string",
+    "type",
+    "url",
+    "var",
+}
 
 
 @dataclass(frozen=True)
@@ -40,11 +86,15 @@ class Probe:
     selection: str = "smoke"
     expect: str = "pass"
     known_gap: str | None = None
+    probe_case: str = "seed"
+    support_evidence: bool = True
+    environmental_class: str | None = None
+    required_reference_extension: str | None = None
 
     @property
     def probe_id(self) -> str:
         digest = hashlib.sha1(
-            f"{self.area}:{self.kind}:{self.symbol}:{self.source}".encode("utf-8")
+            f"{self.area}:{self.kind}:{self.symbol}:{self.source}:{self.probe_case}".encode("utf-8")
         ).hexdigest()[:10]
         return f"oracle-{slug(self.area)}-{slug(self.kind)}-{slug(self.symbol)}-{digest}"
 
@@ -221,7 +271,345 @@ def build_probes(rows: list[dict]) -> list[Probe]:
         ),
     ]
     probes.extend(full_only_probes(rows))
+    probes.extend(builtin_function_probes(rows))
+    probes.extend(internal_descriptor_probes(rows))
     return dedupe_probes(probes)
+
+
+def internal_descriptor_probes(rows: list[dict]) -> list[Probe]:
+    """Classify every target-registered internal class descriptor member."""
+    probes: list[Probe] = []
+    class_kinds = {"class", "interface", "trait", "enum"}
+    member_kinds = {"method", "property", "class_constant"}
+    for row in rows:
+        kind = str(row.get("kind") or "")
+        rust = row.get("rust_registry") or {}
+        if kind in class_kinds:
+            if not rust.get("class_registered"):
+                continue
+            class_name = str(row["name"])
+            symbol = class_name
+            body = (
+                f"$class = {php_string(class_name)};\n"
+                "$available = class_exists($class, false) "
+                "|| interface_exists($class, false) "
+                "|| trait_exists($class, false) "
+                "|| (function_exists('enum_exists') && enum_exists($class, false));\n"
+                'echo $available ? "available\\n" : "missing\\n";'
+            )
+        elif kind in member_kinds:
+            if not rust.get("class_registered"):
+                continue
+            class_name = str(row.get("class") or row.get("owner") or "")
+            if not class_name:
+                continue
+            name = str(row["name"])
+            symbol = f"{class_name}::{name}"
+            if kind == "method":
+                predicate = "method_exists($class, $member)"
+            elif kind == "property":
+                predicate = "(new ReflectionClass($class))->hasProperty($member)"
+            else:
+                predicate = "defined($class . '::' . $member)"
+            body = (
+                f"$class = {php_string(class_name)};\n"
+                f"$member = {php_string(name)};\n"
+                "$classAvailable = class_exists($class, false) "
+                "|| interface_exists($class, false) "
+                "|| trait_exists($class, false) "
+                "|| (function_exists('enum_exists') && enum_exists($class, false));\n"
+                f'$available = $classAvailable && {predicate};\n'
+                'echo $available ? "available\\n" : "missing\\n";'
+            )
+        else:
+            continue
+        extension = str(row.get("extension") or "core").lower()
+        probes.append(
+            Probe(
+                area="internal_api_contract",
+                kind=kind,
+                symbol=symbol,
+                source=str(row.get("source") or "php-src"),
+                selection="full",
+                probe_case="descriptor-availability",
+                support_evidence=False,
+                environmental_class=EXTERNAL_EXTENSION_CLASSES.get(extension),
+                required_reference_extension=required_reference_extension(row),
+                body=body,
+            )
+        )
+    return probes
+
+
+def builtin_function_probes(rows: list[dict]) -> list[Probe]:
+    """Generate a bounded, metadata-derived probe set for each runtime builtin."""
+    probes: list[Probe] = []
+    for row in rows:
+        if row.get("kind") != "function":
+            continue
+        rust = row.get("rust_registry") or {}
+        runtime_builtin = bool(rust.get("runtime_builtin"))
+        if not runtime_builtin and not rust.get("present"):
+            continue
+        name = str(row["name"])
+        extension = str(row.get("extension") or "core").lower()
+        source = str(row.get("source") or "php-src")
+        signature = row.get("signature") or {}
+        params = signature.get("parameters") or []
+        environmental_class = EXTERNAL_EXTENSION_CLASSES.get(extension)
+        required_reference_extension = (
+            None if extension in {"core", "standard"} else extension
+        )
+        probes.append(
+            Probe(
+                area="builtin_contract",
+                kind="function",
+                symbol=name,
+                source=source,
+                selection="full",
+                probe_case="availability",
+                support_evidence=False,
+                environmental_class=environmental_class,
+                required_reference_extension=required_reference_extension,
+                body=(
+                    f'$name = {php_string(name)};\n'
+                    'echo function_exists($name) ? "available\\n" : "missing\\n";'
+                ),
+            )
+        )
+        if not runtime_builtin:
+            continue
+        contract_body = invalid_contract_body(name, params)
+        if contract_body is not None:
+            probes.append(
+                Probe(
+                    area="builtin_contract",
+                    kind="function",
+                    symbol=name,
+                    source=source,
+                    selection="full",
+                    probe_case="binder-diagnostic",
+                    support_evidence=False,
+                    environmental_class=environmental_class,
+                    required_reference_extension=required_reference_extension,
+                    body=contract_body,
+                )
+            )
+        if environmental_class or not hermetic_function(row):
+            continue
+        required = [param for param in params if not param.get("optional") and not param.get("variadic")]
+        if all(sample_expression(param.get("type")) is not None for param in required):
+            probes.append(
+                call_probe(
+                    row,
+                    probe_case="required-defaults",
+                    parameters=required,
+                    named=False,
+                )
+            )
+            optional = next(
+                (
+                    param
+                    for param in params
+                    if param.get("optional")
+                    and not param.get("variadic")
+                    and sample_expression(param.get("type")) is not None
+                ),
+                None,
+            )
+            if optional is not None:
+                probes.append(
+                    call_probe(
+                        row,
+                        probe_case="optional-explicit",
+                        parameters=[*required, optional],
+                        named=False,
+                    )
+                )
+            if required:
+                probes.append(
+                    call_probe(
+                        row,
+                        probe_case="named-required",
+                        parameters=required,
+                        named=True,
+                    )
+                )
+        variadic = next((param for param in params if param.get("variadic")), None)
+        if variadic is not None and sample_expression(variadic.get("type")) is not None:
+            arguments = [*required, variadic]
+            if all(sample_expression(param.get("type")) is not None for param in arguments):
+                probes.append(
+                    call_probe(
+                        row,
+                        probe_case="variadic",
+                        parameters=arguments,
+                        named=False,
+                    )
+                )
+        typed = next((param for param in required if invalid_expression(param.get("type")) is not None), None)
+        if typed is not None:
+            probes.append(invalid_type_probe(row, typed))
+    return probes
+
+
+def invalid_contract_body(name: str, params: list[dict]) -> str | None:
+    required = [param for param in params if not param.get("optional") and not param.get("variadic")]
+    if required:
+        call = f"\\{name}()"
+    elif not any(param.get("variadic") for param in params):
+        call = f"\\{name}(__phrust_probe_unknown: 1)"
+    else:
+        return None
+    return caught_call_body(call, [])
+
+
+def hermetic_function(row: dict) -> bool:
+    extension = str(row.get("extension") or "core").lower()
+    if extension in HERMETIC_EXTENSIONS:
+        return True
+    if extension != "standard":
+        return False
+    source_name = Path(str(row.get("source") or "")).stem.lower()
+    return any(marker in source_name for marker in HERMETIC_STANDARD_SOURCE_MARKERS)
+
+
+def call_probe(
+    row: dict,
+    *,
+    probe_case: str,
+    parameters: list[dict],
+    named: bool,
+) -> Probe:
+    declarations: list[str] = []
+    arguments: list[str] = []
+    reference_variables: list[str] = []
+    for index, param in enumerate(parameters):
+        expression = sample_expression(param.get("type"))
+        if expression is None:
+            raise ValueError(f"no sample expression for {param.get('type')!r}")
+        if param.get("by_ref"):
+            variable = f"$arg{index}"
+            declarations.append(f"{variable} = {expression};")
+            expression = variable
+            reference_variables.append(variable)
+        if named and not param.get("variadic"):
+            expression = f"{param['name']}: {expression}"
+        arguments.append(expression)
+    name = str(row["name"])
+    call = f"\\{name}({', '.join(arguments)})"
+    return Probe(
+        area="builtin_behavior",
+        kind="function",
+        symbol=name,
+        source=str(row.get("source") or "php-src"),
+        selection="full",
+        probe_case=probe_case,
+        support_evidence=True,
+        required_reference_extension=required_reference_extension(row),
+        body=caught_call_body(call, declarations, reference_variables),
+    )
+
+
+def invalid_type_probe(row: dict, target: dict) -> Probe:
+    params = (row.get("signature") or {}).get("parameters") or []
+    required = [param for param in params if not param.get("optional") and not param.get("variadic")]
+    arguments = []
+    declarations = []
+    for index, param in enumerate(required):
+        expression = invalid_expression(param.get("type")) if param is target else sample_expression(param.get("type"))
+        if expression is None:
+            expression = "null"
+        if param.get("by_ref"):
+            variable = f"$arg{index}"
+            declarations.append(f"{variable} = {expression};")
+            expression = variable
+        arguments.append(expression)
+    name = str(row["name"])
+    return Probe(
+        area="builtin_behavior",
+        kind="function",
+        symbol=name,
+        source=str(row.get("source") or "php-src"),
+        selection="full",
+        probe_case=f"invalid-type-{target.get('name', 'argument')}",
+        support_evidence=True,
+        required_reference_extension=required_reference_extension(row),
+        body=caught_call_body(f"\\{name}({', '.join(arguments)})", declarations),
+    )
+
+
+def caught_call_body(
+    call: str, declarations: list[str], reference_variables: list[str] | None = None
+) -> str:
+    lines = [
+        *declarations,
+        "try {",
+        f"    $result = {call};",
+        '    echo "return:\\n";',
+        "    var_dump($result);",
+    ]
+    for variable in reference_variables or []:
+        lines.extend(['    echo "writeback:\\n";', f"    var_dump({variable});"])
+    lines.extend(
+        [
+            "} catch (Throwable $error) {",
+            '    echo "throw:", get_class($error), ":", $error->getMessage(), "\\n";',
+            "}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def sample_expression(type_decl: object) -> str | None:
+    types = normalized_types(type_decl)
+    samples = {
+        "array": "[]",
+        "bool": "false",
+        "boolean": "false",
+        "callable": '"strlen"',
+        "false": "false",
+        "float": "0.0",
+        "int": "0",
+        "integer": "0",
+        "iterable": "[]",
+        "mixed": "null",
+        "null": "null",
+        "object": "(object)[]",
+        "resource": 'fopen("php://memory", "r+")',
+        "string": '""',
+        "true": "true",
+    }
+    for type_name in types:
+        if type_name in samples:
+            return samples[type_name]
+    return None
+
+
+def invalid_expression(type_decl: object) -> str | None:
+    types = set(normalized_types(type_decl))
+    if not types or "mixed" in types:
+        return None
+    if "array" not in types and "iterable" not in types and "object" not in types:
+        return "[]"
+    if "string" not in types:
+        return '"phrust-invalid-type"'
+    return None
+
+
+def normalized_types(type_decl: object) -> list[str]:
+    value = str(type_decl or "mixed").lower().replace("?", "null|")
+    value = value.replace("(", "").replace(")", "")
+    return [part.strip().lstrip("\\") for part in re.split(r"[|&]", value) if part.strip()]
+
+
+def required_reference_extension(row: dict) -> str | None:
+    extension = str(row.get("extension") or "core").lower()
+    return None if extension in {"core", "standard"} else extension
+
+
+def php_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
 
 
 def full_only_probes(rows: list[dict]) -> list[Probe]:
@@ -373,6 +761,10 @@ def write_probes(probes: list[Probe], out_dir: Path, manifest: Path) -> None:
                 "source": probe.source,
                 "expect": probe.expect,
                 "known_gap": probe.known_gap,
+                "probe_case": probe.probe_case,
+                "support_evidence": probe.support_evidence,
+                "environmental_class": probe.environmental_class,
+                "required_reference_extension": probe.required_reference_extension,
             }
         )
     with manifest.open("w", encoding="utf-8") as handle:
@@ -382,13 +774,23 @@ def write_probes(probes: list[Probe], out_dir: Path, manifest: Path) -> None:
 
 def render_probe(probe: Probe) -> str:
     known_gap = f" known_gap={probe.known_gap}" if probe.known_gap else ""
+    required_extension = (
+        f" requires_ref_extension={probe.required_reference_extension}"
+        if probe.required_reference_extension
+        else ""
+    )
+    reference_contract = (
+        "php_ref_required=0 php_ref_optional_reason=missing_reference_extension"
+        if probe.required_reference_extension
+        else "php_ref_required=1"
+    )
     return (
         "<?php\n"
         f"// oracle-probe: id={probe.probe_id} area={probe.area} kind={probe.kind} "
         f"symbol={probe.symbol} source={probe.source} expect={probe.expect}\n"
         f"// runtime-semantics: category=oracle_generated expect={probe.expect} "
-        f"php_ref_required=1{known_gap} oracle_probe_id={probe.probe_id} "
-        f"failure_category={probe.area}\n"
+        f"{reference_contract}{known_gap} oracle_probe_id={probe.probe_id} "
+        f"failure_category={probe.area}{required_extension}\n"
         f"{probe.body}\n"
     )
 
@@ -433,7 +835,9 @@ def run_self_tests() -> None:
         {
             "kind": "function",
             "name": "array_pop",
+            "extension": "json",
             "source": "fixture.stub.php",
+            "rust_registry": {"runtime_builtin": True},
             "signature": {
                 "parameters": [
                     {
@@ -447,7 +851,16 @@ def run_self_tests() -> None:
                 ],
                 "return_type": "mixed",
             },
-        }
+        },
+        {
+            "kind": "method",
+            "class": "ArrayObject",
+            "name": "count",
+            "extension": "spl",
+            "source": "fixture.stub.php",
+            "rust_registry": {"class_registered": True, "present": True},
+            "signature": {"parameters": [], "return_type": "int"},
+        },
     ]
     first = [probe.probe_id for probe in build_probes(rows)]
     second = [probe.probe_id for probe in build_probes(rows)]
@@ -456,6 +869,17 @@ def run_self_tests() -> None:
     by_ref = [probe for probe in build_probes(rows) if probe.area == "reflection" and probe.kind == "parameter"]
     if not by_ref or "isPassedByReference" not in by_ref[0].body:
         raise AssertionError("by-reference reflection probe was not generated")
+    builtin = [probe for probe in build_probes(rows) if probe.area.startswith("builtin_")]
+    cases = {probe.probe_case for probe in builtin}
+    if not {"availability", "binder-diagnostic", "required-defaults"}.issubset(cases):
+        raise AssertionError(f"builtin contract cases missing: {sorted(cases)}")
+    methods = [
+        probe
+        for probe in build_probes(rows)
+        if probe.area == "internal_api_contract" and probe.kind == "method"
+    ]
+    if len(methods) != 1 or "method_exists" not in methods[0].body:
+        raise AssertionError("registered method descriptor probe was not generated exactly once")
 
     reference = resolve_reference_php()
     if reference is None:

@@ -22,19 +22,24 @@ pub(crate) fn baseline_results<W: Write, E: Write>(
     } else {
         Vec::new()
     };
-    let previous_results = if let Some(previous) = &options.previous_results {
+    let previous_result_rows = if let Some(previous) = &options.previous_results {
         if previous.is_file() {
             read_run_results(previous)?
-                .into_iter()
-                .filter(|result| !matches!(result.outcome.as_str(), "PASS" | "SKIP" | "XFAIL"))
-                .map(|result| (result.path.clone(), result))
-                .collect::<BTreeMap<_, _>>()
         } else {
-            BTreeMap::new()
+            Vec::new()
         }
     } else {
-        BTreeMap::new()
+        Vec::new()
     };
+    let previous_outcomes = previous_result_rows
+        .iter()
+        .map(|result| (result.path.clone(), result.outcome.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let previous_results = previous_result_rows
+        .into_iter()
+        .filter(|result| !matches!(result.outcome.as_str(), "PASS" | "SKIP" | "XFAIL"))
+        .map(|result| (result.path.clone(), result))
+        .collect::<BTreeMap<_, _>>();
     let current_results = results
         .iter()
         .filter(|result| !matches!(result.outcome.as_str(), "PASS" | "SKIP" | "XFAIL"))
@@ -148,16 +153,36 @@ pub(crate) fn baseline_results<W: Write, E: Write>(
         let regressions = failures
             .iter()
             .filter(|failure| {
-                !previous_keys.contains(&(
-                    failure.path.clone(),
-                    failure.outcome.clone(),
-                    failure.failure_fingerprint.clone(),
-                )) && !is_related_known_failure_evolution(
-                    previous_results.get(&failure.path),
-                    current_results.get(&failure.path).copied(),
-                )
+                previous_outcomes
+                    .get(&failure.path)
+                    .is_none_or(|outcome| outcome != "SKIP")
+                    && !previous_keys.contains(&(
+                        failure.path.clone(),
+                        failure.outcome.clone(),
+                        failure.failure_fingerprint.clone(),
+                    ))
+                    && !is_related_known_failure_evolution(
+                        previous_results.get(&failure.path),
+                        current_results.get(&failure.path).copied(),
+                    )
             })
             .collect::<Vec<_>>();
+        let activated_failures = failures
+            .iter()
+            .filter(|failure| {
+                previous_outcomes
+                    .get(&failure.path)
+                    .is_some_and(|outcome| outcome == "SKIP")
+            })
+            .collect::<Vec<_>>();
+        if !activated_failures.is_empty() {
+            writeln!(
+                stdout,
+                "[info] PHPT surface activation exposed {} prior-SKIP non-green outcome(s); inspect result-delta.json",
+                activated_failures.len()
+            )
+            .map_err(|error| error.to_string())?;
+        }
         if !regressions.is_empty() {
             writeln!(
                 stderr,

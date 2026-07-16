@@ -187,6 +187,30 @@ for a deliberately cold full-corpus run. Runner or VM code changes invalidate
 the cache through binary fingerprints, so strict no-regression checks remain
 comparable.
 
+Set `PHPT_PREVIOUS_RESULTS=<results.jsonl>` to select an explicit comparable
+full-run baseline instead of the latest directory. A full run with a previous
+result set writes `result-delta.json` and a focused `regression-manifest.jsonl`
+beside its normal reports. PASS-to-failure transitions fail the gate;
+PASS-to-SKIP transitions remain listed separately for environmental audit and
+must not be claimed as proven support.
+
+When a broader capability makes a previously skipped PHPT execute, a resulting
+failure is reported as a surface activation rather than a regression from
+working behavior. These SKIP-to-failure paths are listed in
+`activated_failure_paths`; they remain unsupported evidence and must be worked
+or recorded as gaps. PASS-to-failure and changed pre-existing failure
+fingerprints still fail the gate.
+
+The same deterministic comparison can be run directly for focused evidence:
+
+```bash
+python3 scripts/phpt/result_delta.py \
+  --baseline target/phpt-work/full-runs/<baseline>/results.jsonl \
+  --current target/phpt-work/full-runs/<current>/results.jsonl \
+  --out target/phpt-work/full-runs/<current>/result-delta.json \
+  --regression-manifest target/phpt-work/full-runs/<current>/regression-manifest.jsonl
+```
+
 For runner-only changes, use the narrower smoke gate first:
 
 ```bash

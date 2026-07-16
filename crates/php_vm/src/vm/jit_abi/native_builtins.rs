@@ -1409,6 +1409,12 @@ fn execute_native_preg_replace_callback(
         Value::Reference(reference) => reference.get(),
         callback => callback,
     };
+    if matches!(&callback, Value::Array(array) if array.len() != 2) {
+        return Err(
+            "E_PHP_THROW:TypeError:preg_replace_callback(): Argument #2 ($callback) must be a valid callback, array callback must have exactly two members"
+                .to_owned(),
+        );
+    }
     let subject = match context.decode(arguments[2])? {
         Value::Reference(reference) => reference.get(),
         subject => subject,
@@ -1421,12 +1427,24 @@ fn execute_native_preg_replace_callback(
             Value::Int(limit) => limit,
             _ => -1,
         });
-    let compiled = context
+    let compiled = match context
         .builtin_request_state
         .pcre_mut()
         .cache_mut()
         .compile(&pattern)
-        .map_err(|error| error.message().to_owned())?;
+    {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            emit_native_php_diagnostic(
+                context,
+                php_runtime::api::PHP_E_WARNING,
+                &format!("preg_replace_callback(): {}", error.message()),
+                source,
+                true,
+            )?;
+            return context.encode(Value::Null);
+        }
+    };
     let replace = |context: &mut NativeExecutionContext<'_>,
                    subject: &[u8],
                    count: &mut i64|
@@ -1513,6 +1531,35 @@ fn execute_native_preg_replace_callback(
     context.encode(result)
 }
 
+fn execute_native_preg_replace_callback_array(
+    context: &mut NativeExecutionContext<'_>,
+    arguments: &[i64],
+) -> Result<Option<i64>, String> {
+    if !(2..=5).contains(&arguments.len()) {
+        return Ok(None);
+    }
+    let patterns = match context.decode(arguments[0])? {
+        Value::Reference(reference) => reference.get(),
+        patterns => patterns,
+    };
+    let Value::Array(patterns) = patterns else {
+        return Ok(None);
+    };
+    if !patterns.is_empty() {
+        return Ok(None);
+    }
+    if let Some(count) = arguments.get(3)
+        && let Value::Reference(reference) = context.decode(*count)?
+    {
+        reference.set(Value::Int(0));
+    }
+    let subject = match context.decode(arguments[1])? {
+        Value::Reference(reference) => reference.get(),
+        subject => subject,
+    };
+    context.encode(subject).map(Some)
+}
+
 pub(super) fn execute_native_builtin(
     context: &mut NativeExecutionContext<'_>,
     name: &str,
@@ -1521,10 +1568,38 @@ pub(super) fn execute_native_builtin(
     caller_locals: Option<(u32, &[i64])>,
 ) -> Result<i64, String> {
     let normalized = name.trim_start_matches('\\').to_ascii_lowercase();
+    if native_builtin_is_unavailable_target_function(&normalized) {
+        return Err(format!(
+            "E_PHP_THROW:Error:Call to undefined function {name}()"
+        ));
+    }
+    if matches!(normalized.as_str(), "strftime" | "gmstrftime")
+        && !(1..=2).contains(&arguments.len())
+    {
+        emit_native_php_diagnostic(
+            context,
+            php_runtime::api::PHP_E_DEPRECATED,
+            &format!(
+                "Function {normalized}() is deprecated since 8.1, use IntlDateFormatter::format() instead"
+            ),
+            source,
+            true,
+        )?;
+    }
+    validate_native_builtin_arity(&normalized, arguments.len())?;
+    validate_native_builtin_types(context, &normalized, arguments, source)?;
     if let Some(result) = execute_native_internal_builtin(context, &normalized, arguments) {
         return result;
     }
     match normalized.as_str() {
+        "get_included_files" | "get_required_files" => {
+            let files = context
+                .included_files
+                .iter()
+                .map(|path| Value::string(path.to_string_lossy().into_owned()))
+                .collect();
+            context.encode(Value::packed_array(files))
+        }
         "ob_start" => {
             context.output.start_buffer();
             context.encode(Value::Bool(true))
@@ -1569,6 +1644,16 @@ pub(super) fn execute_native_builtin(
             execute_native_array_predicate(context, &normalized, arguments, source)
         }
         "preg_replace_callback" => execute_native_preg_replace_callback(context, arguments, source),
+        "preg_replace_callback_array" => {
+            if let Some(result) = execute_native_preg_replace_callback_array(context, arguments)? {
+                Ok(result)
+            } else {
+                Err(
+                    "E_PHP_THROW:Error:preg_replace_callback_array requires VM callable dispatch for user callbacks"
+                        .to_owned(),
+                )
+            }
+        }
         "sort" | "rsort" | "asort" | "arsort" | "natsort" | "natcasesort" => {
             execute_native_value_sort(context, &normalized, arguments)
         }
@@ -1676,7 +1761,10 @@ pub(super) fn execute_native_builtin(
             };
             let name =
                 String::from_utf8_lossy(&native_string(context.decode(*name)?)?).into_owned();
-            context.encode(Value::Bool(context.lookup_constant(&name).is_ok()))
+            context.encode(Value::Bool(
+                context.lookup_constant(&name).is_ok()
+                    || native_internal_class_constant_exists(&name),
+            ))
         }
         "constant" => {
             let [name] = arguments else {
@@ -2613,7 +2701,7 @@ pub(super) fn execute_native_builtin(
             let exists = context.function_id(&name).is_some()
                 || context.external_function(&name).is_some()
                 || context.visible_function_names.contains(&name)
-                || php_extensions::BuiltinRegistry::new().contains(&name);
+                || native_php_function_exists(&name);
             context.encode(Value::Bool(exists))
         }
         "method_exists" | "property_exists" => {
@@ -2651,8 +2739,20 @@ pub(super) fn execute_native_builtin(
                     && php_std::ExtensionRegistry::standard_library()
                         .enabled_class(&class_name)
                         .is_some()
-                    && php_std::generated::arginfo::method_metadata(&class_name, &member)
-                        .is_some());
+                    && php_std::generated::arginfo::method_metadata_in_hierarchy(
+                        &class_name,
+                        &member,
+                    )
+                    .is_some())
+                || (normalized == "property_exists"
+                    && php_std::ExtensionRegistry::standard_library()
+                        .enabled_class(&class_name)
+                        .is_some()
+                    && php_std::generated::arginfo::property_metadata_in_hierarchy(
+                        &class_name,
+                        &member,
+                    )
+                    .is_some());
             context.encode(Value::Bool(exists))
         }
         "class_exists" | "interface_exists" | "trait_exists" | "enum_exists" => {
@@ -3448,5 +3548,207 @@ pub(super) fn execute_native_builtin(
                 }
             }
         }
+    }
+}
+
+fn validate_native_builtin_arity(name: &str, argument_count: usize) -> Result<(), String> {
+    let Some(function) = php_std::arginfo::function_metadata_indexed(name) else {
+        return Ok(());
+    };
+    let required = function
+        .params
+        .iter()
+        .filter(|parameter| {
+            !parameter.optional && parameter.default_value.is_none() && !parameter.variadic
+        })
+        .count();
+    // These callback-tail APIs encode a PHP overload in a single variadic
+    // stub. The callback(s) inside `...$rest` are still mandatory, so their
+    // runtime minimum cannot be inferred by counting fixed parameters.
+    let required = match name {
+        "array_intersect_uassoc" | "array_intersect_ukey" | "array_uintersect" => 2,
+        "array_uintersect_uassoc" => 3,
+        _ => required,
+    };
+    let variadic = function
+        .params
+        .last()
+        .is_some_and(|parameter| parameter.variadic);
+    let plural = |count: usize| if count == 1 { "" } else { "s" };
+    if argument_count < required {
+        let expectation = if name == "strtr" {
+            "exactly 2 arguments".to_owned()
+        } else if !variadic && required == function.params.len() {
+            format!("exactly {required} argument{}", plural(required))
+        } else {
+            format!("at least {required} argument{}", plural(required))
+        };
+        return Err(format!(
+            "E_PHP_THROW:ArgumentCountError:{}() expects {expectation}, {argument_count} given",
+            function.name,
+        ));
+    }
+    if !variadic && argument_count > function.params.len() {
+        let maximum = function.params.len();
+        let expectation = if name == "strtr" {
+            "exactly 3 arguments".to_owned()
+        } else if required == maximum {
+            format!("exactly {maximum} argument{}", plural(maximum))
+        } else {
+            format!("at most {maximum} argument{}", plural(maximum))
+        };
+        return Err(format!(
+            "E_PHP_THROW:ArgumentCountError:{}() expects {expectation}, {argument_count} given",
+            function.name,
+        ));
+    }
+    Ok(())
+}
+
+fn native_php_function_exists(name: &str) -> bool {
+    // `print` is a language construct, while the mhash compatibility symbols
+    // are conditional on a libmhash-enabled PHP build. Both have internal
+    // implementation entries but are absent from the pinned PHP 8.5.7 target
+    // function table.
+    if matches!(
+        name,
+        "print"
+            | "mhash"
+            | "mhash_count"
+            | "mhash_get_block_size"
+            | "mhash_get_hash_name"
+            | "mhash_keygen_s2k"
+    ) {
+        return false;
+    }
+    php_std::introspection::function_exists(php_std::ExtensionRegistry::standard_library(), name)
+        || php_extensions::BuiltinRegistry::new().contains(name)
+}
+
+fn native_internal_class_constant_exists(name: &str) -> bool {
+    let Some((class_name, constant_name)) = name.rsplit_once("::") else {
+        return false;
+    };
+    php_std::ExtensionRegistry::standard_library()
+        .enabled_class(class_name)
+        .is_some()
+        && php_std::generated::arginfo::constant_metadata_in_hierarchy(class_name, constant_name)
+            .is_some()
+}
+
+pub(super) fn native_builtin_is_unavailable_target_function(name: &str) -> bool {
+    matches!(
+        name.trim_start_matches('\\').to_ascii_lowercase().as_str(),
+        "mhash"
+            | "mhash_count"
+            | "mhash_get_block_size"
+            | "mhash_get_hash_name"
+            | "mhash_keygen_s2k"
+    )
+}
+
+fn validate_native_builtin_types(
+    context: &NativeExecutionContext<'_>,
+    name: &str,
+    arguments: &[i64],
+    source: &php_ir::Instruction,
+) -> Result<(), String> {
+    let Some(metadata) = php_std::arginfo::function_metadata_indexed(name) else {
+        return Ok(());
+    };
+    if !matches!(metadata.extension, "hash" | "json" | "pcre" | "tokenizer") {
+        return Ok(());
+    }
+    if metadata.params.iter().any(|parameter| {
+        parameter
+            .type_decl
+            .split('|')
+            .any(|atom| atom.trim() == "callable")
+    }) {
+        // Runtime callable validation must accept PHP's array callback form
+        // and resolve visibility; the scalar arginfo validator intentionally
+        // has no class-table context for that job.
+        return Ok(());
+    }
+    let Some(info) = php_std::arginfo::function_arginfo_indexed(name) else {
+        return Ok(());
+    };
+    let values = arguments
+        .iter()
+        .map(|argument| {
+            context.decode(*argument).map(|value| match value {
+                Value::Reference(reference) => reference.get(),
+                value => value,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mode = if context.unit.strict_types_for_span(source.span) {
+        php_std::arginfo::CoercionMode::Strict
+    } else {
+        php_std::arginfo::CoercionMode::Weak
+    };
+    let span = php_runtime::api::RuntimeSourceSpan {
+        file: context
+            .unit
+            .files
+            .get(source.span.file.index())
+            .map(|file| file.path.clone()),
+        start: source.span.start,
+        end: source.span.end,
+    };
+    php_std::arginfo::ArgumentValidator::new(mode)
+        .validate(info, &values, span)
+        .map(|_| ())
+        .map_err(|error| {
+            let class = match error.class() {
+                php_std::arginfo::ArginfoErrorClass::TypeError => "TypeError",
+                php_std::arginfo::ArginfoErrorClass::ValueError => "ValueError",
+            };
+            format!("E_PHP_THROW:{class}:{}", error.diagnostic().message())
+        })
+}
+
+#[cfg(test)]
+mod arity_tests {
+    use super::{native_php_function_exists, validate_native_builtin_arity};
+
+    #[test]
+    fn generated_builtin_arity_uses_php_argument_count_diagnostics() {
+        assert_eq!(
+            validate_native_builtin_arity("abs", 0),
+            Err(
+                "E_PHP_THROW:ArgumentCountError:abs() expects exactly 1 argument, 0 given"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            validate_native_builtin_arity("array_chunk", 0),
+            Err(
+                "E_PHP_THROW:ArgumentCountError:array_chunk() expects at least 2 arguments, 0 given"
+                    .to_owned()
+            )
+        );
+        assert!(validate_native_builtin_arity("printf", 4).is_ok());
+        assert_eq!(
+            validate_native_builtin_arity("array_uintersect_uassoc", 0),
+            Err(
+                "E_PHP_THROW:ArgumentCountError:array_uintersect_uassoc() expects at least 3 arguments, 0 given"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            validate_native_builtin_arity("strtr", 0),
+            Err(
+                "E_PHP_THROW:ArgumentCountError:strtr() expects exactly 2 arguments, 0 given"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn function_exists_uses_the_php_visible_target_surface() {
+        assert!(native_php_function_exists("class_alias"));
+        assert!(!native_php_function_exists("print"));
+        assert!(!native_php_function_exists("mhash"));
     }
 }

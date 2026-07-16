@@ -1968,7 +1968,7 @@ def self_test() -> int:
     assert cranelift_dependency_version()
     source_abi = native_source_abi_identity()
     assert source_abi["version"] == 18
-    assert source_abi["hash"] == 0x0DC1_A818_0000_0027
+    assert source_abi["hash"] == 0x0DC1_A818_0000_0028
     host_cpu = cpu_identity()
     assert len(host_cpu["feature_fingerprint_sha256"]) == 64
     ab_off = {

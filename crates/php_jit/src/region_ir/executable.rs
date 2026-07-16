@@ -10,6 +10,8 @@ use php_ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::{RegionClassName, RegionPropertyName, RegionSemanticContext, RegionSemanticOp};
+
 /// A typed failure while constructing an executable region.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeCompileError {
@@ -184,6 +186,11 @@ pub enum RegionCallTarget {
     },
     DynamicConstructor {
         class_name: Operand,
+    },
+    /// PHP runtime semantics identified by an append-only operation ID, not a
+    /// synthetic function symbol.
+    Semantic {
+        operation: RegionSemanticOp,
     },
 }
 
@@ -671,8 +678,6 @@ pub enum RegionInstructionKind {
     CompileTimeFatal {
         diagnostic_id: String,
     },
-    /// The semantic graph is complete, but Cranelift has no lowering yet.
-    MissingLowering,
 }
 
 /// Explicit control flow for one executable region block.
@@ -708,8 +713,6 @@ pub enum RegionTerminator {
         value: Option<RegionOperand>,
         finally: Option<BlockId>,
     },
-    /// The semantic graph is complete, but Cranelift has no lowering yet.
-    MissingLowering,
 }
 
 impl RegionTerminator {
@@ -717,7 +720,7 @@ impl RegionTerminator {
     #[must_use]
     pub fn register_uses(&self) -> Vec<RegId> {
         let operand = match self {
-            Self::Jump { .. } | Self::ReturnReference { .. } | Self::MissingLowering => None,
+            Self::Jump { .. } | Self::ReturnReference { .. } => None,
             Self::JumpIfFalse { condition, .. }
             | Self::JumpIfTrue { condition, .. }
             | Self::JumpIf { condition, .. }
@@ -925,7 +928,6 @@ impl RegionTerminator {
                 if_true, if_false, ..
             } => vec![*if_true, *if_false],
             Self::Return { .. } | Self::ReturnReference { .. } | Self::Exit { .. } => Vec::new(),
-            Self::MissingLowering => Vec::new(),
         }
     }
 }
@@ -992,6 +994,27 @@ impl BaselineRegionBuilder {
         function: FunctionId,
         runtime_metadata: &CompileMetadata,
     ) -> Result<RegionGraph, NativeCompileError> {
+        php_ir::verify_function(unit, function).map_err(|errors| {
+            let first = &errors[0];
+            NativeCompileError::new(
+                "JIT_REGION_REJECT_INVALID_IR",
+                format!(
+                    "function={} span={}:{}-{} verifier={}: {}",
+                    function.raw(),
+                    unit.functions
+                        .get(function.index())
+                        .map_or(u32::MAX, |function| function.span.file.raw()),
+                    unit.functions
+                        .get(function.index())
+                        .map_or(0, |function| function.span.start),
+                    unit.functions
+                        .get(function.index())
+                        .map_or(0, |function| function.span.end),
+                    first.diagnostic_id(),
+                    first.message
+                ),
+            )
+        })?;
         let ir_function = unit.functions.get(function.index()).ok_or_else(|| {
             NativeCompileError::new(
                 "JIT_REGION_REJECT_MISSING_FUNCTION",
@@ -1172,7 +1195,7 @@ impl BaselineRegionBuilder {
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
-                                        src: lower_operand(unit, argument.value)?,
+                                        src: lower_operand(unit, argument.value),
                                     },
                                 });
                                 next_continuation = next_continuation.saturating_add(1);
@@ -1183,7 +1206,7 @@ impl BaselineRegionBuilder {
                                         .dims
                                         .iter()
                                         .map(|operand| lower_operand(unit, *operand))
-                                        .collect::<Result<Vec<_>, _>>()?,
+                                        .collect(),
                                     append: false,
                                     source: temporary,
                                 })
@@ -1203,13 +1226,13 @@ impl BaselineRegionBuilder {
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
-                                        src: lower_operand(unit, argument.value)?,
+                                        src: lower_operand(unit, argument.value),
                                     },
                                 });
                                 next_continuation = next_continuation.saturating_add(1);
                                 argument.by_ref_local = Some(temporary);
                                 Some(RegionInstructionKind::BindReferenceProperty {
-                                    object: lower_operand(unit, property.object)?,
+                                    object: lower_operand(unit, property.object),
                                     source: temporary,
                                 })
                             } else {
@@ -1304,7 +1327,7 @@ impl BaselineRegionBuilder {
                         let captures = captures.iter().try_fold(
                             Vec::with_capacity(captures.len()),
                             |mut lowered, capture| {
-                                let src = lower_operand(unit, capture.src)?;
+                                let src = lower_operand(unit, capture.src);
                                 let snapshot = LocalId::new(region_local_count);
                                 region_local_count = region_local_count.saturating_add(1);
                                 region_locals.push(format!(
@@ -1399,7 +1422,7 @@ impl BaselineRegionBuilder {
                             {
                                 Some(None)
                             }
-                            operand => lower_operand(unit, operand).ok().map(Some),
+                            operand => Some(Some(lower_operand(unit, operand))),
                         };
                         if let (Some(mut closure), Some(bound_object)) = (closure, bound_object) {
                             closure.bound_object = bound_object;
@@ -1431,16 +1454,20 @@ impl BaselineRegionBuilder {
                     }
                     _ => {}
                 }
+                let semantic_context = RegionSemanticContext {
+                    span: instruction.span,
+                    continuation_id: next_continuation,
+                };
                 let kind = match &instruction.kind {
                     InstructionKind::Nop => RegionInstructionKind::Nop,
-                    InstructionKind::LoadConst { dst, constant } => lower_constant(unit, *constant)
-                        .map_or(RegionInstructionKind::MissingLowering, |src| {
-                            RegionInstructionKind::Move { dst: *dst, src }
-                        }),
-                    InstructionKind::Move { dst, src } => lower_operand(unit, *src)
-                        .map_or(RegionInstructionKind::MissingLowering, |src| {
-                            RegionInstructionKind::Move { dst: *dst, src }
-                        }),
+                    InstructionKind::LoadConst { dst, constant } => RegionInstructionKind::Move {
+                        dst: *dst,
+                        src: lower_constant(unit, *constant),
+                    },
+                    InstructionKind::Move { dst, src } => RegionInstructionKind::Move {
+                        dst: *dst,
+                        src: lower_operand(unit, *src),
+                    },
                     InstructionKind::LoadLocal { dst, local } => RegionInstructionKind::LoadLocal {
                         dst: *dst,
                         local: *local,
@@ -1453,62 +1480,46 @@ impl BaselineRegionBuilder {
                             quiet: true,
                         }
                     }
-                    InstructionKind::StoreLocal { local, src } => lower_operand(unit, *src)
-                        .map_or(RegionInstructionKind::MissingLowering, |src| {
-                            RegionInstructionKind::StoreLocal { local: *local, src }
-                        }),
-                    InstructionKind::Discard { src } => lower_operand(unit, *src)
-                        .map_or(RegionInstructionKind::MissingLowering, |src| {
-                            RegionInstructionKind::Discard { src }
-                        }),
+                    InstructionKind::StoreLocal { local, src } => {
+                        RegionInstructionKind::StoreLocal {
+                            local: *local,
+                            src: lower_operand(unit, *src),
+                        }
+                    }
+                    InstructionKind::Discard { src } => RegionInstructionKind::Discard {
+                        src: lower_operand(unit, *src),
+                    },
                     InstructionKind::Binary { dst, op, lhs, rhs } => {
-                        match (lower_operand(unit, *lhs), lower_operand(unit, *rhs)) {
-                            (Ok(lhs), Ok(rhs)) => {
-                                fast_path_operations = fast_path_operations.saturating_add(1);
-                                RegionInstructionKind::Binary {
-                                    dst: *dst,
-                                    op: lower_binary(*op),
-                                    lhs,
-                                    rhs,
-                                }
-                            }
-                            _ => RegionInstructionKind::MissingLowering,
+                        fast_path_operations = fast_path_operations.saturating_add(1);
+                        RegionInstructionKind::Binary {
+                            dst: *dst,
+                            op: lower_binary(*op),
+                            lhs: lower_operand(unit, *lhs),
+                            rhs: lower_operand(unit, *rhs),
                         }
                     }
-                    InstructionKind::Unary { dst, op, src } => lower_operand(unit, *src).map_or(
-                        RegionInstructionKind::MissingLowering,
-                        |src| RegionInstructionKind::Unary {
-                            dst: *dst,
-                            op: lower_unary(*op),
-                            src,
-                        },
-                    ),
+                    InstructionKind::Unary { dst, op, src } => RegionInstructionKind::Unary {
+                        dst: *dst,
+                        op: lower_unary(*op),
+                        src: lower_operand(unit, *src),
+                    },
                     InstructionKind::Compare { dst, op, lhs, rhs } => {
-                        match (lower_operand(unit, *lhs), lower_operand(unit, *rhs)) {
-                            (Ok(lhs), Ok(rhs)) => {
-                                fast_path_operations = fast_path_operations.saturating_add(1);
-                                RegionInstructionKind::Compare {
-                                    dst: *dst,
-                                    op: lower_compare(*op),
-                                    lhs,
-                                    rhs,
-                                }
-                            }
-                            _ => RegionInstructionKind::MissingLowering,
+                        fast_path_operations = fast_path_operations.saturating_add(1);
+                        RegionInstructionKind::Compare {
+                            dst: *dst,
+                            op: lower_compare(*op),
+                            lhs: lower_operand(unit, *lhs),
+                            rhs: lower_operand(unit, *rhs),
                         }
                     }
-                    InstructionKind::Cast { dst, kind, src } => lower_operand(unit, *src).map_or(
-                        RegionInstructionKind::MissingLowering,
-                        |src| RegionInstructionKind::Cast {
-                            dst: *dst,
-                            op: lower_cast(*kind),
-                            src,
-                        },
-                    ),
-                    InstructionKind::Echo { src } => lower_operand(unit, *src)
-                        .map_or(RegionInstructionKind::MissingLowering, |src| {
-                            RegionInstructionKind::Echo { src }
-                        }),
+                    InstructionKind::Cast { dst, kind, src } => RegionInstructionKind::Cast {
+                        dst: *dst,
+                        op: lower_cast(*kind),
+                        src: lower_operand(unit, *src),
+                    },
+                    InstructionKind::Echo { src } => RegionInstructionKind::Echo {
+                        src: lower_operand(unit, *src),
+                    },
                     InstructionKind::NewArray { dst } => {
                         RegionInstructionKind::NewArray { dst: *dst }
                     }
@@ -1517,50 +1528,37 @@ impl BaselineRegionBuilder {
                         key,
                         value,
                         by_ref_local,
-                    } => match (
-                        key.map(|key| lower_operand(unit, key)).transpose(),
-                        by_ref_local
+                    } => RegionInstructionKind::ArrayInsert {
+                        array: *array,
+                        key: key.map(|key| lower_operand(unit, key)),
+                        value: by_ref_local
                             .map(RegionOperand::Local)
-                            .map_or_else(|| lower_operand(unit, *value), Ok),
-                    ) {
-                        (Ok(key), Ok(value)) => RegionInstructionKind::ArrayInsert {
-                            array: *array,
-                            key,
-                            value,
-                            by_ref_local: *by_ref_local,
-                        },
-                        _ => RegionInstructionKind::MissingLowering,
+                            .unwrap_or_else(|| lower_operand(unit, *value)),
+                        by_ref_local: *by_ref_local,
                     },
-                    InstructionKind::ArraySpread { array, source } => lower_operand(unit, *source)
-                        .map_or(RegionInstructionKind::MissingLowering, |source| {
-                            RegionInstructionKind::ArraySpread {
-                                array: *array,
-                                source,
-                            }
-                        }),
+                    InstructionKind::ArraySpread { array, source } => {
+                        RegionInstructionKind::ArraySpread {
+                            array: *array,
+                            source: lower_operand(unit, *source),
+                        }
+                    }
                     InstructionKind::FetchDim {
                         dst,
                         array,
                         key,
                         quiet,
-                    } => match (lower_operand(unit, *array), lower_operand(unit, *key)) {
-                        (Ok(array), Ok(key)) => RegionInstructionKind::FetchDim {
-                            dst: *dst,
-                            array,
-                            key,
-                            quiet: *quiet,
-                        },
-                        _ => RegionInstructionKind::MissingLowering,
+                    } => RegionInstructionKind::FetchDim {
+                        dst: *dst,
+                        array: lower_operand(unit, *array),
+                        key: lower_operand(unit, *key),
+                        quiet: *quiet,
                     },
                     InstructionKind::ArrayGet { dst, array, index } => {
-                        match (lower_operand(unit, *array), lower_operand(unit, *index)) {
-                            (Ok(array), Ok(key)) => RegionInstructionKind::FetchDim {
-                                dst: *dst,
-                                array,
-                                key,
-                                quiet: false,
-                            },
-                            _ => RegionInstructionKind::MissingLowering,
+                        RegionInstructionKind::FetchDim {
+                            dst: *dst,
+                            array: lower_operand(unit, *array),
+                            key: lower_operand(unit, *index),
+                            quiet: false,
                         }
                     }
                     InstructionKind::FetchConst { dst, .. } => {
@@ -1572,26 +1570,24 @@ impl BaselineRegionBuilder {
                         dims,
                         value,
                     } => {
-                        match (
-                            dims.iter()
-                                .map(|dim| lower_operand(unit, *dim))
-                                .collect::<Result<Vec<_>, _>>(),
-                            lower_operand(unit, *value),
-                        ) {
-                            (Ok(keys), Ok(value)) if keys.is_empty() => {
-                                RegionInstructionKind::AssignLocalResult {
-                                    dst: *dst,
-                                    local: *local,
-                                    value,
-                                }
+                        let keys = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        let value = lower_operand(unit, *value);
+                        if keys.is_empty() {
+                            RegionInstructionKind::AssignLocalResult {
+                                dst: *dst,
+                                local: *local,
+                                value,
                             }
-                            (Ok(keys), Ok(value)) => RegionInstructionKind::AssignDim {
+                        } else {
+                            RegionInstructionKind::AssignDim {
                                 dst: *dst,
                                 local: *local,
                                 keys,
                                 value,
-                            },
-                            _ => RegionInstructionKind::MissingLowering,
+                            }
                         }
                     }
                     InstructionKind::AppendDim {
@@ -1599,70 +1595,62 @@ impl BaselineRegionBuilder {
                         local,
                         dims,
                         value,
-                    } => match (
-                        dims.iter()
-                            .map(|dim| lower_operand(unit, *dim))
-                            .collect::<Result<Vec<_>, _>>(),
-                        lower_operand(unit, *value),
-                    ) {
-                        (Ok(keys), Ok(value)) => RegionInstructionKind::AppendDim {
-                            dst: *dst,
-                            local: *local,
-                            keys,
-                            value,
-                        },
-                        _ => RegionInstructionKind::MissingLowering,
+                    } => RegionInstructionKind::AppendDim {
+                        dst: *dst,
+                        local: *local,
+                        keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
+                        value: lower_operand(unit, *value),
                     },
-                    InstructionKind::IssetDim { dst, local, dims } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |keys| {
-                            if keys.is_empty() {
-                                RegionInstructionKind::IssetLocal {
-                                    dst: *dst,
-                                    local: *local,
-                                }
-                            } else {
-                                RegionInstructionKind::IssetDim {
-                                    dst: *dst,
-                                    local: *local,
-                                    keys,
-                                }
+                    InstructionKind::IssetDim { dst, local, dims } => {
+                        let keys = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        if keys.is_empty() {
+                            RegionInstructionKind::IssetLocal {
+                                dst: *dst,
+                                local: *local,
                             }
-                        }),
-                    InstructionKind::EmptyDim { dst, local, dims } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |keys| {
-                            if keys.is_empty() {
-                                RegionInstructionKind::EmptyLocal {
-                                    dst: *dst,
-                                    local: *local,
-                                }
-                            } else {
-                                RegionInstructionKind::EmptyDim {
-                                    dst: *dst,
-                                    local: *local,
-                                    keys,
-                                }
+                        } else {
+                            RegionInstructionKind::IssetDim {
+                                dst: *dst,
+                                local: *local,
+                                keys,
                             }
-                        }),
-                    InstructionKind::UnsetDim { local, dims } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |keys| {
-                            if keys.is_empty() {
-                                RegionInstructionKind::UnsetLocal { local: *local }
-                            } else {
-                                RegionInstructionKind::UnsetDim {
-                                    local: *local,
-                                    keys,
-                                }
+                        }
+                    }
+                    InstructionKind::EmptyDim { dst, local, dims } => {
+                        let keys = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        if keys.is_empty() {
+                            RegionInstructionKind::EmptyLocal {
+                                dst: *dst,
+                                local: *local,
                             }
-                        }),
+                        } else {
+                            RegionInstructionKind::EmptyDim {
+                                dst: *dst,
+                                local: *local,
+                                keys,
+                            }
+                        }
+                    }
+                    InstructionKind::UnsetDim { local, dims } => {
+                        let keys = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        if keys.is_empty() {
+                            RegionInstructionKind::UnsetLocal { local: *local }
+                        } else {
+                            RegionInstructionKind::UnsetDim {
+                                local: *local,
+                                keys,
+                            }
+                        }
+                    }
                     InstructionKind::CallFunction { dst, name, args } => {
                         let args = prepared_call_args.as_deref().unwrap_or(args);
                         let function = unit
@@ -1830,7 +1818,7 @@ impl BaselineRegionBuilder {
                         })
                         .map_or_else(
                             || {
-                                let mut operands = vec![lower_operand(unit, *object).ok()];
+                                let mut operands = vec![Some(lower_operand(unit, *object))];
                                 operands.extend(lower_call_operands(unit, args));
                                 RegionInstructionKind::NativeCall(RegionNativeCall {
                                     result: RegionCallResult::Register(*dst),
@@ -1886,14 +1874,12 @@ impl BaselineRegionBuilder {
                         && method.eq_ignore_ascii_case("suspend")
                         && args.len() <= 1 =>
                     {
-                        args.first()
-                            .map(|argument| lower_operand(unit, argument.value))
-                            .transpose()
-                            .map_or(RegionInstructionKind::MissingLowering, |value| {
-                                RegionInstructionKind::NativeSuspend(
-                                    RegionNativeSuspend::FiberSuspend { dst: *dst, value },
-                                )
-                            })
+                        RegionInstructionKind::NativeSuspend(RegionNativeSuspend::FiberSuspend {
+                            dst: *dst,
+                            value: args
+                                .first()
+                                .map(|argument| lower_operand(unit, argument.value)),
+                        })
                     }
                     InstructionKind::CallStaticMethod {
                         dst,
@@ -1988,9 +1974,9 @@ impl BaselineRegionBuilder {
                                 )
                         }) {
                             fast_path_operations = fast_path_operations.saturating_add(1);
-                            lower_direct_closure_call(unit, *dst, closure, args)
+                            lower_direct_closure_call(unit, *dst, closure, args, semantic_context)
                         } else {
-                            let mut operands = vec![lower_operand(unit, *callee).ok()];
+                            let mut operands = vec![Some(lower_operand(unit, *callee))];
                             operands.extend(lower_call_operands(unit, args));
                             RegionInstructionKind::NativeCall(RegionNativeCall {
                                 result: RegionCallResult::Register(*dst),
@@ -2033,7 +2019,7 @@ impl BaselineRegionBuilder {
                                 )
                         }) {
                             fast_path_operations = fast_path_operations.saturating_add(1);
-                            lower_direct_closure_call(unit, *dst, closure, args)
+                            lower_direct_closure_call(unit, *dst, closure, args, semantic_context)
                         } else {
                             let known_name =
                                 known_string_operand(unit, *callee, &known_register_strings);
@@ -2043,7 +2029,7 @@ impl BaselineRegionBuilder {
                                 fast_path_operations = fast_path_operations.saturating_add(1);
                                 lower_direct_function_call(unit, *dst, name, function, args)
                             } else {
-                                let mut operands = vec![lower_operand(unit, *callee).ok()];
+                                let mut operands = vec![Some(lower_operand(unit, *callee))];
                                 operands.extend(lower_call_operands(unit, args));
                                 RegionInstructionKind::NativeCall(RegionNativeCall {
                                     result: RegionCallResult::Register(*dst),
@@ -2088,7 +2074,13 @@ impl BaselineRegionBuilder {
                             known_closure.filter(|closure| !closure.requires_runtime_context)
                         {
                             fast_path_operations = fast_path_operations.saturating_add(1);
-                            lower_direct_closure_call(unit, *dst, closure, &[argument])
+                            lower_direct_closure_call(
+                                unit,
+                                *dst,
+                                closure,
+                                &[argument],
+                                semantic_context,
+                            )
                         } else if let Some(name) = known_name {
                             if let Some(function) = find_function(unit, &name) {
                                 fast_path_operations = fast_path_operations.saturating_add(1);
@@ -2102,7 +2094,7 @@ impl BaselineRegionBuilder {
                                     },
                                     args: vec![argument],
                                     argument_operand_offset: 0,
-                                    operands: vec![lower_operand(unit, *input).ok()],
+                                    operands: vec![Some(lower_operand(unit, *input))],
                                     direct_arity: None,
                                     variadic: false,
                                     returns_by_reference: false,
@@ -2110,8 +2102,8 @@ impl BaselineRegionBuilder {
                                 })
                             }
                         } else {
-                            let mut operands = vec![lower_operand(unit, *callable).ok()];
-                            operands.push(lower_operand(unit, *input).ok());
+                            let mut operands = vec![Some(lower_operand(unit, *callable))];
+                            operands.push(Some(lower_operand(unit, *input)));
                             RegionInstructionKind::NativeCall(RegionNativeCall {
                                 result: RegionCallResult::Register(*dst),
                                 target: RegionCallTarget::Pipe {
@@ -2172,7 +2164,7 @@ impl BaselineRegionBuilder {
                         method,
                         args,
                     } => {
-                        let mut operands = vec![lower_operand(unit, *object).ok()];
+                        let mut operands = vec![Some(lower_operand(unit, *object))];
                         operands.extend(lower_call_operands(unit, args));
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::ReferenceLocal(*target),
@@ -2246,7 +2238,7 @@ impl BaselineRegionBuilder {
                         class_name,
                         args,
                     } => {
-                        let mut operands = vec![lower_operand(unit, *class_name).ok()];
+                        let mut operands = vec![Some(lower_operand(unit, *class_name))];
                         operands.extend(lower_call_operands(unit, args));
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::Register(*dst),
@@ -2281,39 +2273,37 @@ impl BaselineRegionBuilder {
                             outer_finally: None,
                         })
                     }
-                    InstructionKind::Throw { value } => lower_operand(unit, *value).map_or(
-                        RegionInstructionKind::MissingLowering,
-                        |value| {
-                            let class = match value {
-                                RegionOperand::Register(register) => {
-                                    known_exception_classes.get(&register)
-                                }
-                                _ => None,
-                            };
-                            let catch = active_exception.and_then(|handler| {
-                                let matches = class.is_some_and(|class| {
-                                    handler.catch_types.iter().any(|catch_type| {
-                                        catch_type.eq_ignore_ascii_case(class)
-                                            || catch_type.eq_ignore_ascii_case("throwable")
-                                    })
-                                });
-                                (matches || handler.catch_types.is_empty())
-                                    .then_some(handler.catch)
-                                    .flatten()
+                    InstructionKind::Throw { value } => {
+                        let value = lower_operand(unit, *value);
+                        let class = match value {
+                            RegionOperand::Register(register) => {
+                                known_exception_classes.get(&register)
+                            }
+                            _ => None,
+                        };
+                        let catch = active_exception.and_then(|handler| {
+                            let matches = class.is_some_and(|class| {
+                                handler.catch_types.iter().any(|catch_type| {
+                                    catch_type.eq_ignore_ascii_case(class)
+                                        || catch_type.eq_ignore_ascii_case("throwable")
+                                })
                             });
-                            RegionInstructionKind::NativeControl(RegionNativeControl::Throw {
-                                value,
-                                catch,
-                                finally: catch
-                                    .is_none()
-                                    .then(|| active_exception.and_then(|handler| handler.finally))
-                                    .flatten(),
-                                exception_local: catch
-                                    .and(active_exception)
-                                    .and_then(|handler| handler.exception_local),
-                            })
-                        },
-                    ),
+                            (matches || handler.catch_types.is_empty())
+                                .then_some(handler.catch)
+                                .flatten()
+                        });
+                        RegionInstructionKind::NativeControl(RegionNativeControl::Throw {
+                            value,
+                            catch,
+                            finally: catch
+                                .is_none()
+                                .then(|| active_exception.and_then(|handler| handler.finally))
+                                .flatten(),
+                            exception_local: catch
+                                .and(active_exception)
+                                .and_then(|handler| handler.exception_local),
+                        })
+                    }
                     InstructionKind::MakeException {
                         dst,
                         class_name,
@@ -2321,26 +2311,21 @@ impl BaselineRegionBuilder {
                     } => RegionInstructionKind::NativeControl(RegionNativeControl::MakeException {
                         dst: *dst,
                         class_name: class_name.clone(),
-                        message: lower_operand(unit, *message).ok(),
+                        message: Some(lower_operand(unit, *message)),
                     }),
-                    InstructionKind::Include { dst, kind, path } => lower_operand(unit, *path)
-                        .map_or(RegionInstructionKind::MissingLowering, |path| {
-                            RegionInstructionKind::NativeDynamicCode(
-                                RegionNativeDynamicCode::Include {
-                                    dst: *dst,
-                                    kind: *kind,
-                                    path,
-                                },
-                            )
-                        }),
-                    InstructionKind::Eval { dst, code } => lower_operand(unit, *code).map_or(
-                        RegionInstructionKind::MissingLowering,
-                        |code| {
-                            RegionInstructionKind::NativeDynamicCode(
-                                RegionNativeDynamicCode::Eval { dst: *dst, code },
-                            )
-                        },
-                    ),
+                    InstructionKind::Include { dst, kind, path } => {
+                        RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::Include {
+                            dst: *dst,
+                            kind: *kind,
+                            path: lower_operand(unit, *path),
+                        })
+                    }
+                    InstructionKind::Eval { dst, code } => {
+                        RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::Eval {
+                            dst: *dst,
+                            code: lower_operand(unit, *code),
+                        })
+                    }
                     InstructionKind::DeclareFunction { name, function } => {
                         RegionInstructionKind::NativeDynamicCode(
                             RegionNativeDynamicCode::DeclareFunction {
@@ -2365,13 +2350,10 @@ impl BaselineRegionBuilder {
                         RegionInstructionKind::UnsetLocal { local: *local }
                     }
                     InstructionKind::ForeachInit { iterator, source } => {
-                        lower_operand(unit, *source).map_or(
-                            RegionInstructionKind::MissingLowering,
-                            |source| RegionInstructionKind::ForeachInit {
-                                iterator: *iterator,
-                                source,
-                            },
-                        )
+                        RegionInstructionKind::ForeachInit {
+                            iterator: *iterator,
+                            source: lower_operand(unit, *source),
+                        }
                     }
                     InstructionKind::ForeachInitRef { iterator, local } => {
                         RegionInstructionKind::ForeachInitRef {
@@ -2440,26 +2422,20 @@ impl BaselineRegionBuilder {
                         },
                     ),
                     InstructionKind::Yield { dst, key, value } => {
-                        match (
-                            key.map(|key| lower_operand(unit, key)).transpose(),
-                            value.map(|value| lower_operand(unit, value)).transpose(),
-                        ) {
-                            (Ok(key), Ok(value)) => RegionInstructionKind::NativeSuspend(
-                                RegionNativeSuspend::GeneratorYield {
-                                    dst: *dst,
-                                    key,
-                                    value,
-                                },
-                            ),
-                            _ => RegionInstructionKind::MissingLowering,
-                        }
+                        RegionInstructionKind::NativeSuspend(RegionNativeSuspend::GeneratorYield {
+                            dst: *dst,
+                            key: key.map(|key| lower_operand(unit, key)),
+                            value: value.map(|value| lower_operand(unit, value)),
+                        })
                     }
-                    InstructionKind::YieldFrom { dst, source } => lower_operand(unit, *source)
-                        .map_or(RegionInstructionKind::MissingLowering, |source| {
-                            RegionInstructionKind::NativeSuspend(
-                                RegionNativeSuspend::GeneratorDelegate { dst: *dst, source },
-                            )
-                        }),
+                    InstructionKind::YieldFrom { dst, source } => {
+                        RegionInstructionKind::NativeSuspend(
+                            RegionNativeSuspend::GeneratorDelegate {
+                                dst: *dst,
+                                source: lower_operand(unit, *source),
+                            },
+                        )
+                    }
                     InstructionKind::RuntimeError {
                         diagnostic_id,
                         message,
@@ -2469,63 +2445,44 @@ impl BaselineRegionBuilder {
                         message: message.clone(),
                     },
                     InstructionKind::FetchStaticProperty {
-                        dst, class_name, ..
-                    } if matches!(class_name.to_ascii_lowercase().as_str(), "self" | "static") => {
-                        RegionInstructionKind::NativeCall(RegionNativeCall {
-                            result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_static_property_fetch".to_owned(),
-                                function: None,
-                            },
-                            args: Vec::new(),
-                            argument_operand_offset: 0,
-                            operands: Vec::new(),
-                            direct_arity: None,
-                            variadic: false,
-                            returns_by_reference: false,
-                            caller_strict_types: unit.strict_types,
-                        })
-                    }
-                    InstructionKind::FetchStaticProperty { dst, .. } => {
-                        RegionInstructionKind::NativeCall(RegionNativeCall {
-                            result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_static_property_fetch".to_owned(),
-                                function: None,
-                            },
-                            args: Vec::new(),
-                            argument_operand_offset: 0,
-                            operands: Vec::new(),
-                            direct_arity: None,
-                            variadic: false,
-                            returns_by_reference: false,
-                            caller_strict_types: unit.strict_types,
-                        })
-                    }
-                    InstructionKind::FetchClassConstant { dst, .. } => {
-                        RegionInstructionKind::NativeCall(RegionNativeCall {
-                            result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_class_constant_fetch".to_owned(),
-                                function: None,
-                            },
-                            args: Vec::new(),
-                            argument_operand_offset: 0,
-                            operands: Vec::new(),
-                            direct_arity: None,
-                            variadic: false,
-                            returns_by_reference: false,
-                            caller_strict_types: unit.strict_types,
-                        })
-                    }
-                    InstructionKind::ResolveCallable {
                         dst,
-                        callable: CallableKind::FunctionName { name },
+                        class_name,
+                        property,
                     } => RegionInstructionKind::NativeCall(RegionNativeCall {
                         result: RegionCallResult::Register(*dst),
-                        target: RegionCallTarget::Function {
-                            name: format!("__phrust_resolve_callable:{name}"),
-                            function: None,
+                        target: RegionCallTarget::Semantic {
+                            operation: RegionSemanticOp::StaticPropertyFetch {
+                                context: RegionSemanticContext {
+                                    span: instruction.span,
+                                    continuation_id: next_continuation,
+                                },
+                                class_name: RegionClassName::Static(class_name.clone()),
+                                property: property.clone(),
+                            },
+                        },
+                        args: Vec::new(),
+                        argument_operand_offset: 0,
+                        operands: Vec::new(),
+                        direct_arity: None,
+                        variadic: false,
+                        returns_by_reference: false,
+                        caller_strict_types: unit.strict_types,
+                    }),
+                    InstructionKind::FetchClassConstant {
+                        dst,
+                        class_name,
+                        constant,
+                    } => RegionInstructionKind::NativeCall(RegionNativeCall {
+                        result: RegionCallResult::Register(*dst),
+                        target: RegionCallTarget::Semantic {
+                            operation: RegionSemanticOp::ClassConstantFetch {
+                                context: RegionSemanticContext {
+                                    span: instruction.span,
+                                    continuation_id: next_continuation,
+                                },
+                                class_name: class_name.clone(),
+                                constant: constant.clone(),
+                            },
                         },
                         args: Vec::new(),
                         argument_operand_offset: 0,
@@ -2536,18 +2493,16 @@ impl BaselineRegionBuilder {
                         caller_strict_types: unit.strict_types,
                     }),
                     InstructionKind::ResolveCallable { dst, callable } => {
-                        let target = match callable {
-                            CallableKind::MethodPlaceholder { target } => target,
-                            CallableKind::UnresolvedDynamic { target } => target,
-                            CallableKind::FunctionName { .. } => unreachable!(
-                                "function-name callable is handled by the preceding arm"
-                            ),
-                        };
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: format!("__phrust_resolve_invalid_callable:{target}"),
-                                function: None,
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::ResolveCallable {
+                                    context: RegionSemanticContext {
+                                        span: instruction.span,
+                                        continuation_id: next_continuation,
+                                    },
+                                    callable: callable.clone(),
+                                },
                             },
                             args: Vec::new(),
                             argument_operand_offset: 0,
@@ -2558,122 +2513,23 @@ impl BaselineRegionBuilder {
                             caller_strict_types: unit.strict_types,
                         })
                     }
-                    InstructionKind::InstanceOf { dst, object, .. } => lower_operand(unit, *object)
-                        .map_or(RegionInstructionKind::MissingLowering, |object| {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_instanceof".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands: vec![Some(object)],
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }),
-                    InstructionKind::DynamicInstanceOf {
+                    InstructionKind::InstanceOf {
                         dst,
                         object,
-                        target,
-                    } => match (lower_operand(unit, *object), lower_operand(unit, *target)) {
-                        (Ok(object), Ok(target)) => {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_instanceof".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands: vec![Some(object), Some(target)],
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
-                    InstructionKind::AcquireCallable { dst, value } => lower_operand(unit, *value)
-                        .map_or(RegionInstructionKind::MissingLowering, |value| {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_acquire_callable".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands: vec![Some(value)],
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }),
-                    InstructionKind::FetchProperty { dst, object, .. } => {
-                        lower_operand(unit, *object)
-                            .map_or(RegionInstructionKind::MissingLowering, |object| {
-                                RegionInstructionKind::FetchProperty { dst: *dst, object }
-                            })
-                    }
-                    InstructionKind::AssignProperty {
-                        dst, object, value, ..
-                    } => match (lower_operand(unit, *object), lower_operand(unit, *value)) {
-                        (Ok(object), Ok(value)) => RegionInstructionKind::AssignProperty {
-                            dst: *dst,
-                            object,
-                            value,
-                        },
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
-                    InstructionKind::FetchDynamicProperty {
-                        dst,
-                        object,
-                        property,
-                    }
-                    | InstructionKind::IssetDynamicProperty {
-                        dst,
-                        object,
-                        property,
-                    }
-                    | InstructionKind::EmptyDynamicProperty {
-                        dst,
-                        object,
-                        property,
-                    } => match (lower_operand(unit, *object), lower_operand(unit, *property)) {
-                        (Ok(object), Ok(property)) => {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_dynamic_property".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands: vec![Some(object), Some(property)],
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
-                    InstructionKind::IssetProperty { dst, object, .. }
-                    | InstructionKind::EmptyProperty { dst, object, .. } => lower_operand(
-                        unit, *object,
-                    )
-                    .map_or(RegionInstructionKind::MissingLowering, |object| {
+                        class_name,
+                    } => {
+                        let object = lower_operand(unit, *object);
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_property_probe".to_owned(),
-                                function: None,
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::InstanceOf {
+                                    context: RegionSemanticContext {
+                                        span: instruction.span,
+                                        continuation_id: next_continuation,
+                                    },
+                                    object,
+                                    class_name: class_name.clone(),
+                                },
                             },
                             args: Vec::new(),
                             argument_operand_offset: 0,
@@ -2683,39 +2539,224 @@ impl BaselineRegionBuilder {
                             returns_by_reference: false,
                             caller_strict_types: unit.strict_types,
                         })
-                    }),
+                    }
+                    InstructionKind::DynamicInstanceOf {
+                        dst,
+                        object,
+                        target,
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let target = lower_operand(unit, *target);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::DynamicInstanceOf {
+                                    context: RegionSemanticContext {
+                                        span: instruction.span,
+                                        continuation_id: next_continuation,
+                                    },
+                                    object,
+                                    target,
+                                },
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object), Some(target)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::AcquireCallable { dst, value } => {
+                        let value = lower_operand(unit, *value);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::AcquireCallable {
+                                    context: RegionSemanticContext {
+                                        span: instruction.span,
+                                        continuation_id: next_continuation,
+                                    },
+                                    value,
+                                },
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(value)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::FetchProperty { dst, object, .. } => {
+                        RegionInstructionKind::FetchProperty {
+                            dst: *dst,
+                            object: lower_operand(unit, *object),
+                        }
+                    }
+                    InstructionKind::AssignProperty {
+                        dst, object, value, ..
+                    } => RegionInstructionKind::AssignProperty {
+                        dst: *dst,
+                        object: lower_operand(unit, *object),
+                        value: lower_operand(unit, *value),
+                    },
+                    InstructionKind::FetchDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let property = lower_operand(unit, *property);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::PropertyFetch {
+                                    context: semantic_context,
+                                    object,
+                                    property: RegionPropertyName::Dynamic(property),
+                                },
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object), Some(property)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::IssetDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                    }
+                    | InstructionKind::EmptyDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let property_operand = lower_operand(unit, *property);
+                        let property = RegionPropertyName::Dynamic(property_operand);
+                        let operation = if matches!(
+                            instruction.kind,
+                            InstructionKind::IssetDynamicProperty { .. }
+                        ) {
+                            RegionSemanticOp::PropertyIsset {
+                                context: semantic_context,
+                                object,
+                                property,
+                            }
+                        } else {
+                            RegionSemanticOp::PropertyEmpty {
+                                context: semantic_context,
+                                object,
+                                property,
+                            }
+                        };
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic { operation },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object), Some(property_operand)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::IssetProperty {
+                        dst,
+                        object,
+                        property,
+                    }
+                    | InstructionKind::EmptyProperty {
+                        dst,
+                        object,
+                        property,
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let property = RegionPropertyName::Static(property.clone());
+                        let operation =
+                            if matches!(instruction.kind, InstructionKind::IssetProperty { .. }) {
+                                RegionSemanticOp::PropertyIsset {
+                                    context: semantic_context,
+                                    object,
+                                    property,
+                                }
+                            } else {
+                                RegionSemanticOp::PropertyEmpty {
+                                    context: semantic_context,
+                                    object,
+                                    property,
+                                }
+                            };
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic { operation },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
                     InstructionKind::IssetPropertyDim {
-                        dst, object, dims, ..
+                        dst,
+                        object,
+                        property,
+                        dims,
                     }
                     | InstructionKind::EmptyPropertyDim {
-                        dst, object, dims, ..
-                    } => match (
-                        lower_operand(unit, *object),
-                        dims.iter()
+                        dst,
+                        object,
+                        property,
+                        dims,
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let dimensions = dims
+                            .iter()
                             .map(|dim| lower_operand(unit, *dim))
-                            .collect::<Result<Vec<_>, _>>(),
-                    ) {
-                        (Ok(object), Ok(dims)) => {
-                            let mut operands = Vec::with_capacity(dims.len() + 1);
-                            operands.push(Some(object));
-                            operands.extend(dims.into_iter().map(Some));
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_property_dim_probe".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
+                            .collect::<Vec<_>>();
+                        let semantic_property = RegionPropertyName::Static(property.clone());
+                        let operation =
+                            if matches!(instruction.kind, InstructionKind::IssetPropertyDim { .. })
+                            {
+                                RegionSemanticOp::PropertyDimIsset {
+                                    context: semantic_context,
+                                    object,
+                                    property: semantic_property,
+                                    dimensions: dimensions.clone(),
+                                }
+                            } else {
+                                RegionSemanticOp::PropertyDimEmpty {
+                                    context: semantic_context,
+                                    object,
+                                    property: semantic_property,
+                                    dimensions: dimensions.clone(),
+                                }
+                            };
+                        let mut operands = Vec::with_capacity(dimensions.len() + 1);
+                        operands.push(Some(object));
+                        operands.extend(dimensions.into_iter().map(Some));
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic { operation },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
                     InstructionKind::IssetDynamicPropertyDim {
                         dst,
                         object,
@@ -2727,171 +2768,208 @@ impl BaselineRegionBuilder {
                         object,
                         property,
                         dims,
-                    } => match (
-                        lower_operand(unit, *object),
-                        lower_operand(unit, *property),
-                        dims.iter()
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let property_operand = lower_operand(unit, *property);
+                        let dimensions = dims
+                            .iter()
                             .map(|dim| lower_operand(unit, *dim))
-                            .collect::<Result<Vec<_>, _>>(),
-                    ) {
-                        (Ok(object), Ok(property), Ok(dims)) => {
-                            let mut operands = Vec::with_capacity(dims.len() + 2);
-                            operands.push(Some(object));
-                            operands.push(Some(property));
-                            operands.extend(dims.into_iter().map(Some));
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_dynamic_property_dim_probe".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
+                            .collect::<Vec<_>>();
+                        let semantic_property = RegionPropertyName::Dynamic(property_operand);
+                        let operation = if matches!(
+                            instruction.kind,
+                            InstructionKind::IssetDynamicPropertyDim { .. }
+                        ) {
+                            RegionSemanticOp::PropertyDimIsset {
+                                context: semantic_context,
+                                object,
+                                property: semantic_property,
+                                dimensions: dimensions.clone(),
+                            }
+                        } else {
+                            RegionSemanticOp::PropertyDimEmpty {
+                                context: semantic_context,
+                                object,
+                                property: semantic_property,
+                                dimensions: dimensions.clone(),
+                            }
+                        };
+                        let mut operands = Vec::with_capacity(dimensions.len() + 2);
+                        operands.push(Some(object));
+                        operands.push(Some(property_operand));
+                        operands.extend(dimensions.into_iter().map(Some));
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic { operation },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
                     InstructionKind::AssignDynamicProperty {
                         dst,
                         object,
                         property,
                         value,
-                    } => match (
-                        lower_operand(unit, *object),
-                        lower_operand(unit, *property),
-                        lower_operand(unit, *value),
-                    ) {
-                        (Ok(object), Ok(property), Ok(value)) => {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_dynamic_property_assign".to_owned(),
-                                    function: None,
+                    } => {
+                        let object = lower_operand(unit, *object);
+                        let property = lower_operand(unit, *property);
+                        let value = lower_operand(unit, *value);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::PropertyAssign {
+                                    context: semantic_context,
+                                    object,
+                                    property: RegionPropertyName::Dynamic(property),
+                                    value,
                                 },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands: vec![Some(object), Some(property), Some(value)],
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
-                    InstructionKind::UnsetProperty { object, .. } => {
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object), Some(property), Some(value)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::UnsetProperty { object, property } => {
                         let dst = RegId::new(region_register_count);
                         region_register_count = region_register_count.saturating_add(1);
-                        lower_operand(unit, *object).map_or(
-                            RegionInstructionKind::MissingLowering,
-                            |object| {
-                                RegionInstructionKind::NativeCall(RegionNativeCall {
-                                    result: RegionCallResult::Register(dst),
-                                    target: RegionCallTarget::Function {
-                                        name: "__phrust_property_unset".to_owned(),
-                                        function: None,
-                                    },
-                                    args: Vec::new(),
-                                    argument_operand_offset: 0,
-                                    operands: vec![Some(object)],
-                                    direct_arity: None,
-                                    variadic: false,
-                                    returns_by_reference: false,
-                                    caller_strict_types: unit.strict_types,
-                                })
+                        let object = lower_operand(unit, *object);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::PropertyUnset {
+                                    context: semantic_context,
+                                    object,
+                                    property: RegionPropertyName::Static(property.clone()),
+                                },
                             },
-                        )
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
                     }
                     InstructionKind::UnsetDynamicProperty { object, property } => {
                         let dst = RegId::new(region_register_count);
                         region_register_count = region_register_count.saturating_add(1);
-                        match (lower_operand(unit, *object), lower_operand(unit, *property)) {
-                            (Ok(object), Ok(property)) => {
-                                RegionInstructionKind::NativeCall(RegionNativeCall {
-                                    result: RegionCallResult::Register(dst),
-                                    target: RegionCallTarget::Function {
-                                        name: "__phrust_dynamic_property_unset".to_owned(),
-                                        function: None,
-                                    },
-                                    args: Vec::new(),
-                                    argument_operand_offset: 0,
-                                    operands: vec![Some(object), Some(property)],
-                                    direct_arity: None,
-                                    variadic: false,
-                                    returns_by_reference: false,
-                                    caller_strict_types: unit.strict_types,
-                                })
-                            }
-                            _ => RegionInstructionKind::MissingLowering,
-                        }
+                        let object = lower_operand(unit, *object);
+                        let property = lower_operand(unit, *property);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::PropertyUnset {
+                                    context: semantic_context,
+                                    object,
+                                    property: RegionPropertyName::Dynamic(property),
+                                },
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(object), Some(property)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
                     }
-                    InstructionKind::UnsetPropertyDim { object, dims, .. } => {
+                    InstructionKind::UnsetPropertyDim {
+                        object,
+                        property,
+                        dims,
+                    } => {
                         let dst = RegId::new(region_register_count);
                         region_register_count = region_register_count.saturating_add(1);
-                        let mut operands = vec![lower_operand(unit, *object).ok()];
-                        operands.extend(dims.iter().map(|dim| lower_operand(unit, *dim).ok()));
-                        if operands.iter().all(Option::is_some) {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_property_dim_unset".to_owned(),
-                                    function: None,
+                        let object = lower_operand(unit, *object);
+                        let dimensions = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        let mut operands = vec![Some(object)];
+                        operands.extend(dimensions.iter().copied().map(Some));
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::PropertyDimUnset {
+                                    context: semantic_context,
+                                    object,
+                                    property: RegionPropertyName::Static(property.clone()),
+                                    dimensions,
                                 },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        } else {
-                            RegionInstructionKind::MissingLowering
-                        }
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
                     }
                     InstructionKind::AssignPropertyDim {
                         dst,
                         object,
+                        property,
                         dims,
                         value,
-                        ..
+                        append,
                     } => {
-                        let mut operands = vec![lower_operand(unit, *object).ok()];
-                        operands.extend(dims.iter().map(|dim| lower_operand(unit, *dim).ok()));
-                        operands.push(lower_operand(unit, *value).ok());
-                        if operands.iter().all(Option::is_some) {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_property_dim_assign".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        } else {
-                            RegionInstructionKind::MissingLowering
-                        }
-                    }
-                    InstructionKind::AssignStaticProperty { dst, value, .. } => lower_operand(
-                        unit, *value,
-                    )
-                    .map_or(RegionInstructionKind::MissingLowering, |value| {
+                        let object = lower_operand(unit, *object);
+                        let dimensions = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        let value = lower_operand(unit, *value);
+                        let mut operands = vec![Some(object)];
+                        operands.extend(dimensions.iter().copied().map(Some));
+                        operands.push(Some(value));
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_static_property_assign".to_owned(),
-                                function: None,
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::PropertyDimAssign {
+                                    context: semantic_context,
+                                    object,
+                                    property: RegionPropertyName::Static(property.clone()),
+                                    dimensions,
+                                    value,
+                                    append: *append,
+                                },
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::AssignStaticProperty {
+                        dst,
+                        class_name,
+                        property,
+                        value,
+                    } => {
+                        let value = lower_operand(unit, *value);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::StaticPropertyAssign {
+                                    context: semantic_context,
+                                    class_name: RegionClassName::Static(class_name.clone()),
+                                    property: property.clone(),
+                                    value,
+                                },
                             },
                             args: Vec::new(),
                             argument_operand_offset: 0,
@@ -2901,42 +2979,63 @@ impl BaselineRegionBuilder {
                             returns_by_reference: false,
                             caller_strict_types: unit.strict_types,
                         })
-                    }),
+                    }
                     InstructionKind::AssignDynamicStaticProperty {
                         dst,
                         class_name,
+                        property,
                         value,
-                        ..
-                    } => match (
-                        lower_operand(unit, *class_name),
-                        lower_operand(unit, *value),
-                    ) {
-                        (Ok(class_name), Ok(value)) => {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_static_property_assign".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands: vec![Some(class_name), Some(value)],
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
-                    },
-                    InstructionKind::IssetStaticProperty { dst, .. }
-                    | InstructionKind::EmptyStaticProperty { dst, .. } => {
+                    } => {
+                        let class_name = lower_operand(unit, *class_name);
+                        let value = lower_operand(unit, *value);
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_static_property_probe".to_owned(),
-                                function: None,
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::StaticPropertyAssign {
+                                    context: semantic_context,
+                                    class_name: RegionClassName::Dynamic(class_name),
+                                    property: property.clone(),
+                                    value,
+                                },
                             },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(class_name), Some(value)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::IssetStaticProperty {
+                        dst,
+                        class_name,
+                        property,
+                    }
+                    | InstructionKind::EmptyStaticProperty {
+                        dst,
+                        class_name,
+                        property,
+                    } => {
+                        let operation = if matches!(
+                            instruction.kind,
+                            InstructionKind::IssetStaticProperty { .. }
+                        ) {
+                            RegionSemanticOp::StaticPropertyIsset {
+                                context: semantic_context,
+                                class_name: RegionClassName::Static(class_name.clone()),
+                                property: property.clone(),
+                            }
+                        } else {
+                            RegionSemanticOp::StaticPropertyEmpty {
+                                context: semantic_context,
+                                class_name: RegionClassName::Static(class_name.clone()),
+                                property: property.clone(),
+                            }
+                        };
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic { operation },
                             args: Vec::new(),
                             argument_operand_offset: 0,
                             operands: Vec::new(),
@@ -2946,72 +3045,106 @@ impl BaselineRegionBuilder {
                             caller_strict_types: unit.strict_types,
                         })
                     }
-                    InstructionKind::IssetStaticPropertyDim { dst, dims, .. }
-                    | InstructionKind::EmptyStaticPropertyDim { dst, dims, .. } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim).map(Some))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |operands| {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Register(*dst),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_static_property_dim_probe".to_owned(),
-                                    function: None,
+                    InstructionKind::IssetStaticPropertyDim {
+                        dst,
+                        class_name,
+                        property,
+                        dims,
+                    }
+                    | InstructionKind::EmptyStaticPropertyDim {
+                        dst,
+                        class_name,
+                        property,
+                        dims,
+                    } => {
+                        let dimensions = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        let operation = if matches!(
+                            instruction.kind,
+                            InstructionKind::IssetStaticPropertyDim { .. }
+                        ) {
+                            RegionSemanticOp::StaticPropertyDimIsset {
+                                context: semantic_context,
+                                class_name: RegionClassName::Static(class_name.clone()),
+                                property: property.clone(),
+                                dimensions: dimensions.clone(),
+                            }
+                        } else {
+                            RegionSemanticOp::StaticPropertyDimEmpty {
+                                context: semantic_context,
+                                class_name: RegionClassName::Static(class_name.clone()),
+                                property: property.clone(),
+                                dimensions: dimensions.clone(),
+                            }
+                        };
+                        let operands = dimensions.into_iter().map(Some).collect();
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Semantic { operation },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::UnsetStaticPropertyDim {
+                        class_name,
+                        property,
+                        dims,
+                    } => {
+                        let dimensions = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        let operands = dimensions.iter().copied().map(Some).collect();
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Discard,
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::StaticPropertyDimUnset {
+                                    context: semantic_context,
+                                    class_name: RegionClassName::Static(class_name.clone()),
+                                    property: property.clone(),
+                                    dimensions,
                                 },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }),
-                    InstructionKind::UnsetStaticPropertyDim { dims, .. } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim).map(Some))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |operands| {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::Discard,
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_static_property_dim_unset".to_owned(),
-                                    function: None,
-                                },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: false,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }),
-                    InstructionKind::CloneObject { dst, object } => lower_operand(unit, *object)
-                        .map_or(RegionInstructionKind::MissingLowering, |object| {
-                            RegionInstructionKind::CloneObject { dst: *dst, object }
-                        }),
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::CloneObject { dst, object } => {
+                        RegionInstructionKind::CloneObject {
+                            dst: *dst,
+                            object: lower_operand(unit, *object),
+                        }
+                    }
                     InstructionKind::CloneWith {
                         dst,
                         object,
                         replacements,
-                    } => match (
-                        lower_operand(unit, *object),
-                        lower_operand(unit, *replacements),
-                    ) {
-                        (Ok(object), Ok(replacements)) => RegionInstructionKind::CloneWith {
-                            dst: *dst,
-                            object,
-                            replacements,
-                        },
-                        _ => RegionInstructionKind::MissingLowering,
+                    } => RegionInstructionKind::CloneWith {
+                        dst: *dst,
+                        object: lower_operand(unit, *object),
+                        replacements: lower_operand(unit, *replacements),
                     },
-                    InstructionKind::BindGlobal { local, .. } => {
+                    InstructionKind::BindGlobal { local, name } => {
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::ReferenceLocal(*local),
-                            target: RegionCallTarget::Function {
-                                name: "__phrust_bind_global".to_owned(),
-                                function: None,
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::BindGlobal {
+                                    context: semantic_context,
+                                    local: *local,
+                                    name: name.clone(),
+                                },
                             },
                             args: Vec::new(),
                             argument_operand_offset: 0,
@@ -3027,26 +3160,17 @@ impl BaselineRegionBuilder {
                         dims,
                         append,
                         source,
-                    } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |keys| {
-                            RegionInstructionKind::BindReferenceIntoDim {
-                                array: *local,
-                                keys,
-                                append: *append,
-                                source: *source,
-                            }
-                        }),
+                    } => RegionInstructionKind::BindReferenceIntoDim {
+                        array: *local,
+                        keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
+                        append: *append,
+                        source: *source,
+                    },
                     InstructionKind::BindReferenceProperty { object, source, .. } => {
-                        lower_operand(unit, *object).map_or(
-                            RegionInstructionKind::MissingLowering,
-                            |object| RegionInstructionKind::BindReferenceProperty {
-                                object,
-                                source: *source,
-                            },
-                        )
+                        RegionInstructionKind::BindReferenceProperty {
+                            object: lower_operand(unit, *object),
+                            source: *source,
+                        }
                     }
                     InstructionKind::BindReferencePropertyDim {
                         object,
@@ -3054,21 +3178,11 @@ impl BaselineRegionBuilder {
                         append,
                         source,
                         ..
-                    } => match (
-                        lower_operand(unit, *object),
-                        dims.iter()
-                            .map(|dim| lower_operand(unit, *dim))
-                            .collect::<Result<Vec<_>, _>>(),
-                    ) {
-                        (Ok(object), Ok(keys)) => {
-                            RegionInstructionKind::BindReferenceIntoPropertyDim {
-                                object,
-                                keys,
-                                append: *append,
-                                source: *source,
-                            }
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
+                    } => RegionInstructionKind::BindReferenceIntoPropertyDim {
+                        object: lower_operand(unit, *object),
+                        keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
+                        append: *append,
+                        source: *source,
                     },
                     InstructionKind::BindReferenceDimFromProperty {
                         local,
@@ -3076,80 +3190,51 @@ impl BaselineRegionBuilder {
                         append,
                         object,
                         ..
-                    } => match (
-                        dims.iter()
-                            .map(|dim| lower_operand(unit, *dim))
-                            .collect::<Result<Vec<_>, _>>(),
-                        lower_operand(unit, *object),
-                    ) {
-                        (Ok(keys), Ok(object)) => {
-                            RegionInstructionKind::BindReferenceDimFromProperty {
-                                array: *local,
-                                keys,
-                                append: *append,
-                                object,
-                            }
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
+                    } => RegionInstructionKind::BindReferenceDimFromProperty {
+                        array: *local,
+                        keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
+                        append: *append,
+                        object: lower_operand(unit, *object),
                     },
                     InstructionKind::BindReferenceFromProperty { target, object, .. } => {
-                        lower_operand(unit, *object).map_or(
-                            RegionInstructionKind::MissingLowering,
-                            |object| RegionInstructionKind::BindReferenceFromProperty {
-                                target: *target,
-                                object,
-                            },
-                        )
+                        RegionInstructionKind::BindReferenceFromProperty {
+                            target: *target,
+                            object: lower_operand(unit, *object),
+                        }
                     }
                     InstructionKind::BindReferenceFromPropertyDim {
                         target,
                         object,
                         dims,
                         ..
-                    } => match (
-                        lower_operand(unit, *object),
-                        dims.iter()
-                            .map(|dim| lower_operand(unit, *dim))
-                            .collect::<Result<Vec<_>, _>>(),
-                    ) {
-                        (Ok(object), Ok(keys)) => {
-                            RegionInstructionKind::BindReferenceFromPropertyDim {
-                                target: *target,
-                                object,
-                                keys,
-                            }
-                        }
-                        _ => RegionInstructionKind::MissingLowering,
+                    } => RegionInstructionKind::BindReferenceFromPropertyDim {
+                        target: *target,
+                        object: lower_operand(unit, *object),
+                        keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
                     },
                     InstructionKind::BindReferenceStaticProperty { source, .. } => {
                         RegionInstructionKind::BindReferenceStaticProperty { source: *source }
                     }
                     InstructionKind::FetchDynamicStaticProperty {
                         dst, class_name, ..
-                    } => lower_operand(unit, *class_name).map_or(
-                        RegionInstructionKind::MissingLowering,
-                        |class_name| RegionInstructionKind::FetchDynamicStaticProperty {
+                    } => RegionInstructionKind::FetchDynamicStaticProperty {
+                        dst: *dst,
+                        class_name: lower_operand(unit, *class_name),
+                    },
+                    InstructionKind::FetchObjectClassName { dst, object } => {
+                        RegionInstructionKind::FetchObjectClassName {
                             dst: *dst,
-                            class_name,
-                        },
-                    ),
-                    InstructionKind::FetchObjectClassName { dst, object } => lower_operand(
-                        unit, *object,
-                    )
-                    .map_or(RegionInstructionKind::MissingLowering, |object| {
-                        RegionInstructionKind::FetchObjectClassName { dst: *dst, object }
-                    }),
-                    InstructionKind::RegisterConstant { name, value } => lower_operand(
-                        unit, *value,
-                    )
-                    .map_or(RegionInstructionKind::MissingLowering, |value| {
+                            object: lower_operand(unit, *object),
+                        }
+                    }
+                    InstructionKind::RegisterConstant { name, value } => {
                         RegionInstructionKind::NativeDynamicCode(
                             RegionNativeDynamicCode::RegisterConstant {
                                 name: name.clone(),
-                                value,
+                                value: lower_operand(unit, *value),
                             },
                         )
-                    }),
+                    }
                     InstructionKind::EmitDiagnostic { .. } => {
                         RegionInstructionKind::NativeDynamicCode(
                             RegionNativeDynamicCode::EmitDiagnostic,
@@ -3165,49 +3250,52 @@ impl BaselineRegionBuilder {
                         target,
                         local,
                         dims,
-                    } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |keys| {
-                            RegionInstructionKind::BindReferenceDim {
-                                target: *target,
-                                array: *local,
-                                keys,
-                            }
-                        }),
+                    } => RegionInstructionKind::BindReferenceDim {
+                        target: *target,
+                        array: *local,
+                        keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
+                    },
                     InstructionKind::BindReferenceFromStaticPropertyDim {
-                        target, dims, ..
-                    } => dims
-                        .iter()
-                        .map(|dim| lower_operand(unit, *dim).map(Some))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_or(RegionInstructionKind::MissingLowering, |operands| {
-                            RegionInstructionKind::NativeCall(RegionNativeCall {
-                                result: RegionCallResult::ReferenceLocal(*target),
-                                target: RegionCallTarget::Function {
-                                    name: "__phrust_static_property_reference".to_owned(),
-                                    function: None,
+                        target,
+                        class_name,
+                        property,
+                        dims,
+                    } => {
+                        let dimensions = dims
+                            .iter()
+                            .map(|dim| lower_operand(unit, *dim))
+                            .collect::<Vec<_>>();
+                        let operands = dimensions.iter().copied().map(Some).collect();
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::ReferenceLocal(*target),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::StaticPropertyReference {
+                                    context: semantic_context,
+                                    target: *target,
+                                    class_name: RegionClassName::Static(class_name.clone()),
+                                    property: property.clone(),
+                                    dimensions,
                                 },
-                                args: Vec::new(),
-                                argument_operand_offset: 0,
-                                operands,
-                                direct_arity: None,
-                                variadic: false,
-                                returns_by_reference: true,
-                                caller_strict_types: unit.strict_types,
-                            })
-                        }),
-                    InstructionKind::InitStaticLocal { local, default, .. } => {
-                        lower_operand(unit, *default).map_or(
-                            RegionInstructionKind::MissingLowering,
-                            |default| RegionInstructionKind::InitStaticLocal {
-                                local: *local,
-                                default,
                             },
-                        )
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: true,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::InitStaticLocal { local, default, .. } => {
+                        RegionInstructionKind::InitStaticLocal {
+                            local: *local,
+                            default: lower_operand(unit, *default),
+                        }
                     }
                 };
+                if let RegionInstructionKind::NativeCall(call) = &kind {
+                    super::semantic_lowering::validate_semantic_call(call, semantic_context)?;
+                }
                 instructions.push(RegionInstruction {
                     id: instruction.id,
                     span: instruction.span,
@@ -3225,7 +3313,20 @@ impl BaselineRegionBuilder {
                 )
             })?;
             let terminator = lower_terminator(unit, ir_function.blocks.len(), block_index, block)
-                .unwrap_or(RegionTerminator::MissingLowering);
+                .map_err(|error| {
+                NativeCompileError::new(
+                    error.code,
+                    format!(
+                        "function={} block={} span={}:{}-{}: {}",
+                        ir_function.name,
+                        block.id.raw(),
+                        source_terminator.span.file.raw(),
+                        source_terminator.span.start,
+                        source_terminator.span.end,
+                        error.detail
+                    ),
+                )
+            })?;
             let terminator_span = source_terminator.span;
             blocks.push(RegionBlock {
                 id: block.id,
@@ -3697,17 +3798,17 @@ const fn lower_cast(op: php_ir::CastKind) -> RegionCastOp {
     }
 }
 
-fn lower_operand(unit: &IrUnit, operand: Operand) -> Result<RegionOperand, NativeCompileError> {
+fn lower_operand(unit: &IrUnit, operand: Operand) -> RegionOperand {
     match operand {
-        Operand::Register(register) => Ok(RegionOperand::Register(register)),
-        Operand::Local(local) => Ok(RegionOperand::Local(local)),
+        Operand::Register(register) => RegionOperand::Register(register),
+        Operand::Local(local) => RegionOperand::Local(local),
         Operand::Constant(constant) => lower_constant(unit, constant),
     }
 }
 
 fn lower_call_operands(unit: &IrUnit, args: &[IrCallArg]) -> Vec<Option<RegionOperand>> {
     args.iter()
-        .map(|argument| lower_operand(unit, argument.value).ok())
+        .map(|argument| Some(lower_operand(unit, argument.value)))
         .collect()
 }
 
@@ -3793,7 +3894,7 @@ fn returned_closure(unit: &IrUnit, name: &str, args: &[IrCallArg]) -> Option<Kno
             argument
                 .by_ref_local
                 .map(RegionOperand::Local)
-                .or_else(|| lower_operand(unit, argument.value).ok())
+                .or_else(|| Some(lower_operand(unit, argument.value)))
         })
         .collect::<Option<Vec<_>>>()?;
     Some(KnownClosure {
@@ -3882,7 +3983,7 @@ fn lower_direct_method_call(
     let mut operands = if is_static {
         Vec::new()
     } else {
-        vec![lower_operand(unit, receiver).ok()]
+        vec![Some(lower_operand(unit, receiver))]
     };
     operands.extend(lower_call_operands(unit, args));
     for parameter in target.params.iter().skip(args.len()) {
@@ -3916,6 +4017,7 @@ fn lower_direct_closure_call(
     dst: RegId,
     closure: KnownClosure,
     args: &[IrCallArg],
+    semantic_context: RegionSemanticContext,
 ) -> RegionInstructionKind {
     let target = &unit.functions[closure.function.index()];
     let variadic = target
@@ -3939,9 +4041,11 @@ fn lower_direct_closure_call(
     {
         return RegionInstructionKind::NativeCall(RegionNativeCall {
             result: RegionCallResult::Register(dst),
-            target: RegionCallTarget::Function {
-                name: "__phrust_bound_closure_class".to_owned(),
-                function: None,
+            target: RegionCallTarget::Semantic {
+                operation: RegionSemanticOp::BoundClosureClass {
+                    context: semantic_context,
+                    bound_object,
+                },
             },
             args: Vec::new(),
             argument_operand_offset: 0,
@@ -3992,20 +4096,13 @@ fn lower_direct_closure_call(
     })
 }
 
-fn lower_constant(
-    unit: &IrUnit,
-    constant: php_ir::ConstId,
-) -> Result<RegionOperand, NativeCompileError> {
+fn lower_constant(unit: &IrUnit, constant: php_ir::ConstId) -> RegionOperand {
     match unit.constants.get(constant.index()) {
-        Some(IrConstant::Int(value)) => Ok(RegionOperand::I64(*value)),
-        Some(IrConstant::Null) => Ok(RegionOperand::Constant(u32::MAX)),
-        Some(IrConstant::Bool(false)) => Ok(RegionOperand::Constant(crate::JIT_VALUE_FALSE)),
-        Some(IrConstant::Bool(true)) => Ok(RegionOperand::Constant(crate::JIT_VALUE_TRUE)),
-        Some(_) => Ok(RegionOperand::Constant(constant.raw())),
-        None => Err(NativeCompileError::new(
-            "JIT_REGION_REJECT_CONSTANT",
-            format!("constant {} is missing", constant.raw()),
-        )),
+        Some(IrConstant::Int(value)) => RegionOperand::I64(*value),
+        Some(IrConstant::Null) => RegionOperand::Constant(u32::MAX),
+        Some(IrConstant::Bool(false)) => RegionOperand::Constant(crate::JIT_VALUE_FALSE),
+        Some(IrConstant::Bool(true)) => RegionOperand::Constant(crate::JIT_VALUE_TRUE),
+        Some(_) | None => RegionOperand::Constant(constant.raw()),
     }
 }
 
@@ -4034,12 +4131,12 @@ fn lower_terminator(
     match &terminator.kind {
         TerminatorKind::Jump { target } => Ok(RegionTerminator::Jump { target: *target }),
         TerminatorKind::JumpIfFalse { condition, target } => Ok(RegionTerminator::JumpIfFalse {
-            condition: lower_operand(unit, *condition)?,
+            condition: lower_operand(unit, *condition),
             target: *target,
             fallthrough: fallthrough()?,
         }),
         TerminatorKind::JumpIfTrue { condition, target } => Ok(RegionTerminator::JumpIfTrue {
-            condition: lower_operand(unit, *condition)?,
+            condition: lower_operand(unit, *condition),
             target: *target,
             fallthrough: fallthrough()?,
         }),
@@ -4048,7 +4145,7 @@ fn lower_terminator(
             if_true,
             if_false,
         } => Ok(RegionTerminator::JumpIf {
-            condition: lower_operand(unit, *condition)?,
+            condition: lower_operand(unit, *condition),
             if_true: *if_true,
             if_false: *if_false,
         }),
@@ -4056,7 +4153,7 @@ fn lower_terminator(
             value: Some(value),
             by_ref_local: None,
         } => Ok(RegionTerminator::Return {
-            value: lower_operand(unit, *value)?,
+            value: lower_operand(unit, *value),
             finally: None,
         }),
         TerminatorKind::Return { value: None, .. } => Ok(RegionTerminator::Return {
@@ -4071,7 +4168,7 @@ fn lower_terminator(
             finally: None,
         }),
         TerminatorKind::Exit { value } => Ok(RegionTerminator::Exit {
-            value: value.map(|value| lower_operand(unit, value)).transpose()?,
+            value: value.map(|value| lower_operand(unit, value)),
             finally: None,
         }),
     }

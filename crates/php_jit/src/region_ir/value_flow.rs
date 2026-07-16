@@ -866,7 +866,8 @@ fn instruction_result_fact(
                     | RegionCallTarget::Callable { .. }
                     | RegionCallTarget::Pipe { .. }
                     | RegionCallTarget::Constructor { .. }
-                    | RegionCallTarget::DynamicConstructor { .. } => SsaValueFact::UNKNOWN,
+                    | RegionCallTarget::DynamicConstructor { .. }
+                    | RegionCallTarget::Semantic { .. } => SsaValueFact::UNKNOWN,
                 };
                 Some((dst, class))
             }

@@ -276,6 +276,95 @@ mod tests {
     use php_ir::{InstructionKind, Operand};
 
     #[test]
+    fn native_builtin_arginfo_errors_are_php_catchable() {
+        let output = PhpExecutor::default().execute_source(PhpExecutionInput {
+            source: r#"<?php
+try {
+    abs();
+} catch (Throwable $error) {
+    echo get_class($error), ":", $error->getMessage(), "\n";
+}
+try {
+    json_decode([]);
+} catch (Throwable $error) {
+    echo get_class($error), ":", $error->getMessage(), "\n";
+}
+try {
+    clearstatcache(__phrust_probe_unknown: 1);
+} catch (Throwable $error) {
+    echo get_class($error), ":", $error->getMessage(), "\n";
+}
+echo function_exists('class_alias') ? "class_alias:available\n" : "class_alias:missing\n";
+echo function_exists('print') ? "print:available\n" : "print:missing\n";
+"#
+            .to_owned(),
+            source_path: "builtin-arginfo.php".to_owned(),
+            real_path: None,
+            cwd: std::path::PathBuf::from("."),
+            include_roots: Vec::new(),
+            runtime_context: php_runtime::api::RuntimeContext::default(),
+            optimization_level: None,
+            collect_counters: false,
+        });
+        assert_eq!(
+            output.status,
+            PhpExecutionStatus::Success,
+            "stdout={} diagnostics={}",
+            String::from_utf8_lossy(&output.stdout),
+            output.diagnostics_text
+        );
+        assert_eq!(
+            output.stdout,
+            b"ArgumentCountError:abs() expects exactly 1 argument, 0 given\n\
+TypeError:json_decode(): Argument #1 ($json) must be of type string, array given\n\
+Error:Unknown named parameter $__phrust_probe_unknown\n\
+class_alias:available\n\
+print:missing\n"
+        );
+    }
+
+    #[test]
+    fn native_internal_api_introspection_uses_generated_hierarchy() {
+        let output = PhpExecutor::default().execute_source(PhpExecutionInput {
+            source: r#"<?php
+echo method_exists('ArgumentCountError', 'getMessage') ? "error-method\n" : "missing\n";
+echo method_exists('AppendIterator', 'getInnerIterator') ? "spl-method\n" : "missing\n";
+echo defined('ReflectionClass::IS_IMPLICIT_ABSTRACT') ? "class-constant\n" : "missing\n";
+$reflection = new ReflectionClass('ReflectionObject');
+echo $reflection->hasProperty('name') ? "inherited-property\n" : "missing\n";
+$errorReflection = new ReflectionClass('Error');
+echo $errorReflection->hasProperty('message') ? "error-property\n" : "missing\n";
+echo (new ReflectionClass('Error'))->hasProperty('message') ? "temporary-property\n" : "missing\n";
+$class = 'Error';
+$member = 'message';
+echo (new ReflectionClass($class))->getName(), "\n";
+echo (new ReflectionClass($class))->hasProperty($member) ? "variable-property\n" : "missing\n";
+$classAvailable = class_exists($class, false) || interface_exists($class, false) || trait_exists($class, false) || (function_exists('enum_exists') && enum_exists($class, false));
+echo $classAvailable && (new ReflectionClass($class))->hasProperty($member) ? "probe-property\n" : "missing\n";
+"#
+            .to_owned(),
+            source_path: "internal-api-introspection.php".to_owned(),
+            real_path: None,
+            cwd: std::path::PathBuf::from("."),
+            include_roots: Vec::new(),
+            runtime_context: php_runtime::api::RuntimeContext::default(),
+            optimization_level: None,
+            collect_counters: false,
+        });
+        assert_eq!(
+            output.status,
+            PhpExecutionStatus::Success,
+            "stdout={} diagnostics={}",
+            String::from_utf8_lossy(&output.stdout),
+            output.diagnostics_text
+        );
+        assert_eq!(
+            output.stdout,
+            b"error-method\nspl-method\nclass-constant\ninherited-property\nerror-property\ntemporary-property\nError\nvariable-property\nprobe-property\n"
+        );
+    }
+
+    #[test]
     fn bounded_cranelift_prewarm_populates_cache_without_executing_script() {
         let mut builder = IrBuilder::new(UnitId::new(91));
         let file = builder.add_file("prewarm.php");

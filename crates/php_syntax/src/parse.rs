@@ -334,6 +334,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_keyword_named_arguments_without_recovery() {
+        let source = "<?php preg_grep(pattern: '', array: []); f(match: 1, print: 2);";
+        let parse = parse_source_file(source);
+
+        assert!(
+            !parse.has_errors(),
+            "unexpected parser diagnostics: {:?}",
+            parse.diagnostics()
+        );
+        assert_eq!(parse.reconstructed_text(), source);
+    }
+
+    #[test]
     fn print_construct_keeps_concat_operand() {
         let source = "<?php print(bin2hex($char)).\" => \".bin2hex($char).\"\\n\";";
         let parse = parse_source_file(source);

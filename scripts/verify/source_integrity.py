@@ -119,6 +119,7 @@ ARGINFO_REQUIRED_SNIPPETS = [
     "pub const GENERATED_FUNCTIONS: &[GeneratedFunctionMetadata] = &[",
     "pub const GENERATED_CLASSES: &[GeneratedClassMetadata] = &[",
     "pub const GENERATED_METHODS: &[GeneratedMethodMetadata] = &[",
+    "pub const GENERATED_PROPERTIES: &[GeneratedPropertyMetadata] = &[",
     "pub const GENERATED_CONSTANTS: &[GeneratedConstantMetadata] = &[",
     "pub fn function_metadata(name: &str) -> Option<&'static GeneratedFunctionMetadata>",
     "pub fn class_metadata(name: &str) -> Option<&'static GeneratedClassMetadata>",
@@ -136,6 +137,7 @@ GENERATED_COUNT_CONSTANTS = [
     "GENERATED_ARGINFO_FUNCTION_COUNT",
     "GENERATED_ARGINFO_CLASS_COUNT",
     "GENERATED_ARGINFO_METHOD_COUNT",
+    "GENERATED_ARGINFO_PROPERTY_COUNT",
     "GENERATED_ARGINFO_CONSTANT_COUNT",
 ]
 

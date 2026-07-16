@@ -16,7 +16,7 @@ pub const JIT_RUNTIME_ABI_VERSION: u32 = 18;
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a818_0000_0027;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a818_0000_0028;
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
 pub const JIT_DEOPT_MAX_SLOTS: usize = 256;
@@ -460,6 +460,8 @@ impl JitNativeCallKind {
     pub const SHUTDOWN_FUNCTION: Self = Self(13);
     pub const DESTRUCTOR: Self = Self(14);
     pub const BUILTIN_CALLBACK: Self = Self(15);
+    /// RegionSemanticOperationId is stored in `target.function_id`.
+    pub const SEMANTIC_OPERATION: Self = Self(16);
 }
 
 /// ABI-visible flags for one prepared native argument.

@@ -17,6 +17,7 @@ mod object_support;
 mod request_state;
 mod root_index;
 mod runtime_ops;
+mod semantic_dispatch;
 mod telemetry;
 
 use dynamic_units::*;
@@ -49,6 +50,7 @@ pub(super) use runtime_ops::{
     jit_native_runtime_fatal_abi, jit_native_truthy_abi, jit_native_unary_abi,
     jit_native_value_lifecycle_abi,
 };
+use semantic_dispatch::*;
 use telemetry::NativeRuntimeTelemetry;
 
 thread_local! {
@@ -3238,7 +3240,7 @@ fn invoke_native_external_function_with_metadata(
                     value.clone(),
                 );
             } else {
-                return Err(format!("Unknown named parameter ${name}"));
+                return Err(format!("E_PHP_THROW:Error:Unknown named parameter ${name}"));
             }
         } else {
             if saw_named {
@@ -4271,6 +4273,19 @@ fn execute_native_class_constant(
         && constant.eq_ignore_ascii_case("ARRAY_AS_PROPS")
     {
         return Some(Ok(2));
+    }
+    if let Some((legacy, modern)) = pdo_mysql_deprecated_constant(&resolved_class, constant)
+        && let Err(error) = emit_native_php_diagnostic(
+            context,
+            php_runtime::api::PHP_E_DEPRECATED,
+            &format!(
+                "Constant PDO::{legacy} is deprecated since 8.5, use Pdo\\Mysql::{modern} instead"
+            ),
+            instruction,
+            true,
+        )
+    {
+        return Some(Err(error));
     }
     if let Some(value) = native_internal_class_constant(&resolved_class, constant) {
         return Some(context.encode(value));

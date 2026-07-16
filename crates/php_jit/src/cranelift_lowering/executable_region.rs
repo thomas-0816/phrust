@@ -1240,32 +1240,6 @@ fn validate_region_native_coverage(region: &RegionGraph) -> Result<(), Cranelift
                     ),
                 ));
             }
-            if matches!(instruction.kind, RegionInstructionKind::MissingLowering) {
-                return Err(CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_MISSING_INSTRUCTION_LOWERING",
-                    format!(
-                        "function={} instruction={:?} span={}:{}-{}",
-                        region.function_name,
-                        instruction.source_kind,
-                        instruction.span.file.raw(),
-                        instruction.span.start,
-                        instruction.span.end
-                    ),
-                ));
-            }
-        }
-        if matches!(block.terminator, RegionTerminator::MissingLowering) {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_MISSING_TERMINATOR_LOWERING",
-                format!(
-                    "function={} terminator={:?} span={}:{}-{}",
-                    region.function_name,
-                    block.source_terminator,
-                    block.terminator_span.file.raw(),
-                    block.terminator_span.start,
-                    block.terminator_span.end
-                ),
-            ));
         }
     }
     Ok(())
@@ -1353,8 +1327,7 @@ fn region_instruction_result_register(kind: &RegionInstructionKind) -> Option<Re
         | RegionInstructionKind::NativeControl(_)
         | RegionInstructionKind::NativeDynamicCode(_)
         | RegionInstructionKind::RuntimeFatal { dst: None, .. }
-        | RegionInstructionKind::CompileTimeFatal { .. }
-        | RegionInstructionKind::MissingLowering => None,
+        | RegionInstructionKind::CompileTimeFatal { .. } => None,
     }
 }
 

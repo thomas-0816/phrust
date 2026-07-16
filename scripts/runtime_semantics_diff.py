@@ -392,18 +392,25 @@ def run_rust(fixture: Fixture, rust_vm: Path) -> dict:
 def run_process(command: list[str], fixture_path: Path, php_path: Path | None) -> dict:
     try:
         completed = subprocess.run(
-            command, check=False, capture_output=True, env=process_env(), text=True
+            command, check=False, capture_output=True, env=process_env(), text=False
         )
     except OSError as error:
         return {"status": "error", "message": f"failed to execute {command[0]}: {error}"}
-    stderr = normalize_stderr(completed.stderr, fixture_path, php_path)
+    stdout = decode_process_bytes(completed.stdout)
+    stderr_raw = decode_process_bytes(completed.stderr)
+    stderr = normalize_stderr(stderr_raw, fixture_path, php_path)
     return {
         "status": "completed",
         "exit_code": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "stdout": stdout,
+        "stderr": stderr_raw,
         "stderr_normalized": stderr,
     }
+
+
+def decode_process_bytes(value: bytes) -> str:
+    """Preserve arbitrary PHP stdout/stderr bytes one-to-one in JSON reports."""
+    return value.decode("utf-8", errors="surrogateescape")
 
 
 def process_env() -> dict[str, str]:

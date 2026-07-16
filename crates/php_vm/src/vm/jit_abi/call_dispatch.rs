@@ -136,7 +136,11 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                 ));
             };
             let instruction_kind = format!("{:?}", instruction.kind);
-            let helper_id = call_dispatch_helper_id(&instruction);
+            let semantic_operation = semantic_operation_from_frame(frame)?;
+            let helper_id = semantic_operation.map_or_else(
+                || call_dispatch_helper_id(&instruction),
+                semantic_operation_helper_id,
+            );
             context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             if context.options.collect_counters {
                 context.enter_runtime_helper(helper_id);
@@ -153,24 +157,16 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             {
                 return Ok(value);
             }
-            if let Some(result) =
-                execute_native_static_property(context, &instruction, &encoded, frame.function_id)
-            {
-                return result;
+            if let Some(operation) = semantic_operation {
+                return execute_native_semantic_operation(
+                    context,
+                    operation,
+                    &instruction,
+                    &encoded,
+                    frame.function_id,
+                );
             }
             if let Some(result) = execute_native_fiber_suspend(context, &instruction, &encoded) {
-                return result;
-            }
-            if let Some(result) = execute_native_instanceof(context, &instruction, &encoded) {
-                return result;
-            }
-            if let Some(result) = execute_native_resolve_callable(context, &instruction) {
-                return result;
-            }
-            if let Some(result) = execute_native_acquire_callable(context, &instruction, &encoded) {
-                return result;
-            }
-            if let Some(result) = execute_native_bind_global(context, &instruction) {
                 return result;
             }
             if matches!(
@@ -219,19 +215,6 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         &encoded,
                         Some(frame.function_id),
                     )
-            {
-                return result;
-            }
-            if let Some(result) = execute_native_property_instruction(
-                context,
-                &instruction,
-                &encoded,
-                frame.function_id,
-            ) {
-                return result;
-            }
-            if let Some(result) =
-                execute_native_class_constant(context, &instruction, frame.function_id)
             {
                 return result;
             }
@@ -782,23 +765,6 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         );
                     }
                 }
-            }
-            if matches!(
-                instruction.kind,
-                php_ir::InstructionKind::CallCallable { .. }
-            ) && let [bound_object] = encoded.as_slice()
-                && let Value::Object(object) = context.decode(*bound_object)?
-            {
-                let class_name = object.class_name();
-                let display_name = context
-                    .unit
-                    .classes
-                    .iter()
-                    .find(|class| class.name == normalize_class_name(&class_name))
-                    .map_or(class_name, |class| class.display_name.clone());
-                return context.encode(Value::String(PhpString::from_bytes(
-                    display_name.as_bytes().to_vec(),
-                )));
             }
             if let php_ir::InstructionKind::NewObject { args, .. } = &instruction.kind
                 && frame.target.function_id != u32::MAX

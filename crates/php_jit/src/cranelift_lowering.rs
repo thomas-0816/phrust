@@ -3422,18 +3422,6 @@ fn lower_region_instruction(
                 diagnostic_id.clone(),
             ));
         }
-        RegionInstructionKind::MissingLowering => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_MISSING_INSTRUCTION_LOWERING",
-                format!(
-                    "instruction {:?} at {}:{}-{} has no native lowering",
-                    instruction.source_kind,
-                    instruction.span.file.raw(),
-                    instruction.span.start,
-                    instruction.span.end
-                ),
-            ));
-        }
     }
     Ok(())
 }

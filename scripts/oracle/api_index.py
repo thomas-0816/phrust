@@ -85,6 +85,7 @@ def main() -> int:
         static_rows, extractor_gaps = load_static_rows(php_src)
         reference = load_reference_rows(reference_php, args.out.parent)
         rows = merge_rows(static_rows, reference.rows)
+        rows.extend(rust_only_rows(rows, rust, reference.php_version))
         rows.extend(extractor_gap_rows(extractor_gaps, reference.php_version))
         rows = classify_rows(rows, rust, reference)
         validate_rows(rows)
@@ -206,7 +207,13 @@ def load_rust_registry(registry: Path) -> dict[str, Any]:
                 "present": True,
             }
         for constant in extension["constants"]:
-            require_fields(constant, {"name", "has_value"}, "registry constant")
+            require_fields(constant, {"name"}, "registry constant")
+            if "has_value" not in constant:
+                # Registry dumps produced before the explicit presence bit
+                # carried the serialized value instead. Accept that schema so
+                # source-index generation remains usable during a toolchain
+                # upgrade, while normalizing every row for downstream users.
+                constant = {**constant, "has_value": constant.get("value") is not None}
             constants[constant["name"]] = {
                 **constant,
                 "extension": extension_name,
@@ -660,6 +667,57 @@ def classify_rows(
     return sorted(classified, key=row_sort_key)
 
 
+def rust_only_rows(
+    rows: list[dict[str, Any]], rust: dict[str, Any], php_version: str
+) -> list[dict[str, Any]]:
+    """Expose registry symbols absent from php-src/reference extraction."""
+    existing = {row_key(row) for row in rows}
+    additions: list[dict[str, Any]] = []
+    for entry in rust.get("functions", {}).values():
+        key = ("function", "", entry["name"].lower())
+        if key in existing:
+            continue
+        row = base_row(
+            kind="function",
+            name=entry["name"],
+            extension=entry.get("extension") or "core",
+            source="Rust extension registry",
+            provenance=["rust-registry"],
+        )
+        row["php_version"] = php_version
+        additions.append(row)
+    for entry in rust.get("classes", {}).values():
+        kind = str(entry.get("kind") or "class").lower()
+        if kind not in {"class", "interface", "trait", "enum"}:
+            kind = "class"
+        key = (kind, "", entry["name"].lower())
+        if key in existing:
+            continue
+        row = base_row(
+            kind=kind,
+            name=entry["name"],
+            extension=entry.get("extension") or "core",
+            source="Rust extension registry",
+            provenance=["rust-registry"],
+        )
+        row["php_version"] = php_version
+        additions.append(row)
+    for entry in rust.get("constants", {}).values():
+        key = ("constant", "", entry["name"].lower())
+        if key in existing:
+            continue
+        row = base_row(
+            kind="constant",
+            name=entry["name"],
+            extension=entry.get("extension") or "core",
+            source="Rust extension registry",
+            provenance=["rust-registry"],
+        )
+        row["php_version"] = php_version
+        additions.append(row)
+    return additions
+
+
 def rust_registry_for(row: dict[str, Any], rust: dict[str, Any]) -> dict[str, Any]:
     if rust["status"]["status"] != "available":
         return {
@@ -990,6 +1048,23 @@ def run_self_tests() -> None:
     validate_rows(sorted_rows)
     if [row["name"] for row in sorted_rows] != ["a", "b"]:
         raise AssertionError("row sorting self-test failed")
+    registry_only = rust_only_rows(
+        sample_rows,
+        {
+            "functions": {
+                "runtime_only": {
+                    "name": "runtime_only",
+                    "extension": "test",
+                    "runtime_builtin": True,
+                }
+            },
+            "classes": {},
+            "constants": {},
+        },
+        PHP_VERSION,
+    )
+    if len(registry_only) != 1 or registry_only[0]["name"] != "runtime_only":
+        raise AssertionError("Rust-only registry symbol was not indexed exactly once")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)

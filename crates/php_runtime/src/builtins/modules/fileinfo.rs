@@ -471,13 +471,33 @@ fn detect_buffer_mime(
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     match MagicDetector::open(flags, magic_file).and_then(|detector| detector.buffer(bytes)) {
-        Ok(value) => Ok(Value::string(value)),
+        Ok(value) => {
+            let value = if flags & FILEINFO_MIME_TYPE != 0
+                && flags & FILEINFO_MIME_ENCODING == 0
+                && looks_like_php_source(bytes)
+            {
+                "text/x-php".to_owned()
+            } else {
+                value
+            };
+            Ok(Value::string(value))
+        }
         Err(message) => {
             context.php_warning("E_PHP_RUNTIME_FILEINFO_MAGIC", message, span);
             let _ = path;
             Ok(Value::Bool(false))
         }
     }
+}
+
+fn looks_like_php_source(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let bytes = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .map_or(&[][..], |start| &bytes[start..]);
+    bytes.starts_with(b"<?php") && bytes.get(5).is_none_or(|byte| byte.is_ascii_whitespace())
+        || bytes.starts_with(b"<?=")
 }
 
 pub(in crate::builtins::modules) fn image_type(bytes: &[u8]) -> Option<i64> {
@@ -942,6 +962,27 @@ mod tests {
         )
         .expect("detect buffer");
         assert_eq!(detected, Value::string("text/plain"));
+    }
+
+    #[test]
+    fn fileinfo_identifies_php_source_independently_of_host_magic_database() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let source = b"<?php\n$this->baz(function () {});\n";
+
+        assert_eq!(
+            detect_buffer_mime(
+                &mut context,
+                source,
+                Some("fixture.php"),
+                FILEINFO_MIME_TYPE,
+                None,
+                RuntimeSourceSpan::default(),
+            )
+            .expect("detect PHP source"),
+            Value::string("text/x-php")
+        );
+        assert!(!looks_like_php_source(b"This text mentions <?php later"));
     }
 
     #[test]

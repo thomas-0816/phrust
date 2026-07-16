@@ -43,8 +43,10 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("gmdate", builtin_gmdate, BuiltinCompatibility::Php),
+    BuiltinEntry::new("gmmktime", builtin_gmmktime, BuiltinCompatibility::Php),
     BuiltinEntry::new("gmstrftime", builtin_gmstrftime, BuiltinCompatibility::Php),
     BuiltinEntry::new("microtime", builtin_microtime, BuiltinCompatibility::Php),
+    BuiltinEntry::new("mktime", builtin_mktime, BuiltinCompatibility::Php),
     BuiltinEntry::new("strtotime", builtin_strtotime, BuiltinCompatibility::Php),
     BuiltinEntry::new("strftime", builtin_strftime, BuiltinCompatibility::Php),
     BuiltinEntry::new("hrtime", builtin_hrtime, BuiltinCompatibility::Php),
@@ -247,6 +249,56 @@ pub(in crate::builtins::modules) fn builtin_time(
 ) -> BuiltinResult {
     expect_arity("time", &args, 0)?;
     Ok(Value::Int(datetime::current_timestamp()))
+}
+
+fn builtin_mktime(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    mktime_in_timezone(context, "mktime", args, None)
+}
+
+fn builtin_gmmktime(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    mktime_in_timezone(context, "gmmktime", args, Some("GMT"))
+}
+
+fn mktime_in_timezone(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    args: Vec<Value>,
+    timezone: Option<&str>,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 6 {
+        return Err(arity_error(function, "one to six argument(s)"));
+    }
+    let timezone = timezone.unwrap_or_else(|| context.default_timezone());
+    let defaults =
+        datetime::format_timestamp(datetime::current_timestamp(), timezone, "Y-n-j-G-i-s")
+            .split('-')
+            .map(str::parse::<i64>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| value_error(function, "could not resolve current date components"))?;
+    let component = |index: usize, default: i64| -> Result<i64, BuiltinError> {
+        match args.get(index).map(deref_value) {
+            None | Some(Value::Null) => Ok(default),
+            Some(value) => int_arg(function, &value),
+        }
+    };
+    let hour = component(0, defaults[3])?;
+    let minute = component(1, defaults[4])?;
+    let second = component(2, defaults[5])?;
+    let month = component(3, defaults[1])?;
+    let day = component(4, defaults[2])?;
+    let year = component(5, defaults[0])?;
+    Ok(
+        datetime::timestamp_from_components(year, month, day, hour, minute, second, timezone)
+            .map_or(Value::Bool(false), Value::Int),
+    )
 }
 pub(in crate::builtins::modules) fn builtin_microtime(
     _context: &mut BuiltinContext<'_>,
@@ -482,7 +534,7 @@ pub(in crate::builtins::modules) fn builtin_timezone_identifiers_list(
 mod tests {
     use super::{
         BuiltinContext, RuntimeSourceSpan, builtin_date_create,
-        builtin_date_create_immutable_from_format, builtin_date_diff,
+        builtin_date_create_immutable_from_format, builtin_date_diff, builtin_mktime,
     };
     use crate::{OutputBuffer, Value, datetime};
 
@@ -562,5 +614,27 @@ mod tests {
         assert_eq!(interval.get_property("days"), Some(Value::Int(8)));
         assert_eq!(interval.get_property("d"), Some(Value::Int(8)));
         assert_eq!(interval.get_property("invert"), Some(Value::Int(0)));
+    }
+
+    #[test]
+    fn mktime_normalizes_php_date_components() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        assert_eq!(
+            builtin_mktime(
+                &mut context,
+                vec![
+                    Value::Int(12),
+                    Value::Int(0),
+                    Value::Int(0),
+                    Value::Int(3),
+                    Value::Int(1),
+                    Value::Int(2006),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("mktime"),
+            Value::Int(1_141_214_400)
+        );
     }
 }

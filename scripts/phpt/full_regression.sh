@@ -92,8 +92,12 @@ fi
 
 mkdir -p "$run_dir"
 
-previous_results=""
-if [[ "${PHPT_DISABLE_REUSE:-0}" != "1" ]]; then
+previous_results="${PHPT_PREVIOUS_RESULTS:-}"
+if [[ -n "$previous_results" && ! -s "$previous_results" ]]; then
+  printf 'Explicit PHPT_PREVIOUS_RESULTS does not exist or is empty: %s\n' "$previous_results" >&2
+  exit 1
+fi
+if [[ -z "$previous_results" && "${PHPT_DISABLE_REUSE:-0}" != "1" ]]; then
   previous_results="$(
     find "$work_root/full-runs" -mindepth 2 -maxdepth 2 -name results.jsonl -type f \
       ! -path "$run_dir/results.jsonl" \
@@ -172,6 +176,14 @@ fi
   --report "$report" \
   --timestamp "$timestamp" \
   ${previous_args[@]+"${previous_args[@]}"}
+
+if [[ -n "$previous_results" ]]; then
+  python3 "$script_dir/result_delta.py" \
+    --baseline "$previous_results" \
+    --current "$run_dir/results.jsonl" \
+    --out "$run_dir/result-delta.json" \
+    --regression-manifest "$run_dir/regression-manifest.jsonl"
+fi
 
 "$phpt_tool" triage \
   --corpus "$corpus" \

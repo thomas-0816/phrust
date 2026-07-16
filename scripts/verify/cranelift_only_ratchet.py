@@ -225,6 +225,7 @@ def verify_lowering(failures: list[str]) -> None:
     for script in (
         "scripts/verify/cranelift_exhaustive_lowering.py",
         "scripts/verify/cranelift_typed_runtime_ops.py",
+        "scripts/verify/cranelift_typed_semantic_ops.py",
     ):
         result = command([str(ROOT / script)], check=False)
         if result.returncode != 0:

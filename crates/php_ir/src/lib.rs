@@ -58,7 +58,7 @@ pub use rule_selection::{
 pub use source_map::{IrSourceMap, IrSourceMapEntry, IrSourceMapTarget, IrSpan};
 pub use verify::{
     VerificationDiagnosticContext, VerificationError, VerificationErrorCode,
-    instruction_register_uses, terminator_register_uses, verify_unit,
+    instruction_register_uses, terminator_register_uses, verify_function, verify_unit,
 };
 
 #[cfg(test)]

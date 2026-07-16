@@ -36,6 +36,11 @@ def main() -> int:
             failures.append(f"missing exhaustive classifier: {function}")
     if "InstructionKind::RuntimeError" not in region or "RuntimeFatal" not in region:
         failures.append("RuntimeError is not represented as an explicit native fatal")
+    if "MissingLowering" in region:
+        failures.append("production Region IR still contains MissingLowering")
+    for hidden_failure in ("map_or(RegionInstructionKind", "unwrap_or(RegionInstructionKind"):
+        if hidden_failure in region:
+            failures.append(f"conditional lowering fallback remains: {hidden_failure}")
     direct_missing = re.compile(
         r"(?P<arms>(?:InstructionKind::\w+\s*\{[^{}]*\}\s*(?:\|\s*)?)+)"
         r"=>\s*RegionInstructionKind::MissingLowering",

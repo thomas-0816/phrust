@@ -4367,6 +4367,21 @@ fn failure_fingerprint(result: &PhptRunResult) -> String {
 
 fn normalize_failure_detail_for_fingerprint(detail: &str) -> String {
     let mut normalized = detail.to_string();
+    // Harness diagnostics for binary PHPT inputs include the checkout root.
+    // Normalize stable repository-relative paths before hashing so sibling
+    // worktrees produce the same BORK fingerprint.
+    for marker in ["/third_party/php-src/", "/tests/phpt/generated/"] {
+        let mut search_from = 0;
+        while let Some(relative_start) = normalized[search_from..].find(marker) {
+            let marker_start = search_from + relative_start;
+            let prefix_start = normalized[..marker_start]
+                .rfind(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '=' | '"' | '`'))
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            normalized.replace_range(prefix_start..marker_start, "<repo>");
+            search_from = prefix_start + "<repo>".len() + marker.len();
+        }
+    }
     // PHPT_WORK_DIR is configurable. Keep the conventional `phpt-work`
     // prefix recognizable when callers use an isolated sibling such as
     // `phpt-work-one-worker`; otherwise the run directory leaks into every

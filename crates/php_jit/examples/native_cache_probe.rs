@@ -3,8 +3,7 @@ use php_ir::{FunctionFlags, InstructionKind, IrConstant, IrSpan, Operand, UnitId
 use php_jit::{
     JIT_HELPER_REGISTRY_ABI_HASH, JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus,
     JitEngine, NativeArtifactCache, NativeArtifactImage, NativeCacheConfig, NativeCacheIdentity,
-    NativeCacheMode, NativeContinuationEntry, NativeFunctionAbi, NativeFunctionImage,
-    cranelift_host_isa_identity,
+    NativeCacheMode, cranelift_host_isa_identity,
 };
 use std::path::PathBuf;
 
@@ -22,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut compiled = false;
     let (artifact, event) = cache.get_or_compile(
         &identity,
-        |_| None,
+        resolve_probe_helper,
         || -> Result<NativeArtifactImage, php_jit::NativeCacheError> {
             compiled = true;
             let unit = probe_unit();
@@ -44,40 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     record.result.diagnostics
                 )));
             }
-            let handle = record.result.handle.as_ref().ok_or_else(|| {
-                php_jit::NativeCacheError::InvalidHeader("probe has no native handle".to_owned())
-            })?;
-            let code = handle.copy_relocation_free_machine_code().ok_or_else(|| {
-                php_jit::NativeCacheError::InvalidRelocation(
-                    "probe unexpectedly requires a relocation".to_owned(),
-                )
-            })?;
-            let mut image = NativeArtifactImage::minimal(
-                identity.clone(),
-                code.clone(),
-                NativeFunctionImage {
-                    function_id: 0,
-                    code_offset: 0,
-                    code_len: code.len() as u64,
-                    arity: 0,
-                    abi: NativeFunctionAbi::PackedI64StatusOut,
-                },
-            );
-            if let Some(metadata) = handle.region_state_metadata() {
-                let mut seen = std::collections::BTreeSet::new();
-                image.continuations = metadata
-                    .native_pc_ranges
-                    .iter()
-                    .map(|range| NativeContinuationEntry {
-                        function_id: range.function.raw(),
-                        continuation_id: range.continuation_id,
-                        code_offset: u64::from(range.start),
-                    })
-                    .filter(|entry| entry.code_offset < image.code.len() as u64)
-                    .filter(|entry| seen.insert((entry.function_id, entry.continuation_id)))
-                    .collect();
-            }
-            Ok(image)
+            NativeArtifactImage::from_compile_records(identity.clone(), &records)
         },
     )?;
     let value = artifact.invoke_i64_status_out(0)?;
@@ -99,6 +65,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stats.invalid_artifacts
     );
     Ok(())
+}
+
+fn resolve_probe_helper(stable_id: u32) -> Option<usize> {
+    let lifecycle = php_jit::lookup_helper_by_name("phrust_native_value_lifecycle")?;
+    (stable_id == lifecycle.id.0).then_some(probe_value_lifecycle as *const () as usize)
+}
+
+extern "C" fn probe_value_lifecycle(
+    _context: u64,
+    _operation: u32,
+    encoded: i64,
+    out: *mut i64,
+) -> i32 {
+    if out.is_null() {
+        return 1;
+    }
+    // SAFETY: the generated helper ABI passes a valid status-out pointer.
+    unsafe { out.write(encoded) };
+    0
 }
 
 fn probe_unit() -> php_ir::IrUnit {

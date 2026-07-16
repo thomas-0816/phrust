@@ -217,12 +217,6 @@ pub(super) fn lower_region_terminator(
                 function,
             )?;
         }
-        RegionTerminator::MissingLowering => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_MISSING_TERMINATOR_LOWERING",
-                "terminator has no native lowering",
-            ));
-        }
     }
     Ok(())
 }

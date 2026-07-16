@@ -27,6 +27,8 @@ help:
       '  just verify-generated-extension-surfaces Strict canonical descriptor drift check' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
+      '  just native-surface-inventory Build strict native PHP support inventory' \
+      '  just native-php-surface     Build PHP 8.5 native acceptance tranche' \
       '  just oracle-probe-generate Generate bounded oracle runtime probes' \
       '  just oracle-probe-smoke Run smoke oracle probes through runtime diff' \
       '  just oracle-gap-report  Generate prioritized oracle gap queue' \
@@ -122,6 +124,7 @@ help:
       '  just verify-generated-extension-surfaces Regenerate and diff extension surfaces' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
+      '  just native-surface-inventory Build strict native PHP support inventory' \
       '  just oracle-probe-generate Generate bounded oracle runtime probes' \
       '  just oracle-probe-smoke Run smoke oracle probes through runtime diff' \
       '  just oracle-probe-full  Run full generated oracle probe set' \
@@ -733,6 +736,15 @@ oracle-api-summary:
       just oracle-api-index >/dev/null; \
     fi
     scripts/oracle/api_index.py --summary-only
+
+native-surface-inventory:
+    @just oracle-api-index
+    @just oracle-probe-generate
+    scripts/oracle/native_surface_inventory.py --self-test --check
+
+native-php-surface:
+    @just native-surface-inventory
+    scripts/verify/native_php_surface.py --check
 
 oracle-probe-generate:
     @if [[ ! -f target/oracle/api/php-source-api-symbols.jsonl ]]; then \

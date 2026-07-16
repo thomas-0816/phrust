@@ -36,13 +36,14 @@ def main() -> int:
         ("pub struct RegionGraph", "production Region graph"),
         ("source_kind: InstructionKind", "authoritative instruction retention"),
         ("source_terminator: TerminatorKind", "authoritative terminator retention"),
-        ("MissingLowering", "concrete missing-lowering representation"),
         ("strict_types: unit.strict_types_for_function(function)", "strict-types metadata"),
         ("captures: ir_function.captures.clone()", "closure capture metadata"),
         ("declarations: declaration_metadata(unit, function)", "declaration metadata"),
         ("let exception_regions = collect_exception_regions(ir_function)", "exception regions"),
     ):
         require(region, needle, label, failures)
+    if "MissingLowering" in region:
+        failures.append("production Region IR still contains MissingLowering")
 
     authoritative_start = lowering.find("fn compile_authoritative_region")
     authoritative_end = lowering.find("fn runtime_helper_abi_hash", authoritative_start)

@@ -1031,8 +1031,14 @@ fn hash_context_object(
 }
 
 fn hash_context_arg(name: &str, value: &Value) -> Result<ObjectRef, crate::builtins::BuiltinError> {
-    let Value::Object(object) = deref_value(value) else {
-        return Err(type_error(name, "HashContext", value));
+    let value = deref_value(value);
+    let Value::Object(object) = value else {
+        return Err(argument_type_error(
+            name,
+            "#1 ($context)",
+            "HashContext",
+            &value,
+        ));
     };
     if normalize_class_name(&object.class_name()) != normalize_class_name(HASH_CONTEXT_CLASS)
         || !matches!(
