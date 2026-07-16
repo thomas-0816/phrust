@@ -289,7 +289,16 @@ pub fn analyze_executable_value_flow(
                 .into_iter()
                 .reduce(join_facts)
                 .unwrap_or(SsaValueFact::UNKNOWN);
-            let fact = if region
+            let fact = if !local_storage
+                .get(&local)
+                .is_some_and(|storage| storage.is_promoted())
+            {
+                // References, request globals, and suspension-backed locals can
+                // change through storage that is not represented by StoreLocal
+                // instructions in this region. Do not specialize their loaded
+                // values from the stores that happen to be visible here.
+                SsaValueFact::UNKNOWN
+            } else if region
                 .params
                 .iter()
                 .any(|parameter| parameter.local == local)
@@ -986,6 +995,55 @@ mod tests {
         assert_eq!(flow.local_fact(local).class, SsaValueClass::Int);
         assert_eq!(flow.register_fact(loaded).class, SsaValueClass::Int);
         assert_eq!(flow.promoted_local_count(), 1);
+    }
+
+    #[test]
+    fn keeps_static_local_contents_unknown_after_visible_store() {
+        let mut builder = IrBuilder::new(UnitId::new(4_202));
+        let file = builder.add_file("static-flow.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("flow", FunctionFlags::default(), span);
+        let local = builder.intern_local(function, "value");
+        let block = builder.append_block(function);
+        let null = builder.intern_constant(IrConstant::Null);
+        let set = builder.intern_constant(IrConstant::String("set".into()));
+        builder.emit(
+            function,
+            block,
+            InstructionKind::InitStaticLocal {
+                local,
+                name: "value".to_owned(),
+                default: Operand::Constant(null),
+            },
+            span,
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::StoreLocal {
+                local,
+                src: Operand::Constant(set),
+            },
+            span,
+        );
+        let loaded = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadLocal { dst: loaded, local },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(loaded)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_eq!(
+            flow.local_storage(local),
+            LocalStorageClass::MemoryReference
+        );
+        assert_eq!(flow.local_fact(local), SsaValueFact::UNKNOWN);
+        assert_eq!(flow.register_fact(loaded), SsaValueFact::UNKNOWN);
     }
 
     #[test]

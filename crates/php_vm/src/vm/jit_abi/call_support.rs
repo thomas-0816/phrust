@@ -260,6 +260,68 @@ pub(super) fn invoke_native_function_with_metadata_strict(
     result
 }
 
+pub(super) fn materialize_native_property_reference_arguments(
+    context: &mut NativeExecutionContext<'_>,
+    arguments: &mut [php_jit::JitNativeCallArgument],
+    encoded: &mut [i64],
+    metadata: Option<&[php_ir::instruction::IrCallArg]>,
+) -> Result<(), String> {
+    let Some(metadata) = metadata else {
+        return Ok(());
+    };
+    for (index, ((argument, encoded), call_argument)) in arguments
+        .iter_mut()
+        .zip(encoded.iter_mut())
+        .zip(metadata)
+        .enumerate()
+    {
+        if argument.flags.0 & php_jit::JitNativeArgFlags::BY_REFERENCE.0 == 0
+            || matches!(context.decode(*encoded)?, Value::Reference(_))
+        {
+            continue;
+        }
+        let Some(target) = &call_argument.by_ref_property else {
+            continue;
+        };
+        if argument.property_receiver == 0 {
+            return Err(format!(
+                "native call argument {} is missing its property receiver",
+                index + 1
+            ));
+        }
+        let mut receiver = context.decode(argument.property_receiver)?;
+        for _ in 0..16 {
+            let Value::Reference(reference) = receiver else {
+                break;
+            };
+            receiver = reference.get();
+        }
+        let Value::Object(object) = receiver else {
+            return Err(format!(
+                "native call argument {} property receiver is not an object",
+                index + 1
+            ));
+        };
+        let reference = match object.get_property(&target.property) {
+            Some(Value::Reference(reference)) => reference,
+            Some(value) => {
+                let reference = php_runtime::api::ReferenceCell::new(value);
+                object.set_property(target.property.clone(), Value::Reference(reference.clone()));
+                reference
+            }
+            None => {
+                let reference = php_runtime::api::ReferenceCell::new(Value::Null);
+                object.set_property(target.property.clone(), Value::Reference(reference.clone()));
+                reference
+            }
+        };
+        let reference = context.encode(Value::Reference(reference))?;
+        argument.value.payload = reference as u64;
+        *encoded = reference;
+    }
+    Ok(())
+}
+
 pub(super) fn invoke_native_named_callable(
     context: &mut NativeExecutionContext<'_>,
     name: &str,
@@ -502,13 +564,21 @@ pub(super) fn invoke_native_bound_method(
                 arguments,
             )));
         }
-        return invoke_native_function_with_metadata_strict(
+        let pushed_called_class = entry.flags.is_static;
+        if pushed_called_class {
+            context.called_classes.push(class_name.clone());
+        }
+        let result = invoke_native_function_with_metadata_strict(
             context,
             function,
             &call_arguments,
             metadata,
             strict,
         );
+        if pushed_called_class {
+            context.called_classes.pop();
+        }
+        return result;
     }
     if let Some((function, _)) = native_external_method(context, &class_name, method) {
         return invoke_native_external_function_with_metadata(

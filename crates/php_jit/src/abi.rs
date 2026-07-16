@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{FunctionId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 18;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 19;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a818_0000_0028;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a819_0000_0029;
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
 pub const JIT_DEOPT_MAX_SLOTS: usize = 256;
@@ -492,6 +492,12 @@ pub struct JitNativeCallArgument {
     pub flags: JitNativeArgFlags,
     /// Caller local/lvalue index for by-reference binding, or `u32::MAX`.
     pub source_slot: u32,
+    /// Encoded receiver for a deferred object-property lvalue, or zero.
+    ///
+    /// Cross-unit userland signatures may not be published when the caller is
+    /// compiled. The runtime binder uses this receiver together with immutable
+    /// IR call metadata only when the resolved parameter is by-reference.
+    pub property_receiver: i64,
 }
 
 /// Stable target descriptor resolved through generation-safe indirection.
@@ -1371,7 +1377,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 18);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 19);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);

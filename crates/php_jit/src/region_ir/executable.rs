@@ -1061,7 +1061,15 @@ impl BaselineRegionBuilder {
             let mut known_closure_locals = BTreeMap::<LocalId, KnownClosure>::new();
             let mut known_object_registers = BTreeMap::<RegId, u32>::new();
             let mut known_object_locals = BTreeMap::<LocalId, u32>::new();
-            if let Some((class, false)) = method_class {
+            if let Some((class, false)) = method_class
+                && unit
+                    .classes
+                    .get(class as usize)
+                    .is_some_and(|class| class.flags.is_final)
+            {
+                // `$this` may be an instance of a subclass. Treat its class as
+                // exact only when the declaring class cannot be extended;
+                // otherwise a direct call would bypass virtual overrides.
                 known_object_locals.insert(LocalId::new(0), class);
             }
             let mut known_exception_classes = BTreeMap::<RegId, String>::new();
@@ -1916,7 +1924,11 @@ impl BaselineRegionBuilder {
                                                 InstructionKind::FetchClassConstant {
                                                     class_name,
                                                     ..
-                                                } if class_name.eq_ignore_ascii_case("static")
+                                                }
+                                                    | InstructionKind::CallStaticMethod {
+                                                        class_name,
+                                                        ..
+                                                    } if class_name.eq_ignore_ascii_case("static")
                                             )
                                         })
                                 })

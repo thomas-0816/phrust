@@ -562,6 +562,111 @@ fn exact_receiver_links_public_non_final_method() {
 }
 
 #[test]
+fn this_receiver_keeps_virtual_method_dispatch_in_non_final_class() {
+    let mut builder = IrBuilder::new(UnitId::new(97));
+    let file = builder.add_file("virtual-method.php");
+    let span = IrSpan::new(file, 0, 40);
+    let item = builder.start_function(
+        "Widget::item",
+        FunctionFlags {
+            is_method: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    let item_block = builder.append_block(item);
+    builder.terminate_return(item, item_block, None, span);
+
+    let run = builder.start_function(
+        "Widget::run",
+        FunctionFlags {
+            is_method: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    let this = builder.intern_local(run, "this");
+    let run_block = builder.append_block(run);
+    let receiver = builder.alloc_register(run);
+    builder.emit(
+        run,
+        run_block,
+        InstructionKind::LoadLocal {
+            dst: receiver,
+            local: this,
+        },
+        span,
+    );
+    let result = builder.alloc_register(run);
+    builder.emit(
+        run,
+        run_block,
+        InstructionKind::CallMethod {
+            dst: result,
+            object: Operand::Register(receiver),
+            method: "item".to_owned(),
+            args: Vec::new(),
+        },
+        span,
+    );
+    builder.terminate_return(run, run_block, Some(Operand::Register(result)), span);
+    builder.push_class(ClassEntry {
+        id: ClassId::new(0),
+        name: "widget".to_owned(),
+        display_name: "Widget".to_owned(),
+        parent: None,
+        parent_display_name: None,
+        interfaces: Vec::new(),
+        methods: vec![
+            ClassMethodEntry {
+                name: "item".to_owned(),
+                origin_class: "widget".to_owned(),
+                function: item,
+                flags: ClassMethodFlags {
+                    has_body: true,
+                    ..ClassMethodFlags::default()
+                },
+                attributes: Vec::new(),
+            },
+            ClassMethodEntry {
+                name: "run".to_owned(),
+                origin_class: "widget".to_owned(),
+                function: run,
+                flags: ClassMethodFlags {
+                    has_body: true,
+                    ..ClassMethodFlags::default()
+                },
+                attributes: Vec::new(),
+            },
+        ],
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor: None,
+        flags: ClassFlags::default(),
+        span,
+    });
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, run).expect("method region");
+    let call = region.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|instruction| match &instruction.kind {
+            RegionInstructionKind::NativeCall(call) => Some(call),
+            _ => None,
+        })
+        .expect("native method call");
+
+    assert!(matches!(
+        call.target,
+        RegionCallTarget::Method { ref method, .. } if method == "item"
+    ));
+    assert_eq!(call.direct_compiled_target(), None);
+}
+
+#[test]
 fn object_syntax_static_method_call_omits_receiver_from_native_abi() {
     let mut builder = IrBuilder::new(UnitId::new(93));
     let file = builder.add_file("static-method.php");

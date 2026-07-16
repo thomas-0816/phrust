@@ -3953,6 +3953,14 @@ fn lower_native_call_trampoline(
             builder
                 .ins()
                 .store(MemFlagsData::new(), source_slot, pointer, base + 28);
+            let property_receiver = argument
+                .and_then(|argument| argument.by_ref_property.as_ref())
+                .map(|target| lower_ir_operand(builder, locals, registers, target.object))
+                .transpose()?
+                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+            builder
+                .ins()
+                .store(MemFlagsData::new(), property_receiver, pointer, base + 32);
         }
         pointer
     };

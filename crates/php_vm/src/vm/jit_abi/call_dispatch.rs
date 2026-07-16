@@ -1449,6 +1449,12 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         parameters,
                     );
                 }
+                materialize_native_property_reference_arguments(
+                    context,
+                    arguments,
+                    &mut encoded,
+                    metadata,
+                )?;
                 return invoke_native_function_with_metadata_strict(
                     context,
                     function_id,
@@ -1475,6 +1481,12 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         parameters,
                     );
                 }
+                materialize_native_property_reference_arguments(
+                    context,
+                    arguments,
+                    &mut encoded,
+                    metadata,
+                )?;
                 return invoke_native_external_function_with_metadata(
                     context,
                     function,
