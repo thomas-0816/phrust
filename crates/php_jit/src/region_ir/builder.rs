@@ -2,8 +2,8 @@
 
 use super::{NodeId, RegionValueType::Control};
 use super::{
-    RegionCompareOp, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
-    RegionPlacement, RegionValueType, SnapshotEntry, SnapshotId, VmSlotId,
+    OptimizerRegionGraph, RegionCompareOp, RegionConst, RegionEffects, RegionId, RegionNode,
+    RegionNodeKind, RegionPlacement, RegionValueType, SnapshotEntry, SnapshotId, VmSlotId,
 };
 
 /// Region builder options.
@@ -22,7 +22,7 @@ impl Default for RegionBuilderOptions {
 /// Convenience builder for compact region graphs.
 #[derive(Debug)]
 pub struct RegionBuilder {
-    graph: RegionGraph,
+    graph: OptimizerRegionGraph,
     options: RegionBuilderOptions,
 }
 
@@ -41,7 +41,7 @@ impl RegionBuilder {
         options: RegionBuilderOptions,
     ) -> Self {
         Self {
-            graph: RegionGraph::new(region_id, name),
+            graph: OptimizerRegionGraph::new(region_id, name),
             options,
         }
     }
@@ -477,7 +477,7 @@ impl RegionBuilder {
 
     /// Finishes the graph.
     #[must_use]
-    pub fn finish(self) -> RegionGraph {
+    pub fn finish(self) -> OptimizerRegionGraph {
         self.graph
     }
 
@@ -664,7 +664,7 @@ fn is_cse_eligible(
 
 /// Builds the minimal scalar fixture requested by FPE-31.
 #[must_use]
-pub fn build_minimal_scalar_region() -> RegionGraph {
+pub fn build_minimal_scalar_region() -> OptimizerRegionGraph {
     let mut builder = RegionBuilder::new(RegionId::new(0), "minimal-scalar");
     let start = builder.start();
     let param = builder.param_i64(VmSlotId::new(0));
@@ -892,7 +892,7 @@ mod tests {
     }
 
     fn const_i64_at(
-        graph: &crate::region_ir::RegionGraph,
+        graph: &crate::region_ir::OptimizerRegionGraph,
         node: crate::region_ir::NodeId,
     ) -> Option<i64> {
         let RegionNodeKind::Const(constant) = graph.node(node)?.kind else {
@@ -905,7 +905,7 @@ mod tests {
     }
 
     fn const_bool_at(
-        graph: &crate::region_ir::RegionGraph,
+        graph: &crate::region_ir::OptimizerRegionGraph,
         node: crate::region_ir::NodeId,
     ) -> Option<bool> {
         let RegionNodeKind::Const(constant) = graph.node(node)?.kind else {

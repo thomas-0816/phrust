@@ -1331,6 +1331,44 @@ pub fn simplexml_count_property() -> &'static str {
     SIMPLEXML_COUNT
 }
 
+/// Returns the PHP-visible key/value sequence used by `foreach` on a
+/// `SimpleXMLElement`. The vector deliberately preserves duplicate child names.
+#[must_use]
+pub fn simplexml_iteration_entries(object: &ObjectRef) -> Vec<(Value, Value)> {
+    let iterable = if matches!(
+        object.get_property(SIMPLEXML_ENTRIES),
+        Some(Value::Array(_))
+    ) {
+        object.clone()
+    } else {
+        match simplexml_children(object) {
+            Value::Object(children) => children,
+            _ => return Vec::new(),
+        }
+    };
+    let Some(Value::Array(entries)) = iterable.get_property(SIMPLEXML_ENTRIES) else {
+        return Vec::new();
+    };
+    let names = match iterable.get_property(SIMPLEXML_ENTRY_NAMES) {
+        Some(Value::Array(names)) => Some(names),
+        _ => None,
+    };
+    entries
+        .iter()
+        .map(|(key, value)| {
+            let visible_key = names
+                .as_ref()
+                .and_then(|names| names.get(&key))
+                .cloned()
+                .unwrap_or_else(|| match key {
+                    ArrayKey::Int(key) => Value::Int(key),
+                    ArrayKey::String(key) => Value::String(key),
+                });
+            (visible_key, value.clone())
+        })
+        .collect()
+}
+
 pub fn xml_reader_xml(object: &ObjectRef, xml: &str) -> Result<Value, String> {
     let document = parse_xml(xml)?;
     let events = reader_events(&document);
@@ -2380,5 +2418,23 @@ mod tests {
         assert_eq!(events[1].name, "child");
         assert_eq!(events[2].value, "text");
         assert_eq!(events[3].node_type, XML_READER_END_ELEMENT);
+    }
+
+    #[test]
+    fn simplexml_iteration_preserves_duplicate_child_names() {
+        let Value::Object(root) = simplexml_load_string("<root><a>A</a><b>B</b><a>C</a></root>")
+            .expect("valid SimpleXML")
+        else {
+            panic!("SimpleXML root must be an object");
+        };
+        let entries = simplexml_iteration_entries(&root);
+        let names = entries
+            .iter()
+            .map(|(name, _)| match name {
+                Value::String(name) => name.to_string_lossy(),
+                other => panic!("unexpected SimpleXML iteration key: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["a", "b", "a"]);
     }
 }

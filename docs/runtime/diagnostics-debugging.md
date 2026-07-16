@@ -76,11 +76,13 @@ off.
 
 ## Enabling Debug Mode
 
-`php-vm run` accepts explicit diagnostic and debug options:
+`php-vm run` exposes native execution telemetry without enabling a second
+debug executor:
 
 ```bash
-php-vm run --debug --error-format json path/to/script.php
-php-vm run --debug --debug-log target/diagnostics/php-vm.jsonl path/to/script.php
+php-vm run --timings-json target/diagnostics/php-vm-timings.json \
+  --counters-json target/diagnostics/php-vm-counters.json path/to/script.php
+php-vm run --trace --trace-runtime --trace-includes path/to/script.php
 ```
 
 `phrust-php` keeps its public PHP-like flags stable, so debug mode is selected
@@ -123,9 +125,10 @@ IR/runtime/include, and server configuration failures. It validates JSON lines
 with `json.loads`, checks required fields, and rejects vague user-facing text
 such as raw `Debug` enum output or `called Result::unwrap()`.
 
-`debug-smoke` checks `php-vm run --debug`, `PHRUST_DEBUG=1 phrust-php`, debug
-log file routing, and `phrust-server --debug` request events. The smoke asserts
-that PHP stdout remains exact while debug events are emitted outside stdout.
+`debug-smoke` checks `php-vm` native timing/counter telemetry,
+`PHRUST_DEBUG=1 phrust-php`, and `phrust-server --debug` request events. The
+smoke asserts that PHP stdout remains exact while telemetry is emitted outside
+stdout.
 
 ## Redaction
 

@@ -35,10 +35,8 @@ for fixture in "$FIXTURES_DIR"/*.php; do
     fi
 
     baseline_stderr=""
-    for opt_level in 0 1 2; do
-        for quickening in off on; do
-            for inline_caches in off on; do
-                label="${name}.opt${opt_level}.q${quickening}.ic${inline_caches}"
+    for preset in baseline default; do
+                label="${name}.${preset}"
                 stdout="$OUT_DIR/$label.stdout"
                 stderr="$OUT_DIR/$label.stderr"
                 stdout_norm="$OUT_DIR/$label.stdout.norm"
@@ -46,9 +44,7 @@ for fixture in "$FIXTURES_DIR"/*.php; do
 
                 status=0
                 "$ENGINE" run \
-                    --opt-level="$opt_level" \
-                    --quickening="$quickening" \
-                    --inline-caches="$inline_caches" \
+                    --engine-preset="$preset" \
                     "$fixture" \
                     > "$stdout" \
                     2> "$stderr" || status=$?
@@ -74,8 +70,6 @@ for fixture in "$FIXTURES_DIR"/*.php; do
                     exit 1
                 fi
                 run_count=$((run_count + 1))
-            done
-        done
     done
     fixture_count=$((fixture_count + 1))
 done

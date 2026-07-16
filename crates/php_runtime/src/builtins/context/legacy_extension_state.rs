@@ -1910,19 +1910,42 @@ enum SocketEntry {
         domain: i64,
         socket_type: i64,
         protocol: i64,
+        socket: Option<Socket>,
+        #[cfg(unix)]
+        unix_datagram: Option<UnixDatagram>,
     },
     Listener(TcpListener),
     Stream(TcpStream),
+    Datagram(UdpSocket),
     #[cfg(unix)]
     UnixListener(UnixListener),
     #[cfg(unix)]
     UnixStream(UnixStream),
+    #[cfg(unix)]
+    UnixDatagram(UnixDatagram),
     Closed,
 }
 
 impl SocketState {
     /// Registers a newly-created socket placeholder and returns its stable ID.
-    pub fn create(&mut self, domain: i64, socket_type: i64, protocol: i64) -> i64 {
+    pub fn create(&mut self, domain: i64, socket_type: i64, protocol: i64) -> Result<i64, i32> {
+        let socket = if domain == i64::from(libc::AF_INET)
+            && socket_type == i64::from(libc::SOCK_STREAM)
+            && (protocol == 0 || protocol == i64::from(libc::IPPROTO_TCP))
+        {
+            Some(Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(raw_errno)?)
+        } else {
+            None
+        };
+        #[cfg(unix)]
+        let unix_datagram = if domain == i64::from(libc::AF_UNIX)
+            && socket_type == i64::from(libc::SOCK_DGRAM)
+            && protocol == 0
+        {
+            Some(UnixDatagram::unbound().map_err(raw_errno)?)
+        } else {
+            None
+        };
         let id = if self.next_id <= 0 { 1 } else { self.next_id };
         self.next_id = id.saturating_add(1);
         self.sockets.insert(
@@ -1931,11 +1954,14 @@ impl SocketState {
                 domain,
                 socket_type,
                 protocol,
+                socket,
+                #[cfg(unix)]
+                unix_datagram,
             },
         );
         self.options.insert(id, BTreeMap::new());
         self.last_error = 0;
-        id
+        Ok(id)
     }
 
     /// Binds a stream listener to a loopback TCP address or Unix socket path.
@@ -1947,10 +1973,40 @@ impl SocketState {
             domain,
             socket_type,
             protocol,
+            socket,
+            ..
         } = entry
         else {
             return Err(libc::EINVAL);
         };
+        if *domain == i64::from(libc::AF_INET)
+            && *socket_type == i64::from(libc::SOCK_DGRAM)
+            && (*protocol == 0 || *protocol == i64::from(libc::IPPROTO_UDP))
+        {
+            let bind_address = if address == "localhost" {
+                "127.0.0.1"
+            } else {
+                address
+            };
+            if !matches!(bind_address, "127.0.0.1" | "0.0.0.0") {
+                return Err(libc::EACCES);
+            }
+            return match UdpSocket::bind((bind_address, port)) {
+                Ok(socket) => {
+                    *entry = SocketEntry::Datagram(socket);
+                    self.last_error = 0;
+                    Ok(())
+                }
+                Err(error) => Err(raw_errno(error)),
+            };
+        }
+        #[cfg(unix)]
+        if *domain == i64::from(libc::AF_UNIX)
+            && *socket_type == i64::from(libc::SOCK_DGRAM)
+            && *protocol == 0
+        {
+            return bind_unix_datagram(entry, address);
+        }
         if *socket_type != i64::from(libc::SOCK_STREAM) {
             return Err(libc::EAFNOSUPPORT);
         }
@@ -1973,9 +2029,19 @@ impl SocketState {
         if bind_address != "127.0.0.1" {
             return Err(libc::EACCES);
         }
-        match TcpListener::bind((bind_address, port)) {
-            Ok(listener) => {
-                *entry = SocketEntry::Listener(listener);
+        let Some(socket) = socket else {
+            return Err(libc::EBADF);
+        };
+        let address = format!("{bind_address}:{port}")
+            .parse::<SocketAddr>()
+            .map_err(|_| libc::EINVAL)?;
+        match socket
+            .bind(&address.into())
+            .and_then(|()| socket.listen(128))
+        {
+            Ok(()) => {
+                let listener = socket.try_clone().map_err(raw_errno)?;
+                *entry = SocketEntry::Listener(listener.into());
                 self.last_error = 0;
                 Ok(())
             }
@@ -1984,19 +2050,32 @@ impl SocketState {
     }
 
     /// Marks a listener ready. `TcpListener::bind` already starts listening.
-    pub fn listen(&mut self, id: i64) -> Result<(), i32> {
-        match self.sockets.get(&id) {
-            Some(SocketEntry::Listener(_)) => {
+    pub fn listen(&mut self, id: i64, backlog: i32) -> Result<(), i32> {
+        let Some(entry) = self.sockets.get_mut(&id) else {
+            return Err(libc::EBADF);
+        };
+        match entry {
+            SocketEntry::Created {
+                socket: Some(socket),
+                ..
+            } => {
+                socket.listen(backlog).map_err(raw_errno)?;
+                let listener = socket.try_clone().map_err(raw_errno)?;
+                *entry = SocketEntry::Listener(listener.into());
                 self.last_error = 0;
                 Ok(())
             }
+            SocketEntry::Listener(_) => {
+                self.last_error = 0;
+                Ok(())
+            }
+            SocketEntry::Datagram(_) => Err(libc::EOPNOTSUPP),
             #[cfg(unix)]
-            Some(SocketEntry::UnixListener(_)) => {
+            SocketEntry::UnixListener(_) => {
                 self.last_error = 0;
                 Ok(())
             }
-            Some(_) => Err(libc::EINVAL),
-            None => Err(libc::EBADF),
+            _ => Err(libc::EINVAL),
         }
     }
 
@@ -2009,6 +2088,7 @@ impl SocketState {
             domain,
             socket_type,
             protocol,
+            ..
         } = entry
         else {
             return Err(libc::EINVAL);
@@ -2062,6 +2142,14 @@ impl SocketState {
         }
     }
 
+    /// Binds and owns a Unix stream server for the standard streams API.
+    #[cfg(unix)]
+    pub fn bind_unix_stream_server(&mut self, path: &str) -> Result<i64, i32> {
+        let address = unix_socket_addr(path).map_err(raw_errno)?;
+        let listener = UnixListener::bind_addr(&address).map_err(raw_errno)?;
+        self.insert_accepted(SocketEntry::UnixListener(listener))
+    }
+
     fn insert_accepted(&mut self, entry: SocketEntry) -> Result<i64, i32> {
         let id = if self.next_id <= 0 { 1 } else { self.next_id };
         self.next_id = id.saturating_add(1);
@@ -2081,8 +2169,23 @@ impl SocketState {
                 }
                 Err(error) => Err(raw_errno(error)),
             },
+            Some(SocketEntry::Datagram(socket)) => match socket.send(bytes) {
+                Ok(written) => {
+                    self.last_error = 0;
+                    Ok(written)
+                }
+                Err(error) => Err(raw_errno(error)),
+            },
             #[cfg(unix)]
             Some(SocketEntry::UnixStream(stream)) => match stream.write(bytes) {
+                Ok(written) => {
+                    self.last_error = 0;
+                    Ok(written)
+                }
+                Err(error) => Err(raw_errno(error)),
+            },
+            #[cfg(unix)]
+            Some(SocketEntry::UnixDatagram(socket)) => match socket.send(bytes) {
                 Ok(written) => {
                     self.last_error = 0;
                     Ok(written)
@@ -2108,10 +2211,33 @@ impl SocketState {
                     Err(error) => Err(raw_errno(error)),
                 }
             }
+            Some(SocketEntry::Datagram(socket)) => {
+                let mut buffer = vec![0; length];
+                match socket.recv(&mut buffer) {
+                    Ok(read) => {
+                        buffer.truncate(read);
+                        self.last_error = 0;
+                        Ok(buffer)
+                    }
+                    Err(error) => Err(raw_errno(error)),
+                }
+            }
             #[cfg(unix)]
             Some(SocketEntry::UnixStream(stream)) => {
                 let mut buffer = vec![0; length];
                 match stream.read(&mut buffer) {
+                    Ok(read) => {
+                        buffer.truncate(read);
+                        self.last_error = 0;
+                        Ok(buffer)
+                    }
+                    Err(error) => Err(raw_errno(error)),
+                }
+            }
+            #[cfg(unix)]
+            Some(SocketEntry::UnixDatagram(socket)) => {
+                let mut buffer = vec![0; length];
+                match socket.recv(&mut buffer) {
                     Ok(read) => {
                         buffer.truncate(read);
                         self.last_error = 0;
@@ -2125,16 +2251,122 @@ impl SocketState {
         }
     }
 
+    /// Sets nonblocking mode on a live socket.
+    pub fn set_nonblocking(&mut self, id: i64, nonblocking: bool) -> Result<(), i32> {
+        let result = match self.sockets.get_mut(&id) {
+            Some(SocketEntry::Created {
+                socket: Some(socket),
+                ..
+            }) => socket.set_nonblocking(nonblocking),
+            #[cfg(unix)]
+            Some(SocketEntry::Created {
+                unix_datagram: Some(socket),
+                ..
+            }) => socket.set_nonblocking(nonblocking),
+            Some(SocketEntry::Listener(socket)) => socket.set_nonblocking(nonblocking),
+            Some(SocketEntry::Stream(socket)) => socket.set_nonblocking(nonblocking),
+            Some(SocketEntry::Datagram(socket)) => socket.set_nonblocking(nonblocking),
+            #[cfg(unix)]
+            Some(SocketEntry::UnixListener(socket)) => socket.set_nonblocking(nonblocking),
+            #[cfg(unix)]
+            Some(SocketEntry::UnixStream(socket)) => socket.set_nonblocking(nonblocking),
+            #[cfg(unix)]
+            Some(SocketEntry::UnixDatagram(socket)) => socket.set_nonblocking(nonblocking),
+            Some(SocketEntry::Created { .. } | SocketEntry::Closed) => {
+                return Err(libc::EBADF);
+            }
+            None => return Err(libc::EBADF),
+        };
+        result.map_err(raw_errno)?;
+        self.last_error = 0;
+        Ok(())
+    }
+
+    /// Sends one gathered message, optionally to a Unix datagram address.
+    pub fn send_message(
+        &mut self,
+        id: i64,
+        bytes: &[u8],
+        address: Option<&str>,
+    ) -> Result<usize, i32> {
+        #[cfg(unix)]
+        if let Some(SocketEntry::Created {
+            unix_datagram: Some(socket),
+            ..
+        }) = self.sockets.get_mut(&id)
+        {
+            let Some(address) = address else {
+                return Err(libc::EDESTADDRREQ);
+            };
+            let address = unix_socket_addr(address).map_err(raw_errno)?;
+            let result = socket.send_to_addr(bytes, &address).map_err(raw_errno)?;
+            self.last_error = 0;
+            return Ok(result);
+        }
+        #[cfg(unix)]
+        if let Some(SocketEntry::UnixDatagram(socket)) = self.sockets.get_mut(&id) {
+            let result = if let Some(address) = address {
+                let address = unix_socket_addr(address).map_err(raw_errno)?;
+                socket.send_to_addr(bytes, &address)
+            } else {
+                socket.send(bytes)
+            };
+            return result.inspect(|_| self.last_error = 0).map_err(raw_errno);
+        }
+        if address.is_some() {
+            return Err(libc::EISCONN);
+        }
+        self.write(id, bytes)
+    }
+
+    /// Polls socket descriptors for readable data using the host kernel.
+    pub fn poll_readable(&self, ids: &[i64], timeout: Duration) -> Result<Vec<i64>, i32> {
+        let descriptors = ids
+            .iter()
+            .map(|id| {
+                let entry = self.sockets.get(id).ok_or(libc::EBADF)?;
+                let fd = match entry {
+                    SocketEntry::Created {
+                        socket: Some(socket),
+                        ..
+                    } => socket.as_raw_fd(),
+                    #[cfg(unix)]
+                    SocketEntry::Created {
+                        unix_datagram: Some(socket),
+                        ..
+                    } => socket.as_raw_fd(),
+                    SocketEntry::Listener(socket) => socket.as_raw_fd(),
+                    SocketEntry::Stream(socket) => socket.as_raw_fd(),
+                    SocketEntry::Datagram(socket) => socket.as_raw_fd(),
+                    #[cfg(unix)]
+                    SocketEntry::UnixListener(socket) => socket.as_raw_fd(),
+                    #[cfg(unix)]
+                    SocketEntry::UnixStream(socket) => socket.as_raw_fd(),
+                    #[cfg(unix)]
+                    SocketEntry::UnixDatagram(socket) => socket.as_raw_fd(),
+                    SocketEntry::Created { .. } | SocketEntry::Closed => {
+                        return Err(libc::EBADF);
+                    }
+                };
+                Ok((*id, fd))
+            })
+            .collect::<Result<Vec<_>, i32>>()?;
+        super::socket_sys::poll_readable(&descriptors, timeout).map_err(raw_errno)
+    }
+
     /// Returns the local socket name for a bound or connected socket.
     #[must_use]
     pub fn local_name(&self, id: i64) -> Option<(String, Option<u16>)> {
         match self.sockets.get(&id)? {
             SocketEntry::Listener(listener) => tcp_name(listener.local_addr().ok()),
             SocketEntry::Stream(stream) => tcp_name(stream.local_addr().ok()),
+            SocketEntry::Datagram(socket) => tcp_name(socket.local_addr().ok()),
             #[cfg(unix)]
             SocketEntry::UnixListener(listener) => unix_name(listener.local_addr().ok()),
             #[cfg(unix)]
             SocketEntry::UnixStream(stream) => unix_name(stream.local_addr().ok()),
+            #[cfg(unix)]
+            SocketEntry::UnixDatagram(socket) => unix_name(socket.local_addr().ok()),
             SocketEntry::Created { .. } | SocketEntry::Closed => None,
         }
     }
@@ -2144,11 +2376,12 @@ impl SocketState {
     pub fn peer_name(&self, id: i64) -> Option<(String, Option<u16>)> {
         match self.sockets.get(&id)? {
             SocketEntry::Stream(stream) => tcp_name(stream.peer_addr().ok()),
+            SocketEntry::Datagram(socket) => tcp_name(socket.peer_addr().ok()),
             #[cfg(unix)]
             SocketEntry::UnixStream(stream) => unix_name(stream.peer_addr().ok()),
             SocketEntry::Created { .. } | SocketEntry::Listener(_) | SocketEntry::Closed => None,
             #[cfg(unix)]
-            SocketEntry::UnixListener(_) => None,
+            SocketEntry::UnixListener(_) | SocketEntry::UnixDatagram(_) => None,
         }
     }
 
@@ -2168,6 +2401,7 @@ impl SocketState {
                 }
                 Err(error) => Err(raw_errno(error)),
             },
+            Some(SocketEntry::Datagram(_)) => Err(libc::EOPNOTSUPP),
             #[cfg(unix)]
             Some(SocketEntry::UnixStream(stream)) => match stream.shutdown(shutdown) {
                 Ok(()) => {
@@ -2187,17 +2421,57 @@ impl SocketState {
             return Err(libc::ENOPROTOOPT);
         }
         match self.sockets.get_mut(&id) {
+            Some(SocketEntry::Created { .. })
+                if level == i64::from(libc::SOL_SOCKET) && option == i64::from(libc::SO_DEBUG) =>
+            {
+                return Err(libc::EACCES);
+            }
             Some(SocketEntry::Stream(stream))
                 if level == i64::from(libc::IPPROTO_TCP)
                     && option == i64::from(libc::TCP_NODELAY) =>
             {
                 stream.set_nodelay(value != 0).map_err(raw_errno)?;
             }
+            #[cfg(target_os = "linux")]
+            Some(SocketEntry::Created {
+                socket: Some(socket),
+                ..
+            }) if level == i64::from(libc::IPPROTO_TCP)
+                && option == i64::from(libc::TCP_DEFER_ACCEPT) =>
+            {
+                super::socket_sys::set_int_option(
+                    socket,
+                    level as i32,
+                    option as i32,
+                    value as i32,
+                )
+                .map_err(raw_errno)?;
+            }
+            #[cfg(target_os = "linux")]
+            Some(SocketEntry::Datagram(socket))
+                if level == i64::from(libc::IPPROTO_IP)
+                    && option == i64::from(libc::IP_MTU_DISCOVER) =>
+            {
+                super::socket_sys::set_udp_int_option(
+                    socket,
+                    level as i32,
+                    option as i32,
+                    value as i32,
+                )
+                .map_err(raw_errno)?;
+            }
             Some(
-                SocketEntry::Created { .. } | SocketEntry::Listener(_) | SocketEntry::Stream(_),
+                SocketEntry::Created { .. }
+                | SocketEntry::Listener(_)
+                | SocketEntry::Stream(_)
+                | SocketEntry::Datagram(_),
             ) => {}
             #[cfg(unix)]
-            Some(SocketEntry::UnixListener(_) | SocketEntry::UnixStream(_)) => {}
+            Some(
+                SocketEntry::UnixListener(_)
+                | SocketEntry::UnixStream(_)
+                | SocketEntry::UnixDatagram(_),
+            ) => {}
             Some(SocketEntry::Closed) => return Err(libc::EBADF),
             None => return Err(libc::EBADF),
         }
@@ -2221,11 +2495,38 @@ impl SocketState {
             {
                 return stream.nodelay().map(i64::from).map_err(raw_errno);
             }
+            #[cfg(target_os = "linux")]
+            Some(SocketEntry::Created {
+                socket: Some(socket),
+                ..
+            }) if level == i64::from(libc::IPPROTO_TCP)
+                && option == i64::from(libc::TCP_DEFER_ACCEPT) =>
+            {
+                return super::socket_sys::get_int_option(socket, level as i32, option as i32)
+                    .map(i64::from)
+                    .map_err(raw_errno);
+            }
+            #[cfg(target_os = "linux")]
+            Some(SocketEntry::Listener(listener))
+                if level == i64::from(libc::IPPROTO_TCP)
+                    && option == i64::from(libc::TCP_DEFER_ACCEPT) =>
+            {
+                return super::socket_sys::get_int_option(listener, level as i32, option as i32)
+                    .map(i64::from)
+                    .map_err(raw_errno);
+            }
             Some(
-                SocketEntry::Created { .. } | SocketEntry::Listener(_) | SocketEntry::Stream(_),
+                SocketEntry::Created { .. }
+                | SocketEntry::Listener(_)
+                | SocketEntry::Stream(_)
+                | SocketEntry::Datagram(_),
             ) => {}
             #[cfg(unix)]
-            Some(SocketEntry::UnixListener(_) | SocketEntry::UnixStream(_)) => {}
+            Some(
+                SocketEntry::UnixListener(_)
+                | SocketEntry::UnixStream(_)
+                | SocketEntry::UnixDatagram(_),
+            ) => {}
             Some(SocketEntry::Closed) => return Err(libc::EBADF),
             None => return Err(libc::EBADF),
         }
@@ -2261,12 +2562,23 @@ impl SocketState {
 }
 
 fn is_supported_socket_option(level: i64, option: i64) -> bool {
-    matches!(
+    let common = matches!(
         (level as i32, option as i32),
         (libc::SOL_SOCKET, libc::SO_REUSEADDR)
             | (libc::SOL_SOCKET, libc::SO_KEEPALIVE)
+            | (libc::SOL_SOCKET, libc::SO_DEBUG)
             | (libc::IPPROTO_TCP, libc::TCP_NODELAY)
-    )
+    );
+    #[cfg(target_os = "linux")]
+    {
+        common
+            || (level as i32, option as i32) == (libc::IPPROTO_IP, libc::IP_MTU_DISCOVER)
+            || (level as i32, option as i32) == (libc::IPPROTO_TCP, libc::TCP_DEFER_ACCEPT)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        common
+    }
 }
 
 fn tcp_name(addr: Option<SocketAddr>) -> Option<(String, Option<u16>)> {
@@ -2278,7 +2590,8 @@ fn bind_unix_listener(entry: &mut SocketEntry, path: &str) -> Result<(), i32> {
     if path.is_empty() {
         return Err(libc::EINVAL);
     }
-    match UnixListener::bind(path) {
+    let address = unix_socket_addr(path).map_err(raw_errno)?;
+    match UnixListener::bind_addr(&address) {
         Ok(listener) => {
             *entry = SocketEntry::UnixListener(listener);
             Ok(())
@@ -2297,7 +2610,8 @@ fn connect_unix_stream(entry: &mut SocketEntry, path: &str) -> Result<(), i32> {
     if path.is_empty() {
         return Err(libc::EINVAL);
     }
-    match UnixStream::connect(path) {
+    let address = unix_socket_addr(path).map_err(raw_errno)?;
+    match UnixStream::connect_addr(&address) {
         Ok(stream) => {
             *entry = SocketEntry::UnixStream(stream);
             Ok(())
@@ -2312,10 +2626,47 @@ fn connect_unix_stream(_entry: &mut SocketEntry, _path: &str) -> Result<(), i32>
 }
 
 #[cfg(unix)]
+fn bind_unix_datagram(entry: &mut SocketEntry, path: &str) -> Result<(), i32> {
+    if path.is_empty() {
+        return Err(libc::EINVAL);
+    }
+    let address = unix_socket_addr(path).map_err(raw_errno)?;
+    match UnixDatagram::bind_addr(&address) {
+        Ok(socket) => {
+            *entry = SocketEntry::UnixDatagram(socket);
+            Ok(())
+        }
+        Err(error) => Err(raw_errno(error)),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn unix_socket_addr(path: &str) -> std::io::Result<UnixSocketAddr> {
+    if let Some(name) = path.as_bytes().strip_prefix(&[0]) {
+        UnixSocketAddr::from_abstract_name(name)
+    } else {
+        UnixSocketAddr::from_pathname(path)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn unix_socket_addr(path: &str) -> std::io::Result<UnixSocketAddr> {
+    UnixSocketAddr::from_pathname(path)
+}
+
+#[cfg(unix)]
 fn unix_name(addr: Option<std::os::unix::net::SocketAddr>) -> Option<(String, Option<u16>)> {
     let addr = addr?;
-    let path = addr.as_pathname()?;
-    Some((path.to_string_lossy().into_owned(), None))
+    if let Some(path) = addr.as_pathname() {
+        return Some((path.to_string_lossy().into_owned(), None));
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(name) = addr.as_abstract_name() {
+        let mut path = String::from("\0");
+        path.push_str(&String::from_utf8_lossy(name));
+        return Some((path, None));
+    }
+    None
 }
 
 fn raw_errno(error: std::io::Error) -> i32 {
@@ -4316,134 +4667,6 @@ fn sysvshm_encoded_len(entries: &BTreeMap<i64, Vec<u8>>) -> usize {
             .values()
             .map(|payload| 8usize.saturating_add(4).saturating_add(payload.len()))
             .sum::<usize>()
-}
-
-/// Request-local state for `strtok`.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct StrtokState {
-    input: Vec<u8>,
-    offset: usize,
-    mode: StrtokMode,
-    emitted_token: bool,
-}
-
-impl StrtokState {
-    /// Starts tokenization over a new input string.
-    pub fn reset(&mut self, input: Vec<u8>) {
-        self.input = input;
-        self.offset = 0;
-        self.mode = StrtokMode::Active;
-        self.emitted_token = false;
-    }
-
-    /// Whether one-argument `strtok()` needs a new input string first.
-    #[must_use]
-    pub const fn requires_input(&self) -> bool {
-        matches!(self.mode, StrtokMode::NeedsInput)
-    }
-
-    /// Returns the next token separated by any byte in `delimiters`.
-    pub fn next_token(&mut self, delimiters: &[u8]) -> Option<Vec<u8>> {
-        if delimiters.is_empty() {
-            return if self.offset == 0 {
-                let token = self.input.clone();
-                self.offset = self.input.len();
-                Some(token)
-            } else {
-                None
-            };
-        }
-        let skipped_start = self.offset;
-        while self.offset < self.input.len() && delimiters.contains(&self.input[self.offset]) {
-            self.offset += 1;
-        }
-        if self.offset >= self.input.len() {
-            // We reached the end while skipping leading delimiters. Because a
-            // token's terminating delimiter is now consumed eagerly (see below),
-            // reaching the end without skipping any further delimiter is a clean
-            // exhaustion; skipping one or more extra trailing delimiters leaves a
-            // grace state where the next bare strtok() warns, matching PHP.
-            self.mode = if self.input.is_empty()
-                || (self.emitted_token && self.offset.saturating_sub(skipped_start) == 0)
-            {
-                StrtokMode::Exhausted
-            } else {
-                StrtokMode::NeedsInput
-            };
-            return None;
-        }
-        let start = self.offset;
-        while self.offset < self.input.len() && !delimiters.contains(&self.input[self.offset]) {
-            self.offset += 1;
-        }
-        let token = self.input[start..self.offset].to_vec();
-        // Consume the delimiter that terminated this token so the next call (which
-        // may use a different delimiter set) does not re-read it, matching PHP's
-        // php_strtok_r, which advances the saved pointer past the delimiter.
-        if self.offset < self.input.len() {
-            self.offset += 1;
-        }
-        self.mode = StrtokMode::Active;
-        self.emitted_token = true;
-        Some(token)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum StrtokMode {
-    #[default]
-    Exhausted,
-    Active,
-    NeedsInput,
-}
-
-/// Request-local iconv encoding configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IconvEncodingState {
-    input_encoding: String,
-    output_encoding: String,
-    internal_encoding: String,
-}
-
-impl Default for IconvEncodingState {
-    fn default() -> Self {
-        Self {
-            input_encoding: "UTF-8".to_owned(),
-            output_encoding: "UTF-8".to_owned(),
-            internal_encoding: "UTF-8".to_owned(),
-        }
-    }
-}
-
-impl IconvEncodingState {
-    /// Returns the input encoding used by iconv defaults.
-    #[must_use]
-    pub fn input_encoding(&self) -> &str {
-        &self.input_encoding
-    }
-
-    /// Returns the output encoding used by iconv defaults.
-    #[must_use]
-    pub fn output_encoding(&self) -> &str {
-        &self.output_encoding
-    }
-
-    /// Returns the internal encoding used by iconv defaults.
-    #[must_use]
-    pub fn internal_encoding(&self) -> &str {
-        &self.internal_encoding
-    }
-
-    /// Updates one named iconv encoding setting.
-    pub fn set(&mut self, name: &str, encoding: impl Into<String>) -> bool {
-        match name {
-            "input_encoding" => self.input_encoding = encoding.into(),
-            "output_encoding" => self.output_encoding = encoding.into(),
-            "internal_encoding" => self.internal_encoding = encoding.into(),
-            _ => return false,
-        }
-        true
-    }
 }
 
 /// Process-local APCu entry.

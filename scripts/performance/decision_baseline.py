@@ -458,7 +458,7 @@ def run_self_test() -> int:
         "rows": [
             {
                 "scenario": "routing",
-                "row": "phrust-fast-preset",
+                "row": "phrust-default",
                 "status": "pass",
                 "correctness": "pass",
                 "phase_summary": {"compile_total_ms": 4.0, "execute_ms": 5.0},

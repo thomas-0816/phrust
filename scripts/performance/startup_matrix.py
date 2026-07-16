@@ -112,13 +112,13 @@ def build_rows(debug_engine: Path, release_engine: Path, fixture: Path) -> list[
         StartupRow(
             "debug-empty-fast",
             "debug",
-            [str(debug_engine), "run", "--engine-preset=fast", str(fixture)],
+            [str(debug_engine), "run", "--engine-preset=default", str(fixture)],
             timing_index=3,
         ),
         StartupRow(
             "release-empty-fast",
             "release",
-            [str(release_engine), "run", "--engine-preset=fast", str(fixture)],
+            [str(release_engine), "run", "--engine-preset=default", str(fixture)],
             timing_index=3,
         ),
     ]

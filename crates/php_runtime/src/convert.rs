@@ -337,10 +337,19 @@ pub fn to_array_php(value: &Value) -> Result<PhpArray, String> {
         Value::Null => Ok(PhpArray::new()),
         Value::Array(array) => Ok(array.clone()),
         Value::Reference(cell) => to_array_php(&cell.borrow()),
-        Value::Object(_) | Value::Fiber(_) | Value::Generator(_) => Err(
-            "E_PHP_RUNTIME_OBJECT_TO_ARRAY_GAP: object to array conversion is not implemented"
-                .to_owned(),
-        ),
+        Value::Object(object) => {
+            let mut array = PhpArray::new();
+            for (name, value) in object.array_cast_snapshot() {
+                array.insert(
+                    crate::ArrayKey::String(PhpString::from_bytes(name.into_bytes())),
+                    value,
+                );
+            }
+            Ok(array)
+        }
+        Value::Fiber(_) | Value::Generator(_) => {
+            Err("fiber/generator to array conversion is not implemented".to_owned())
+        }
         Value::Uninitialized => Err("cannot convert uninitialized value to array".to_owned()),
         Value::Callable(_) => Err("callable to array conversion is not implemented".to_owned()),
         scalar => {
@@ -736,6 +745,74 @@ mod tests {
             to_object_php(&Value::Int(7)).unwrap_err(),
             "E_PHP_RUNTIME_OBJECT_CAST_GAP: object cast conversion is not implemented"
         );
+    }
+
+    #[test]
+    fn object_to_array_cast_encodes_visibility_and_omits_uninitialized_slots() {
+        let property = |name: &str, value: Value, flags: ClassPropertyFlags| ClassPropertyEntry {
+            name: name.to_owned(),
+            default: value,
+            type_: None,
+            flags,
+            hooks: ClassPropertyHooks::default(),
+            attributes: Vec::new(),
+        };
+        let class = ClassEntry {
+            name: "castfixture".to_owned().into(),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: vec![
+                property("public", Value::Int(1), ClassPropertyFlags::default()),
+                property(
+                    "protected",
+                    Value::Int(2),
+                    ClassPropertyFlags {
+                        is_protected: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                ),
+                property(
+                    "private:castfixture:private",
+                    Value::Int(3),
+                    ClassPropertyFlags {
+                        is_private: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                ),
+                property(
+                    "typed",
+                    Value::Uninitialized,
+                    ClassPropertyFlags {
+                        is_typed: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                ),
+            ],
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        };
+        let object = ObjectRef::new_with_display_name(&class, "CastFixture");
+        object.set_property("dynamic", Value::Int(4));
+
+        let array = to_array_php(&Value::Object(object)).unwrap();
+        let string_key =
+            |bytes: &[u8]| crate::ArrayKey::String(PhpString::from_bytes(bytes.to_vec()));
+        assert_eq!(array.get(&string_key(b"public")), Some(&Value::Int(1)));
+        assert_eq!(
+            array.get(&string_key(b"\0*\0protected")),
+            Some(&Value::Int(2))
+        );
+        assert_eq!(
+            array.get(&string_key(b"\0CastFixture\0private")),
+            Some(&Value::Int(3))
+        );
+        assert_eq!(array.get(&string_key(b"dynamic")), Some(&Value::Int(4)));
+        assert_eq!(array.get(&string_key(b"typed")), None);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use php_diagnostics::{
     DiagnosticSeverity, DiagnosticSuggestion,
 };
 use php_executor::EngineProfileName;
-use php_vm::api::{DenseIncludeMode, DeploymentRootMode};
+use php_vm::api::{DeploymentRootMode, NativeCacheConfig, NativeCacheMode};
 
 use crate::routing::RequestRewriteRule;
 
@@ -20,7 +20,6 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 const DEFAULT_MAX_UPLOAD_FILES: usize = 32;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_EXECUTION_MS: u64 = 30_000;
-const DEFAULT_MAX_VM_STEPS: usize = 100_000;
 const DEFAULT_SCRIPT_CACHE_SHARDS: usize = 16;
 const DEFAULT_SCRIPT_CACHE_MAX_ENTRIES: usize = 4096;
 // Serve cached entry scripts without canonicalize/stat/retain for the same
@@ -72,20 +71,20 @@ pub struct RequestLimitsConfig {
     pub cpu_execution_limit: usize,
     pub request_timeout_ms: u64,
     pub max_execution_ms: u64,
-    pub max_vm_steps: usize,
     pub execution_deadline_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineConfig {
     pub engine_preset: EngineProfileName,
+    pub native_cache: NativeCacheMode,
+    pub native_cache_dir: PathBuf,
     /// Declared mutability of the deployment root. `dev` (default) marks the
     /// docroot as mutable, which keeps every deployment-fingerprint-gated
     /// persistent reuse blocked; `immutable` is an operator declaration for
     /// atomically swapped release directories whose cached source remains
     /// trusted until cache clear or restart.
     pub deployment_mode: DeploymentRootMode,
-    pub dense_includes: Option<DenseIncludeMode>,
     pub perf_ablation: ServerPerfAblation,
     pub script_cache_enabled: bool,
     pub script_cache_shards: usize,
@@ -106,7 +105,6 @@ pub struct ObservabilityConfig {
     pub perf_trace_vm_counters: bool,
     pub request_profile: Option<PathBuf>,
     pub request_profile_vm_counters: bool,
-    pub request_profile_source_attribution: bool,
     pub request_profile_trigger_header: bool,
 }
 
@@ -128,13 +126,8 @@ pub struct CapabilityConfig {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServerPerfAblation {
-    pub disable_dense_includes: bool,
-    pub disable_quickening: bool,
     pub disable_inline_caches: bool,
-    pub disable_builtin_ic: bool,
-    pub disable_jit: bool,
     pub disable_include_o2: bool,
-    pub disable_dense_jump_threading: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,9 +240,6 @@ impl ServerConfig {
         let mut max_execution_ms = file_config
             .positive_u64("max_execution_ms")?
             .unwrap_or(DEFAULT_MAX_EXECUTION_MS);
-        let mut max_vm_steps = file_config
-            .positive_usize("max_vm_steps")?
-            .unwrap_or(DEFAULT_MAX_VM_STEPS);
         let mut execution_deadline_enabled = file_config
             .bool("execution_deadline_enabled")?
             .unwrap_or(true);
@@ -258,19 +248,22 @@ impl ServerConfig {
             .map(|value| parse_engine_preset("engine_preset", &value))
             .transpose()?
             .unwrap_or_default();
+        let native_cache_defaults = NativeCacheConfig::default();
+        let mut native_cache = file_config
+            .string("native_cache")
+            .or_else(|| env_value("PHRUST_NATIVE_CACHE"))
+            .map(|value| parse_native_cache("native_cache", &value))
+            .transpose()?
+            .unwrap_or(native_cache_defaults.mode);
+        let mut native_cache_dir = file_config
+            .path("native_cache_dir")
+            .or_else(|| env_value("PHRUST_NATIVE_CACHE_DIR").map(PathBuf::from))
+            .unwrap_or(native_cache_defaults.directory);
         let mut deployment_mode = file_config
             .string("deployment_mode")
             .map(|value| parse_deployment_mode("deployment_mode", &value))
             .transpose()?
             .unwrap_or(DeploymentRootMode::DevMutable);
-        let file_dense_includes = file_config
-            .string("dense_includes")
-            .map(|value| parse_dense_includes("dense_includes", &value))
-            .transpose()?;
-        let env_dense_includes = env_value("PHRUST_DENSE_INCLUDES")
-            .map(|value| parse_dense_includes("PHRUST_DENSE_INCLUDES", &value))
-            .transpose()?;
-        let mut dense_includes = file_dense_includes.or(env_dense_includes);
         let file_perf_ablation = file_config
             .string("perf_ablation")
             .map(|value| parse_perf_ablation("perf_ablation", &value))
@@ -315,9 +308,6 @@ impl ServerConfig {
         let mut request_profile_vm_counters = file_config
             .bool("request_profile_vm_counters")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_VM_COUNTERS"));
-        let mut request_profile_source_attribution = file_config
-            .bool("request_profile_source_attribution")?
-            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_SOURCE_ATTRIBUTION"));
         let mut request_profile_trigger_header = file_config
             .bool("request_profile_trigger_header")?
             .unwrap_or_else(|| {
@@ -402,12 +392,15 @@ impl ServerConfig {
                 "--max-execution-ms" => {
                     max_execution_ms = parse_positive_u64(&arg, &required_value(&arg, &mut args)?)?;
                 }
-                "--max-vm-steps" => {
-                    max_vm_steps = parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
-                }
                 "--disable-execution-deadline" => execution_deadline_enabled = false,
                 "--engine-preset" => {
                     engine_preset = parse_engine_preset(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                "--native-cache" => {
+                    native_cache = parse_native_cache(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                "--native-cache-dir" => {
+                    native_cache_dir = PathBuf::from(required_value(&arg, &mut args)?);
                 }
                 "--deployment-mode" => {
                     deployment_mode =
@@ -416,16 +409,6 @@ impl ServerConfig {
                 _ if arg.starts_with("--deployment-mode=") => {
                     let value = arg.trim_start_matches("--deployment-mode=");
                     deployment_mode = parse_deployment_mode("--deployment-mode", value)?;
-                }
-                "--dense-includes" => {
-                    dense_includes = Some(parse_dense_includes(
-                        &arg,
-                        &required_value(&arg, &mut args)?,
-                    )?);
-                }
-                _ if arg.starts_with("--dense-includes=") => {
-                    let value = arg.trim_start_matches("--dense-includes=");
-                    dense_includes = Some(parse_dense_includes("--dense-includes", value)?);
                 }
                 "--perf-ablation" => {
                     perf_ablation = parse_perf_ablation(&arg, &required_value(&arg, &mut args)?)?;
@@ -471,7 +454,6 @@ impl ServerConfig {
                     request_profile = Some(PathBuf::from(required_value(&arg, &mut args)?))
                 }
                 "--request-profile-vm-counters" => request_profile_vm_counters = true,
-                "--request-profile-source-attribution" => request_profile_source_attribution = true,
                 "--request-profile-trigger-header" => request_profile_trigger_header = true,
                 "--enable-network-requests" => network_requests_enabled = true,
                 "--debug" => debug = true,
@@ -518,13 +500,13 @@ impl ServerConfig {
                 cpu_execution_limit,
                 request_timeout_ms,
                 max_execution_ms,
-                max_vm_steps,
                 execution_deadline_enabled,
             },
             engine: EngineConfig {
                 engine_preset,
+                native_cache,
+                native_cache_dir,
                 deployment_mode,
-                dense_includes,
                 perf_ablation,
                 script_cache_enabled,
                 script_cache_shards,
@@ -543,7 +525,6 @@ impl ServerConfig {
                 perf_trace_vm_counters,
                 request_profile,
                 request_profile_vm_counters,
-                request_profile_source_attribution,
                 request_profile_trigger_header,
             },
             sessions_uploads: SessionsUploadsConfig {
@@ -611,13 +592,13 @@ impl ServerConfig {
                 cpu_execution_limit: default_cpu_execution_limit(),
                 request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
                 max_execution_ms: DEFAULT_MAX_EXECUTION_MS,
-                max_vm_steps: DEFAULT_MAX_VM_STEPS,
                 execution_deadline_enabled: true,
             },
             engine: EngineConfig {
                 engine_preset: EngineProfileName::default(),
+                native_cache: NativeCacheConfig::default().mode,
+                native_cache_dir: NativeCacheConfig::default().directory,
                 deployment_mode: DeploymentRootMode::DevMutable,
-                dense_includes: env_value_dense_includes()?,
                 perf_ablation: env_value_perf_ablation()?.unwrap_or_default(),
                 script_cache_enabled: true,
                 script_cache_shards: DEFAULT_SCRIPT_CACHE_SHARDS,
@@ -636,7 +617,6 @@ impl ServerConfig {
                 perf_trace_vm_counters: false,
                 request_profile: None,
                 request_profile_vm_counters: false,
-                request_profile_source_attribution: false,
                 request_profile_trigger_header: true,
             },
             sessions_uploads: SessionsUploadsConfig {
@@ -679,11 +659,11 @@ Options:\n\
   --cpu-execution-limit <n>    maximum concurrent CPU-bound PHP executions (default: available CPUs)\n\
   --request-timeout-ms <n>     body read timeout in milliseconds (default: 30000)\n\
   --max-execution-ms <n>       PHP execution deadline in milliseconds (default: 30000)\n\
-  --max-vm-steps <n>           maximum VM dispatches per request (default: 100000)\n\
   --disable-execution-deadline disable cooperative PHP execution deadline\n\
-  --engine-preset <name>       default managed-fast, baseline oracle, fast alias, or experimental-jit diagnostics\n\
-  --dense-includes <off|auto>  override dense-bytecode include execution\n\
-  --perf-ablation <list>       comma-separated disables: dense-includes, quickening, inline-caches, builtin-ic, jit, include-o2, dense-jump-threading, or all\n\
+  --engine-preset <name>       default optimizing or baseline diagnostic native runtime\n\
+  --native-cache <mode>        off, read, write, or read-write PNA1 cache access\n\
+  --native-cache-dir <path>    directory containing validated PNA1 artifacts\n\
+  --perf-ablation <list>       comma-separated disables: inline-caches, include-o2, or all\n\
   --disable-metrics-endpoint   disable GET /__phrust/metrics\n\
   --metrics-token <token>      require Authorization: Bearer token for metrics\n\
   --tls-cert <path>            PEM certificate chain for HTTPS\n\
@@ -695,7 +675,6 @@ Options:\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
   --request-profile <dir>      write JSON request profiles for opted-in PHP requests\n\
   --request-profile-vm-counters  collect heavy VM counters for profiled requests\n\
-  --request-profile-source-attribution  collect per-clone source attribution (slow)\n\
   --request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1 (default)\n\
   --enable-network-requests    allow PHP cURL requests to external hosts\n\
   --debug                      emit structured server debug events to stderr\n\
@@ -967,11 +946,10 @@ fn parse_engine_preset(flag: &str, value: &str) -> Result<EngineProfileName, Con
         .map_err(|error| ConfigError::new(format!("invalid {flag}: {error}")))
 }
 
-fn env_value_dense_includes() -> Result<Option<DenseIncludeMode>, ConfigError> {
-    std::env::var("PHRUST_DENSE_INCLUDES")
-        .ok()
-        .map(|value| parse_dense_includes("PHRUST_DENSE_INCLUDES", &value))
-        .transpose()
+fn parse_native_cache(flag: &str, value: &str) -> Result<NativeCacheMode, ConfigError> {
+    value
+        .parse()
+        .map_err(|error: String| ConfigError::new(format!("invalid {flag}: {error}")))
 }
 
 fn env_value_perf_ablation() -> Result<Option<ServerPerfAblation>, ConfigError> {
@@ -991,16 +969,6 @@ fn parse_deployment_mode(flag: &str, value: &str) -> Result<DeploymentRootMode, 
     }
 }
 
-fn parse_dense_includes(flag: &str, value: &str) -> Result<DenseIncludeMode, ConfigError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "0" | "false" | "no" | "off" => Ok(DenseIncludeMode::Off),
-        "1" | "true" | "yes" | "on" | "auto" => Ok(DenseIncludeMode::Auto),
-        _ => Err(ConfigError::new(format!(
-            "invalid {flag} `{value}`; expected off, 0, auto, or 1"
-        ))),
-    }
-}
-
 fn parse_perf_ablation(flag: &str, value: &str) -> Result<ServerPerfAblation, ConfigError> {
     let mut ablation = ServerPerfAblation::default();
     for raw_part in value.split(',') {
@@ -1010,24 +978,14 @@ fn parse_perf_ablation(flag: &str, value: &str) -> Result<ServerPerfAblation, Co
         }
         match part.replace('_', "-").as_str() {
             "all" => {
-                ablation.disable_dense_includes = true;
-                ablation.disable_quickening = true;
                 ablation.disable_inline_caches = true;
-                ablation.disable_builtin_ic = true;
-                ablation.disable_jit = true;
                 ablation.disable_include_o2 = true;
-                ablation.disable_dense_jump_threading = true;
             }
-            "dense-includes" => ablation.disable_dense_includes = true,
-            "quickening" => ablation.disable_quickening = true,
             "inline-caches" => ablation.disable_inline_caches = true,
-            "builtin-ic" | "builtin-dispatch-cache" => ablation.disable_builtin_ic = true,
-            "jit" => ablation.disable_jit = true,
             "include-o2" => ablation.disable_include_o2 = true,
-            "dense-jump-threading" => ablation.disable_dense_jump_threading = true,
             _ => {
                 return Err(ConfigError::new(format!(
-                    "invalid {flag} entry `{part}`; expected dense-includes, quickening, inline-caches, builtin-ic, jit, include-o2, dense-jump-threading, all, or none"
+                    "invalid {flag} entry `{part}`; expected inline-caches, include-o2, all, or none"
                 )));
             }
         }
@@ -1175,661 +1133,4 @@ fn default_max_in_flight() -> usize {
 
 fn default_cpu_execution_limit() -> usize {
     std::thread::available_parallelism().map_or(1, usize::from)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, DeploymentRootMode, ServerConfig};
-    use php_diagnostics::DiagnosticOutputFormat;
-    use php_executor::EngineProfileName;
-    use php_vm::api::DenseIncludeMode;
-    use std::{
-        collections::HashMap,
-        fs,
-        net::SocketAddr,
-        path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn parses_deployment_mode_flag_and_rejects_unknown_values() {
-        let config =
-            ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "immutable"])
-                .unwrap();
-        assert_eq!(
-            config.engine.deployment_mode,
-            DeploymentRootMode::ImmutableDeclared
-        );
-        let config =
-            ServerConfig::parse_from(["--docroot", "public", "--deployment-mode=dev"]).unwrap();
-        assert_eq!(
-            config.engine.deployment_mode,
-            DeploymentRootMode::DevMutable
-        );
-        let error = ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "prod"])
-            .unwrap_err();
-        assert!(error.to_string().contains("expected dev or immutable"));
-    }
-
-    #[test]
-    fn parses_required_docroot_and_defaults() {
-        let config = ServerConfig::parse_from(["--docroot", "public"]).unwrap();
-
-        assert_eq!(
-            config.transport.listen,
-            "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
-        );
-        assert_eq!(config.routing.docroot, PathBuf::from("public"));
-        assert!(!config.observability.debug);
-        assert_eq!(
-            config.observability.error_format,
-            DiagnosticOutputFormat::Text
-        );
-        assert_eq!(config.observability.debug_log, None);
-        assert_eq!(config.routing.index, "index.php");
-        assert_eq!(config.limits.max_body_bytes, 1_048_576);
-        assert_eq!(
-            config.sessions_uploads.upload_temp_dir,
-            std::env::temp_dir().join("phrust-uploads")
-        );
-        assert_eq!(config.sessions_uploads.max_upload_files, 32);
-        assert_eq!(config.sessions_uploads.max_upload_file_bytes, 1_048_576);
-        assert_eq!(
-            config.sessions_uploads.session_save_path,
-            std::env::temp_dir().join("phrust-sessions")
-        );
-        assert_eq!(config.sessions_uploads.session_cookie_name, "PHPSESSID");
-        assert_eq!(config.sessions_uploads.session_cookie_path, "/");
-        assert!(config.sessions_uploads.sessions_enabled);
-        assert_eq!(config.limits.request_timeout_ms, 30_000);
-        assert_eq!(config.limits.max_execution_ms, 30_000);
-        assert_eq!(config.limits.max_vm_steps, 100_000);
-        assert!(config.limits.execution_deadline_enabled);
-        assert_eq!(config.engine.engine_preset, EngineProfileName::Default);
-        assert_eq!(
-            config.engine.deployment_mode,
-            DeploymentRootMode::DevMutable
-        );
-        assert_eq!(config.engine.dense_includes, None);
-        assert_eq!(config.engine.perf_ablation, Default::default());
-        assert!(config.routing.metrics_endpoint_enabled);
-        assert_eq!(config.observability.metrics_token, None);
-        assert_eq!(config.transport.tls_cert, None);
-        assert_eq!(config.transport.tls_key, None);
-        assert!(!config.transport.http3_enabled);
-        assert_eq!(config.transport.http3_listen, None);
-        assert_eq!(config.observability.access_log, None);
-        assert_eq!(config.observability.perf_trace, None);
-        assert!(!config.observability.perf_trace_vm_counters);
-        assert_eq!(config.observability.request_profile, None);
-        assert!(config.observability.request_profile_trigger_header);
-        assert!(!config.capabilities.network_requests_enabled);
-        assert!(config.engine.script_cache_enabled);
-        assert_eq!(config.engine.script_cache_shards, 16);
-        assert_eq!(config.engine.script_cache_max_entries, 4096);
-        assert_eq!(config.engine.script_cache_preload, None);
-        assert_eq!(config.engine.script_cache_check_interval_ms, 2_000);
-        assert!(!config.engine.strict_preload);
-        assert!(!config.routing.cache_clear_endpoint_enabled);
-        assert!(config.routing.front_controller.is_none());
-        assert!(config.routing.request_rewrites.is_empty());
-        assert!(!config.help);
-        assert_eq!(config.limits.max_in_flight, 200);
-    }
-
-    #[test]
-    fn parses_all_options() {
-        let config = ServerConfig::parse_from([
-            "--listen",
-            "127.0.0.1:0",
-            "--docroot",
-            "public",
-            "--index",
-            "home.php",
-            "--front-controller",
-            "index.php",
-            "--rewrite-prefix-query",
-            "/api=route",
-            "--max-body-bytes",
-            "64",
-            "--upload-temp-dir",
-            "uploads",
-            "--max-upload-files",
-            "4",
-            "--max-upload-file-bytes",
-            "32",
-            "--session-save-path",
-            "sessions",
-            "--session-cookie-name",
-            "APPSESSID",
-            "--session-cookie-path",
-            "/app",
-            "--disable-sessions",
-            "--max-in-flight",
-            "2",
-            "--cpu-execution-limit",
-            "3",
-            "--request-timeout-ms",
-            "250",
-            "--max-execution-ms",
-            "125",
-            "--max-vm-steps",
-            "250000",
-            "--disable-execution-deadline",
-            "--engine-preset",
-            "experimental-jit",
-            "--dense-includes=off",
-            "--perf-ablation",
-            "quickening,inline-caches,builtin-ic,jit,include-o2,dense-jump-threading",
-            "--disable-metrics-endpoint",
-            "--metrics-token",
-            "secret",
-            "--tls-cert",
-            "tls/cert.pem",
-            "--tls-key",
-            "tls/key.pem",
-            "--enable-http3",
-            "--http3-listen",
-            "127.0.0.1:9443",
-            "--access-log",
-            "-",
-            "--perf-trace",
-            "perf.jsonl",
-            "--perf-trace-vm-counters",
-            "--request-profile",
-            "profiles",
-            "--enable-network-requests",
-            "--debug",
-            "--error-format",
-            "json",
-            "--debug-log",
-            "debug.log",
-            "--no-script-cache",
-            "--script-cache-shards",
-            "3",
-            "--script-cache-max-entries",
-            "64",
-            "--script-cache-preload",
-            "preload.txt",
-            "--script-cache-check-interval-ms",
-            "25",
-            "--strict-preload",
-            "--enable-cache-clear-endpoint",
-        ])
-        .unwrap();
-
-        assert_eq!(
-            config.transport.listen,
-            "127.0.0.1:0".parse::<SocketAddr>().unwrap()
-        );
-        assert_eq!(config.routing.index, "home.php");
-        assert_eq!(
-            config.routing.front_controller,
-            Some(PathBuf::from("index.php"))
-        );
-        assert_eq!(config.routing.request_rewrites.len(), 1);
-        assert_eq!(config.routing.request_rewrites[0].path_prefix, "/api");
-        assert_eq!(config.routing.request_rewrites[0].query_parameter, "route");
-        assert_eq!(config.limits.max_body_bytes, 64);
-        assert_eq!(
-            config.sessions_uploads.upload_temp_dir,
-            PathBuf::from("uploads")
-        );
-        assert_eq!(config.sessions_uploads.max_upload_files, 4);
-        assert_eq!(config.sessions_uploads.max_upload_file_bytes, 32);
-        assert_eq!(
-            config.sessions_uploads.session_save_path,
-            PathBuf::from("sessions")
-        );
-        assert_eq!(config.sessions_uploads.session_cookie_name, "APPSESSID");
-        assert_eq!(config.sessions_uploads.session_cookie_path, "/app");
-        assert!(!config.sessions_uploads.sessions_enabled);
-        assert_eq!(config.limits.max_in_flight, 2);
-        assert_eq!(config.limits.cpu_execution_limit, 3);
-        assert_eq!(config.limits.request_timeout_ms, 250);
-        assert_eq!(config.limits.max_execution_ms, 125);
-        assert_eq!(config.limits.max_vm_steps, 250_000);
-        assert!(!config.limits.execution_deadline_enabled);
-        assert_eq!(
-            config.engine.engine_preset,
-            EngineProfileName::ExperimentalJit
-        );
-        assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Off));
-        assert!(config.engine.perf_ablation.disable_quickening);
-        assert!(config.engine.perf_ablation.disable_inline_caches);
-        assert!(config.engine.perf_ablation.disable_builtin_ic);
-        assert!(config.engine.perf_ablation.disable_jit);
-        assert!(config.engine.perf_ablation.disable_include_o2);
-        assert!(config.engine.perf_ablation.disable_dense_jump_threading);
-        assert!(!config.engine.perf_ablation.disable_dense_includes);
-        assert!(!config.routing.metrics_endpoint_enabled);
-        assert_eq!(
-            config.observability.metrics_token,
-            Some("secret".to_string())
-        );
-        assert_eq!(
-            config.transport.tls_cert,
-            Some(PathBuf::from("tls/cert.pem"))
-        );
-        assert_eq!(config.transport.tls_key, Some(PathBuf::from("tls/key.pem")));
-        assert!(config.transport.http3_enabled);
-        assert_eq!(
-            config.transport.http3_listen,
-            Some("127.0.0.1:9443".parse::<SocketAddr>().unwrap())
-        );
-        assert_eq!(config.observability.access_log, Some("-".to_string()));
-        assert_eq!(
-            config.observability.perf_trace,
-            Some(PathBuf::from("perf.jsonl"))
-        );
-        assert!(config.observability.perf_trace_vm_counters);
-        assert_eq!(
-            config.observability.request_profile,
-            Some(PathBuf::from("profiles"))
-        );
-        assert!(config.observability.request_profile_trigger_header);
-        assert!(config.capabilities.network_requests_enabled);
-        assert!(config.observability.debug);
-        assert_eq!(
-            config.observability.error_format,
-            DiagnosticOutputFormat::Json
-        );
-        assert_eq!(
-            config.observability.debug_log,
-            Some(PathBuf::from("debug.log"))
-        );
-        assert!(!config.engine.script_cache_enabled);
-        assert_eq!(config.engine.script_cache_shards, 3);
-        assert_eq!(config.engine.script_cache_max_entries, 64);
-        assert_eq!(
-            config.engine.script_cache_preload,
-            Some(PathBuf::from("preload.txt"))
-        );
-        assert_eq!(config.engine.script_cache_check_interval_ms, 25);
-        assert!(config.engine.strict_preload);
-        assert!(config.routing.cache_clear_endpoint_enabled);
-    }
-
-    #[test]
-    fn help_does_not_require_docroot() {
-        let config = ServerConfig::parse_from(["--help"]).unwrap();
-
-        assert!(config.help);
-    }
-
-    #[test]
-    fn builtin_cli_server_reads_request_rewrites_from_server_env() {
-        let config = ServerConfig::builtin_cli_server_with_env(
-            "127.0.0.1:0",
-            PathBuf::from("public"),
-            None,
-            |name| {
-                (name == BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV)
-                    .then(|| "/api=route,/legacy=path".to_string())
-            },
-        )
-        .unwrap();
-
-        assert_eq!(config.routing.request_rewrites.len(), 2);
-        assert_eq!(config.routing.request_rewrites[0].path_prefix, "/api");
-        assert_eq!(config.routing.request_rewrites[0].query_parameter, "route");
-        assert_eq!(config.routing.request_rewrites[1].path_prefix, "/legacy");
-        assert_eq!(config.routing.request_rewrites[1].query_parameter, "path");
-    }
-
-    #[test]
-    fn parses_config_file_and_cli_overrides_values() {
-        let path = temp_config(
-            r#"
-listen = "127.0.0.1:9000"
-docroot = "from-file"
-index = "home.php"
-max_body_bytes = 64
-metrics_token = "from-file-token"
-access_log = "access.log"
-tls_cert = "cert.pem"
-tls_key = "key.pem"
-http3_enabled = true
-http3_listen = "127.0.0.1:9443"
-script_cache_max_entries = 12
-strict_preload = true
-engine_preset = "baseline"
-dense_includes = "auto"
-perf_ablation = "dense-includes"
-max_vm_steps = 333000
-network_requests_enabled = true
-rewrite_prefix_query = "/api=route,/legacy=path"
-"#,
-        );
-
-        let config = ServerConfig::parse_from([
-            "--config",
-            path.to_str().unwrap(),
-            "--docroot",
-            "from-cli",
-            "--max-body-bytes",
-            "128",
-            "--metrics-token",
-            "from-cli-token",
-            "--engine-preset",
-            "fast",
-            "--dense-includes",
-            "off",
-            "--perf-ablation=jit",
-        ])
-        .unwrap();
-
-        fs::remove_file(path).expect("remove config");
-
-        assert_eq!(
-            config.transport.listen,
-            "127.0.0.1:9000".parse::<SocketAddr>().unwrap()
-        );
-        assert_eq!(config.routing.docroot, PathBuf::from("from-cli"));
-        assert_eq!(config.routing.index, "home.php");
-        assert_eq!(config.limits.max_body_bytes, 128);
-        assert_eq!(
-            config.observability.metrics_token,
-            Some("from-cli-token".to_string())
-        );
-        assert_eq!(
-            config.observability.access_log,
-            Some("access.log".to_string())
-        );
-        assert_eq!(config.transport.tls_cert, Some(PathBuf::from("cert.pem")));
-        assert_eq!(config.transport.tls_key, Some(PathBuf::from("key.pem")));
-        assert!(config.transport.http3_enabled);
-        assert_eq!(
-            config.transport.http3_listen,
-            Some("127.0.0.1:9443".parse::<SocketAddr>().unwrap())
-        );
-        assert_eq!(config.engine.script_cache_max_entries, 12);
-        assert!(config.engine.strict_preload);
-        assert!(config.capabilities.network_requests_enabled);
-        assert_eq!(config.engine.engine_preset, EngineProfileName::Default);
-        assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Off));
-        assert!(config.engine.perf_ablation.disable_jit);
-        assert!(!config.engine.perf_ablation.disable_dense_includes);
-        assert_eq!(config.limits.max_vm_steps, 333_000);
-        assert_eq!(config.routing.request_rewrites.len(), 2);
-        assert_eq!(config.routing.request_rewrites[0].path_prefix, "/api");
-        assert_eq!(config.routing.request_rewrites[0].query_parameter, "route");
-        assert_eq!(config.routing.request_rewrites[1].path_prefix, "/legacy");
-        assert_eq!(config.routing.request_rewrites[1].query_parameter, "path");
-    }
-
-    #[test]
-    fn cli_override_replaces_invalid_file_value_before_final_validation() {
-        let path = temp_config(
-            r#"
-docroot = "from-file"
-index = "../bad.php"
-"#,
-        );
-
-        let config =
-            ServerConfig::parse_from(["--config", path.to_str().unwrap(), "--index", "index.php"])
-                .unwrap();
-
-        fs::remove_file(path).expect("remove config");
-
-        assert_eq!(config.routing.index, "index.php");
-    }
-
-    #[test]
-    fn rejects_missing_docroot_without_help() {
-        let error = ServerConfig::parse_from(["--listen", "127.0.0.1:0"]).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--docroot is required; example: phrust-server --docroot public"
-        );
-        assert_eq!(error.diagnostic().code, "E_PHRUST_SERVER_CONFIG");
-    }
-
-    #[test]
-    fn rejects_invalid_listen_address_with_expected_format() {
-        let error =
-            ServerConfig::parse_from(["--listen", "no-port", "--docroot", "public"]).unwrap_err();
-
-        assert!(error.to_string().contains("invalid --listen `no-port`"));
-        assert!(error.to_string().contains("expected host:port"));
-    }
-
-    #[test]
-    fn rejects_unknown_flag() {
-        let error = ServerConfig::parse_from(["--docroot", "public", "--wat"]).unwrap_err();
-
-        assert!(error.to_string().contains("unknown flag `--wat`"));
-        assert!(error.to_string().contains("accepted flags"));
-    }
-
-    #[test]
-    fn parses_debug_env_vars() {
-        let env = HashMap::from([
-            ("PHRUST_SERVER_DEBUG", "1"),
-            ("PHRUST_SERVER_ERROR_FORMAT", "json"),
-            ("PHRUST_SERVER_DEBUG_LOG", "server-debug.log"),
-            ("PHRUST_SERVER_ENABLE_NETWORK_REQUESTS", "1"),
-            ("PHRUST_DENSE_INCLUDES", "1"),
-            ("PHRUST_PERF_ABLATION", "dense-includes,builtin_ic"),
-            ("PHRUST_REQUEST_PROFILE", "1"),
-        ]);
-        let config = ServerConfig::parse_from_with_env(["--docroot", "public"], |name| {
-            env.get(name).map(|value| (*value).to_string())
-        })
-        .unwrap();
-
-        assert!(config.observability.debug);
-        assert_eq!(
-            config.observability.error_format,
-            DiagnosticOutputFormat::Json
-        );
-        assert_eq!(
-            config.observability.debug_log,
-            Some(PathBuf::from("server-debug.log"))
-        );
-        assert!(config.capabilities.network_requests_enabled);
-        assert_eq!(config.engine.dense_includes, Some(DenseIncludeMode::Auto));
-        assert!(config.engine.perf_ablation.disable_dense_includes);
-        assert!(config.engine.perf_ablation.disable_builtin_ic);
-        assert_eq!(
-            config.observability.request_profile,
-            Some(PathBuf::from("target/performance/server/request-profile"))
-        );
-    }
-
-    #[test]
-    fn cli_debug_flags_override_env_vars() {
-        let env = HashMap::from([
-            ("PHRUST_SERVER_DEBUG", "1"),
-            ("PHRUST_SERVER_ERROR_FORMAT", "text"),
-            ("PHRUST_SERVER_DEBUG_LOG", "env-debug.log"),
-        ]);
-        let config = ServerConfig::parse_from_with_env(
-            [
-                "--docroot",
-                "public",
-                "--error-format",
-                "json",
-                "--debug-log",
-                "cli-debug.log",
-            ],
-            |name| env.get(name).map(|value| (*value).to_string()),
-        )
-        .unwrap();
-
-        assert!(config.observability.debug);
-        assert_eq!(
-            config.observability.error_format,
-            DiagnosticOutputFormat::Json
-        );
-        assert_eq!(
-            config.observability.debug_log,
-            Some(PathBuf::from("cli-debug.log"))
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_error_format() {
-        let error = ServerConfig::parse_from(["--docroot", "public", "--error-format", "yaml"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "invalid error format `yaml`; expected text or json"
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_engine_preset() {
-        let error = ServerConfig::parse_from(["--docroot", "public", "--engine-preset", "turbo"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "invalid --engine-preset: unsupported engine preset `turbo`; expected baseline, default, fast, or experimental-jit"
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_perf_toggles() {
-        let error = ServerConfig::parse_from(["--docroot", "public", "--dense-includes", "maybe"])
-            .unwrap_err();
-        assert!(error.to_string().contains("invalid --dense-includes"));
-
-        let error = ServerConfig::parse_from(["--docroot", "public", "--perf-ablation", "unknown"])
-            .unwrap_err();
-        assert!(error.to_string().contains("invalid --perf-ablation entry"));
-    }
-
-    #[test]
-    fn rejects_zero_limits() {
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--max-in-flight", "0"]).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--max-in-flight must be greater than zero"
-        );
-
-        let error = ServerConfig::parse_from(["--docroot", "public", "--cpu-execution-limit", "0"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--cpu-execution-limit must be greater than zero"
-        );
-
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--max-body-bytes", "0"]).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--max-body-bytes must be greater than zero"
-        );
-
-        let error = ServerConfig::parse_from(["--docroot", "public", "--max-upload-files", "0"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--max-upload-files must be greater than zero"
-        );
-
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--max-upload-file-bytes", "0"])
-                .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--max-upload-file-bytes must be greater than zero"
-        );
-
-        let error = ServerConfig::parse_from(["--docroot", "public", "--request-timeout-ms", "0"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--request-timeout-ms must be greater than zero"
-        );
-
-        let error = ServerConfig::parse_from(["--docroot", "public", "--max-execution-ms", "0"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--max-execution-ms must be greater than zero"
-        );
-
-        let error = ServerConfig::parse_from(["--docroot", "public", "--script-cache-shards", "0"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--script-cache-shards must be greater than zero"
-        );
-
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--script-cache-max-entries", "0"])
-                .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--script-cache-max-entries must be greater than zero"
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_session_cookie_settings() {
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--session-cookie-name", "bad name"])
-                .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "--session-cookie-name must be a valid cookie name"
-        );
-
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--session-cookie-path", "/;\n"])
-                .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "--session-cookie-path must be a non-empty cookie path without response separators"
-        );
-    }
-
-    #[test]
-    fn rejects_incomplete_tls_pair() {
-        let error = ServerConfig::parse_from(["--docroot", "public", "--tls-cert", "cert.pem"])
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "TLS configuration requires both --tls-cert <path> and --tls-key <path>; provide both flags or neither"
-        );
-    }
-
-    #[test]
-    fn rejects_http3_without_tls_pair() {
-        let error =
-            ServerConfig::parse_from(["--docroot", "public", "--enable-http3"]).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3"
-        );
-    }
-
-    fn temp_config(contents: &str) -> PathBuf {
-        let unique = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "phrust-server-config-{}-{unique}.toml",
-            std::process::id()
-        ));
-        fs::write(&path, contents).expect("write config");
-        path
-    }
 }

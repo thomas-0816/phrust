@@ -4,11 +4,11 @@ use std::collections::BTreeSet;
 
 use php_ir::rule_selection::{RuleKind, RuleSelection, RuleSelectionReport};
 
-use super::{NodeId, RegionGraph, RegionNodeKind, RegionValueType};
+use super::{NodeId, OptimizerRegionGraph, RegionNodeKind, RegionValueType};
 
 /// Selects report-only rules for the safe scalar region IR subset.
 #[must_use]
-pub fn select_region_rules(graph: &RegionGraph) -> RuleSelectionReport {
+pub fn select_region_rules(graph: &OptimizerRegionGraph) -> RuleSelectionReport {
     let mut report = RuleSelectionReport::default();
     let mut fused_children = BTreeSet::new();
 
@@ -53,11 +53,11 @@ pub fn select_region_rules(graph: &RegionGraph) -> RuleSelectionReport {
 
 /// Dumps region rule metadata in the shared stable format.
 #[must_use]
-pub fn dump_region_rule_selection(graph: &RegionGraph) -> String {
+pub fn dump_region_rule_selection(graph: &OptimizerRegionGraph) -> String {
     select_region_rules(graph).dump_text()
 }
 
-fn select_region_node_rule(graph: &RegionGraph, node: NodeId) -> Option<RuleKind> {
+fn select_region_node_rule(graph: &OptimizerRegionGraph, node: NodeId) -> Option<RuleKind> {
     let node = graph.node(node)?;
     if !node.effects.is_pure() {
         return None;
@@ -94,7 +94,7 @@ fn select_region_node_rule(graph: &RegionGraph, node: NodeId) -> Option<RuleKind
     }
 }
 
-fn compare_branch_use(graph: &RegionGraph, compare: NodeId) -> Option<NodeId> {
+fn compare_branch_use(graph: &OptimizerRegionGraph, compare: NodeId) -> Option<NodeId> {
     graph.def_use().uses(compare).iter().copied().find(|user| {
         graph.node(*user).is_some_and(|node| {
             matches!(node.kind, RegionNodeKind::If) && node.inputs.contains(&compare)
@@ -108,7 +108,7 @@ mod tests {
 
     use super::select_region_rules;
     use crate::region_ir::{
-        RegionBuilder, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
+        OptimizerRegionGraph, RegionBuilder, RegionEffects, RegionId, RegionNode, RegionNodeKind,
         RegionPlacement, RegionValueType, VmSlotId,
     };
 
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn region_rule_selection_skips_effectful_shapes() {
-        let mut graph = RegionGraph::new(RegionId::new(352), "region-effectful");
+        let mut graph = OptimizerRegionGraph::new(RegionId::new(352), "region-effectful");
         let start = graph.add_node(RegionNode::new(
             RegionNodeKind::Start,
             Vec::new(),

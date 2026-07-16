@@ -118,6 +118,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "stream_socket_server",
+        builtin_stream_socket_server,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "stream_resolve_include_path",
         builtin_stream_resolve_include_path,
         BuiltinCompatibility::Php,
@@ -370,6 +375,9 @@ pub(in crate::builtins::modules) fn builtin_ftell(
     expect_arity("ftell", &args, 1)?;
     Ok(
         resource_arg(&args[0]).map_or(Value::Bool(false), |resource| {
+            if !resource.flags().seekable {
+                return Value::Bool(false);
+            }
             resource
                 .tell()
                 .map_or(Value::Bool(false), |offset| Value::Int(offset as i64))
@@ -972,6 +980,70 @@ pub(in crate::builtins::modules) fn builtin_stream_set_timeout(
     Ok(Value::Bool(false))
 }
 
+fn builtin_stream_socket_server(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=4).contains(&args.len()) {
+        return Err(arity_error(
+            "stream_socket_server",
+            "between one and four arguments",
+        ));
+    }
+    let uri = string_arg("stream_socket_server", &args[0])?;
+    let uri_bytes = uri.as_bytes();
+    let Some(mut path) = uri_bytes.strip_prefix(b"unix://").map(ToOwned::to_owned) else {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_STREAM_SOCKET_TRANSPORT",
+            "stream_socket_server(): only unix:// transport is implemented",
+        ));
+    };
+    let abstract_path = path.first() == Some(&0);
+    #[cfg(target_os = "linux")]
+    let maximum = if abstract_path { 108 } else { 107 };
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let maximum = 103;
+    #[cfg(not(unix))]
+    let maximum = 0;
+    if path.len() > maximum {
+        context.php_notice(
+            "E_PHP_RUNTIME_STREAM_SOCKET_PATH_TRUNCATED",
+            format!(
+                "stream_socket_server(): socket path exceeded the maximum allowed length of {maximum} bytes and was truncated"
+            ),
+            span.clone(),
+        );
+        path.truncate(maximum);
+    }
+    let path = String::from_utf8_lossy(&path).into_owned();
+    #[cfg(unix)]
+    let socket = context.socket_state().bind_unix_stream_server(&path);
+    #[cfg(not(unix))]
+    let socket = Err(libc::EAFNOSUPPORT);
+    match socket {
+        Ok(socket_id) => {
+            let Some(resources) = context.resources() else {
+                return Ok(Value::Bool(false));
+            };
+            Ok(Value::Resource(
+                resources.register_socket_server(socket_id, &uri.to_string_lossy()),
+            ))
+        }
+        Err(errno) => {
+            assign_reference_arg(args.get(1), Value::Int(i64::from(errno)));
+            let message = std::io::Error::from_raw_os_error(errno).to_string();
+            assign_reference_arg(args.get(2), Value::string(message.clone()));
+            context.php_warning(
+                "E_PHP_RUNTIME_STREAM_SOCKET_BIND",
+                format!("stream_socket_server(): unable to connect to unix://{path} ({message})"),
+                span,
+            );
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
 pub(in crate::builtins::modules) fn builtin_scandir(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -1052,5 +1124,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stored, Value::Array(options));
+    }
+
+    #[test]
+    fn ftell_returns_false_for_non_seekable_standard_streams() {
+        let mut output = OutputBuffer::new();
+        let mut resources = ResourceTable::new();
+        let stdin = resources.register_stdin(Vec::new());
+        let mut context = context(&mut output, &mut resources);
+
+        assert_eq!(
+            builtin_ftell(
+                &mut context,
+                vec![Value::Resource(stdin)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("ftell standard input"),
+            Value::Bool(false)
+        );
     }
 }

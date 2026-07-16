@@ -12,8 +12,8 @@ not committed as public documentation.
   baseline under its own policy.
 - Generated reports, counter dumps, profiler captures, and benchmark matrices
   belong under `target/performance/`.
-- Native-tier and JIT material remains experimental/default-off unless an ADR
-  changes that policy.
+- Cranelift is the mandatory production compiler; `baseline` and `default`
+  select native optimization policy.
 
 ## Main Commands
 
@@ -21,12 +21,12 @@ not committed as public documentation.
 nix develop -c just verify-performance
 nix develop -c just benchmark-smoke
 nix develop -c just framework-smoke
-nix develop -c just fastest-engine-matrix
-nix develop -c just fastest-hotpath-report
+nix develop -c just default-profile-smoke
+nix develop -c just native-smoke
 nix develop -c just perf-report
 ```
 
 Use [Performance methodology](../performance/methodology.md),
-[optimization gates](../performance/optimization-gates.md), and
+[native optimization gates](../performance/optimization-gates.md), and
 [performance known gaps](../performance/known-gaps.md) for the accepted
 contracts.

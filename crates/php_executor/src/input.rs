@@ -4,10 +4,7 @@ use php_runtime::api::{
     ExitStatus, RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, SessionState,
     UploadRegistry, Value,
 };
-use php_vm::api::{
-    FunctionCallSiteSnapshot, PersistentFeedbackEpochs, QuickeningSiteSnapshot, TieringStats,
-    VmCounters, VmOptions,
-};
+use php_vm::api::{NativeCacheStats, TieringStats, VmCounters, VmOptions};
 use std::path::PathBuf;
 
 /// Executor-wide defaults.
@@ -17,16 +14,11 @@ pub struct PhpExecutorOptions {
     /// Optimization level owned by the executor's runtime include compiler.
     pub include_optimization_level: OptimizationLevel,
     pub vm_options: VmOptions,
-    /// Export adaptive quickening sites after each execution. Off by
-    /// default: the export walks the whole quickening table, which
-    /// servers must not pay per request; the CLI enables it when it
-    /// persists a feedback sidecar.
-    pub collect_quickening_feedback: bool,
 }
 
 impl Default for PhpExecutorOptions {
     fn default() -> Self {
-        Self::managed_fast_runtime()
+        Self::default_native_runtime()
     }
 }
 
@@ -49,8 +41,6 @@ pub struct PhpExecutionInput {
     pub runtime_context: RuntimeContext,
     pub optimization_level: Option<OptimizationLevel>,
     pub collect_counters: bool,
-    pub collect_profile_spans: bool,
-    pub collect_layout_source_attribution: bool,
 }
 
 /// Per-request execution input for a compiled script.
@@ -61,8 +51,6 @@ pub struct PhpRequestExecutionInput {
     pub include_roots: Vec<PathBuf>,
     pub runtime_context: RuntimeContext,
     pub collect_counters: bool,
-    pub collect_profile_spans: bool,
-    pub collect_layout_source_attribution: bool,
 }
 
 /// Owned PHP execution output.
@@ -80,14 +68,9 @@ pub struct PhpExecutionOutput {
     pub trace: Vec<String>,
     pub counters: Option<VmCounters>,
     pub tiering_stats: Option<TieringStats>,
-    pub quickening_feedback: Vec<QuickeningSiteSnapshot>,
-    /// Replay-stable monomorphic entry-unit function-call IC sites observed
-    /// by the executed request, for persistent feedback.
-    pub callsite_feedback: Vec<FunctionCallSiteSnapshot>,
-    /// Final invalidation epochs of the executed request, for stamping
-    /// persistent-feedback entries with their observation state. `None` when
-    /// feedback collection was off or execution ended before teardown.
-    pub persistent_feedback_epochs: Option<PersistentFeedbackEpochs>,
+    pub native_cache_stats: Option<NativeCacheStats>,
+    pub native_cache_load_nanos: u64,
+    pub native_compile_nanos: u64,
 }
 
 impl PhpExecutionOutput {
@@ -105,9 +88,9 @@ impl PhpExecutionOutput {
             trace: Vec::new(),
             counters: None,
             tiering_stats: None,
-            quickening_feedback: Vec::new(),
-            callsite_feedback: Vec::new(),
-            persistent_feedback_epochs: None,
+            native_cache_stats: None,
+            native_cache_load_nanos: 0,
+            native_compile_nanos: 0,
         }
     }
 }

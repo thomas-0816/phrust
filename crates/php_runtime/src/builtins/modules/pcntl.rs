@@ -219,7 +219,7 @@ fn flush_root_output_before_fork(output: &mut crate::OutputBuffer) {
 fn builtin_pcntl_getpriority(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_getpriority", &args, 0, 2)?;
     let process_id = optional_int("pcntl_getpriority", &args, 0, 0)?;
@@ -230,6 +230,20 @@ fn builtin_pcntl_getpriority(
     let error = last_errno();
     if priority == -1 && error != 0 {
         context.pcntl_state().set_last_error(error);
+        match error {
+            libc::ESRCH => context.php_warning(
+                "E_PHP_RUNTIME_PCNTL_GETPRIORITY",
+                format!(
+                    "pcntl_getpriority(): Error {error}: No process was located using the given parameters"
+                ),
+                span,
+            ),
+            _ => context.php_warning(
+                "E_PHP_RUNTIME_PCNTL_GETPRIORITY",
+                format!("pcntl_getpriority(): Unknown error {error} has occurred"),
+                span,
+            ),
+        }
         return Ok(Value::Bool(false));
     }
     context.pcntl_state().set_last_error(0);
@@ -602,6 +616,7 @@ const PRIO_DARWIN_BG_VALUE: i64 = 0x1000;
 const PRIO_DARWIN_THREAD_VALUE: i64 = 3;
 
 fn validate_getpriority_mode(process_id: i64, mode: i64) -> Result<(), BuiltinError> {
+    let _ = process_id;
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         let allowed = [

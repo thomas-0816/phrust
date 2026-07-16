@@ -6,7 +6,7 @@
 // function compiles natively. These callers are pure scalar arithmetic delegating
 // to small leaves — the shape inlining unlocks.
 //
-// Differential: scripts/performance/copy_patch_native_diff.py runs this with the
+// Native differential fixture; the native runtime gate runs this with the
 // native tier off and on and asserts identical output, plus a diff against PHP
 // 8.5.7. Every value here is int/float so the whole thing is native-eligible once
 // the callees inline.

@@ -1,0 +1,50 @@
+Usage: phrust-server --docroot <path> [options]
+
+Options:
+--listen <addr>              TCP listen address (default: 127.0.0.1:8080)
+--config <path>              read simple TOML-style server config
+--docroot <path>             document root (required unless --help)
+--index <name>               directory index file name (default: index.php)
+--front-controller <path>    optional front controller, relative to docroot
+--rewrite-prefix-query <p=q> rewrite matching request paths to /?q=<suffix>
+--max-body-bytes <n>         maximum request body bytes (default: 1048576)
+--upload-temp-dir <path>     upload temp directory (default: OS temp/phrust-uploads)
+--max-upload-files <n>       maximum uploaded files per request (default: 32)
+--max-upload-file-bytes <n>  maximum bytes per uploaded file (default: max body bytes)
+--session-save-path <path>   compatibility path for session config
+--session-cookie-name <name> session cookie name (default: PHPSESSID)
+--session-cookie-path <path> session cookie path (default: /)
+--disable-sessions           disable persistent web sessions
+--max-in-flight <n>          maximum concurrent in-flight requests
+--cpu-execution-limit <n>    maximum concurrent CPU-bound PHP executions (default: available CPUs)
+--request-timeout-ms <n>     body read timeout in milliseconds (default: 30000)
+--max-execution-ms <n>       PHP execution deadline in milliseconds (default: 30000)
+--disable-execution-deadline disable cooperative PHP execution deadline
+--engine-preset <name>       default optimizing or baseline diagnostic native runtime
+--native-cache <mode>        off, read, write, or read-write PNA1 cache access
+--native-cache-dir <path>    directory containing validated PNA1 artifacts
+--perf-ablation <list>       comma-separated disables: inline-caches, include-o2, or all
+--disable-metrics-endpoint   disable GET /__phrust/metrics
+--metrics-token <token>      require Authorization: Bearer token for metrics
+--tls-cert <path>            PEM certificate chain for HTTPS
+--tls-key <path>             PEM private key for HTTPS
+--enable-http3               enable HTTP/3 over QUIC using the TLS certificate
+--http3-listen <addr>        UDP listen address for HTTP/3 (default: TCP listen address)
+--access-log <path|->        write compact access logs to file or stdout
+--perf-trace <path>          append per-PHP-request performance trace JSONL
+--perf-trace-vm-counters     include heavy VM counters in perf trace rows
+--request-profile <dir>      write JSON request profiles for opted-in PHP requests
+--request-profile-vm-counters  collect heavy VM counters for profiled requests
+--request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1 (default)
+--enable-network-requests    allow PHP cURL requests to external hosts
+--debug                      emit structured server debug events to stderr
+--error-format <text|json>   render server diagnostics/debug events as text or JSON
+--debug-log <path>           append server debug events to a file instead of stderr
+--no-script-cache            disable process-local compiled script cache
+--script-cache-shards <n>    compiled script cache shard count (default: 16)
+--script-cache-max-entries <n> maximum compiled script cache entries (default: 4096)
+--script-cache-preload <file> preload newline-delimited script paths at startup
+--script-cache-check-interval-ms <n> skip stat checks for this many milliseconds (default: 2000; 0 validates every request)
+--strict-preload             fail startup when preload entries cannot compile
+--enable-cache-clear-endpoint enable loopback-only POST /__phrust/cache/clear
+--help                       show this help

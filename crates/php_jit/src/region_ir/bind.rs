@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{NodeId, RegionGraph, RegionValueType, VmSlotId};
+use super::{NodeId, OptimizerRegionGraph, RegionValueType, VmSlotId};
 
 /// Abstract VM slot kind used by future spill/deopt metadata.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -256,7 +256,7 @@ impl BindMapReport {
 
 /// Validates VM slot binding metadata against a region graph.
 #[must_use]
-pub fn validate_bind_map(graph: &RegionGraph) -> BindMapReport {
+pub fn validate_bind_map(graph: &OptimizerRegionGraph) -> BindMapReport {
     let mut report = BindMapReport {
         vm_slot_count: graph.bind_map().slots.len() as u64,
         ..BindMapReport::default()

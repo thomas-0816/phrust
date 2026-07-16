@@ -4,11 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `phrust` is a **new, independent (clean-room) PHP 8.5 engine written in Rust** —
 its own lexer → parser/CST → typed AST → semantic frontend/HIR → IR → runtime →
-VM, plus its **own** performance stack: a conservative optimizer (`php_optimizer`),
-quickening and inline caches, a bytecode cache / opcache (`php_bytecode_cache`),
-and a JIT (`php_jit`, Cranelift backend, feature-gated/opt-in). These are
-phrust's own designs — a *different* opcache and JIT from the original C
-php-src, not ports of Zend Opcache or the Zend JIT.
+VM, plus its **own** performance stack: a conservative optimizer
+(`php_optimizer`) and a mandatory native compiler with a validated persistent
+artifact cache (`php_jit`, Cranelift backend). These are phrust's own designs,
+not ports of Zend Opcache or the Zend JIT.
 
 It re-implements PHP *behavior*; it is **not** a reimplementation of the Zend
 engine and does **not** emulate the Zend ABI, reuse or link Zend/PHP C
@@ -110,8 +109,8 @@ belongs (functional ownership):
 - Lowering / bytecode boundary → `php_ir`
 - Runtime values, conversions, arrays, resources, builtins → `php_runtime`, `php_std`
 - Execution semantics → `php_vm`
-- Performance (optimizer, quickening, inline caches, opcache, JIT) →
-  `php_optimizer`, `php_bytecode_cache`, `php_jit`, `php_perf` — must preserve
+- Performance (optimizer, native compiler, persistent artifacts, measurement) →
+  `php_optimizer`, `php_jit`, `php_perf` — must preserve
   PHP-visible output, diagnostics, exit status, and side-effect order
 - Developer + PHPT target commands → `php_vm_cli`
 - PHPT indexing / runner / triage / baselines → `php_phpt_tools`, `scripts/phpt/`

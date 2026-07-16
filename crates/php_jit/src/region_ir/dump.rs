@@ -1,10 +1,10 @@
 //! Deterministic region IR dump.
 
-use super::{RegionConst, RegionGraph, RegionNodeKind};
+use super::{OptimizerRegionGraph, RegionConst, RegionNodeKind};
 
 /// Dumps a region graph in a stable textual format.
 #[must_use]
-pub fn dump_region_graph(graph: &RegionGraph) -> String {
+pub fn dump_region_graph(graph: &OptimizerRegionGraph) -> String {
     let mut out = String::new();
     out.push_str("region r");
     out.push_str(&graph.metadata().region_id.raw().to_string());

@@ -7,6 +7,8 @@ import re
 import sys
 from pathlib import Path
 
+from rust_module import read_rust_module
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / "crates/php_runtime/src"
@@ -40,9 +42,8 @@ def main() -> int:
     context = read("crates/php_runtime/src/builtins/context.rs")
     views = read("crates/php_runtime/src/builtins/context/service_views.rs")
     vm = read("crates/php_vm/src/vm/mod.rs")
-    vm_builtin_adapter = read("crates/php_vm/src/vm/builtin_adapter.rs")
-    vm_execution_state = read("crates/php_vm/src/vm/execution_state.rs")
-    vm_request_lifecycle = read("crates/php_vm/src/vm/request_lifecycle.rs")
+    vm_jit_abi = read_rust_module(ROOT / "crates/php_vm/src/vm/jit_abi.rs")
+    vm_native_builtins = read("crates/php_vm/src/vm/jit_abi/native_builtins.rs")
     extensions = read("crates/php_extensions/src/lib.rs")
     apcu = read("crates/php_extensions/src/apcu.rs")
     migration = read("docs/runtime/request-state-slots.md")
@@ -113,60 +114,39 @@ def main() -> int:
         if symbol not in builtin_state:
             failures.append(f"builtin request owner is missing {symbol}")
 
-    execution_state = struct_body(vm_execution_state, "ExecutionState")
-    vm_adapter_state = struct_body(vm_builtin_adapter, "BuiltinAdapterState")
-    request_lifecycle_state = struct_body(
-        vm_request_lifecycle, "RequestLifecycleState"
+    native_execution_state = struct_body(vm_jit_abi, "NativeExecutionContext")
+    registered_extension_state = struct_body(
+        vm_jit_abi, "NativeRegisteredExtensionRequestState"
     )
-    if execution_state.count("builtins: BuiltinAdapterState") != 1:
-        failures.append("ExecutionState must own exactly one builtin adapter subsystem")
-    if "builtin_request_state" in execution_state:
-        failures.append("ExecutionState must not directly own migrated builtin request slots")
-    if execution_state.count("request: RequestLifecycleState") != 1:
-        failures.append("ExecutionState must own exactly one request lifecycle subsystem")
-    lifecycle_fields = (
-        "http_response",
-        "upload_registry",
-        "session",
-        "session_loader",
-        "sapi_name",
-        "php_binary",
-    )
-    for field in lifecycle_fields:
-        if re.search(
-            rf"^\s+(?:pub\(super\)\s+)?{field}:", execution_state, re.MULTILINE
-        ):
-            failures.append(f"ExecutionState directly owns request field: {field}")
-        if not re.search(rf"^\s+pub\(super\) {field}:", request_lifecycle_state, re.MULTILINE):
-            failures.append(f"RequestLifecycleState is missing request field: {field}")
-    if (
-        vm_adapter_state.count(
-            "builtin_request_state: php_runtime::api::BuiltinRequestState"
-        )
-        != 1
+    if native_execution_state.count(
+        "builtin_request_state: php_runtime::api::BuiltinRequestState"
+    ) != 1:
+        failures.append("native VM must own exactly one migrated BuiltinRequestState")
+    if native_execution_state.count(
+        "registered_extensions: NativeRegisteredExtensionRequestState"
+    ) != 1:
+        failures.append("native VM must own exactly one registered extension state")
+    for symbol in (
+        "state: php_runtime::api::RequestState",
+        "apcu: php_runtime::api::ExtensionStateSlot<php_runtime::api::ApcuState>",
     ):
-        failures.append("VM must own exactly one migrated BuiltinRequestState")
+        if registered_extension_state.count(symbol) != 1:
+            failures.append(f"native registered extension owner is missing {symbol}")
     request_state_borrow = "BuiltinContext::with_runtime_request_state("
     if request_state_borrow in vm:
         failures.append("VM facade must not construct builtin request-state services")
-    if vm_builtin_adapter.count(request_state_borrow) != 1:
+    if vm_native_builtins.count(request_state_borrow) != 1:
         failures.append(
-            "builtin adapter must borrow its request-state owner exactly once"
+            "native builtin adapter must borrow its request-state owner exactly once"
         )
-    if re.search(
-        r"^\s+pub\(super\) apcu_state:\s*php_runtime::api::ApcuState",
-        vm_adapter_state,
-        re.MULTILINE,
-    ):
-        failures.append("VM still directly owns a legacy APCu state")
     for symbol in (
-        "RegisteredExtensionRequestState",
+        "NativeRegisteredExtensionRequestState",
         'request_state_slot("apcu")',
         "registry.create_request_state()",
-        "registered_extensions.bind(&mut context)",
+        "registered_extensions.bind(&mut builtin)",
     ):
-        if symbol not in vm_builtin_adapter:
-            failures.append(f"VM APCu registry integration is missing {symbol}")
+        if symbol not in vm_jit_abi and symbol not in vm_native_builtins:
+            failures.append(f"native VM APCu registry integration is missing {symbol}")
     for symbol in ("create_request_state", "request_state_slot"):
         if symbol not in extensions:
             failures.append(f"extension integration registry is missing {symbol}")

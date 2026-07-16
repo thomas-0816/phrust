@@ -6,7 +6,7 @@ use php_diagnostics::{
 };
 use php_ir::{VerificationDiagnosticContext, lower::LoweringDiagnosticContext, module::IrUnit};
 use php_runtime::api::{ExitStatus, RuntimeDiagnostic, RuntimeDiagnosticPayload};
-use php_semantics::{Severity, diagnostics::DiagnosticId};
+use php_semantics::{Severity, diagnostics::DiagnosticId, symbols::declarations::DeclarationKind};
 use php_source::{SourceText, TextRange};
 use php_vm::api::VmResult;
 use std::collections::BTreeMap;
@@ -135,6 +135,12 @@ pub(crate) fn execution_output_from_vm(
                 }
             }
         }
+        ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported
+            if result
+                .output
+                .as_bytes()
+                .windows(b"Fatal error:".len())
+                .any(|window| window == b"Fatal error:") => {}
         ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported => {
             let _ = write_runtime_diagnostics(&mut diagnostics, path, &result.diagnostics);
             let _ = writeln!(diagnostics, "{path}: {}", result.status);
@@ -164,28 +170,25 @@ pub(crate) fn execution_output_from_vm(
         trace: result.trace,
         counters: result.counters.map(|counters| *counters),
         tiering_stats: result.tiering_stats.map(|stats| *stats),
-        quickening_feedback: Vec::new(),
-        callsite_feedback: Vec::new(),
-        persistent_feedback_epochs: None,
+        native_cache_stats: result.native_cache_stats.map(|stats| *stats),
+        native_cache_load_nanos: result.native_cache_load_nanos,
+        native_compile_nanos: result.native_compile_nanos,
     }
 }
 
-/// Builds the reference redeclaration wording from the semantic duplicate
-/// diagnostic (`duplicate function declaration \`f\``): functions and classes
-/// render as `Cannot redeclare <kind> <name>[()] (previously declared in
-/// <file>:<line>)`; other kinds keep the phrust wording.
+/// Builds the reference redeclaration wording from typed semantic duplicate
+/// metadata. Functions and classes render as `Cannot redeclare <kind>
+/// <name>[()] (previously declared in <file>:<line>)`; other kinds keep the
+/// phrust wording.
 fn redeclare_fatal_message(
     diagnostic: &php_semantics::SemanticDiagnostic,
     path: &str,
     source: &SourceText,
 ) -> Option<String> {
-    let message = diagnostic.message();
-    let rest = message.strip_prefix("duplicate ")?;
-    let (kind, name_part) = rest.split_once(" declaration `")?;
-    let name = name_part.strip_suffix('`')?;
-    let suffix = match kind {
-        "function" => "()",
-        "class" => "",
+    let (name, declaration_kind) = diagnostic.duplicate_declaration()?;
+    let (kind, suffix) = match declaration_kind {
+        DeclarationKind::Function => ("function", "()"),
+        DeclarationKind::Class => ("class", ""),
         _ => return None,
     };
     let previous_line = diagnostic
@@ -198,14 +201,74 @@ fn redeclare_fatal_message(
 }
 
 const PHP_RESERVED_WORDS: &[&str] = &[
-    "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone",
-    "const", "continue", "declare", "default", "do", "echo", "else", "elseif", "empty",
-    "enddeclare", "endfor", "endforeach", "endif", "endswitch", "endwhile", "enum", "exit",
-    "extends", "final", "finally", "fn", "for", "foreach", "function", "global", "goto", "if",
-    "implements", "include", "include_once", "instanceof", "insteadof", "interface", "isset",
-    "list", "match", "namespace", "new", "or", "print", "private", "protected", "public",
-    "readonly", "require", "require_once", "return", "static", "switch", "throw", "trait", "try",
-    "unset", "use", "var", "while", "xor", "yield",
+    "abstract",
+    "and",
+    "array",
+    "as",
+    "break",
+    "callable",
+    "case",
+    "catch",
+    "class",
+    "clone",
+    "const",
+    "continue",
+    "declare",
+    "default",
+    "do",
+    "echo",
+    "else",
+    "elseif",
+    "empty",
+    "enddeclare",
+    "endfor",
+    "endforeach",
+    "endif",
+    "endswitch",
+    "endwhile",
+    "enum",
+    "exit",
+    "extends",
+    "final",
+    "finally",
+    "fn",
+    "for",
+    "foreach",
+    "function",
+    "global",
+    "goto",
+    "if",
+    "implements",
+    "include",
+    "include_once",
+    "instanceof",
+    "insteadof",
+    "interface",
+    "isset",
+    "list",
+    "match",
+    "namespace",
+    "new",
+    "or",
+    "print",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "require",
+    "require_once",
+    "return",
+    "static",
+    "switch",
+    "throw",
+    "trait",
+    "try",
+    "unset",
+    "use",
+    "var",
+    "while",
+    "xor",
+    "yield",
 ];
 
 /// Synthesizes the reference parser error wording for an unexpected token at
@@ -316,7 +379,6 @@ pub(crate) fn write_php_compile_error_stdout<W: Write>(
     }
     Ok(false)
 }
-
 
 pub(crate) fn write_frontend_diagnostics<W: Write>(
     stderr: &mut W,
@@ -539,6 +601,12 @@ pub(crate) fn write_runtime_diagnostics<W: Write>(
             diagnostic.to_json()
         )
         .map_err(|error| error.to_string())?;
+        if !diagnostic.stack_trace().is_empty() {
+            writeln!(stderr, "call_stack:").map_err(|error| error.to_string())?;
+            for frame in diagnostic.stack_trace() {
+                writeln!(stderr, "  at {}", frame.function()).map_err(|error| error.to_string())?;
+            }
+        }
     }
     Ok(())
 }

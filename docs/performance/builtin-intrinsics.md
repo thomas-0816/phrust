@@ -58,7 +58,7 @@ before falling back to the existing builtin registry execution path.
 FPE-25 keeps the ladder request-local and interpreter-side:
 
 1. Generic builtin call through `BuiltinRegistry`.
-2. Function/builtin inline-cache lookup when `--inline-caches=on`.
+2. Function/builtin inline-cache lookup under `--engine-preset=default`.
 3. Exact interpreter intrinsic stub for:
    - `strlen(string)`
    - `count(array)`
@@ -96,10 +96,12 @@ The VM emits the older compatibility counters plus FPE-25 counters:
 - `intrinsic_fallback_by_reason`
 - `specialized_builtin_opcode_hits`
 
-`inline-cache-smoke` requires `strtolower`, `str_contains`,
-`str_starts_with`, and `str_ends_with` intrinsic hits while
-`--inline-caches=on`, and requires no intrinsic counters while inline caches are
-off.
+Before the native-only cutover, `inline-cache-smoke` required intrinsic hits
+for `strtolower`, `str_contains`, `str_starts_with`, and `str_ends_with`. The
+retired VM toggle and counter schema are no longer product evidence;
+`inline-cache-model-tests` now preserves only the data-model contract. Prompt
+16 must add native intrinsic counters and an executable native gate before
+restoring hit-rate requirements.
 
 ## Correctness Fixtures
 

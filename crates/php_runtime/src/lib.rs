@@ -51,8 +51,8 @@ mod gc;
 mod generator;
 mod globals;
 mod ini;
-mod jit_array;
 mod layout_stats;
+mod native_ops;
 mod numeric_string;
 mod object;
 mod output;
@@ -117,28 +117,30 @@ pub mod api {
     }
 
     pub use crate::array::{
-        ArrayEntry, ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary,
-        PhpArrayKeyKindSummary, PhpArrayKind, PhpArrayPackedIntReductionError,
-        PhpArrayPackedMetadata, PhpArrayShapeKind, PhpArrayShapeLookup,
-        PhpArrayShapeLookupFallback, PhpArrayShapeMetadata, PhpArrayValueMut, PhpArrayWriteIntent,
+        ArrayEntry, ArrayKey, PHP_ARRAY_APPEND_OVERFLOW_MESSAGE, PackedArrayValues, PhpArray,
+        PhpArrayAppendError, PhpArrayElementSummary, PhpArrayKeyKindSummary, PhpArrayKind,
+        PhpArrayPackedIntReductionError, PhpArrayPackedMetadata, PhpArrayShapeKind,
+        PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpArrayShapeMetadata, PhpArrayValueMut,
+        PhpArrayWriteIntent,
     };
     pub use crate::autoload::AutoloadRegistry;
     #[cfg(feature = "full-runtime")]
     pub use crate::builtins::{
         ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
-        BuiltinErrorContext, BuiltinRegistry, BuiltinRequestState, BuiltinResult, CurlState,
-        FilesystemRuntimeState, FtpOptionValue, FtpState, GettextState, IconvEncodingState,
-        ImapConnectionConfig, ImapMailboxSnapshot, ImapState, InternalFunction,
-        JSON_ERROR_RECURSION, JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, JsonRequestState,
-        LdapSearchScope, LdapState, MbSubstituteCharacter, NORMALIZER_FORM_C, NORMALIZER_FORM_D,
-        NORMALIZER_FORM_KC, NORMALIZER_FORM_KD, OpcacheState, OpenSslErrorState, PcntlState,
-        PcreRequestState, ReadlineState, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT,
-        ShmopState, SoapParsedBody, SoapState, SocketState, Ssh2FingerprintHash, Ssh2State,
-        StreamContextState, StrtokState, SysvMessageQueueState, SysvSemaphoreError,
-        SysvSemaphoreState, SysvSharedMemoryState, build_soap_envelope, hash_algorithm_exists,
-        igbinary_serialize_value, igbinary_unserialize_value, is_normalized_string, load_wsdl,
-        msgpack_pack_value, msgpack_unpack_value, normalize_string, parse_soap_response,
-        parse_wsdl, soap_http_post, validate_fileinfo_options,
+        BuiltinErrorContext, BuiltinHandlerKind, BuiltinOutcome, BuiltinRegistry,
+        BuiltinRequestState, BuiltinResult, CurlState, FilesystemRuntimeState, FtpOptionValue,
+        FtpState, GettextState, IconvEncodingState, ImapConnectionConfig, ImapMailboxSnapshot,
+        ImapState, InternalFunction, JSON_ERROR_RECURSION, JSON_PARTIAL_OUTPUT_ON_ERROR,
+        JSON_THROW_ON_ERROR, JsonRequestState, LdapSearchScope, LdapState, MbSubstituteCharacter,
+        NORMALIZER_FORM_C, NORMALIZER_FORM_D, NORMALIZER_FORM_KC, NORMALIZER_FORM_KD, OpcacheState,
+        OpenSslErrorState, PcntlState, PcreRequestState, ReadlineState, SYSVMSG_EAGAIN,
+        SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState, SoapParsedBody, SoapState, SocketState,
+        Ssh2FingerprintHash, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
+        SysvSemaphoreError, SysvSemaphoreState, SysvSharedMemoryState, build_soap_envelope,
+        hash_algorithm_exists, igbinary_serialize_value, igbinary_unserialize_value,
+        is_normalized_string, load_wsdl, msgpack_pack_value, msgpack_unpack_value,
+        normalize_string, parse_soap_response, parse_wsdl, soap_http_post,
+        validate_fileinfo_options,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -197,6 +199,15 @@ pub mod api {
     pub use crate::generator::{GeneratorCallContext, GeneratorRef, GeneratorState};
     pub use crate::globals::GlobalSymbolTable;
     pub use crate::ini::{IniEntrySnapshot, IniRegistry};
+    pub use crate::native_ops::{
+        JIT_HELPER_ECHO_VALUE, JIT_HELPER_SCALAR_BINARY, JIT_HELPER_SCALAR_CAST,
+        JIT_HELPER_SCALAR_COMPARE, JIT_HELPER_SCALAR_UNARY, JitHelperId, NATIVE_OPERATION_ABI_HASH,
+        NATIVE_OPERATION_ABI_VERSION, NATIVE_OPERATION_REGISTRY, NativeAbiType, NativeBinaryOp,
+        NativeCastOp, NativeCompareOp, NativeOperationContext, NativeOperationDescriptor,
+        NativeOperationFamily, NativeOperationStatus, NativeOwnership, NativeUnaryOp,
+        lookup_native_operation, native_binary, native_cast, native_compare, native_echo,
+        native_operation_registry_is_stable, native_unary,
+    };
     pub use crate::object::{
         AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
         ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
@@ -299,14 +310,6 @@ pub mod experimental {
     #[doc(hidden)]
     pub use crate::debug::*;
     #[doc(hidden)]
-    pub use crate::jit_array::{
-        PHP_JIT_ARRAY_LAYOUT_VERSION, PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT,
-        PHP_JIT_ARRAY_STATUS_FALLBACK, PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT,
-        PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK, PhpJitArrayAbiError,
-        php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints, php_jit_array_layout_guard,
-        php_jit_array_len, php_jit_record_array_lookup,
-    };
-    #[doc(hidden)]
     pub mod layout_stats {
         pub use crate::layout_stats::*;
     }
@@ -322,9 +325,7 @@ pub(crate) use crate::{
         ExtensionStateLayout, ExtensionStateLayoutBuilder, ExtensionStateSlot, RequestState,
     },
 };
-pub(crate) use array::{
-    ArrayKey, PackedArrayValues, PhpArray, PhpArrayElementSummary, PhpArrayKind, WeakArrayHandle,
-};
+pub(crate) use array::{ArrayKey, PackedArrayValues, PhpArray, WeakArrayHandle};
 #[cfg(feature = "full-runtime")]
 pub(crate) use builtins::{BuiltinError, FtpOptionValue};
 pub(crate) use callable::{

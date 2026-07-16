@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    EntryId, NodeId, RegionGraph, RegionNode, RegionNodeKind, RegionPlacement, RegionValueType,
-    VmSlotId,
+    EntryId, NodeId, OptimizerRegionGraph, RegionNode, RegionNodeKind, RegionPlacement,
+    RegionValueType, VmSlotId,
 };
 
 /// Region OSR entry metadata.
@@ -14,7 +14,7 @@ pub struct RegionOsrEntry {
     pub entry: EntryId,
     /// Node carrying the `Entry` operation.
     pub node: NodeId,
-    /// Optional fake/control predecessor that models interpreter entry.
+    /// Optional fake/control predecessor that models baseline-native loop entry.
     pub fake_control_predecessor: Option<NodeId>,
     /// VM slots that must be live at entry.
     pub live_slots: Vec<VmSlotId>,
@@ -47,7 +47,7 @@ pub struct RegionOsrMotionPolicy {
 
 /// Builds metadata for region `Entry` nodes.
 #[must_use]
-pub fn select_region_osr_entries(graph: &RegionGraph) -> RegionOsrEntryMap {
+pub fn select_region_osr_entries(graph: &OptimizerRegionGraph) -> RegionOsrEntryMap {
     let mut map = RegionOsrEntryMap::default();
     for (index, node) in graph.nodes().iter().enumerate() {
         let RegionNodeKind::Entry(entry) = node.kind else {
@@ -114,7 +114,7 @@ pub fn region_osr_motion_policy(node: &RegionNode) -> RegionOsrMotionPolicy {
     }
 }
 
-fn collect_entry_live_slots(graph: &RegionGraph, entry: &RegionNode) -> Vec<VmSlotId> {
+fn collect_entry_live_slots(graph: &OptimizerRegionGraph, entry: &RegionNode) -> Vec<VmSlotId> {
     let mut slots = Vec::new();
     for input in &entry.inputs {
         if let Some(RegionNode {
@@ -130,7 +130,7 @@ fn collect_entry_live_slots(graph: &RegionGraph, entry: &RegionNode) -> Vec<VmSl
     slots
 }
 
-fn entry_unsupported_reasons(graph: &RegionGraph, entry: &RegionNode) -> Vec<String> {
+fn entry_unsupported_reasons(graph: &OptimizerRegionGraph, entry: &RegionNode) -> Vec<String> {
     let mut reasons = Vec::new();
     for input in &entry.inputs {
         let Some(input_node) = graph.node(*input) else {
@@ -159,13 +159,13 @@ fn entry_unsupported_reasons(graph: &RegionGraph, entry: &RegionNode) -> Vec<Str
 mod tests {
     use super::{region_osr_motion_policy, select_region_osr_entries};
     use crate::region_ir::{
-        EntryId, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind, RegionPlacement,
-        RegionValueType, VmSlotId,
+        EntryId, OptimizerRegionGraph, RegionEffects, RegionId, RegionNode, RegionNodeKind,
+        RegionPlacement, RegionValueType, VmSlotId,
     };
 
     #[test]
     fn region_osr_entry_records_fake_control_and_live_slots() {
-        let mut graph = RegionGraph::new(RegionId::new(380), "region-osr");
+        let mut graph = OptimizerRegionGraph::new(RegionId::new(380), "region-osr");
         let loop_header = graph.add_node(RegionNode::new(
             RegionNodeKind::LoopBegin,
             Vec::new(),

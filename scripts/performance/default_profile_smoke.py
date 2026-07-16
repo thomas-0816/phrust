@@ -18,7 +18,10 @@ from normalize_perf_output import normalize
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ENGINE = ROOT / "target/debug/php-vm"
+_cargo_target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+if not _cargo_target.is_absolute():
+    _cargo_target = ROOT / _cargo_target
+DEFAULT_ENGINE = _cargo_target / "debug/php-vm"
 DEFAULT_OUT_DIR = ROOT / "target/performance/default-profile"
 
 RUNTIME_FIXTURES = (
@@ -48,16 +51,55 @@ PHPT_FIXTURES = (
     "fixtures/phpt_smoke/function.phpt",
 )
 
-FALLBACK_KEYWORDS = (
-    "fallback",
-    "deopt",
-    "exit",
-    "miss",
-    "slow",
-    "guard_failure",
-    "unsupported",
+NATIVE_FAMILIES = (
+    "native_compile",
+    "native_cache",
+    "native_execution",
+    "native_region",
+    "native_call",
+    "native_version",
+    "native_transition",
+    "native_value_table",
+    "native_ssa",
+    "native_ownership",
+    "native_slow_path",
+    "runtime_helper",
+    "gc_safepoint",
 )
-DEFAULT_JIT_MODE = "off"
+LINKAGE_FOOTPRINT_FIELDS = frozenset(
+    {
+        "native_artifact_header_padding_bytes",
+        "native_builtin_direct_eligible",
+        "native_builtin_direct_executed",
+        "native_code_bytes_by_function",
+        "native_code_bytes_by_unit",
+        "native_cross_unit_direct_eligible",
+        "native_cross_unit_direct_executed",
+        "native_duplicate_function_body_count",
+        "native_frame_arena_capacity_bytes",
+        "native_frame_arena_high_water_bytes",
+        "native_function_body_compile_count",
+        "native_inline_bytes_added",
+        "native_inline_calls_removed",
+        "native_inline_rejected_by_reason",
+        "native_inlined_calls",
+        "native_loaded_artifact_maps",
+        "native_loaded_artifact_registry_hits",
+        "native_loaded_entry_table_constructions",
+        "native_mapped_executable_bytes",
+        "native_metadata_bytes",
+        "native_method_monomorphic_eligible",
+        "native_method_monomorphic_executed",
+        "native_relocation_bytes",
+        "native_rodata_bytes",
+        "native_same_unit_direct_eligible",
+        "native_same_unit_direct_executed",
+        "native_stack_bytes_by_function",
+        "native_tail_calls",
+        "native_worker_stack_committed_bytes",
+        "native_worker_stack_virtual_bytes",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -189,32 +231,27 @@ def run_case(engine: Path, case: Case, profile: str, out_dir: Path, timeout: flo
     return RunResult(elapsed_ms, completed.returncode, stdout, stderr, counters)
 
 
-def collect_fallback_deopt_counters(counters: dict[str, Any]) -> dict[str, int]:
+def collect_native_transition_counters(counters: dict[str, Any]) -> dict[str, int]:
     selected: dict[str, int] = {}
     for key, value in counters.items():
         key_lower = key.lower()
-        if isinstance(value, int) and any(word in key_lower for word in FALLBACK_KEYWORDS):
+        if isinstance(value, int) and ("transition" in key_lower or "side_exit" in key_lower):
             selected[key] = value
         elif isinstance(value, dict):
             nested_total = sum(item for item in value.values() if isinstance(item, int))
-            if nested_total and any(word in key_lower for word in FALLBACK_KEYWORDS):
+            if nested_total and ("transition" in key_lower or "side_exit" in key_lower):
                 selected[key] = nested_total
     return {key: value for key, value in sorted(selected.items()) if value != 0}
 
 
 def default_counter_sanity(counters: dict[str, Any]) -> list[str]:
-    failures: list[str] = []
-    if counters.get("jit_mode") != DEFAULT_JIT_MODE:
-        failures.append(
-            f"jit_mode={counters.get('jit_mode')!r}; expected {DEFAULT_JIT_MODE}"
-        )
-    native_compiled = counters.get("native_compiled_regions", 0)
-    native_executions = counters.get("native_executions", 0)
-    if isinstance(native_compiled, int) and native_compiled > 0:
-        failures.append("native_compiled_regions is nonzero while default JIT is off")
-    if isinstance(native_executions, int) and native_executions > 0:
-        failures.append("native_executions is nonzero while default JIT is off")
-    return failures
+    return [
+        f"retired telemetry field {key!r}"
+        for key in counters
+        if key != "schema_version"
+        and not key.startswith(NATIVE_FAMILIES)
+        and key not in LINKAGE_FOOTPRINT_FIELDS
+    ]
 
 
 def compare_case(case: Case, baseline: RunResult, default: RunResult) -> list[str]:
@@ -243,8 +280,8 @@ def verdict(rows: list[dict[str, Any]], failures: list[str]) -> tuple[str, list[
             "gate-backed",
             [
                 "baseline and default profiles matched for selected CLI fixtures",
-                "default profile uses the managed fast runtime without implicit Cranelift JIT",
-                "dense bytecode auto mode may fall back to IR without failing correctness",
+                "baseline and default both use the mandatory Cranelift compiler",
+                "default enables optimization without changing PHP-visible behavior",
             ],
         )
     return (
@@ -280,13 +317,13 @@ def render_markdown(summary: dict[str, Any]) -> str:
             "",
             "## Cases",
             "",
-            "| Category | Fixture | Correctness | Default fallback/deopt counters |",
+            "| Category | Fixture | Correctness | Default native transitions |",
             "| --- | --- | --- | --- |",
         ]
     )
     for row in summary["rows"]:
         fallback = ", ".join(
-            f"{key}={value}" for key, value in row["default_fallback_deopt_counters"].items()
+            f"{key}={value}" for key, value in row["default_native_transition_counters"].items()
         )
         lines.append(
             f"| `{row['category']}` | `{row['fixture']}` | `{row['correctness']}` | "
@@ -304,7 +341,7 @@ def run_self_test() -> int:
             "baseline": {"returncode": 0, "elapsed_ms": 1.0},
             "default": {"returncode": 0, "elapsed_ms": 1.0},
             "correctness": "pass",
-            "default_fallback_deopt_counters": {},
+            "default_native_transition_counters": {},
         }
         for category in ("runtime", "stdlib", "performance", "framework", "phpt")
     ]
@@ -324,21 +361,10 @@ def run_self_test() -> int:
     rendered = render_markdown(summary)
     if default_verdict != "gate-backed" or "Default Engine Profile Smoke" not in rendered:
         raise SystemExit("default-profile-smoke self-test failed")
-    if default_counter_sanity({"jit_mode": DEFAULT_JIT_MODE}) != []:
-        raise SystemExit("default-profile-smoke self-test rejected the default JIT mode")
-    if default_counter_sanity({"jit_mode": "cranelift"}) == []:
-        raise SystemExit("default-profile-smoke self-test failed to catch unexpected JIT mode")
-    if (
-        default_counter_sanity(
-            {
-                "jit_mode": DEFAULT_JIT_MODE,
-                "native_compiled_regions": 1,
-                "native_executions": 0,
-            }
-        )
-        == []
-    ):
-        raise SystemExit("default-profile-smoke self-test failed to catch native compile")
+    if default_counter_sanity({"schema_version": 11, "native_execution_entries": 1}) != []:
+        raise SystemExit("default-profile-smoke rejected canonical native telemetry")
+    if default_counter_sanity({"schema_version": 11, "quick" + "ening_attempts": 1}) == []:
+        raise SystemExit("default-profile-smoke accepted retired telemetry")
     print("[pass] default_profile_smoke self-test")
     return 0
 
@@ -374,7 +400,7 @@ def main() -> int:
                     "elapsed_ms": default.elapsed_ms,
                 },
                 "correctness": "pass" if not case_failures else "fail",
-                "default_fallback_deopt_counters": collect_fallback_deopt_counters(
+                "default_native_transition_counters": collect_native_transition_counters(
                     default.counters
                 ),
             }

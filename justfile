@@ -1,13 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Gates must be hermetic and deterministic under php-vm's default-on caching:
-# keep the bytecode cache repo-local (never the user cache directory) and
-# disable the default persistent-feedback sidecar, whose seeding shifts
-# adaptive counters between otherwise identical runs. Explicit per-gate flags
-# and pre-set environment values still win.
-export PHRUST_BYTECODE_CACHE_DIR := env_var_or_default("PHRUST_BYTECODE_CACHE_DIR", justfile_directory() / "target" / "gate-bytecode-cache")
-export PHRUST_PERSISTENT_FEEDBACK := env_var_or_default("PHRUST_PERSISTENT_FEEDBACK", "off")
-
 help:
     @printf '%s\n' \
       'Available commands:' \
@@ -18,7 +10,7 @@ help:
       '  just verify-runtime       IR, VM, runtime fixtures + oracle diffs' \
       '  just verify-stdlib        Builtins, streams, JSON/PCRE/date, SPL/reflection' \
       '  just verify-server        Integrated HTTP server tests and smoke gate' \
-      '  just verify-performance   Optimizer, cache, quickening, IC, JIT smoke gates' \
+      '  just verify-performance   Optimizer, native cache, IC, JIT smoke gates' \
       '  just verify-performance-extended  Release-profile and hotpath-report gates' \
       '  just verify-phpt          PHPT tooling, manifests, and source-integrity checks' \
       '  just known-gaps           Validate checked known-gap manifests' \
@@ -35,6 +27,8 @@ help:
       '  just verify-generated-extension-surfaces Strict canonical descriptor drift check' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
+      '  just native-surface-inventory Build strict native PHP support inventory' \
+      '  just native-php-surface     Build PHP 8.5 native acceptance tranche' \
       '  just oracle-probe-generate Generate bounded oracle runtime probes' \
       '  just oracle-probe-smoke Run smoke oracle probes through runtime diff' \
       '  just oracle-gap-report  Generate prioritized oracle gap queue' \
@@ -78,9 +72,6 @@ help:
       '' \
       'Runtime and VM:' \
       '  just bytecode-snapshots   Run bytecode snapshot checks' \
-      '  just bytecode-exec-smoke  Run dense bytecode execution A/B smoke' \
-      '  just bytecode-layout-smoke Run dense bytecode block layout A/B smoke' \
-      '  just superinstruction-smoke Run dense bytecode superinstruction A/B smoke' \
       '  just vm-smoke             Run VM CLI smoke checks' \
       '  just vm-trace-smoke       Run VM trace/debug smoke checks' \
       '  just runtime-fixtures     Run runtime fixture checks' \
@@ -89,26 +80,34 @@ help:
       '  just runtime-gap-report   Regenerate runtime gap closure report' \
       '  just wp-language-vm       Run WordPress language/VM core fixtures' \
       '  just wordpress-preflight  Classify local real WordPress smoke prerequisites' \
+      '  just wordpress-cutover-build Build incremental native-only bring-up binaries' \
+      '  just wordpress-native-compile FILE [ARGS] Probe one PHP file without execution' \
+      '  just php-ai-client-smoke Run pinned php-ai-client native differential smoke' \
       '  just wordpress-real-smoke Run no-DB real WordPress frontpage smoke' \
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just wordpress-root-profile Run optional local real WordPress request profile' \
       '  just wordpress-arm64-sample Capture external ARM64 WordPress CPU samples' \
-      '  just wordpress-arm64-accounting-gate Classify and gate ARM64 CPU samples' \
       '  just wordpress-reference-image Build pinned PHP-FPM/OPcache benchmark image' \
       '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
       '  just wordpress-root-tranche-gate Run strict c1-p50 performance acceptance gate' \
       '  just wordpress-root-benchmark-feedback-ab Run persistent-feedback A/B' \
-      '  just wordpress-root-benchmark-cranelift Run experimental Cranelift arm' \
-      '  just worker-adaptive-state-smoke Verify worker-local adaptive reuse and isolation' \
+      '  just cranelift-only-no-alternate-emitter Prove the retired native emitter is absent' \
+      '  just cranelift-only-precondition Rebuild the pinned cutover foundation report' \
+      '  just cranelift-native-dynamic-code Verify native include/eval/declaration compilation' \
+      '  just cranelift-native-transitions Verify native-to-native guard exits and OSR' \
+      '  just cranelift-native-executor Verify the legacy executor is absent' \
+      '  just cranelift-native-cache Verify restart-persistent PNA2 native artifacts' \
+      '  just cranelift-native-product Verify the single native product surface' \
+      '  just cranelift-only-ratchet-fast Check native architecture with incremental cutover binaries' \
+      '  just cranelift-only-ratchet Enforce the final no-exceptions native architecture' \
       '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
-      '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
       '  just wordpress-clone-churn-report Summarize clone/COW attribution from latest request profile' \
       '  just wordpress-array-hotpath-report Summarize array hotpath attribution from latest request profile' \
       '  just wordpress-call-hotpath-report Summarize call/frame attribution from latest request profile' \
-      '  just wordpress-exclusive-work-report Rank exact exclusive request work' \
-      '  just wordpress-persistent-metadata-report Summarize persistent metadata attribution from latest request profile' \
-      '  just wordpress-native-region-report Summarize native-region attribution from latest request profile' \
+      '  just native-linkage-report FILE Summarize direct/dynamic native call attribution' \
+      '  just native-footprint-report DIR Attribute PNA sections and optional process smaps' \
+      '  just native-linkage-tranche-report Assemble the C13 report tree' \
       '  just mysqli-integration   Run explicit live MySQLi integration gate' \
       '  just wordpress-smoke-report Generate web/db diagnostics report' \
       '' \
@@ -128,6 +127,7 @@ help:
       '  just verify-generated-extension-surfaces Regenerate and diff extension surfaces' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
+      '  just native-surface-inventory Build strict native PHP support inventory' \
       '  just oracle-probe-generate Generate bounded oracle runtime probes' \
       '  just oracle-probe-smoke Run smoke oracle probes through runtime diff' \
       '  just oracle-probe-full  Run full generated oracle probe set' \
@@ -142,13 +142,12 @@ help:
       '  just composer-smoke       Run package-manager compatibility smoke gate' \
       '' \
       'Performance:' \
-      '  just perf-flag-matrix     Run performance flag A/B matrix' \
-      '  just cache-roundtrip      Run bytecode-cache roundtrip gate' \
+      '  just function-on-demand-gate Enforce one-PHP-function compile breadth' \
+      '  just cache-roundtrip      Run native artifact/cache roundtrip gates' \
       '  just optimizer-diff       Run optimizer differential gate' \
-      '  just superinstruction-patterns Mine dense opcode pairs/triples' \
-      '  just quickening-smoke     Run quickening smoke gate' \
-      '  just inline-cache-smoke   Run inline-cache smoke gate' \
-      '  just jit-smoke            Run default-off JIT smoke gate' \
+      '  just native-ssa-ratchet   Enforce executable SSA and lifetime lowering' \
+      '  just inline-cache-model-tests Test the retained cache data model' \
+      '  just native-smoke         Run mandatory native smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
       '  just front-controller-hotpath-smoke Run deterministic server hotpath smoke' \
       '  just app-flow-smoke      Run CI-safe app-flow engine comparison smoke' \
@@ -157,8 +156,6 @@ help:
       '  just release-benchmark-smoke Run production release performance smoke' \
       '  just pgo-benchmark-smoke  Run optional PGO performance smoke' \
       '  just bolt-benchmark-smoke Run optional Linux BOLT performance smoke' \
-      '  just fastest-engine-matrix Generate baseline/release/reference comparison matrix' \
-      '  just fastest-hotpath-report Generate fastest-engine hotpath report' \
       '  just perf-decision-baseline Generate startup/compile/execute decision baseline' \
       '  just startup-matrix      Run debug/release startup attribution matrix' \
       '  just perf-report          Generate performance report' \
@@ -449,6 +446,7 @@ ci-local:
     @just quality-fast
     @just ci-rust
     @PHRUST_COMBINED_RUN=1 just ci-domain-gates
+    @just cranelift-only-ratchet
     @just ci-phpt-smoke
 
 verify-frontend:
@@ -475,7 +473,10 @@ verify-runtime:
       fi
     fi
     just bytecode-snapshots
-    just bytecode-exec-smoke
+    just cranelift-native-executor
+    just cranelift-native-cache
+    just cranelift-native-product
+    just cranelift-only-ratchet-fast
     just vm-smoke
     just vm-trace-smoke
     just runtime-fixtures
@@ -487,7 +488,6 @@ verify-runtime:
     # enforcement into the crate roots; combined runs and CI's parallel
     # workspace job already clippy these crates.
     just runtime-semantics-diff
-    just vm-semantics-oracle
 
 verify-stdlib:
     @just stdlib-docs
@@ -501,15 +501,14 @@ verify-stdlib:
 
 # Correctness-focused performance gates. Sub-gates share one engine build
 # through the perf-build dependency (deduplicated within this invocation).
-# perf-flag-matrix runs via performance-regression; the release-profile and
-# report gates live in verify-performance-extended.
-verify-performance: wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke acceleration-matrix fastest-engine-matrix default-profile-smoke managed-fast-coverage fast-preset-smoke app-flow-smoke baseline-native-stencil-smoke copy-patch-stencil-smoke mid-tier-plan-smoke cache-roundtrip optimizer-diff bytecode-layout-smoke superinstruction-smoke templates-smoke quickening-smoke inline-cache-smoke inline-cache-lookup-benchmark-gate jit-smoke safety-audit-smoke
+# Release-profile and report gates live in verify-performance-extended.
+verify-performance: native-linkage-ratchet wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
 # Heavy release-profile and report gates, split out of verify-performance so
 # the serial local gate fits pre-push budgets; CI runs both gates in its
 # parallel matrix. Depends on benchmark-smoke for the hotpath report inputs.
-verify-performance-extended: benchmark-smoke release-benchmark-smoke callgrind-smoke hotpath-inventory fastest-hotpath-report perf-report
+verify-performance-extended: benchmark-smoke release-benchmark-smoke callgrind-smoke hotpath-inventory perf-report
     @printf '%s\n' '[pass] extended performance verification complete'
 
 verify-phpt:
@@ -742,6 +741,15 @@ oracle-api-summary:
     fi
     scripts/oracle/api_index.py --summary-only
 
+native-surface-inventory:
+    @just oracle-api-index
+    @just oracle-probe-generate
+    scripts/oracle/native_surface_inventory.py --self-test --check
+
+native-php-surface:
+    @just native-surface-inventory
+    scripts/verify/native_php_surface.py --check
+
 oracle-probe-generate:
     @if [[ ! -f target/oracle/api/php-source-api-symbols.jsonl ]]; then \
       just oracle-api-index >/dev/null; \
@@ -865,20 +873,6 @@ bench-frontend:
 
 bytecode-snapshots:
     cargo test -p php_ir --test bytecode_snapshots -- --nocapture
-
-bytecode-exec-smoke:
-    cargo build -p php_vm_cli
-    scripts/performance/bytecode_exec_smoke.sh
-
-bytecode-layout-smoke: perf-build
-    scripts/performance/bytecode_layout_smoke.sh
-
-superinstruction-smoke: perf-build
-    scripts/performance/superinstruction_smoke.sh
-
-superinstruction-patterns:
-    cargo build -p php_vm_cli --bin php-vm
-    scripts/performance/superinstruction_patterns.py --summary-doc target/performance/superinstructions/summary.md
 
 vm-smoke:
     cargo build -p php_vm_cli --bin php-vm
@@ -1035,10 +1029,6 @@ runtime-semantics-diff *args:
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py {{args}}
 
-vm-semantics-oracle *args:
-    cargo build -p php_vm_cli --bin php-vm
-    scripts/vm_semantics_oracle.py {{args}}
-
 runtime-toolchain-audit:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1126,6 +1116,7 @@ real-world-fixtures:
     scripts/runtime_semantics_diff.py --category real_world --out target/runtime-semantics/real-world
 
 wordpress-blockers:
+    python3 -m unittest scripts/wordpress/test_smoke_response.py
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category wordpress_blockers --out target/runtime-semantics/wordpress-blockers
 
@@ -1141,13 +1132,27 @@ wp-autoload-stdlib:
 wordpress-preflight:
     scripts/wordpress/preflight.py --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/debug/php-vm}" --phrust-server "${PHRUST_SERVER:-target/debug/phrust-server}" --out target/wordpress-real/preflight.json
 
-wordpress-real-smoke:
-    cargo build -p php_vm_cli -p php_server
-    scripts/wordpress/smoke.py --phase web-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/debug/php-vm}" --phrust-server "${PHRUST_SERVER:-target/debug/phrust-server}" --stop-on-fail
+parallel-rustc-wrapper:
+    python3 -m unittest scripts/development/test_parallel_php_vm_rustc.py
 
-wordpress-real-install-smoke:
-    cargo build -p php_vm_cli -p php_server
-    scripts/wordpress/smoke.py --phase db-install --phase admin-login-page --phase post-install-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/debug/php-vm}" --phrust-server "${PHRUST_SERVER:-target/debug/phrust-server}" --stop-on-fail
+wordpress-cutover-build: parallel-rustc-wrapper
+    RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/development/parallel_php_vm_rustc.sh" PHRUST_RUSTC_CACHE_WRAPPER= CARGO_INCREMENTAL=1 cargo build --profile cutover -p php_vm_cli --bin php-vm -p php_server --bin phrust-server
+
+wordpress-native-compile file *args: wordpress-cutover-build
+    target/cutover/php-vm native-compile "{{file}}" {{args}}
+
+php-ai-client-smoke:
+    @project="${PHRUST_PHP_AI_CLIENT_DIR:-third_party/php-ai-client}"; if [ -d "$project" ] && [ -z "${PHP_VM_CLI:-}" ]; then RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/development/parallel_php_vm_rustc.sh" PHRUST_RUSTC_CACHE_WRAPPER= CARGO_INCREMENTAL=1 cargo build --profile cutover -p php_vm_cli --bin php-vm; fi
+    scripts/php_ai_client_smoke.py
+
+wordpress-real-smoke: wordpress-cutover-build
+    scripts/wordpress/smoke.py --phase web-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/cutover/php-vm}" --phrust-server "${PHRUST_SERVER:-target/cutover/phrust-server}" --stop-on-fail
+
+wordpress-real-install-smoke: wordpress-cutover-build
+    scripts/wordpress/smoke.py --phase db-install --phase admin-login-page --phase post-install-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/cutover/php-vm}" --phrust-server "${PHRUST_SERVER:-target/cutover/phrust-server}" --stop-on-fail
+
+wordpress-db-snapshot action path:
+    scripts/wordpress/db_snapshot.py "{{action}}" "{{path}}"
 
 wordpress-real-perf-report:
     cargo build -p php_server --bin phrust-server
@@ -1156,14 +1161,6 @@ wordpress-real-perf-report:
 wordpress-root-profile:
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
-
-# External, instrumentation-free ARM64 CPU sampling of one pinned PHP worker.
-wordpress-arm64-sample *args:
-    scripts/performance/arm64_work_accounting.py {{args}}
-
-# Exclusive, single-owner accounting over the latest external ARM64 sample run.
-wordpress-arm64-accounting-gate *args:
-    scripts/performance/arm64_stack_classifier.py --gate {{args}}
 
 wordpress-benchmark-self-test:
     scripts/performance/wordpress_root_benchmark.py --self-test
@@ -1176,19 +1173,13 @@ wordpress-reference-image:
 # Clean timing: release Phrust and stock PHP-FPM/OPcache. This never enables
 # request profiles, VM counters, or trace collection.
 wordpress-root-benchmark *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean {{args}}
-
-# Explicit experimental-JIT arm for the clean WordPress A/B matrix. The
-# default benchmark remains copy-patch-only and is the control arm.
-wordpress-root-benchmark-cranelift *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch,jit-cranelift; fi
-    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --engine-preset experimental-jit {{args}}
 
 # Isolated persistent-feedback A/B using the same lean binary and benchmark
 # contract. Both arms and their joint ratio report share one result directory.
 wordpress-root-benchmark-feedback-ab *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --feedback-ab {{args}}
 
 # Instrumented Phrust-only attribution. Its samples are marked timing-ineligible.
@@ -1199,14 +1190,14 @@ wordpress-root-diagnostics *args:
 # Strict regression gate: compare both engines and a recorded Phrust baseline;
 # missing WordPress or reference PHP is a failure.
 wordpress-root-regression-gate *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
 
 # Prompt-pack tranche acceptance: the leading result is the warm,
 # instrumentation-free WordPress concurrency-1 p50. The ordinary regression
 # recipe remains a no-regression CI guard and does not require a speedup.
 wordpress-root-tranche-gate baseline *args:
-    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features --features jit-copy-patch; fi
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 {{args}}
 
 # Anti-theater guard: fail performance branches that only add docs, reports,
@@ -1214,19 +1205,11 @@ wordpress-root-tranche-gate baseline *args:
 perf-pr-guard *args:
     scripts/verify/perf_pr_guard.py {{args}}
 
-# Worker-local adaptive state: direct quickening/IC reuse must preserve the
-# kill switch, compiled-generation isolation, and PHP-visible request isolation.
-worker-adaptive-state-smoke:
-    cargo test -p php_executor worker_ -- --nocapture
-
 # Profiler containment: unprofiled requests after a profiled request must stay
 # within 5% of clean unprofiled requests in the same server process.
 profiler-overhead-gate:
     if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/profiler_overhead_gate.py
-
-wordpress-dense-fallback-report:
-    scripts/performance/dense_fallback_report.py
 
 wordpress-clone-churn-report:
     scripts/performance/clone_churn_report.py
@@ -1237,14 +1220,17 @@ wordpress-array-hotpath-report:
 wordpress-call-hotpath-report:
     scripts/performance/call_hotpath_report.py
 
-wordpress-exclusive-work-report:
-    scripts/performance/exclusive_work_report.py
+native-linkage-report counters *args:
+    scripts/performance/native_linkage_report.py "{{counters}}" {{args}}
 
-wordpress-persistent-metadata-report:
-    scripts/performance/persistent_metadata_report.py
+native-footprint-report cache_dir *args:
+    scripts/performance/native_footprint_report.py --cache-dir "{{cache_dir}}" {{args}}
 
-wordpress-native-region-report:
-    scripts/performance/native_region_report.py
+native-linkage-tranche-report *args:
+    scripts/performance/native_linkage_tranche.py {{args}}
+
+native-linkage-ratchet *args:
+    scripts/verify/native_linkage_ratchet.py {{args}}
 
 wordpress-real-extract-first-failure:
     scripts/wordpress/extract_failure.py --failure "${PHRUST_WORDPRESS_FIRST_FAILURE:-}"
@@ -1290,17 +1276,13 @@ perf-build:
 performance-tests:
     scripts/performance/compare_perf_json.py --self-test
     scripts/performance/hotpath_inventory.py --self-test
-    scripts/performance/fastest_hotpath_report.py --self-test
     scripts/performance/bench_matrix.py --self-test
     scripts/performance/perf_report.py --self-test
     scripts/performance/app_flow_matrix.py --self-test
     scripts/performance/array_hotpath_report.py --self-test
     scripts/performance/call_hotpath_report.py --self-test
     scripts/performance/clone_churn_report.py --self-test
-    scripts/performance/dense_fallback_report.py --self-test
     scripts/performance/front_controller_hotpath_smoke.py --self-test
-    scripts/performance/native_region_report.py --self-test
-    scripts/performance/persistent_metadata_report.py --self-test
     scripts/performance/wordpress_root_benchmark.py --self-test
     scripts/wordpress/root_profile.py --self-test
     scripts/performance/decision_baseline.py --self-test
@@ -1309,36 +1291,19 @@ performance-tests:
 performance-regression: perf-build
     scripts/performance_regression_smoke.sh
     scripts/performance/regression_smoke.sh
-    @just perf-flag-matrix
-    @just polymorphic-inline-cache-smoke
-
-perf-flag-matrix:
-    scripts/performance/perf_flag_matrix.py
 
 default-profile-smoke: perf-build
-    scripts/performance/default_profile_smoke.py
+    scripts/performance/default_profile_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
-managed-fast-coverage: perf-build
-    scripts/performance/managed_fast_coverage.py
-
-fast-preset-smoke: perf-build
-    scripts/performance/fast_preset_smoke.py
-
-baseline-native-stencil-smoke: perf-build
-    scripts/performance/baseline_native_stencil_smoke.py
-
-copy-patch-stencil-smoke: perf-build
-    scripts/performance/copy_patch_stencil_smoke.py
-
-# Differential check that the native copy-patch tier matches the interpreter and
-# the pinned PHP 8.5.7 reference. Builds php-vm with the feature so native
-# actually engages (aarch64); the harness SKIPs cleanly on unsupported hosts.
-copy-patch-native-diff:
-    cargo build -p php_vm_cli --bin php-vm --features jit-copy-patch
-    scripts/performance/copy_patch_native_diff.py
-
-mid-tier-plan-smoke: perf-build
-    scripts/performance/mid_tier_plan_smoke.py
+baseline-native-compile-smoke: perf-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    report="target/performance/baseline-native-compile-smoke.json"
+    "${CARGO_TARGET_DIR:-target}/debug/php-vm" native-compile \
+      fixtures/runtime/valid/hello.php --json >"$report"
+    jq -e '.ok == true and .native_only == true and .executed == false and .status == "compiled"' \
+      "$report" >/dev/null
+    printf '%s\n' '[pass] baseline native compile probe used production Cranelift without execution'
 
 ir-verify:
     cargo test -p php_ir verify --lib
@@ -1376,9 +1341,9 @@ release-profile-plan:
 # request-profiling and layout counters are unavailable in these builds;
 # use the default release build for diagnosis). Measured on microbenches:
 # property reads ~11% faster, concatenation ~5%.
-release-lean:
-    cargo build --release -p php_server --no-default-features --features jit-copy-patch
-    cargo build --release -p php_vm_cli --bin php-vm --no-default-features --features jit-copy-patch
+release-lean: cranelift-only-ratchet
+    cargo build --release -p php_server --no-default-features
+    cargo build --release -p php_vm_cli --bin php-vm --no-default-features
 
 release-benchmark-smoke:
     scripts/performance/release_profiles.py release
@@ -1390,7 +1355,7 @@ bolt-benchmark-smoke:
     scripts/performance/release_profiles.py bolt
 
 framework-smoke: perf-build
-    scripts/performance/framework_micro_smoke.py
+    scripts/performance/framework_micro_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
 front-controller-hotpath-smoke:
     cargo build -p php_server --bin phrust-server
@@ -1412,8 +1377,8 @@ runtime-layout-performance-smoke:
     cargo test -p php_runtime string_intrinsics
     cargo test -p php_runtime json_fast
     cargo test -p php_runtime array_intrinsics
-    cargo test -p php_vm dense_bytecode
-    cargo test -p php_vm superinstruction
+    cargo test -p php_jit baseline_region
+    cargo test -p php_jit cranelift_region
     @just app-flow-smoke
     scripts/performance/runtime_layout_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
@@ -1484,20 +1449,8 @@ perf-ratchet-next-prompt:
 perf-ratchet-accept-local:
     scripts/performance/perf_ratchet.py accept-local
 
-acceleration-matrix: perf-build
-    scripts/performance/acceleration_matrix.py
-
-fastest-engine-matrix: perf-build
-    scripts/performance/fastest_engine_matrix.py
-
 hotpath-inventory:
     scripts/performance/hotpath_inventory.py target/performance/benchmark-smoke.json --json-out target/performance/hotpaths.json --markdown-out target/performance/hotpath-inventory.md
-
-fastest-hotpath-report: perf-build
-    @if [ ! -f target/performance/benchmark-smoke.json ]; then \
-        scripts/performance/bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/benchmark-smoke.json --repetitions "${PHRUST_PERF_BENCH_SMOKE_REPETITIONS:-1}" --warmups "${PHRUST_PERF_BENCH_SMOKE_WARMUPS:-0}" --timeout "${PHRUST_PERF_BENCH_TIMEOUT:-10.0}"; \
-    fi
-    scripts/performance/fastest_hotpath_report.py --benchmark target/performance/benchmark-smoke.json --framework target/performance/framework-smoke/summary.json --acceleration target/performance/acceleration/summary.json --json-out target/performance/fastest/hotpath-report.json --markdown-out target/performance/fastest/hotpath-report.md --summary-doc target/performance/fastest/hotpath-report.md
 
 perf-baseline:
     cargo build -p php_vm_cli --bin php-vm
@@ -1512,16 +1465,14 @@ perf-compare:
     scripts/performance/compare_perf_json.py target/performance/baseline.json target/performance/benchmark-smoke.json --out target/performance/perf-compare.md --json-out target/performance/perf-compare.json
 
 cache-roundtrip:
-    @just cache-fingerprint-smoke
     @just dependency-units-smoke
-    cargo test -p php_bytecode_cache bytecode_cache
-    cargo test -p php_vm_cli bytecode_cache
+    cargo test -p php_jit --lib native_cache
 
-cache-fingerprint-smoke:
-    scripts/performance/cache_fingerprint_smoke.sh
+function-on-demand-gate:
+    scripts/performance/function_on_demand_gate.sh
 
 dependency-units-smoke:
-    scripts/performance/dependency_units_smoke.sh
+    cargo test -p php_vm dependency_units::
 
 templates-smoke:
     scripts/performance/templates_smoke.sh
@@ -1530,11 +1481,22 @@ optimizer-diff:
     @just ir-verify
     scripts/performance/optimizer_diff_smoke.sh
 
-quickening-smoke: perf-build
-    scripts/performance/quickening_smoke.sh
+native-ssa-ratchet:
+    scripts/verify/native_ssa_ratchet.py
 
-inline-cache-smoke: perf-build
-    scripts/performance/inline_cache_smoke.sh
+# Render the B9 evidence bundle from the deterministic native smoke fixture.
+native-ssa-report:
+    scripts/performance/native_ssa_acceptance_report.py \
+        --after target/performance/native-smoke-counters.json \
+        --after-kind validation-fixture
+
+inline-cache-model-tests:
+    cargo test -p php_vm inline_cache::
+
+# Compatibility aliases for pre-cutover documentation and local muscle memory.
+# The native-only product no longer exposes the retired VM cache toggle or its
+# interpreter-era counters; Prompt 16 will add measured native call-site caches.
+inline-cache-smoke: inline-cache-model-tests
 
 inline-cache-lookup-benchmark-gate:
     scripts/performance/inline_cache_lookup_gate.py --self-test
@@ -1542,105 +1504,242 @@ inline-cache-lookup-benchmark-gate:
     scripts/performance/inline_cache_lookup_gate.py
 
 polymorphic-inline-cache-smoke:
-    cargo build -p php_vm_cli --bin php-vm
-    scripts/performance/polymorphic_inline_cache_smoke.sh
+    @just inline-cache-model-tests
 
-jit-smoke:
-    scripts/performance/jit_smoke.sh
+native-smoke:
+    scripts/performance/native_smoke.sh
 
-jit-cranelift-smoke:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo check --workspace
-    @if cargo tree -p php_jit --no-default-features -e features | rg 'cranelift-' >/dev/null; then \
-        printf '%s\n' '[fail] default php_jit dependency tree unexpectedly includes Cranelift crates' >&2; \
-        cargo tree -p php_jit --no-default-features -e features >&2; \
-        exit 1; \
-    fi
-    cargo check --workspace --features jit-cranelift
-    cargo test -p php_jit --features jit-cranelift
-    cargo test -p php_vm --features jit-cranelift jit_
-    cargo test -p php_vm --features jit-cranelift cranelift_
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    @printf '%s\n' '[pass] Cranelift feature-gating smoke passed'
+object-release-root-scan:
+    scripts/performance/object_release_root_scan.sh
 
-jit-cranelift-diff:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/jit_diff.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+# Prompt 0 cutover gate: regenerate current source identity, exercise the
+# detached pre-cutover diagnostic oracle, and prove the native foundation.
+cranelift-only-precondition:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just cranelift-only-ratchet-fast
+    cargo test -p php_jit --lib
+    cargo test -p php_executor bounded_cranelift_prewarm_populates_cache_without_executing_script
+    scripts/verify/interpreter_oracle.py
+    scripts/verify/cranelift_only_precondition.py
 
-jit-cranelift-bench-smoke:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    @just jit-cranelift-diff
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/jit_bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/cranelift/bench-smoke.json --smoke
+# Prompt 1 cutover gate: the retired emitter must be absent from source and all
+# product targets must build against the Cranelift feature graph.
+cranelift-only-no-alternate-emitter:
+    cargo check --workspace --all-targets
+    cargo build -p php_vm_cli --bins --no-default-features --features runtime-telemetry
+    cargo build -p php_server --bin phrust-server --no-default-features --features runtime-telemetry
 
-jit-cranelift-report:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    @just jit-cranelift-diff
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/jit_bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/cranelift/big_wins_report.json
+# Prompt 2 cutover gate: Cranelift is mandatory and the release server contains
+# neither a selectable backend nor linked interpreter entry points.
+cranelift-only-mandatory:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo check --workspace --all-targets
+    cargo test -p php_vm native_entry
+    cargo build --release -p php_server --bin phrust-server
 
-cranelift-guard-report:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    @just jit-cranelift-report
-    scripts/performance/cranelift/guard_failure_report.py --input target/performance/cranelift/big_wins_report.json --out target/performance/cranelift/guard-report.json --text-out target/performance/cranelift/guard-report.txt
+# Prompt 3 cutover gate: every function starts from authoritative php_ir and
+# reaches the same baseline Region IR compiler path without candidate matching.
+cranelift-baseline-ir-coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/verify/cranelift_baseline_ir_coverage.py
+    cargo test -p php_jit --lib
+    cargo check --workspace --all-targets
 
-jit-cranelift-disasm:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/disasm_dump.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+# Prompt 4 cutover gate: Rust exhaustiveness and the generated manifest must
+# cover every IR operation without wildcard or generic-dispatch escape hatches.
+cranelift-exhaustive-lowering:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_instruction_coverage
+    scripts/verify/cranelift_exhaustive_lowering.py
+    cargo test -p php_jit --lib region_ir::coverage
+    cargo test -p php_jit --lib runtime_error_lowers_to_native_fatal_status
+    cargo check -p php_jit --all-targets
 
-jit-cranelift-fuzz-smoke:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/jit_eligible_ir_fuzz_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+# Prompt 5 cutover gate: helper-mapped IR operations use the shared typed
+# runtime ABI, with explicit effects, ownership, status, and caller audit data.
+cranelift-typed-runtime-ops:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_instruction_coverage
+    cargo run --quiet -p php_runtime --example native_operation_audit
+    scripts/verify/cranelift_typed_runtime_ops.py
+    cargo test -p php_runtime native_ops
+    cargo test -p php_jit --lib region_ir::coverage
+    cargo test -p php_vm expressions_execute_
+    cargo check --workspace --all-targets
 
-jit-cranelift-poly-ic-experiment:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/polymorphic_ic_experiment.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
-    @just jit-cranelift-report
-    scripts/performance/cranelift/guard_failure_report.py --input target/performance/cranelift/big_wins_report.json --out target/performance/cranelift/polymorphic-ic/guard-report.json --text-out target/performance/cranelift/polymorphic-ic/guard-report.txt --experimental-ic-report target/performance/cranelift/polymorphic-ic/report.json
+# Prompt 6 cutover gate: every PHP call form uses one native frame and either
+# generation-bound compiled code or the typed native dispatch trampoline.
+cranelift-native-calls:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_call_audit
+    scripts/verify/cranelift_native_calls.py
+    cargo test -p php_jit --lib native_call
+    cargo test -p php_jit --lib cranelift_region_calls_same_unit_compiled_callee_directly
+    cargo test -p php_vm native_call_trampoline_requests_compile_without_interpreter_reentry
+    cargo check --workspace --all-targets
 
-jit-cranelift-framework-smoke:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
-    scripts/performance/cranelift/framework_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+# Prompt 7 cutover gate: PHP control leaves generated frames only through the
+# stable status ABI, explicit native unwind, published roots, and native PCs.
+cranelift-native-control:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_control_audit
+    scripts/verify/cranelift_native_control.py
+    cargo test -p php_jit --lib native_control_status_numbers_are_stable
+    cargo test -p php_jit --lib compiled_finally
+    cargo test -p php_jit --lib native_unwind_resumes
+    cargo test -p php_jit --lib throw_uses_explicit_native_status
+    cargo test -p php_vm exceptions_run_finally_before_
+    cargo test -p php_vm destructors_run_when_local_last_reference_is_replaced_or_unset
+    cargo test -p php_vm gc_snapshot_tracks_vm_roots_and_cycle_candidates
+    cargo test -p php_vm internal_builtin_diagnostics_respect_error_handler
+    cargo test -p php_vm shutdown_stages_append_to_the_single_final_output_buffer
+    cargo check --workspace --all-targets
 
-verify-cranelift:
-    @set +e; scripts/performance/cranelift/platform_check.py --out target/performance/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
-    @just jit-cranelift-smoke
-    @just jit-cranelift-diff
-    @just jit-cranelift-bench-smoke
-    @just jit-cranelift-report
-    @just cranelift-guard-report
-    @just jit-cranelift-fuzz-smoke
-    @printf '%s\n' '[pass] Cranelift verification complete'
+# Prompt 8 cutover gate: generator/fiber suspension points publish stable
+# generated resume entries and persist all live state without resume dispatch.
+cranelift-native-suspensions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_suspension_audit
+    scripts/verify/cranelift_native_suspensions.py
+    cargo test -p php_jit --lib native_resume_entry
+    cargo test -p php_jit --lib native_delegation_state
+    cargo test -p php_jit --lib native_continuation
+    cargo test -p php_jit --lib generator_resume_runs_compiled_finally
+    cargo test -p php_jit --lib suspended_state_owns_generation_until_safe_transition
+    cargo test -p php_vm generator_
+    cargo test -p php_vm frame_reuse_preserves_generator_and_fiber_suspension
+    cargo test -p php_vm trace_runtime_records_fiber_suspend_snapshot
+    cargo test -p php_runtime fiber_state_transitions_are_explicit
+    cargo check --workspace --all-targets
+
+# Prompt 9 cutover gate: include/eval and visible runtime declarations compile,
+# publish, cache, and invoke native entries before any dynamic PHP execution.
+cranelift-native-dynamic-code:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_dynamic_code_audit
+    scripts/verify/cranelift_native_dynamic_code.py
+    cargo test -p php_jit --lib dynamic_code
+    cargo test -p php_jit --lib native_dynamic_code_kind_numbers_are_stable
+    cargo test -p php_jit --lib include_executes_only_after_native_dynamic_compiler_returns_entry_result
+    cargo test -p php_vm native_dynamic_code_boundary_never_uses_first_execution_fallback
+    cargo test -p php_vm include_once_and_require_once_skip_second_execution
+    cargo test -p php_vm include_cache_preserves_include_once_request_tracking
+    cargo test -p php_vm eval_
+    cargo test -p php_vm autoload
+    cargo check --workspace --all-targets
+
+# Prompt 10 cutover gate: optimized exits reconstruct precise state and enter
+# exact baseline/less-specialized generated continuations without effect replay.
+cranelift-native-transitions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_native_transition_audit
+    scripts/verify/cranelift_native_transitions.py
+    cargo test -p php_jit --lib baseline_native_continuation_resumes_exact_instruction
+    cargo test -p php_jit --lib optimized_exit_after_effect_does_not_repeat_effect_in_baseline
+    cargo test -p php_jit --lib nested_callee_transition_uses_published_native_function_entry
+    cargo test -p php_jit --lib cranelift_loop_enters_through_native_osr_state
+    cargo test -p php_jit --lib cranelift_overflow_materializes_precise_region_continuation
+    cargo test -p php_vm expressions_integer_overflow_promotes_to_float
+    cargo test -p php_vm method_call_cache_guard_fails_on_receiver_change
+    cargo test -p php_vm property_fetch_cache_guard_fails_on_receiver_change
+    cargo test -p php_vm class_static_cache_guard_fails_on_resolved_class_change
+    cargo check --workspace --all-targets
+
+# Prompt 11 cutover gate: no opcode executor, adaptive interpreter machinery,
+# public engine selector, or linked retired entry symbol may remain.
+cranelift-native-executor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/verify/cranelift_native_executor.py
+    cargo test -p php_vm --lib
+    cargo test -p php_executor bounded_cranelift_prewarm_populates_cache_without_executing_script
+    cargo test -p php_vm_cli legacy_executor_switches_are_rejected
+    cargo check --workspace --all-targets
+    # Keep this standalone gate optimized while sharing artifacts with the
+    # fast Prompt 14 ratchet. `ci-local` retains the final release/LTO proof.
+    RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/development/parallel_php_vm_rustc.sh" PHRUST_RUSTC_CACHE_WRAPPER= CARGO_INCREMENTAL=1 cargo build --profile cutover -p php_server --bin phrust-server --no-default-features
+
+# Prompt 12 cutover gate: a fresh process loads validated PNA2 machine code,
+# corrupt artifacts rebuild, and loader/concurrency controls remain covered.
+cranelift-native-cache:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scripts/verify/cranelift_native_cache.py
+    cargo test -p php_jit --lib native_cache
+    cargo test -p php_jit --lib native_helpers_publish_symbolic_restart_cache_relocations
+    cargo test -p php_vm vm_reloads_native_artifact_without_compilation
+    cargo test -p php_vm vm_reloads_helper_using_native_artifact_without_compilation
+    cargo test -p php_vm_cli native_cache_controls_parse
+    cargo check --workspace --all-targets
+
+# Prompt 13 cutover gate: CLI, server, presets, docs, startup identity, and
+# telemetry expose one mandatory Cranelift-native engine.
+cranelift-native-product:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p php_vm_cli --bin php-vm -p php_server --bin phrust-server
+    scripts/verify/native_product_surface.py
+    cargo test -p php_executor profiles_select_only_native_optimization_policy
+    cargo test -p php_vm counter_json_contains_only_native_engine_families
+    cargo test -p php_vm_cli legacy_executor_switches_are_rejected
+    cargo test -p php_server native_readiness_metrics_are_machine_readable
+    cargo check --workspace --all-targets
+
+# Prompt 14 architecture gate: source, Cargo graph, exhaustive lowering,
+# release binaries, help snapshots, server startup, native state machines, and
+# restart cache behavior pass with no exception list.
+cranelift-only-ratchet-fast:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_instruction_coverage
+    cargo run --quiet -p php_runtime --example native_operation_audit
+    RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/development/parallel_php_vm_rustc.sh" PHRUST_RUSTC_CACHE_WRAPPER= CARGO_INCREMENTAL=1 cargo build --profile cutover \
+      -p php_vm_cli --bin php-vm \
+      -p php_server --bin phrust-server \
+      --no-default-features
+    scripts/verify/cranelift_only_ratchet.py \
+      --cli "${CARGO_TARGET_DIR:-target}/cutover/php-vm" \
+      --server "${CARGO_TARGET_DIR:-target}/cutover/phrust-server"
+
+cranelift-only-ratchet:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run --quiet -p php_jit --example cranelift_instruction_coverage
+    cargo run --quiet -p php_runtime --example native_operation_audit
+    cargo build --release \
+      -p php_vm_cli --bin php-vm \
+      -p php_server --bin phrust-server \
+      --no-default-features
+    scripts/verify/cranelift_only_ratchet.py \
+      --cli "${CARGO_TARGET_DIR:-target}/release/php-vm" \
+      --server "${CARGO_TARGET_DIR:-target}/release/phrust-server"
 
 dump-cranelift-clif:
-    cargo run -p php_vm_cli --bin php-vm --features jit-cranelift -- dump-cranelift-clif
+    cargo run -p php_vm_cli --bin php-vm  -- dump-cranelift-clif
 
 safety-audit-smoke:
-    @if rg -n '\bunsafe\b' crates/php_bytecode_cache crates/php_vm/src/inline_cache.rs crates/php_vm/src/quickening.rs crates/php_vm/src/tiering.rs; then \
-        printf '%s\n' '[fail] performance cache/JIT/adaptive surface contains Rust unsafe' >&2; \
+    @if rg -n '\bunsafe\b' crates/php_vm/src/inline_cache.rs crates/php_vm/src/tiering.rs; then \
+        printf '%s\n' '[fail] performance cache/JIT surface contains Rust unsafe' >&2; \
         exit 1; \
     fi
-    @if rg -n '\bunsafe\b' crates/php_jit/src --glob '!lib.rs' --glob '!helpers.rs' --glob '!cranelift_lowering.rs' --glob '!code_memory.rs'; then \
+    @if rg -n '\bunsafe\b' crates/php_jit/src --glob '!lib.rs' --glob '!abi.rs' --glob '!helpers.rs' --glob '!cranelift_lowering.rs' --glob '!fallback_helpers.rs' --glob '!native_cache.rs' --glob '!tests.rs' --glob '!code_memory.rs' --glob '!code_manager.rs'; then \
         printf '%s\n' '[fail] performance default JIT surface contains unaudited Rust unsafe' >&2; \
         exit 1; \
     fi
-    @test -f docs/performance/cranelift/safety-audit.md
-    cargo test -p php_bytecode_cache corrupt
-    cargo test -p php_vm_cli bytecode_cache
-    @if ! command -v cargo-miri >/dev/null 2>&1 && ! cargo miri --version >/dev/null 2>&1; then \
-        printf '%s\n' '[skip] cargo-miri is not available in this toolchain; safety audit smoke skipped.'; \
-        exit 0; \
-    fi; \
-    if ! cargo miri --version >/dev/null 2>&1; then \
-        printf '%s\n' '[skip] cargo-miri is present but not usable for the active toolchain; safety audit smoke skipped.'; \
-        exit 0; \
-    fi; \
-    cargo miri test -p php_bytecode_cache rejects_corrupt_input
+    @test -f docs/adr/0017-native-execution-architecture.md
+    cargo test -p php_jit --lib checksum_corruption_and_truncation_are_never_loaded
+    cargo test -p php_jit --lib pna_roundtrip_maps_rx_and_executes_after_reload
+    cargo test -p php_jit --lib code_manager::tests
 
 perf-report:
     scripts/performance/perf_report.py

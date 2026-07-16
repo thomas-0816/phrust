@@ -12,7 +12,7 @@
 // (not the native->native inline pass). `sign_of_sum` is the recognized leaf: it
 // computes `$a + $b` natively, then tail-calls `classify`.
 //
-// Differential: scripts/performance/copy_patch_native_diff.py runs this with the
+// Native differential fixture; the native runtime gate runs this with the
 // native tier off and on and asserts identical output, plus a diff against PHP
 // 8.5.7.
 

@@ -1,30 +1,11 @@
-# Performance Known Gaps
+# Performance known gaps
 
-Performance known gaps are tracked here as performance work lands. Generated
-artifacts under `target/performance` are evidence for local runs, not portable
-hard truth, and are intentionally not committed.
+The machine-readable source of truth is
+`docs/known_gaps/performance.jsonl`.
 
-Machine-readable mirror: `docs/known_gaps/performance.jsonl`. Validate with
-`just known-gaps`.
+| Gap ID | Area | Current gap | Closure evidence |
+| --- | --- | --- | --- |
+| `PERF-GAP-REAL-APPLICATION-COVERAGE` | Native compiler/runtime | Performance validation remains workload- and platform-specific. | Expand strict real-application and PHPT acceptance across supported targets while preserving PHP 8.5.7 behavior. |
 
-| Gap ID | Layer | Evidence/Test | Risk | Planned follow-up |
-| --- | --- | --- | --- | --- |
-| PERF-GAP-STDLIB-PER-BUILTIN-COUNTERS | Runtime counters | `target/performance/hotpath-inventory.md` reports aggregate internal dispatch counters, and the current tiny fast-stub counters include `builtin_fast_stub_hits`/`builtin_fast_stub_misses` attribution for `strlen`, `count`, `is_int`, `is_string`, and `is_array`. Generic internal dispatch counters are still not broken down per builtin name. | Standard-library priorities can still be under- or over-attributed when several non-stub builtins share one fixture. | Add optional per-builtin attribution for the generic internal registry before making broad per-function performance claims |
-| PERF-GAP-HOTPATH-TYPE_CHECKS-NO-EVENTS | Benchmark corpus | Unit tests cover typecheck fast-path hits, misses, and A/B correctness, but `target/performance/hotpath-inventory.md` lists Type Checks with zero counter events in the tiny benchmark smoke corpus. | Type-check caches cannot be prioritized from smoke-corpus counter data yet, even though their correctness path is covered separately. | Add an `instanceof`/typed catch performance fixture before making typecheck throughput claims |
-| PERF-GAP-HOTPATH-CORPUS-REPRESENTATIVENESS | Benchmark corpus | `target/performance/hotpaths.json` is derived from `tests/fixtures/performance/perf_smoke`, and the gated framework-like corpus under `tests/fixtures/performance/framework_smoke/` writes a generated summary in `target/performance/framework-smoke/summary.md`. Both corpora are deterministic micro-smokes, not full Composer/framework applications. | Hot-path ranking is useful for local smoke prioritization, not real Composer/framework workload claims. | Add larger local framework or application corpora before promoting hard performance claims |
-| PERF-GAP-PERF-BUDGET-CALIBRATION | Benchmark budgets | `docs/reference/performance-status.md` records a fresh local snapshot where the default benchmark smoke has no optimization flags and wall-clock medians are noisy across different warmup/repetition settings. | Performance can prove behavior preservation and counter activity, but cannot yet use host wall-clock deltas as a hard performance budget or per-optimization speedup claim. | Add calibrated optimized-flag benchmark suites and stable Linux Callgrind budgets before hard performance gates |
-| PERF-GAP-CACHE-INCLUDE-INVALIDATION | Bytecode cache | `docs/performance/bytecode-cache.md` documents include/require dependency rules, but Performance cache artifacts do not yet record a complete include dependency graph for dynamic include paths, symlinks, working-directory changes, or failed include diagnostics. | A cache hit could become stale if include dependencies were reused without complete fingerprints, so include-sensitive programs must miss until this is implemented. | future runtime SAPI/cache lifecycle or a later explicit cache-dependency change |
-| PERF-GAP-CACHE-COMPOSER-AUTOLOAD-DEPS | Bytecode cache | Composer/autoload interaction is documented in `docs/performance/bytecode-cache.md`; no gate yet fingerprints `vendor/autoload.php`, generated class maps, PSR-4 prefix maps, or autoload registration order. | Composer fixture cache hits cannot be claimed safe without metadata for generated autoload files and runtime autoload behavior. | future runtime dependency model before Composer cache-hit claims |
-| PERF-GAP-CACHE-SHARED-MEMORY-OPCACHE | Bytecode cache / SAPI | `docs/performance/bytecode-cache.md` states that Performance uses optional local disk artifacts and does not implement a shared-memory OPcache manager. | Later daemon or FPM-like workers need a separate shared-memory ownership, eviction, and invalidation design. | future runtime SAPI/daemon design |
-| PERF-GAP-CACHE-PRELOAD | Bytecode cache / SAPI | `docs/performance/bytecode-cache.md` states that PHP OPcache-style preloading is not a Performance requirement. | Preloaded declarations and persistent runtime state can change request isolation semantics if added without a dedicated model. | future runtime-or-later preload ADR |
-| PERF-GAP-CACHE-PRODUCTION-SAPI-LIFECYCLE | Bytecode cache / SAPI | `docs/performance/bytecode-cache.md` documents only CLI and future follow-up diagrams; no FPM, production SAPI, or worker-pool lifecycle is implemented. | Cross-request cache sharing, worker recycling, config reloads, and request cleanup remain undefined for production use. | future runtime SAPI/daemon design |
-| PERF-GAP-JIT-NATIVE-EXECUTION | JIT | `docs/adr/0017-cranelift-jit-experiment.md` accepts only an experiment. `crates/php_jit` and `jit-smoke` cover the API skeleton, conservative eligibility analyzer, handle-based ABI, optional Cranelift IR lowering, guarded native-entry experiments, tiering/stats, safety-audit coverage, executable-memory ownership boundaries, and optional precondition review. Default builds or missing runtime preconditions stay on managed VM paths. | Production/default-on native execution would be unsafe without broader W^X lifecycle ownership, native entry/exit ABI proof, persistent cache invalidation, and native execution smoke gates. | future runtime+ native-code follow-up; keep experimental native-entry support separate from production JIT/Opcache claims |
-
-## Entry Format
-
-- `Gap ID`: stable identifier such as `PERF-GAP-BYTECODE-CACHE-CORRUPT`.
-- `Layer`: bytecode cache, optimizer, quickening, inline cache, specialization,
-  JIT, benchmark infrastructure, or runtime fast path.
-- `Evidence/Test`: fixture, gate, report, or command proving the gap exists.
-- `Risk`: correctness, security, invalidation, portability, or measurement risk.
-- `Planned follow-up`: later performance change, optional research, or future layer.
+Mandatory Cranelift execution, W^X ownership, native ABI validation, and the
+persistent machine-code cache are established architecture, not known gaps.

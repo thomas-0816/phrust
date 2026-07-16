@@ -285,6 +285,7 @@ fn format_constant(constant: &IrConstant) -> String {
         IrConstant::NamedConstant(name) => format!("const {name}"),
         IrConstant::ClassConstant {
             class_name,
+            display_class_name: _,
             constant_name,
         } => format!("class_const {class_name}::{constant_name}"),
         IrConstant::Array(entries) => {
@@ -427,9 +428,21 @@ fn format_instruction(kind: &InstructionKind) -> String {
         InstructionKind::LoadConst { dst, constant } => {
             format!("load_const r{} const:{}", dst.raw(), constant.raw())
         }
-        InstructionKind::FetchConst { dst, name } => {
-            format!("fetch_const r{} {:?}", dst.raw(), name)
-        }
+        InstructionKind::FetchConst {
+            dst,
+            name,
+            fallback,
+        } => fallback.as_ref().map_or_else(
+            || format!("fetch_const r{} {:?}", dst.raw(), name),
+            |fallback| {
+                format!(
+                    "fetch_const r{} {:?} fallback {:?}",
+                    dst.raw(),
+                    name,
+                    fallback
+                )
+            },
+        ),
         InstructionKind::RegisterConstant { name, value } => {
             format!("register_constant {:?} {}", name, format_operand(value))
         }
@@ -1309,9 +1322,6 @@ fn format_instruction(kind: &InstructionKind) -> String {
             format_operand(array),
             format_operand(index)
         ),
-        InstructionKind::Unsupported { diagnostic_id } => {
-            format!("unsupported {diagnostic_id:?}")
-        }
         InstructionKind::RuntimeError {
             diagnostic_id,
             message,
@@ -1460,6 +1470,7 @@ mod tests {
             InstructionKind::FetchConst {
                 dst: RegId::new(0),
                 name: "ANSWER".to_string(),
+                fallback: None,
             },
             InstructionKind::DeclareFunction {
                 name: "runtime_declared".to_string(),
@@ -1503,9 +1514,6 @@ mod tests {
             InstructionKind::Echo {
                 src: Operand::Register(RegId::new(2)),
             },
-            InstructionKind::Unsupported {
-                diagnostic_id: "E_TEST_UNSUPPORTED".to_string(),
-            },
         ];
         for (index, kind) in instructions.into_iter().enumerate() {
             block.instructions.push(Instruction {
@@ -1537,7 +1545,6 @@ mod tests {
             "unary",
             "cast",
             "echo",
-            "unsupported",
             "return",
         ] {
             assert!(text.contains(expected), "{expected} missing from {text}");

@@ -9,6 +9,8 @@ use php_diagnostics::{
 };
 use php_source::TextRange;
 
+use crate::symbols::declarations::DeclarationKind;
+
 pub use ids::DiagnosticId;
 
 /// Diagnostic severity.
@@ -135,6 +137,7 @@ pub struct SemanticDiagnostic {
     span: Option<TextRange>,
     labels: Vec<DiagnosticLabel>,
     notes: Vec<String>,
+    duplicate_declaration: Option<(String, DeclarationKind)>,
 }
 
 impl SemanticDiagnostic {
@@ -154,6 +157,7 @@ impl SemanticDiagnostic {
             span: None,
             labels: Vec::new(),
             notes: Vec::new(),
+            duplicate_declaration: None,
         }
     }
 
@@ -187,6 +191,17 @@ impl SemanticDiagnostic {
     #[must_use]
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
+        self
+    }
+
+    /// Attaches typed duplicate-declaration details for downstream renderers.
+    #[must_use]
+    pub fn with_duplicate_declaration(
+        mut self,
+        name: impl Into<String>,
+        kind: DeclarationKind,
+    ) -> Self {
+        self.duplicate_declaration = Some((name.into(), kind));
         self
     }
 
@@ -230,6 +245,14 @@ impl SemanticDiagnostic {
     #[must_use]
     pub fn notes(&self) -> &[String] {
         &self.notes
+    }
+
+    /// Returns typed duplicate-declaration details, when applicable.
+    #[must_use]
+    pub fn duplicate_declaration(&self) -> Option<(&str, DeclarationKind)> {
+        self.duplicate_declaration
+            .as_ref()
+            .map(|(name, kind)| (name.as_str(), *kind))
     }
 
     /// Renders this diagnostic as a stable JSON object.

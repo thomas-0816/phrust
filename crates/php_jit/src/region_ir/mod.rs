@@ -1,20 +1,31 @@
-//! Compact region optimizer IR for future no-exec native-tier experiments.
+//! Backend-neutral region IR for native compilation and optimizer analysis.
 //!
-//! This IR is intentionally separate from `php_ir` and dense bytecode. It is an
-//! index-based optimizer substrate for region-local analysis, metadata, and
-//! validation; it is not a runtime execution format and does not allocate or
-//! execute native code.
+//! [`RegionGraph`] is the structured, multi-block compiler input consumed
+//! by Cranelift. [`OptimizerRegionGraph`] remains the index-based optimizer and snapshot
+//! substrate used for region-local analysis.
+
+/// Version of the executable Region IR contract consumed by native codegen.
+///
+/// Increment this whenever serialized cache identity or lowering semantics can
+/// no longer be shared with code produced from an earlier Region IR shape.
+pub const REGION_IR_SCHEMA_VERSION: u32 = 13;
 
 mod bind;
 mod builder;
+mod coverage;
 mod dump;
+mod executable;
 mod ids;
-mod interpreter;
 mod node;
 pub mod opt;
 mod osr;
+pub mod ownership;
 mod rules;
+mod semantic_lowering;
+mod semantic_ops;
+pub mod ssa;
 pub mod templates;
+pub mod value_flow;
 mod verify;
 
 pub use bind::{
@@ -22,12 +33,23 @@ pub use bind::{
     VmSlotKind, VmSlotSemanticFlags, validate_bind_map,
 };
 pub use builder::{RegionBuilder, RegionBuilderOptions, build_minimal_scalar_region};
-pub use dump::dump_region_graph;
-pub use ids::{ConstId, EntryId, ExitId, NodeId, RegionId, SnapshotId, VmSlotId};
-pub use interpreter::{
-    RegionGuardExitReason, RegionInterpretInputs, RegionInterpretResult, RegionInterpretStatus,
-    RegionInterpretUnsupportedReason, RegionInterpretValue, interpret_region,
+pub use coverage::{
+    BASELINE_INSTRUCTION_MANIFEST, BASELINE_TERMINATOR_MANIFEST, BaselineEffectFlags,
+    BaselineLoweringClass, BaselineLoweringManifestEntry, baseline_binary_class,
+    baseline_call_arg_class, baseline_callable_class, baseline_cast_class, baseline_compare_class,
+    baseline_include_class, baseline_instruction_lowering, baseline_terminator_lowering,
+    baseline_unary_class,
 };
+pub use dump::dump_region_graph;
+pub use executable::{
+    BaselineRegionBuilder, CompileMetadata, NativeCompileError, NativeCompilerTier, RegionBinaryOp,
+    RegionBlock, RegionCallResult, RegionCallTarget, RegionCastOp, RegionCompareOpCode,
+    RegionDeclarationMetadata, RegionExceptionRegion, RegionGraph, RegionInstruction,
+    RegionInstructionKind, RegionMethodIdentity, RegionNativeCall, RegionNativeControl,
+    RegionNativeDynamicCode, RegionNativeSuspend, RegionOperand, RegionOsrEntryPoint,
+    RegionTerminator, RegionUnaryOp, build_baseline_region,
+};
+pub use ids::{ConstId, EntryId, ExitId, NodeId, RegionId, SnapshotId, VmSlotId};
 pub use node::{
     RegionCompareOp, RegionConst, RegionEffects, RegionNode, RegionNodeKind, RegionPlacement,
     RegionValueType,
@@ -36,7 +58,20 @@ pub use osr::{
     RegionOsrEntry, RegionOsrEntryMap, RegionOsrMotionPolicy, RegionOsrReport,
     region_osr_motion_policy, select_region_osr_entries,
 };
+pub use ownership::{
+    HelperInputOwnership, HelperOwnershipContract, HelperResultOwnership,
+    helper_ownership_contract, value_copy_requires_retain, value_release_required,
+};
 pub use rules::{dump_region_rule_selection, select_region_rules};
+pub use semantic_ops::{
+    RegionClassName, RegionPropertyName, RegionSemanticContext, RegionSemanticOp,
+    RegionSemanticOperationId,
+};
+pub use ssa::{
+    ExecutableSsaGraph, SsaCertainty, SsaOwnership, SsaValueClass, SsaValueFact,
+    build_executable_ssa,
+};
+pub use value_flow::{ExecutableValueFlow, LocalStorageClass, analyze_executable_value_flow};
 pub use verify::{RegionVerifyError, verify_region_graph};
 
 /// Def-use side table for compact node storage.
@@ -110,7 +145,7 @@ pub struct RegionFoldCounters {
 
 /// Compact, table-backed region optimizer graph.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RegionGraph {
+pub struct OptimizerRegionGraph {
     nodes: Vec<RegionNode>,
     constants: Vec<RegionConst>,
     snapshots: Vec<RegionSnapshot>,
@@ -120,7 +155,7 @@ pub struct RegionGraph {
     fold_counters: RegionFoldCounters,
 }
 
-impl RegionGraph {
+impl OptimizerRegionGraph {
     /// Creates an empty graph.
     #[must_use]
     pub fn new(region_id: RegionId, name: impl Into<String>) -> Self {
@@ -240,7 +275,7 @@ impl RegionGraph {
 #[cfg(test)]
 mod tests {
     use super::{
-        RegionBuilder, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode,
+        OptimizerRegionGraph, RegionBuilder, RegionConst, RegionEffects, RegionId, RegionNode,
         RegionNodeKind, RegionPlacement, RegionValueType, SnapshotEntry, VmSlotId,
         build_minimal_scalar_region, dump_region_graph, verify_region_graph,
     };
@@ -260,7 +295,7 @@ mod tests {
 
     #[test]
     fn region_ir_rejects_invalid_node_reference() {
-        let mut graph = RegionGraph::new(RegionId::new(7), "bad-ref");
+        let mut graph = OptimizerRegionGraph::new(RegionId::new(7), "bad-ref");
         graph.add_node(RegionNode::new(
             RegionNodeKind::Add,
             vec![super::NodeId::new(99), super::NodeId::new(0)],
@@ -297,7 +332,7 @@ mod tests {
 
     #[test]
     fn region_ir_rejects_missing_snapshot() {
-        let mut graph = RegionGraph::new(RegionId::new(3), "missing-snapshot");
+        let mut graph = OptimizerRegionGraph::new(RegionId::new(3), "missing-snapshot");
         let start = graph.add_node(RegionNode::new(
             RegionNodeKind::Start,
             Vec::new(),

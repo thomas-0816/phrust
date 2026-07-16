@@ -119,9 +119,9 @@ request, matching the supported web-mode behavior. The optional
 development and deterministic tests; metrics expose both timeout totals and
 disabled-deadline request counts.
 
-Deadline enforcement is cooperative in the VM dispatch loops. It does not use
-Tokio task cancellation as the primary safety mechanism, so native blocking
-builtins are checked when control returns to VM dispatch.
+Deadline enforcement is cooperative at native loop headers. It does not use
+Tokio task cancellation as the primary safety mechanism, so blocking builtins
+are checked when control returns to generated native code.
 
 ## Include Cache
 

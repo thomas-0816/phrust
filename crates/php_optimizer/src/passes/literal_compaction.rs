@@ -423,7 +423,6 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::ForeachCleanup { .. }
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::ForeachNextRef { .. }
-        | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => {}
     }
 }

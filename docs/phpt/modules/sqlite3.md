@@ -26,6 +26,13 @@
 
 ## Known gaps
 
+- Native-only internal-class dispatch for `SQLite3`, `SQLite3Stmt`, and
+  `SQLite3Result` is tracked by the stable PHPT policy gap
+  `extension-policy-sqlite3`. The focused upstream
+  `ext/sqlite3/tests/sqlite3_explain.phpt` proof currently fails closed with
+  `E_PHP_VM_UNKNOWN_CLASS` before `SQLite3Stmt::setExplain()` can run. Closing
+  this requires wiring the existing SQLite request state through the native
+  internal-class method surface; it is not an executor fallback candidate.
 - Callback APIs, custom SQL functions, collations, authorizers, and progress
   handlers are not covered by the selected fixtures.
 - Backups, blob streams, loadable extensions, and advanced file-open edge cases

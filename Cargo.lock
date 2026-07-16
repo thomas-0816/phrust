@@ -72,12 +72,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arcstr"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
-
-[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2261,19 +2255,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "php_bytecode_cache"
-version = "0.0.0"
-dependencies = [
- "crc32fast",
- "php_ir",
- "php_semantics",
- "php_vm",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
 name = "php_diagnostics"
 version = "0.0.0"
 dependencies = [
@@ -2334,6 +2315,11 @@ dependencies = [
  "cranelift-native",
  "libc",
  "php_ir",
+ "php_runtime",
+ "php_std",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2431,6 +2417,7 @@ dependencies = [
  "sha1",
  "sha2 0.10.9",
  "sha3",
+ "socket2",
  "ssh2",
  "suppaftp",
  "tiger",
@@ -2518,6 +2505,7 @@ dependencies = [
 name = "php_vm"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "php_diagnostics",
  "php_extensions",
  "php_ir",
@@ -2528,31 +2516,23 @@ dependencies = [
  "php_source",
  "php_std",
  "php_testkit",
- "redis",
  "serde_json",
- "smallvec",
- "zip 2.4.2",
 ]
 
 [[package]]
 name = "php_vm_cli"
 version = "0.0.0"
 dependencies = [
- "php_bytecode_cache",
  "php_diagnostics",
  "php_executor",
- "php_ir",
  "php_jit",
  "php_optimizer",
- "php_perf",
  "php_runtime",
- "php_semantics",
  "php_server",
  "php_source",
  "php_std",
  "php_testkit",
  "php_vm",
- "serde",
  "serde_json",
 ]
 
@@ -2790,22 +2770,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "redis"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fa6f8e4b491d7a8ef3a9550a4d71969bd0064f46e32b8dbbcc7fc60dad94fed"
-dependencies = [
- "arcstr",
- "combine",
- "itoa",
- "percent-encoding",
- "ryu",
- "socket2",
- "url",
- "xxhash-rust",
 ]
 
 [[package]]
@@ -3051,12 +3015,6 @@ dependencies = [
  "utf8parse",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "same-file"

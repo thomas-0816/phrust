@@ -32,6 +32,22 @@ pub enum ArrayKey {
     String(PhpString),
 }
 
+/// PHP-visible failure when an implicit array append has no free integer key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhpArrayAppendError;
+
+/// Canonical PHP message for an exhausted implicit array key.
+pub const PHP_ARRAY_APPEND_OVERFLOW_MESSAGE: &str =
+    "Cannot add element to the array as the next element is already occupied";
+
+impl std::fmt::Display for PhpArrayAppendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(PHP_ARRAY_APPEND_OVERFLOW_MESSAGE)
+    }
+}
+
+impl std::error::Error for PhpArrayAppendError {}
+
 impl ArrayKey {
     /// Converts a runtime value into a runtime-semantics PHP array key.
     ///
@@ -1894,8 +1910,18 @@ impl PhpArray {
         None
     }
 
-    /// Appends with the next integer key.
-    pub fn append(&mut self, value: Value) -> ArrayKey {
+    /// Returns whether an implicit append has a free integer key.
+    #[must_use]
+    pub fn can_append(&self) -> bool {
+        let next = self.storage.next_append_key().unwrap_or(0);
+        next != i64::MAX || self.storage.find_index(&ArrayKey::Int(i64::MAX)).is_none()
+    }
+
+    /// Appends with the next integer key, returning PHP's overflow condition.
+    pub fn try_append(&mut self, value: Value) -> Result<ArrayKey, PhpArrayAppendError> {
+        if !self.can_append() {
+            return Err(PhpArrayAppendError);
+        }
         let intent = if matches!(value, Value::Reference(_)) {
             PhpArrayWriteIntent::BindReferenceElement
         } else {
@@ -1918,7 +1944,16 @@ impl PhpArray {
             storage.set_internal_pointer(storage.first_index());
         }
         bump_mutation_epoch(storage);
-        key
+        Ok(key)
+    }
+
+    /// Appends with the next integer key.
+    ///
+    /// PHP execution paths that must surface the overflow exception use
+    /// [`Self::try_append`]. This compatibility helper leaves the array
+    /// unchanged on overflow and never panics on user-controlled input.
+    pub fn append(&mut self, value: Value) -> ArrayKey {
+        self.try_append(value).unwrap_or(ArrayKey::Int(i64::MAX))
     }
 
     /// Merges array-spread entries into this array using PHP array-unpack
@@ -2269,6 +2304,20 @@ mod tests {
         assert_eq!(array.append(Value::Int(3)), ArrayKey::Int(8));
         array.insert(ArrayKey::Int(4), Value::Int(4));
         assert_eq!(array.append(Value::Int(5)), ArrayKey::Int(9));
+    }
+
+    #[test]
+    fn array_append_at_exhausted_max_key_is_non_panicking_error() {
+        let mut array = PhpArray::new();
+        array.insert(ArrayKey::Int(i64::MAX), Value::Int(42));
+
+        assert!(!array.can_append());
+        assert_eq!(
+            array.try_append(Value::Int(7)),
+            Err(super::PhpArrayAppendError)
+        );
+        assert_eq!(array.len(), 1);
+        assert_eq!(array.get(&ArrayKey::Int(i64::MAX)), Some(&Value::Int(42)));
     }
 
     #[test]

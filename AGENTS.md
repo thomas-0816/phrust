@@ -154,10 +154,9 @@ Do not automatically update the target PHP version without a new ADR.
   1. Phase and counter split with the built-in flags:
      `php-vm run --timings-json t.json --counters-json c.json <entry.php>`.
      Phases `frontend_analyze_ms`, `ir_lower_ms`, `execute_ms`, and
-     `cache_load_ms` separate compile from execute; counters such as
-     `includes`, `include_compile_misses`, and
-     `rich_fallback_functions_executed` quantify how much application code
-     runs uncached or outside dense dispatch.
+     `cache_load_ms` separate compile from execute; the `native_compile`,
+     `native_cache`, `native_execution`, and `native_transition` families show
+     compilation, reuse, execution, and specialization transitions.
   2. Single-request CPU profile:
      `samply record target/profiling/php-vm run <entry.php>`.
   3. Server under load: start the server, attach with

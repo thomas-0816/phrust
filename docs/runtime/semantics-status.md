@@ -159,12 +159,10 @@ Known-gap fixtures must carry a stable `known_gap=<ID>` and are counted
 separately from pass/fail fixtures.
 
 `just runtime-semantics-diff` compares PHP-visible exit status, stdout, and
-normalized stderr against the PHP 8.5.7 reference binary. `just
-vm-semantics-oracle` compares the VM baseline engine with each fallback-capable
-fast-tier profile over the same runnable fixture set: default managed fast,
-dense bytecode auto fallback, superinstruction auto fallback, quickening, inline
-caches, and noop-JIT dispatch plumbing. Every completed tier must preserve
-visible behavior. `just verify-runtime` runs both oracle gates.
+normalized stderr against the PHP 8.5.7 reference binary. Phrust's `baseline`
+and `default` policies both use the mandatory native compiler; focused preset
+parity is covered by `just default-profile-smoke`. `just verify-runtime` runs
+the external oracle and native architecture gates.
 
 ## Runtime Baseline
 
@@ -186,8 +184,8 @@ Baseline validation set, run on 2026-06-21:
 
 The hard Runtime gate also runs `runtime-fixtures`, `runtime-corpus-smoke`,
 `phpt-smoke`, `runtime-known-gaps`, bytecode snapshots, Rust formatting,
-Clippy, the Semantic frontend gate, `runtime-semantics-diff`, and
-`vm-semantics-oracle`. Full runtime verification requires `REFERENCE_PHP` to
+Clippy, the Semantic frontend gate, `runtime-semantics-diff`, and the native
+product gate. Full runtime verification requires `REFERENCE_PHP` to
 point at the PHP 8.5.7 reference binary; use narrower non-reference gates only
 when that binary is intentionally unavailable.
 

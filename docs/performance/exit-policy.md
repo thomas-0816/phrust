@@ -79,8 +79,7 @@ Run:
 ```bash
 nix develop -c cargo test -p php_vm exit_policy --lib
 nix develop -c cargo test -p php_vm tiering --lib
-nix develop -c just quickening-smoke
-nix develop -c just inline-cache-smoke
-nix develop -c just acceleration-matrix
+nix develop -c just inline-cache-model-tests
+nix develop -c just default-profile-smoke
 nix develop -c just verify-performance
 ```

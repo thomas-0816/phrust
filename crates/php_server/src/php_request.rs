@@ -1109,15 +1109,7 @@ pub(crate) fn execution_stage(
     } else {
         perf_trace_counter_mode(&state)
     };
-    let collect_profile_spans = profile_requested && collect_vm_profile_spans_for_request(&state);
-    execute_compiled_php_with_state(
-        &state,
-        lookup,
-        script_path,
-        runtime_context,
-        mode,
-        collect_profile_spans,
-    )
+    execute_compiled_php_with_state(&state, lookup, script_path, runtime_context, mode)
 }
 
 /// Counter mode for requests that did not ask for a profile (only relevant
@@ -1144,32 +1136,22 @@ pub(crate) fn request_profile_requested(state: &AppState, headers: &HeaderMap) -
 }
 
 /// How much VM accounting a request pays. `--request-profile` alone stays in
-/// `Summary` (phase/boundary JSON only); VM hot counters and per-clone source
-/// attribution are explicit opt-ins because they distort the measured request.
+/// `Summary` (phase JSON only); native hot counters are an explicit opt-in
+/// because they distort the measured request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestCounterMode {
     Off,
     Summary,
     VmCounters,
-    SourceAttributedLayout,
 }
 
 impl RequestCounterMode {
     pub(crate) fn collects_vm_counters(self) -> bool {
-        matches!(self, Self::VmCounters | Self::SourceAttributedLayout)
-    }
-
-    pub(crate) fn collects_source_attribution(self) -> bool {
-        matches!(self, Self::SourceAttributedLayout)
+        matches!(self, Self::VmCounters)
     }
 }
 
 pub(crate) fn request_counter_mode(state: &AppState) -> RequestCounterMode {
-    if state.observability.request_profile.is_some()
-        && state.observability.request_profile_source_attribution
-    {
-        return RequestCounterMode::SourceAttributedLayout;
-    }
     if state.observability.request_profile.is_some()
         && state.observability.request_profile_vm_counters
     {
@@ -1184,17 +1166,12 @@ pub(crate) fn request_counter_mode(state: &AppState) -> RequestCounterMode {
     RequestCounterMode::Off
 }
 
-pub(crate) fn collect_vm_profile_spans_for_request(state: &AppState) -> bool {
-    state.observability.request_profile.is_some()
-}
-
 pub(crate) fn execute_compiled_php_with_state(
     state: &AppState,
     lookup: CompiledScriptCacheLookup,
     script_path: PathBuf,
     runtime_context: RuntimeContext,
     mode: RequestCounterMode,
-    collect_profile_spans: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
     state
         .services
@@ -1223,8 +1200,6 @@ pub(crate) fn execute_compiled_php_with_state(
             include_roots: include_roots_for_docroot(&state.route_config.docroot),
             runtime_context,
             collect_counters: mode.collects_vm_counters(),
-            collect_profile_spans,
-            collect_layout_source_attribution: mode.collects_source_attribution(),
         },
     );
     Ok(output)
@@ -1249,7 +1224,7 @@ fn execute_compiled_with_request_executor(
         if refresh {
             *cached = Some(CachedRequestExecutor {
                 key,
-                executor: PhpExecutor::with_options(options.clone()),
+                executor: state.services.engine.executor(options.clone()),
             });
         }
         match cached.as_mut() {
@@ -1257,7 +1232,11 @@ fn execute_compiled_with_request_executor(
                 cached.executor.reconfigure(options);
                 cached.executor.execute_compiled(compiled, input)
             }
-            None => PhpExecutor::with_options(options).execute_compiled(compiled, input),
+            None => state
+                .services
+                .engine
+                .executor(options)
+                .execute_compiled(compiled, input),
         }
     })
 }
@@ -1298,158 +1277,63 @@ pub(crate) fn append_vm_counters_to_trace(
         return;
     };
     trace.counters.extend([
-        ("vm_instructions_executed", counters.instructions_executed),
+        ("native_compile_attempts", counters.native_compile_attempts),
         (
-            "vm_bytecode_instructions_executed",
-            counters.bytecode_instructions_executed,
+            "native_compile_successes",
+            counters.native_compile_successes,
+        ),
+        ("native_compile_failures", counters.native_compile_failures),
+        ("native_cache_hits", counters.native_cache_hits),
+        ("native_cache_misses", counters.native_cache_misses),
+        ("native_cache_writes", counters.native_cache_writes),
+        (
+            "native_cache_compile_waits",
+            counters.native_cache_compile_waits,
+        ),
+        ("native_cache_evictions", counters.native_cache_evictions),
+        (
+            "native_compile_time_nanos",
+            counters.native_compile_time_nanos,
         ),
         (
-            "vm_bytecode_lower_attempts",
-            counters.bytecode_lower_attempts,
+            "native_execution_entries",
+            counters.native_execution_entries,
+        ),
+        ("native_region_entries", counters.native_region_entries),
+        (
+            "native_region_side_exits",
+            counters.native_region_side_exits,
+        ),
+        ("native_call_direct", counters.native_call_direct),
+        ("native_call_dynamic", counters.native_call_dynamic),
+        (
+            "native_version_published",
+            counters.native_version_published,
+        ),
+        ("native_version_retired", counters.native_version_retired),
+        ("native_transition_count", counters.native_transition_count),
+        (
+            "native_transition_time_nanos",
+            counters.native_transition_time_nanos,
+        ),
+        ("runtime_helper_calls", counters.runtime_helper_calls),
+        (
+            "runtime_helper_time_nanos",
+            counters.runtime_helper_time_nanos,
         ),
         (
-            "vm_bytecode_lower_successes",
-            counters.bytecode_lower_successes,
+            "runtime_helper_object_release_fast_paths",
+            counters.runtime_helper_object_release_fast_paths,
         ),
         (
-            "vm_dense_execution_plan_cache_hits",
-            counters.dense_execution_plan_cache_hits,
+            "runtime_helper_object_release_root_scans",
+            counters.runtime_helper_object_release_root_scans,
         ),
+        ("gc_safepoint_polls", counters.gc_safepoint_polls),
         (
-            "vm_dense_execution_plan_cache_misses",
-            counters.dense_execution_plan_cache_misses,
+            "gc_safepoint_collections",
+            counters.gc_safepoint_collections,
         ),
-        (
-            "vm_entry_rich_instructions_executed",
-            counters.entry_rich_instructions_executed,
-        ),
-        (
-            "vm_include_rich_instructions_executed",
-            counters.include_rich_instructions_executed,
-        ),
-        (
-            "vm_entry_bytecode_instructions_executed",
-            counters.entry_bytecode_instructions_executed,
-        ),
-        (
-            "vm_include_bytecode_instructions_executed",
-            counters.include_bytecode_instructions_executed,
-        ),
-        (
-            "vm_dense_include_entry_attempts",
-            counters.dense_include_entry_attempts,
-        ),
-        (
-            "vm_dense_include_entry_successes",
-            counters.dense_include_entry_successes,
-        ),
-        (
-            "vm_dense_include_entry_fallbacks",
-            counters.dense_include_entry_fallbacks,
-        ),
-        // Calls are counted per interpreter tier; the trace reports the
-        // tier-agnostic totals so dense growth does not zero the metric.
-        (
-            "vm_function_calls",
-            counters.function_calls
-                + counters.dense_direct_call_hits
-                + counters.dense_callable_call_hits,
-        ),
-        (
-            "vm_method_calls",
-            counters.method_calls
-                + counters.dense_method_call_hits
-                + counters.dense_static_call_hits,
-        ),
-        ("vm_frame_allocations", counters.frame_allocations),
-        ("vm_frame_reuses", counters.frame_reuses),
-        ("vm_value_clones", counters.value_clones),
-        ("vm_string_allocations", counters.string_allocations),
-        ("vm_array_handle_clones", counters.array_handle_clones),
-        ("vm_object_allocations", counters.object_allocations),
-        ("vm_cow_separations", counters.cow_separations),
-        (
-            "vm_reference_cell_creations",
-            counters.reference_cell_creations,
-        ),
-        ("vm_array_dim_fetches", counters.array_dim_fetches),
-        ("vm_output_bytes", counters.output_bytes),
-        (
-            "vm_internal_function_dispatches",
-            counters.internal_function_dispatches,
-        ),
-        (
-            "vm_internal_function_dispatch_cache_hits",
-            counters.internal_function_dispatch_cache_hits,
-        ),
-        (
-            "vm_internal_function_dispatch_cache_misses",
-            counters.internal_function_dispatch_cache_misses,
-        ),
-        ("vm_builtin_call_ic_hits", counters.builtin_call_ic_hits),
-        ("vm_builtin_call_ic_misses", counters.builtin_call_ic_misses),
-        ("vm_includes", counters.includes),
-        ("vm_autoloads", counters.autoloads),
-        ("vm_quickening_attempts", counters.quickening_attempts),
-        ("vm_quickening_specialized", counters.quickening_specialized),
-        ("vm_inline_cache_hits", counters.inline_cache_hits),
-        ("vm_inline_cache_misses", counters.inline_cache_misses),
-        (
-            "vm_inline_cache_guard_failures",
-            counters.inline_cache_guard_failures,
-        ),
-        ("vm_function_call_ic_hits", counters.function_call_ic_hits),
-        (
-            "vm_function_call_ic_misses",
-            counters.function_call_ic_misses,
-        ),
-        ("vm_method_ic_hits", counters.method_ic_hits),
-        ("vm_method_ic_misses", counters.method_ic_misses),
-        ("vm_property_ic_hits", counters.property_ic_hits),
-        ("vm_property_ic_misses", counters.property_ic_misses),
-        (
-            "vm_property_assign_ic_hits",
-            counters.property_assign_ic_hits,
-        ),
-        (
-            "vm_property_assign_ic_misses",
-            counters.property_assign_ic_misses,
-        ),
-        ("vm_include_path_ic_hits", counters.include_path_ic_hits),
-        ("vm_include_path_ic_misses", counters.include_path_ic_misses),
-        (
-            "vm_autoload_class_lookup_ic_hits",
-            counters.autoload_class_lookup_ic_hits,
-        ),
-        (
-            "vm_autoload_class_lookup_ic_misses",
-            counters.autoload_class_lookup_ic_misses,
-        ),
-        (
-            "vm_dense_functions_executed",
-            counters.dense_functions_executed,
-        ),
-        (
-            "vm_rich_fallback_functions_executed",
-            counters.rich_fallback_functions_executed,
-        ),
-        ("vm_dense_direct_call_hits", counters.dense_direct_call_hits),
-        ("vm_dense_method_call_hits", counters.dense_method_call_hits),
-        ("vm_dense_static_call_hits", counters.dense_static_call_hits),
-        ("vm_dense_call_ic_hits", counters.dense_call_ic_hits),
-        ("vm_dense_call_ic_misses", counters.dense_call_ic_misses),
-        (
-            "vm_persistent_engine_allocations",
-            counters.persistent_engine_allocations,
-        ),
-        (
-            "vm_persistent_engine_bytes",
-            counters.persistent_engine_bytes,
-        ),
-        ("vm_jit_compile_attempts", counters.jit_compile_attempts),
-        ("vm_jit_compiled", counters.jit_compiled),
-        ("vm_jit_executed", counters.jit_executed),
-        ("vm_jit_side_exits", counters.jit_side_exits),
     ]);
 }
 

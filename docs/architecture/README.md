@@ -16,16 +16,15 @@ before changing a subsystem.
   [runtime values](../runtime/values.md),
   [VM structure](../runtime/vm-structure.md), and
   [runtime cache architecture](../runtime/cache-architecture.md), plus the
-  [include subsystem ownership contract](include-subsystem.md) and the
-  [VM decomposition ownership map](vm-decomposition.md).
+  [include subsystem ownership contract](include-subsystem.md).
 - [Standard library](../stdlib/README.md) and
   [builtin modules](../runtime/builtin-modules.md).
 - [Server architecture](../server-architecture.md) and
   [server functionality](../server-functionality.md).
 - [Performance](../performance/README.md), including
   [methodology](../performance/methodology.md),
-  [optimization gates](../performance/optimization-gates.md), and
-  [bytecode cache](../performance/bytecode-cache.md).
+  [native optimization gates](../performance/optimization-gates.md), and
+  [native compile cache](../performance/native-compile-cache.md).
 
 Architecture docs describe stable contracts and boundaries. Implementation
 history, one-off benchmark captures, and local run evidence belong under

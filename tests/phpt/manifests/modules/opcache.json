@@ -13,5 +13,5 @@
   "scope":["extension_loaded(\"opcache\")","opcache_get_status","opcache_get_configuration","VM compiler-backed opcache_compile_file","opcache_invalidate","request-local cached-script probes","invalid PHP source remains uncached"],
   "non_scope":["Zend Opcache replacement","preloading","persistent file cache","optimizer passes","JIT"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=opcache","nix develop -c just verify-phpt"],
-  "next_step":"Promote request-local compile metadata to durable bytecode-cache telemetry only when the performance/cache layer grows a PHP-visible cache owner."
+  "next_step":"Keep the native artifact cache engine-internal; add PHP-visible cache telemetry only if a separately scoped compatibility owner is introduced."
 }

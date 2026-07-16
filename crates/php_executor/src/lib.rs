@@ -7,7 +7,7 @@
 //! cache used by the server.
 //!
 //! The crate intentionally does not own HTTP routing, CLI argument parsing, disk
-//! bytecode artifact caching, or debug/report commands that need direct access
+//! native artifact caching, or debug/report commands that need direct access
 //! to frontend or VM internals.
 
 mod cache;

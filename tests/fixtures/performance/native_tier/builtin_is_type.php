@@ -1,7 +1,7 @@
 <?php
 
 // The pure type predicates is_int/is_string/is_array/is_float/is_bool lowered to
-// native tag-check stencils — the copy-and-patch tier's cheapest shape. Inside a
+// native tag-check stencils — the native compiler's cheapest shape. Inside a
 // scalar leaf, is_TYPE($x) needs no helper call: the answer is exactly the tag
 // the VM marshaled the argument with (is_int = Int, is_string = OpaqueString,
 // is_array = OpaqueArray, is_float = FloatBits, is_bool = Bool). The stencil only
@@ -17,7 +17,7 @@
 // aliases (is_integer/is_long/is_double) and non-tag predicates
 // (is_null/is_object/is_numeric/…) are left to the interpreter.
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs this
+// Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
 // pinned PHP 8.5.7 reference when available.
 

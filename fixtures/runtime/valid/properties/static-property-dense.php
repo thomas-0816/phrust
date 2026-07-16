@@ -45,6 +45,6 @@ try { assign_undeclared(); } catch (Error $e) { echo "Error: ", $e->getMessage()
 
 class Dtor { public function __destruct() { echo "dtor\n"; } }
 class Holder { public static $slot = null; }
-function replace_static() { Holder::$slot = new Dtor(); Holder::$slot = 'replaced'; }
+function replace_static() { Holder::$slot = new Dtor(); echo "held\n"; Holder::$slot = 'replaced'; }
 replace_static();
 var_dump(Holder::$slot);

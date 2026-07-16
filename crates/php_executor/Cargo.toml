@@ -16,7 +16,5 @@ php_source = { path = "../php_source", version = "0.0.0" }
 php_vm = { path = "../php_vm", version = "0.0.0", default-features = false }
 
 [features]
-default = ["runtime-telemetry", "jit-copy-patch"]
+default = ["runtime-telemetry"]
 runtime-telemetry = ["php_vm/runtime-telemetry", "php_runtime/runtime-telemetry"]
-jit-copy-patch = ["php_vm/jit-copy-patch"]
-jit-cranelift = ["php_vm/jit-cranelift"]

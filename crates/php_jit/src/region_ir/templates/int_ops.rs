@@ -27,7 +27,7 @@ fn int_add_checked() -> RuntimeTemplate {
         reference_cow_restrictions: vec!["no references", "no COW separation"],
         possible_side_exits: vec!["type_mismatch", "integer_overflow"],
         snapshot_requirements: snapshot_pair(),
-        fallback_helper: Some("interpreter_binary_add"),
+        slow_path_helper: Some("runtime_binary_add"),
         unsupported_php_semantic_cases: vec![
             "float fallback",
             "numeric string conversion",
@@ -54,7 +54,7 @@ fn int_compare() -> RuntimeTemplate {
         reference_cow_restrictions: vec!["no references"],
         possible_side_exits: vec!["type_mismatch"],
         snapshot_requirements: snapshot_pair(),
-        fallback_helper: Some("interpreter_compare"),
+        slow_path_helper: Some("runtime_compare"),
         unsupported_php_semantic_cases: vec![
             "loose comparison conversions",
             "string/object comparison",

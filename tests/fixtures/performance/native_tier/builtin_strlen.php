@@ -1,7 +1,7 @@
 <?php
 
 // Builtin strlen() lowered to a native helper call — the second heap-handle
-// shape of the copy-and-patch native tier, mirroring count(). Inside a scalar
+// shape of the Cranelift native compiler, mirroring count(). Inside a scalar
 // leaf, strlen($s) is emitted as a real `blr` into the VM's string-length ABI
 // wrapper over the slot ABI: the string crosses as a read-only borrowed handle
 // (an OpaqueString slot whose payload is a `*const Value` valid only for the
@@ -17,7 +17,7 @@
 // The native path is only taken after the VM confirms `strlen` resolves to the
 // real builtin (see NativeCallPermits::builtin_strlen), mirroring count()/abs().
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs this
+// Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
 // pinned PHP 8.5.7 reference when available.
 

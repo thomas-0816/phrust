@@ -47,6 +47,14 @@ mod identity_storage {
                 ("extra".to_owned(), Value::Bool(true))
             ]
         );
+        assert!(
+            one.try_any_property_value(|value| value == &Value::Bool(true))
+                .expect("checked property visit")
+        );
+        assert!(
+            !one.try_any_property_value(|value| value == &Value::Int(99))
+                .expect("checked property visit")
+        );
         assert_eq!(one.class_name(), "box");
     }
 

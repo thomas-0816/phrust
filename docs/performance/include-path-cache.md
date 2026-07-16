@@ -88,7 +88,7 @@ pointer for all callers; waiting callers may revalidate content before return.
 
 Validation:
 
-- `nix develop -c just inline-cache-smoke`
+- `nix develop -c just inline-cache-model-tests`
 - `nix develop -c just cache-roundtrip`
 - `nix develop -c cargo test -p php_vm include_cache_ --lib`
 - `nix develop -c just verify-performance`

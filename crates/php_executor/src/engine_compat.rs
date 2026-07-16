@@ -116,7 +116,7 @@ where
     )?;
     let include_loader = include_loader_for(&input)?;
     let runtime_context = runtime_context_for(&input, include_loader.as_ref());
-    let executor_options = PhpExecutorOptions::managed_fast_runtime();
+    let executor_options = PhpExecutorOptions::default_native_runtime();
     let mut vm_options = executor_options.vm_options;
     vm_options.include_loader = include_loader;
     vm_options.include_compiler = Some(std::sync::Arc::new(ExecutorIncludeCompiler::new(
@@ -128,7 +128,6 @@ where
     vm_options.trace_includes = input.debug;
     // Drop-in CLI parity with real PHP: no step ceiling. The library default
     // (100k) exists for embedded/test use; the server sets its own limit.
-    vm_options.max_steps = usize::MAX;
     let vm = Vm::with_options(vm_options);
     emit_debug_event(
         stderr,
@@ -173,7 +172,10 @@ where
         .write_all(result.output.as_bytes())
         .map_err(|error| error.to_string())?;
     match result.status.exit_status() {
-        ExitStatus::Success => Ok(vm_success_exit_code(&result)),
+        ExitStatus::Success => {
+            write_runtime_diagnostics(stderr, &input.source_path, &result.diagnostics)?;
+            Ok(vm_success_exit_code(&result))
+        }
         ExitStatus::CompileError => {
             if write_vm_compile_fatal_line(
                 stderr,
@@ -314,7 +316,8 @@ mod tests {
             stdout.contains(
                 "Fatal error: Uncaught Error: Access to undeclared static property C::$p"
             ),
-            "{stdout}"
+            "stdout={stdout} stderr={}",
+            String::from_utf8_lossy(&stderr)
         );
         assert_eq!(stderr, b"");
     }
@@ -330,9 +333,7 @@ mod tests {
         assert_eq!(status, EXIT_PHP_ERROR);
         let stdout = String::from_utf8(stdout).expect("stdout utf8");
         assert!(
-            stdout.starts_with(
-                "\nFatal error: Type int cannot be part of an intersection type in"
-            ),
+            stdout.starts_with("\nFatal error: Type int cannot be part of an intersection type in"),
             "{stdout}"
         );
         // Rendered errors keep stderr clean so 2>&1 comparisons match the
@@ -378,7 +379,24 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_entrypoint_uses_managed_fast_runtime_for_recursion() {
+    fn successful_runtime_warning_keeps_structured_stderr() {
+        let input = test_input("<?php $values = []; echo $values['missing'], 'ok';");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(stdout, b"ok");
+        let stderr = String::from_utf8(stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn compatibility_entrypoint_uses_default_native_runtime_for_recursion() {
         let input = test_input(
             "<?php function f($i) { if ($i > 4) { echo 'stop'; return; } f($i + 1); } f(0);",
         );
@@ -387,7 +405,13 @@ mod tests {
 
         let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
 
-        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(
+            status,
+            EXIT_SUCCESS,
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
         assert_eq!(stdout, b"stop");
         assert_eq!(stderr, b"");
     }
@@ -442,7 +466,13 @@ mod tests {
 
         let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
 
-        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(
+            status,
+            EXIT_SUCCESS,
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
         assert_eq!(stdout, b"ok");
         assert_eq!(stderr, b"");
         fs::remove_dir_all(root).expect("remove temp root");

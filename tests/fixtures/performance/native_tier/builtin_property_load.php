@@ -1,7 +1,7 @@
 <?php
 
 // A monomorphic declared-property load lowered to a native guarded helper call —
-// the highest-value WordPress copy-patch shape. Inside a leaf that returns one
+// the highest-value WordPress native-code shape. Inside a leaf that returns one
 // declared property of a by-value typed object parameter (`return $o->prop;`),
 // the fetch is emitted as an `OpaqueObject`-tag guard plus a `blr` into the
 // runtime monomorphic property-load helper over the slot ABI: the object crosses
@@ -24,7 +24,7 @@
 // property returned through `: int`) side-exits so the interpreter coerces or
 // errors exactly.
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs this
+// Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
 // pinned PHP 8.5.7 reference when available.
 

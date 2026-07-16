@@ -1,13 +1,13 @@
 <?php
 
-// Scalar-int leaf functions covering the copy-and-patch native tier's subset:
+// Scalar-int leaf functions covering the Cranelift native compiler's subset:
 // guarded arithmetic (add/sub/mul with overflow side exit), modulo and shifts
 // with domain guards, bitwise ops, an int comparison returning bool, an
 // if/else diamond, and a while loop. Each is a free function with typed int
 // params and an int/bool return, so it is eligible for native execution; all
 // are called from top-level (dense) code so the dense-path hook engages.
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs this
+// Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
 // pinned PHP 8.5.7 reference when available.
 

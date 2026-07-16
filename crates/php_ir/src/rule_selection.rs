@@ -1,4 +1,4 @@
-//! Shared rule-selection metadata for dense bytecode and region IR.
+//! Shared rule-selection metadata for Region IR optimization.
 
 use std::collections::BTreeMap;
 
@@ -72,7 +72,7 @@ impl RuleKind {
     }
 }
 
-/// Placeholder operand constraints for future BURS/copy-and-patch selectors.
+/// Operand constraints for native rule selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuleOperandConstraint {
     /// Operand index within the selected rule.
@@ -88,7 +88,7 @@ pub struct RuleSelection {
     pub id: RuleId,
     /// Selected rule kind.
     pub kind: RuleKind,
-    /// Original dense instruction indexes or region node indexes covered.
+    /// Original IR instruction or Region node indexes covered.
     pub source_indexes: Vec<u32>,
     /// Optional parent fused rule.
     pub parent: Option<RuleId>,

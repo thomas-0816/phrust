@@ -496,6 +496,18 @@ impl ExtensionRegistry {
                 }
             }
         }
+        if let Some(sockets) = extensions
+            .iter_mut()
+            .find(|extension| extension.name() == "sockets")
+        {
+            patch_platform_socket_constants(sockets);
+        }
+        if let Some(pcntl) = extensions
+            .iter_mut()
+            .find(|extension| extension.name() == "pcntl")
+        {
+            patch_platform_pcntl_constants(pcntl);
+        }
         Self::from_extensions(extensions)
     }
 
@@ -625,6 +637,88 @@ impl ExtensionRegistry {
             }
         }
         None
+    }
+}
+
+fn patch_platform_socket_constants(sockets: &mut ExtensionDescriptor) {
+    #[cfg(not(target_os = "linux"))]
+    sockets.constants.retain(|constant| {
+        !matches!(
+            constant.name(),
+            "IP_MTU_DISCOVER"
+                | "IP_PMTUDISC_DO"
+                | "MCAST_LEAVE_GROUP"
+                | "MCAST_LEAVE_SOURCE_GROUP"
+                | "TCP_DEFER_ACCEPT"
+        )
+    });
+
+    for constant in &mut sockets.constants {
+        let value = match constant.name() {
+            "AF_INET" => Some(libc::AF_INET),
+            "AF_UNIX" => Some(libc::AF_UNIX),
+            "IPPROTO_IP" => Some(libc::IPPROTO_IP),
+            "MSG_OOB" => Some(libc::MSG_OOB),
+            "MSG_WAITALL" => Some(libc::MSG_WAITALL),
+            "SHUT_RD" => Some(libc::SHUT_RD),
+            "SHUT_RDWR" => Some(libc::SHUT_RDWR),
+            "SHUT_WR" => Some(libc::SHUT_WR),
+            "SOCK_DGRAM" => Some(libc::SOCK_DGRAM),
+            "SOCK_STREAM" => Some(libc::SOCK_STREAM),
+            "SOL_SOCKET" => Some(libc::SOL_SOCKET),
+            "SOL_TCP" => Some(libc::IPPROTO_TCP),
+            "SOL_UDP" => Some(libc::IPPROTO_UDP),
+            "SO_DEBUG" => Some(libc::SO_DEBUG),
+            "SO_KEEPALIVE" => Some(libc::SO_KEEPALIVE),
+            "SO_REUSEADDR" => Some(libc::SO_REUSEADDR),
+            "TCP_NODELAY" => Some(libc::TCP_NODELAY),
+            #[cfg(target_os = "linux")]
+            "TCP_DEFER_ACCEPT" => Some(libc::TCP_DEFER_ACCEPT),
+            #[cfg(target_os = "linux")]
+            "IP_MTU_DISCOVER" => Some(libc::IP_MTU_DISCOVER),
+            #[cfg(target_os = "linux")]
+            "IP_PMTUDISC_DO" => Some(libc::IP_PMTUDISC_DO),
+            #[cfg(target_os = "linux")]
+            "MCAST_LEAVE_GROUP" => Some(libc::MCAST_LEAVE_GROUP),
+            #[cfg(target_os = "linux")]
+            "MCAST_LEAVE_SOURCE_GROUP" => Some(libc::MCAST_LEAVE_SOURCE_GROUP),
+            _ => None,
+        };
+        if let Some(value) = value {
+            constant.value = Some(ConstantValue::Int(i64::from(value)));
+        }
+    }
+}
+
+fn patch_platform_pcntl_constants(pcntl: &mut ExtensionDescriptor) {
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    pcntl
+        .constants
+        .retain(|constant| !matches!(constant.name(), "PRIO_DARWIN_BG" | "PRIO_DARWIN_THREAD"));
+
+    for constant in &mut pcntl.constants {
+        let value = match constant.name() {
+            "PRIO_PROCESS" => Some(libc::PRIO_PROCESS as i64),
+            "PRIO_PGRP" => Some(libc::PRIO_PGRP as i64),
+            "PRIO_USER" => Some(libc::PRIO_USER as i64),
+            "SIG_DFL" => Some(libc::SIG_DFL as i64),
+            "SIG_IGN" => Some(libc::SIG_IGN as i64),
+            "SIG_ERR" => Some(libc::SIG_ERR as i64),
+            "SIGALRM" => Some(libc::SIGALRM as i64),
+            "SIGCHLD" => Some(libc::SIGCHLD as i64),
+            "SIGCONT" => Some(libc::SIGCONT as i64),
+            "SIGINT" => Some(libc::SIGINT as i64),
+            "SIGSTOP" => Some(libc::SIGSTOP as i64),
+            "SIGTERM" => Some(libc::SIGTERM as i64),
+            "SIGUSR1" => Some(libc::SIGUSR1 as i64),
+            "SIGUSR2" => Some(libc::SIGUSR2 as i64),
+            "WNOHANG" => Some(libc::WNOHANG as i64),
+            "WUNTRACED" => Some(libc::WUNTRACED as i64),
+            _ => None,
+        };
+        if let Some(value) = value {
+            constant.value = Some(ConstantValue::Int(value));
+        }
     }
 }
 
@@ -1639,10 +1733,27 @@ mod tests {
             );
         }
 
-        for name in ["SIG_DFL", "SIG_IGN", "SIGCHLD", "SIGUSR1", "WNOHANG"] {
+        for name in [
+            "SIG_DFL", "SIG_IGN", "SIGCHLD", "SIGCONT", "SIGSTOP", "SIGUSR1", "WNOHANG",
+        ] {
             assert!(
                 registry.enabled_constant(name).is_some(),
                 "{name} should be registered as a pcntl constant"
+            );
+        }
+
+        for (name, expected) in [
+            ("SIGCHLD", libc::SIGCHLD as i64),
+            ("SIGCONT", libc::SIGCONT as i64),
+            ("SIGSTOP", libc::SIGSTOP as i64),
+            ("SIGUSR1", libc::SIGUSR1 as i64),
+        ] {
+            assert_eq!(
+                registry
+                    .enabled_constant(name)
+                    .and_then(ConstantDescriptor::value),
+                Some(ConstantValue::Int(expected)),
+                "{name} should use the target platform value"
             );
         }
     }

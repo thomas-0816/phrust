@@ -65,6 +65,18 @@ class ExtensionSurfaceGeneratorTests(unittest.TestCase):
                 {"schema_version": 1, "extensions": ["test"]}, [item]
             )
 
+    def test_platform_constant_uses_target_value(self) -> None:
+        rendered = surfaces.render_constant(
+            "core",
+            {
+                "name": "PHP_OS",
+                "value": {"kind": "string", "value": "extraction-host"},
+                "deprecation": None,
+            },
+        )
+        self.assertIn("crate::constants::PHP_OS", rendered)
+        self.assertNotIn("extraction-host", rendered)
+
 
 def tree(root: Path) -> dict[str, bytes]:
     return {

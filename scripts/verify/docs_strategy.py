@@ -72,7 +72,12 @@ def tracked_docs() -> list[str]:
     out = subprocess.run(
         ["git", "ls-files", "*.md"], capture_output=True, text=True, cwd=ROOT, check=True
     ).stdout.split()
-    return [p for p in out if not p.startswith(("third_party/", "target/", ".claude/", ".github/"))]
+    return [
+        p
+        for p in out
+        if not p.startswith(("third_party/", "target/", ".claude/", ".github/"))
+        and (ROOT / p).is_file()
+    ]
 
 
 def classify(path: str) -> str:

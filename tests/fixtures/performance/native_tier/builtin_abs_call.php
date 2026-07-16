@@ -11,7 +11,7 @@
 // shown via magnitude(), whose int|float return keeps it in the interpreter —
 // the exact value the native path's side exit defers to.
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs this
+// Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
 // pinned PHP 8.5.7 reference when available.
 

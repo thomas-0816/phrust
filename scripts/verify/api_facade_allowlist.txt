@@ -5,4 +5,4 @@
 #   path-prefix|relative/path/prefix/|reason
 #
 # No workspace source exceptions remain. Use php_runtime::api/debug/experimental
-# and php_vm::api/experimental.
+# and php_vm::api/experimental/tooling.

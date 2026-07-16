@@ -125,7 +125,6 @@ pub(super) fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::ForeachCleanup { .. }
-        | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => Vec::new(),
     }
 }

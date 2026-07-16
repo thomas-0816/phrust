@@ -25,6 +25,15 @@ semantics fixture gates, the Runtime semantics diff harness, the VM semantics
 oracle, and runtime hardening lints. Formatting, general linting, and workspace
 tests are covered by `ci-rust`, `ci-local`, and the dedicated CI jobs.
 
+The Prompt 11 server-build proof and the architecture check inside
+`verify-runtime` share the incremental `cutover` profile. The architecture
+check, `just cranelift-only-ratchet-fast`, builds the CLI and server together;
+the profile's many codegen units and disabled LTO keep the development gate
+parallel. `just ci-local` additionally runs
+`just cranelift-only-ratchet` against canonical release binaries. Release and
+profiling artifacts therefore retain their single-codegen-unit performance
+configuration and are not replaced by development builds.
+
 ## Evidence Map
 
 | Area | Evidence |

@@ -92,8 +92,12 @@ fi
 
 mkdir -p "$run_dir"
 
-previous_results=""
-if [[ "${PHPT_DISABLE_REUSE:-0}" != "1" ]]; then
+previous_results="${PHPT_PREVIOUS_RESULTS:-}"
+if [[ -n "$previous_results" && ! -s "$previous_results" ]]; then
+  printf 'Explicit PHPT_PREVIOUS_RESULTS does not exist or is empty: %s\n' "$previous_results" >&2
+  exit 1
+fi
+if [[ -z "$previous_results" && "${PHPT_DISABLE_REUSE:-0}" != "1" ]]; then
   previous_results="$(
     find "$work_root/full-runs" -mindepth 2 -maxdepth 2 -name results.jsonl -type f \
       ! -path "$run_dir/results.jsonl" \
@@ -127,6 +131,11 @@ if [[ -n "${PHPT_DEV_REUSE_PASS:-}" && "${PHPT_DEV_REUSE_PASS:-}" != "0" ]]; the
   dev_reuse_args=(--dev-reuse-pass)
 fi
 
+cleanup_args=()
+if [[ "${PHPT_KEEP_WORK:-0}" != "1" ]]; then
+  cleanup_args=(--cleanup-work)
+fi
+
 printf 'TARGET_PHP=%s\n' "$target_php"
 printf 'PHPT_TARGET_MODE=%s\n' "$target_mode"
 printf 'PHPT_CORPUS_MANIFEST=%s\n' "$corpus"
@@ -134,6 +143,7 @@ printf 'PHPT_RUN_DIR=%s\n' "$run_dir"
 printf 'PHPT_JOBS=%s\n' "$phpt_jobs"
 printf 'PHPT_REUSE_RESULTS=%s\n' "${reuse_args[*]:-disabled}"
 printf 'PHPT_DEV_REUSE_PASS=%s\n' "${PHPT_DEV_REUSE_PASS:-0}"
+printf 'PHPT_KEEP_WORK=%s\n' "${PHPT_KEEP_WORK:-0}"
 
 set +e
 "$phpt_tool" run \
@@ -147,6 +157,7 @@ set +e
   --timeout-seconds "${PHPT_TIMEOUT_SECONDS:-30}" \
   ${reuse_args[@]+"${reuse_args[@]}"} \
   ${dev_reuse_args[@]+"${dev_reuse_args[@]}"} \
+  ${cleanup_args[@]+"${cleanup_args[@]}"} \
   ${job_args[@]+"${job_args[@]}"}
 run_status=$?
 set -e
@@ -165,6 +176,14 @@ fi
   --report "$report" \
   --timestamp "$timestamp" \
   ${previous_args[@]+"${previous_args[@]}"}
+
+if [[ -n "$previous_results" ]]; then
+  python3 "$script_dir/result_delta.py" \
+    --baseline "$previous_results" \
+    --current "$run_dir/results.jsonl" \
+    --out "$run_dir/result-delta.json" \
+    --regression-manifest "$run_dir/regression-manifest.jsonl"
+fi
 
 "$phpt_tool" triage \
   --corpus "$corpus" \

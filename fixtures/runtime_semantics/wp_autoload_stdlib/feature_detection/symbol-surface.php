@@ -39,3 +39,5 @@ echo array_key_exists("PACK_B_CONST", $constants) ? "const=yes\n" : "const=no\n"
 echo array_key_exists("PACK_B_DEFINED", $constants) ? "define=yes\n" : "define=no\n";
 echo extension_loaded("standard") ? "standard=yes\n" : "standard=no\n";
 echo in_array("standard", get_loaded_extensions(), true) ? "loaded=yes\n" : "loaded=no\n";
+echo extension_loaded("phrust_missing_extension") ? "missing=yes\n" : "missing=no\n";
+echo in_array("phrust_missing_extension", get_loaded_extensions(), true) ? "missing-listed=yes\n" : "missing-listed=no\n";

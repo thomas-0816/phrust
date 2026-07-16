@@ -1,6 +1,0 @@
-Call graph:
-    3 Thread_13: php-worker-0
-    + 3 thread_start  (in libsystem_pthread.dylib) + 8  [0x4000]
-    +   3 php_vm::copy_patch_bridge::cached_leaf  (in phrust-server) + 4  [0x4004]  copy_patch_bridge.rs:20
-    +     3 native-copy-patch  (in phrust-server) + 0  [0x4008]
-Total number in stack (recursive counted multiple, when >=5):

@@ -301,6 +301,14 @@ pub const FUNCTIONS: &[GeneratedBuiltinDescriptor] = &[
         variadic: false,
     },
     GeneratedBuiltinDescriptor {
+        name: "stream_socket_server",
+        extension: "standard",
+        return_type: Some("mixed"),
+        required_parameters: 1,
+        total_parameters: 5,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
         name: "stream_wrapper_register",
         extension: "standard",
         return_type: Some("bool"),

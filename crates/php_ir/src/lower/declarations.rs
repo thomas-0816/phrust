@@ -1682,6 +1682,7 @@ impl LoweringContext<'_> {
                 )
             },
             current_class,
+            current_class_display,
             class_constants,
             class_parents,
         );
@@ -1709,6 +1710,7 @@ impl LoweringContext<'_> {
             value,
             |context| matches!(context, ConstExprContext::ClassConstInitializer),
             Some(current_class),
+            Some(current_class_display),
             class_constants,
             class_parents,
         );

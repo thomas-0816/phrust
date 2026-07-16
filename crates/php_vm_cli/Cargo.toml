@@ -6,23 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["jit-copy-patch", "runtime-telemetry"]
-jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift", "php_vm/jit-cranelift"]
-# Copy-and-patch native leaf tier, on by default (runtime-gated by
-# PHRUST_JIT_COPY_PATCH, which defaults on; set falsey to disable). Compile it
-# out with --no-default-features.
-jit-copy-patch = [
-    "php_vm/jit-copy-patch",
-    "php_executor/jit-copy-patch",
-    "php_server/jit-copy-patch",
-]
+default = ["runtime-telemetry"]
 runtime-telemetry = [
     "php_server/runtime-telemetry",
     "php_std/runtime-telemetry",
     "php_vm/runtime-telemetry",
     "php_executor/runtime-telemetry",
     "php_runtime/runtime-telemetry",
-    "php_bytecode_cache/runtime-telemetry",
 ]
 
 [[bin]]
@@ -34,20 +24,15 @@ name = "phrust-php"
 path = "src/bin/phrust_php.rs"
 
 [dependencies]
-php_bytecode_cache = { path = "../php_bytecode_cache", version = "0.0.0", default-features = false }
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_executor = { path = "../php_executor", version = "0.0.0", default-features = false }
-php_ir = { path = "../php_ir", version = "0.0.0" }
-php_jit = { path = "../php_jit", version = "0.0.0", optional = true }
+php_jit = { path = "../php_jit", version = "0.0.0" }
 php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
-php_perf = { path = "../php_perf", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }
-php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_server = { path = "../php_server", version = "0.0.0", default-features = false }
 php_source = { path = "../php_source", version = "0.0.0" }
 php_std = { path = "../php_std", version = "0.0.0", default-features = false }
 php_vm = { path = "../php_vm", version = "0.0.0", default-features = false }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]

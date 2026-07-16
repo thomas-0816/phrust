@@ -1,0 +1,18 @@
+Usage:
+  php-vm run [native options] <file> [-- args...]
+  php-vm run --clear-native-cache [--native-cache-dir PATH]
+  php-vm compile <file> [--json] [--opt-level 0|1|2]
+  php-vm native-compile <file> [--function NAME] [--json] [--opt-level 0|1|2]
+  php-vm dump-ir <file> [--with-source]
+
+Native options:
+  --engine-preset baseline|default
+  --opt-level 0|1|2
+  --native-cache off|read|write|read-write
+  --native-cache-dir PATH
+  --clear-native-cache
+  --native-cache-stats
+  --counters-json PATH
+  --timings-json PATH
+  --trace --trace-runtime --trace-includes
+  --env KEY=VALUE

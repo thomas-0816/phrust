@@ -20,15 +20,8 @@ EMPTY_RUST_ALLOWLIST: dict[str, str] = {
 REQUIRED_FILES = [
     "crates/php_vm/src/lib.rs",
     "crates/php_vm/src/vm/mod.rs",
-    "crates/php_vm/src/vm/arguments.rs",
-    "crates/php_vm/src/vm/builtin_callbacks.rs",
-    "crates/php_vm/src/vm/builtin_intrinsics.rs",
-    "crates/php_vm/src/vm/builtins.rs",
-    "crates/php_vm/src/vm/calls.rs",
-    "crates/php_vm/src/vm/dense_method_dispatch.rs",
-    "crates/php_vm/src/vm/generator_fiber.rs",
+    "crates/php_vm/src/vm/jit_abi.rs",
     "crates/php_vm/src/vm/options.rs",
-    "crates/php_vm/src/vm/prelude.rs",
     "crates/php_vm/src/vm/result.rs",
     "crates/php_std/src/lib.rs",
     "crates/php_std/src/arginfo.rs",
@@ -58,88 +51,63 @@ REQUIRED_FILES = [
     "docs/architecture/guardrails.md",
     "docs/quality/repository-truth-ratchet.md",
     "docs/runtime/module-boundaries.md",
-    "docs/performance/mode-matrix.md",
     "docs/quality/panic-unwrap-policy.md",
 ]
 
 API_FACADE_ROOT_RE = re.compile(
-    r"\bphp_(?:vm|runtime)::(?!(?:api|debug|experimental)\b)(?:\{|[A-Za-z_])"
+    r"\bphp_(?:vm|runtime)::(?!(?:api|debug|experimental|tooling)\b)(?:\{|[A-Za-z_])"
 )
 
 API_FACADE_ROOT_MODULES = {
     "crates/php_runtime/src/lib.rs": {"api", "debug", "experimental"},
-    "crates/php_vm/src/lib.rs": {"api", "experimental"},
+    "crates/php_vm/src/lib.rs": {"api", "tooling"},
 }
 
 VM_MOD_REQUIRED_SNIPPETS = [
-    "mod arguments;",
-    "mod builtin_callbacks;",
-    "mod builtin_intrinsics;",
-    "mod builtins;",
-    "mod calls;",
-    "mod dense_method_dispatch;",
-    "mod generator_fiber;",
+    "mod jit_abi;",
     "mod options;",
-    "mod prelude;",
     "mod result;",
-    "BytecodeLayoutMode",
-    "DenseIncludeMode",
-    "DenseJumpThreadingMode",
-    "ExecutionFormat",
-    "JitBlacklistMode",
-    "JitMode",
-    "SuperinstructionMode",
+    "NativeBlacklistMode",
+    "NativeOptimizationPolicy",
     "VmOptions",
     "pub use result::VmResult;",
     "pub struct Vm",
     "impl Vm",
     "pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult",
+    "compile_unit_with_runtime_helpers",
 ]
 
 VM_RESULT_REQUIRED_SNIPPETS = [
     "impl VmResult",
     "pub(crate) fn success(",
-    "pub(crate) fn success_with_diagnostics(",
-    "pub(super) fn script_exit(",
-    "pub(crate) fn runtime_error_with_diagnostic(",
-    "pub(super) fn compile_error(",
-    "pub(super) fn unsupported(",
-    "pub(super) fn propagating_exception(",
+    "pub(crate) fn compile_error(",
 ]
 
 VM_SUBMODULE_REQUIRED_SNIPPETS = {
-    "crates/php_vm/src/vm/arguments.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/builtin_callbacks.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/builtin_intrinsics.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/builtins.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/calls.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/dense_method_dispatch.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/generator_fiber.rs": ["use super::prelude::*;"],
-    "crates/php_vm/src/vm/prelude.rs": ["pub(super) use super::*;"],
+    "crates/php_vm/src/vm/jit_abi.rs": [
+        "jit_native_call_dispatch_abi",
+        "jit_native_dynamic_code_abi",
+        "jit_native_runtime_fatal_abi",
+    ],
+    "crates/php_vm/src/vm/native_entry.rs": ["invoke_i64_with_native_unwind"],
+    "crates/php_vm/src/vm/options.rs": [
+        "pub struct VmOptions",
+        "pub enum NativeOptimizationPolicy",
+        "pub enum NativeBlacklistMode",
+    ],
 }
 
-VM_SUBMODULE_FORBIDDEN_SNIPPETS = {
-    "crates/php_vm/src/vm/arguments.rs": ["use super::*;"],
-    "crates/php_vm/src/vm/builtin_callbacks.rs": ["use super::*;"],
-    "crates/php_vm/src/vm/builtin_intrinsics.rs": ["use super::*;"],
-    "crates/php_vm/src/vm/builtins.rs": ["use super::*;"],
-    "crates/php_vm/src/vm/calls.rs": ["use super::*;"],
-    "crates/php_vm/src/vm/dense_method_dispatch.rs": ["use super::*;"],
-    "crates/php_vm/src/vm/generator_fiber.rs": ["use super::*;"],
-}
+VM_SUBMODULE_FORBIDDEN_SNIPPETS: dict[str, list[str]] = {}
 
 VM_LIB_REQUIRED_SNIPPETS = [
     "mod vm;",
     "pub mod api {",
     "pub use crate::vm::{",
-    "BytecodeLayoutMode",
-    "DenseIncludeMode",
-    "DenseJumpThreadingMode",
-    "ExecutionFormat",
-    "JitBlacklistMode",
-    "JitMode",
-    "SuperinstructionMode",
+    "NativeBlacklistMode",
+    "NativeOptimizationPolicy",
     "VmOptions",
+    "CRANELIFT_VERSION",
+    "JIT_RUNTIME_ABI_HASH",
 ]
 
 ARGINFO_REQUIRED_SNIPPETS = [
@@ -151,6 +119,7 @@ ARGINFO_REQUIRED_SNIPPETS = [
     "pub const GENERATED_FUNCTIONS: &[GeneratedFunctionMetadata] = &[",
     "pub const GENERATED_CLASSES: &[GeneratedClassMetadata] = &[",
     "pub const GENERATED_METHODS: &[GeneratedMethodMetadata] = &[",
+    "pub const GENERATED_PROPERTIES: &[GeneratedPropertyMetadata] = &[",
     "pub const GENERATED_CONSTANTS: &[GeneratedConstantMetadata] = &[",
     "pub fn function_metadata(name: &str) -> Option<&'static GeneratedFunctionMetadata>",
     "pub fn class_metadata(name: &str) -> Option<&'static GeneratedClassMetadata>",
@@ -168,6 +137,7 @@ GENERATED_COUNT_CONSTANTS = [
     "GENERATED_ARGINFO_FUNCTION_COUNT",
     "GENERATED_ARGINFO_CLASS_COUNT",
     "GENERATED_ARGINFO_METHOD_COUNT",
+    "GENERATED_ARGINFO_PROPERTY_COUNT",
     "GENERATED_ARGINFO_CONSTANT_COUNT",
 ]
 
@@ -370,13 +340,14 @@ def check_api_facade_imports() -> None:
             stripped = line.strip()
             if stripped.startswith("//"):
                 continue
-            if API_FACADE_ROOT_RE.search(line):
+            code_without_strings = re.sub(r'"(?:\\.|[^"\\])*"', '""', line)
+            if API_FACADE_ROOT_RE.search(code_without_strings):
                 violations.append(f"{relative}:{line_number}: {stripped}")
     if violations:
         joined = "\n  - ".join(violations[:50])
         extra = "" if len(violations) <= 50 else f"\n  ... {len(violations) - 50} more"
         raise IntegrityError(
-            "root php_vm/php_runtime imports must use api/debug/experimental facades "
+            "root php_vm/php_runtime imports must use api/debug/experimental/tooling facades "
             "or be documented in scripts/verify/api_facade_allowlist.txt:\n"
             f"  - {joined}{extra}"
         )

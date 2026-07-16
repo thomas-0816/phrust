@@ -1,7 +1,7 @@
 <?php
 
 // Builtin count() lowered to a native helper call — the first heap-handle shape
-// of the copy-and-patch native tier. Inside a scalar leaf, count($array) is
+// of the Cranelift native compiler. Inside a scalar leaf, count($array) is
 // emitted as a real `blr` into the runtime `php_jit_array_len` helper over the
 // slot ABI: the array crosses as a read-only borrowed handle (an OpaqueArray
 // slot whose payload is a `*const Value` valid only for the synchronous call).
@@ -17,7 +17,7 @@
 // The native path is only taken after the VM confirms `count` resolves to the
 // real builtin (see NativeCallPermits::builtin_count), mirroring abs().
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs this
+// Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
 // pinned PHP 8.5.7 reference when available.
 

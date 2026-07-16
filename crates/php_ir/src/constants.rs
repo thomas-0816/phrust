@@ -24,6 +24,9 @@ pub enum IrConstant {
     ClassConstant {
         /// Class-like name as resolved by the semantic frontend when possible.
         class_name: String,
+        /// Source-case class-like name used for autoload callbacks and diagnostics.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        display_class_name: String,
         /// Constant name without the class qualifier.
         constant_name: String,
     },

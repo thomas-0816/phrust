@@ -84,6 +84,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "error_clear_last",
+        builtin_error_handling_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "error_get_last",
+        builtin_error_handling_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "error_log",
         builtin_error_handling_requires_vm,
         BuiltinCompatibility::Php,
@@ -5007,44 +5017,6 @@ pub(in crate::builtins::modules) fn array_diff_by_key_and_value(
     Ok(output)
 }
 
-pub(in crate::builtins::modules) fn array_intersect_by_value(
-    first: &crate::PhpArray,
-    others: &[crate::PhpArray],
-) -> Result<crate::PhpArray, BuiltinError> {
-    let mut output = crate::PhpArray::new();
-    for (key, value) in first.iter() {
-        let needle = array_compare_value_key("array_intersect", value)?;
-        if others.iter().all(|other| {
-            other.iter().any(|(_, candidate)| {
-                array_compare_value_key("array_intersect", candidate)
-                    .is_ok_and(|candidate| candidate == needle)
-            })
-        }) {
-            output.insert(key.clone(), materialize_array_builtin_value(value));
-        }
-    }
-    Ok(output)
-}
-
-pub(in crate::builtins::modules) fn array_intersect_by_key_and_value(
-    first: &crate::PhpArray,
-    others: &[crate::PhpArray],
-) -> Result<crate::PhpArray, BuiltinError> {
-    let mut output = crate::PhpArray::new();
-    for (key, value) in first.iter() {
-        let needle = array_compare_value_key("array_intersect_assoc", value)?;
-        if others.iter().all(|other| {
-            other.get(&key).is_some_and(|candidate| {
-                array_compare_value_key("array_intersect_assoc", candidate)
-                    .is_ok_and(|candidate| candidate == needle)
-            })
-        }) {
-            output.insert(key.clone(), materialize_array_builtin_value(value));
-        }
-    }
-    Ok(output)
-}
-
 pub(in crate::builtins::modules) fn array_compare_value_key(
     name: &str,
     value: &Value,
@@ -5839,17 +5811,21 @@ pub(in crate::builtins::modules) fn splice_replacement_values(
 pub(in crate::builtins::modules) fn merge_recursive_into(
     output: &mut crate::PhpArray,
     input: &crate::PhpArray,
-) {
+) -> Result<(), BuiltinError> {
     for (key, value) in input.iter() {
         match key {
             ArrayKey::Int(_) => {
-                output.append(materialize_array_builtin_value(value));
+                output
+                    .try_append(materialize_array_builtin_value(value))
+                    .map_err(|error| {
+                        BuiltinError::new("E_PHP_RUNTIME_ARRAY_APPEND_OVERFLOW", error.to_string())
+                    })?;
             }
             ArrayKey::String(key) => {
                 let out_key = ArrayKey::String(key.clone());
                 if let Some(existing) = output.get(&out_key).map(materialize_array_builtin_value) {
                     let merged =
-                        merge_recursive_values(existing, materialize_array_builtin_value(value));
+                        merge_recursive_values(existing, materialize_array_builtin_value(value))?;
                     output.insert(out_key, merged);
                 } else {
                     output.insert(out_key, materialize_array_builtin_value(value));
@@ -5857,15 +5833,30 @@ pub(in crate::builtins::modules) fn merge_recursive_into(
             }
         }
     }
+    Ok(())
 }
 
-pub(in crate::builtins::modules) fn merge_recursive_values(left: Value, right: Value) -> Value {
+pub(in crate::builtins::modules) fn merge_recursive_values(
+    left: Value,
+    right: Value,
+) -> Result<Value, BuiltinError> {
     match (deref_value(&left), deref_value(&right)) {
         (Value::Array(mut left), Value::Array(right)) => {
-            merge_recursive_into(&mut left, &right);
-            Value::Array(left)
+            merge_recursive_into(&mut left, &right)?;
+            Ok(Value::Array(left))
         }
-        (left, right) => Value::packed_array(vec![left, right]),
+        (Value::Array(mut left), right) => {
+            left.try_append(right).map_err(|error| {
+                BuiltinError::new("E_PHP_RUNTIME_ARRAY_APPEND_OVERFLOW", error.to_string())
+            })?;
+            Ok(Value::Array(left))
+        }
+        (left, Value::Array(right)) => {
+            let mut merged = crate::PhpArray::from_packed(vec![left]);
+            merge_recursive_into(&mut merged, &right)?;
+            Ok(Value::Array(merged))
+        }
+        (left, right) => Ok(Value::packed_array(vec![left, right])),
     }
 }
 
@@ -9720,7 +9711,7 @@ mod tests {
                 "strtotime",
                 vec![Value::string("2024-01-02 03:04:05")],
             ),
-            Value::Int(1_704_164_645)
+            Value::Int(1_704_161_045)
         );
         assert_eq!(
             call_in_context(

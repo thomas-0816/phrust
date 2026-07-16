@@ -1,36 +1,31 @@
-# Runtime VM Structure
+# Native VM Structure
 
-The VM crate keeps the public `php_vm::vm` API stable while splitting the
-implementation into a module directory:
+`php_vm` is the outer native PHP execution coordinator. It contains no opcode
+loop and exposes no backend selector.
 
-- `crates/php_vm/src/vm/mod.rs` is the temporary migration facade for public
-  exports, construction, request lifecycle, and top-level orchestration. The
-  implementation ownership and dependency rules are defined by the
-  [VM decomposition map](../architecture/vm-decomposition.md).
-- `crates/php_vm/src/vm/prelude.rs` owns private VM implementation imports for
-  VM submodules. It is not part of the public API surface.
-- `crates/php_vm/src/vm/options.rs` owns `VmOptions` and the public execution
-  mode enums re-exported from `php_vm::vm`.
-- `crates/php_vm/src/vm/result.rs` owns `VmResult`, `VmControlFlow`, and
-  `VmResult` constructor helpers.
-- `crates/php_vm/src/vm/arguments.rs` owns user-function argument preparation,
-  reference binding, runtime type enforcement, and parameter diagnostics.
-- `crates/php_vm/src/vm/closure_operations.rs` owns closure construction,
-  capture materialization, binding context, and `$this` initialization.
-- `crates/php_vm/src/vm/class_operations.rs`, `class_relations.rs`, and
-  `property_resolution.rs` own constant/class operations, state-aware class and
-  method relationships, and property lookup respectively.
-- `crates/php_vm/src/vm/dense_method_dispatch.rs` owns dense bytecode method
-  call dispatch helpers.
-- `crates/php_vm/src/vm/generator_fiber.rs` owns generator and fiber runtime
-  method handling.
+- `crates/php_vm/src/vm/mod.rs` verifies authoritative IR, compiles every
+  function through Cranelift, publishes native entries, enters the unit entry,
+  and assembles the outer execution result.
+- `crates/php_vm/src/vm/options.rs` owns native compilation, runtime-context,
+  tracing, include, and inline-cache configuration.
+- `crates/php_vm/src/vm/jit_abi.rs` owns typed runtime-helper and native-call
+  boundaries. Missing publication returns a native status; it never re-enters
+  another executor.
+- `crates/php_vm/src/vm/result.rs` owns the outer request result.
+- `compiled_unit`, `dependency_units`, `include`, and `inline_cache` retain
+  backend-neutral IR, dependency, source-map, resolver, and cache metadata.
 
-The module split does not add Zend, function, callable, object, or
-standard-library behavior. New VM behavior continues to enter through the
-existing frontend-to-IR-to-VM pipeline. Implementation must follow the target
-ownership map rather than adding new behavior to the migration facade.
+Runtime semantics are implemented by typed operations in `php_runtime` and are
+called from generated code through stable helper IDs and ABI records. Native
+code generation lives in `php_jit`; frontend ownership remains
+`php_lexer -> php_syntax -> php_ast -> php_semantics -> php_ir`.
 
-`scripts/verify/source_integrity.py` pins the expected VM module wiring, the
-non-empty Rust source rule, and the `VmResult` helper ownership. It also rejects
-direct `use super::*` imports from focused VM submodules so broad parent-module
-reach-through is visible in one private prelude instead of being duplicated.
+The architectural gate is:
+
+```sh
+nix develop -c just cranelift-native-executor
+```
+
+It rejects retired executor paths and public engine types, runs native-focused
+tests, checks every workspace target, builds the release server, and scans its
+symbols for legacy entry points.

@@ -421,7 +421,6 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::ForeachCleanup { .. }
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::ForeachNextRef { .. }
-        | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => {}
     }
 }

@@ -68,6 +68,12 @@ target intentionally avoids host-specific absolute paths; the shell may use the
 developer's `PATH` for optional tools, but required Runtime semantics validation tools
 must be available inside `nix develop`.
 
+The runtime-semantics differential runner resolves its default `php-vm` binary
+under `CARGO_TARGET_DIR` (falling back to `target/`) and selects the `php-vm`
+Cargo binary explicitly when a build fallback is required. This keeps isolated
+or tmpfs validation targets deterministic even though `php_vm_cli` publishes
+multiple binaries.
+
 ## Optional Miri
 
 Miri is useful for reference/GC model tests, but it depends on a Miri-capable

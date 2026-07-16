@@ -1,43 +1,44 @@
 # Cache Architecture
 
-This repository has two intentionally separate cache classes. They share the
+This repository has several intentionally separate cache classes. They share the
 same safety rule: a cache hit must never change PHP-visible stdout, stderr, exit
 status, diagnostics, request side effects, or fixture behavior.
 
-## CLI Bytecode Artifact Cache
+## Persistent Native Artifact Cache
 
-The CLI bytecode cache is a disk artifact cache owned by `php_vm_cli` and
-`php_bytecode_cache`. It exists for local CLI execution and performance
-experiments, and is enabled with `php-vm run --bytecode-cache=...`.
+The PNA2 disk cache is owned by `php_jit` and configured by `php_vm_cli` with
+`php-vm run --native-cache=...`. It stores validated Cranelift machine code and
+symbolic relocations so another process can publish executable entries without
+recompiling unchanged IR.
 
-Cache artifacts are stored under the configured cache directory as `.phbc`
-files named by a hex digest. The cache format is a project-owned envelope with a
-verified IR payload; corrupt, stale, unreadable, or missing artifacts fall back
-to compile-from-source behavior.
+Artifacts are content addressed. Their identity covers source/IR content,
+compiler and target identity, CPU features, compile policy, and the versioned
+runtime/helper ABIs. Helper addresses are never serialized: the loader resolves
+stable helper IDs through the current registry, applies bounded relocations in
+writable memory, then changes the mapping to executable. Corrupt, stale,
+unreadable, oversized, or incompatible artifacts are rejected and rebuilt.
 
-The bytecode cache fingerprint records these dimensions:
+The native cache validates at least these dimensions:
 
-- source bytes hash;
-- canonical source identity when available;
-- engine crate version;
-- PHP compatibility target;
-- frontend, cache, and IR format versions;
-- optimization level;
-- Rust target label;
-- feature flags such as bytecode-cache mode;
-- runtime and configuration values that influence the compiled artifact.
+- PNA2 unit-bundle schema and checksum;
+- source/IR and native compile-policy identities;
+- compiler version, target triple, and CPU feature identity;
+- runtime and helper ABI versions and hashes;
+- code, function, relocation, transition, and metadata bounds;
+- cache-directory ownership, symlink, lock, and total-size constraints.
 
-The CLI reports bytecode cache state through `--bytecode-cache-stats` JSON:
-`hit`, `miss`, `wrote`, `cleared`, `compile_error`, `load_error`,
-`store_error`, and the cache file path when one was selected.
+The CLI exposes `--native-cache off|read|write|read-write`,
+`--native-cache-dir`, `--clear-native-cache`, and `--native-cache-stats`.
+Detailed format, W^X, and restart validation live in
+[`native-compile-cache.md`](../performance/native-compile-cache.md).
 
 ## Server Compiled Script Cache
 
 The server cache is a process-local, in-memory compiled-script cache owned by
 `php_executor::CompiledScriptCache` and consumed by `php_server`. It exists only
 to reuse immutable compiled entry scripts across HTTP requests in the current
-server process. It does not persist artifacts across process restarts and does
-not use the `.phbc` disk format.
+server process. It does not persist these object graphs across process restarts
+and is independent of the PNA2 machine-code cache.
 
 The server cache key records the invalidation dimensions available at
 entry-script compile time:
@@ -116,9 +117,9 @@ stale invalidations, stale dependency invalidations, and compile errors.
 
 ## Why The Key Logic Is Not Shared
 
-The two caches have different lifetimes and trust boundaries. The bytecode cache
-loads untrusted local disk data and must validate a portable artifact against a
-format version, target label, PHP target, feature set, and runtime config. The
+The caches have different lifetimes and trust boundaries. The native cache
+loads untrusted local machine code and must validate the artifact, target,
+compile policy, and ABI identities before W^X publication. The
 server cache stores `Arc<CompiledPhpScript>` and `Arc<CompiledUnit>` values
 created by the current process and never deserializes them from disk, so its key
 can be smaller and focused on process-local staleness.
@@ -137,5 +138,5 @@ dynamic include graphs, autoload registration order, and cross-process
 invalidation remain known boundaries. These caches are not treated as an
 OPcache replacement.
 
-The CLI bytecode cache remains an optional local optimization. Programs must run
-correctly when the cache is disabled, empty, corrupt, or stale.
+The persistent native cache is optional; native compilation is not. Programs
+must run correctly when the cache is disabled, empty, corrupt, or stale.

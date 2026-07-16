@@ -696,7 +696,7 @@ fn at_prefix_operator(parser: &Parser<'_>) -> bool {
 }
 
 fn at_named_argument_label(parser: &Parser<'_>) -> bool {
-    parser.at(named(TokenName::String)) && nth_non_trivia_is(parser, 1, symbol(b':'))
+    parser.current_keyword_context().is_some() && nth_non_trivia_is(parser, 1, symbol(b':'))
 }
 
 fn at_static_class_context_name(parser: &Parser<'_>) -> bool {

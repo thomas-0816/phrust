@@ -1,1760 +1,2214 @@
-//! First minimal VM dispatch loop.
+//! Native PHP execution coordinator.
 
-mod arguments;
-mod builtin_adapter;
-mod builtin_array_callbacks;
-mod builtin_array_sort;
-mod builtin_callback_validation;
-mod builtin_callbacks;
-mod builtin_classes;
-mod builtin_environment;
-mod builtin_error_output;
-mod builtin_fileinfo;
-mod builtin_filter_callbacks;
-mod builtin_intrinsics;
-mod builtin_pcre_callbacks;
-mod builtin_settype;
-mod builtins;
-mod callable_builtins;
-mod calls;
-mod class_context;
-mod class_operations;
-mod class_relations;
-mod class_validation;
-mod closure_operations;
-mod dense_dispatch;
-mod dense_method_dispatch;
-mod dense_pcre_support;
-mod dense_runtime_adapters;
-mod diagnostics;
-mod dim_execution_support;
-mod dispatch_contract;
-mod exception_dispatch;
-mod execution_control;
-mod execution_cursor;
-mod execution_optimization;
-mod execution_state;
-mod execution_tiering;
-mod ext_redis;
-mod generator_fiber;
-mod include_execution;
-mod inline_cache_access;
-mod instrumentation;
-mod iteration;
 mod jit_abi;
-mod jit_state;
-mod layout_source;
-mod method_cache_metadata;
-mod method_dispatch;
-mod object_lifecycle;
-mod operand_read;
+mod native_compile_cache;
+mod native_entry;
 mod options;
-mod prelude;
-mod property_cache_metadata;
-mod property_execution;
-mod property_resolution;
-mod property_state;
-mod reflection;
-mod request_lifecycle;
-mod request_profile;
 mod result;
-mod rich_array_dispatch;
-mod rich_call_dispatch;
-mod rich_dispatch;
-mod rich_exception_dispatch;
-mod rich_foreach_dispatch;
-mod rich_object_dispatch;
-mod rich_property_dispatch;
-mod runtime_class_metadata;
-mod runtime_class_support;
-mod runtime_environment_support;
-mod runtime_operations;
-mod scalar_handlers;
-mod serialization;
-mod shutdown_execution;
-mod spl;
-mod spl_heap_dispatch;
-mod spl_iterator_dispatch;
-mod spl_recursive_iterator_dispatch;
-mod static_property_predicates;
-mod stream_wrappers;
-mod symbol_resolution;
-mod value_support;
 
-use arguments::{
-    ParamTypecheckRequest, TypecheckFastPathContext, call_args_from_owned_php_array,
-    call_args_from_php_array, call_args_to_positional, call_argument_reference_cell,
-    check_property_type, coerce_or_check_param_type, coerce_return_value, ir_runtime_type,
-    param_is_sensitive, sensitive_parameter_value, trace_value_for_param, type_error_value_name,
-};
-#[cfg(test)]
-use builtin_adapter::internal_builtin_by_ref_param_name;
-use builtin_adapter::{
-    BuiltinAdapterState, InternalFunctionDispatchCache, InternalFunctionDispatchCacheOutcome,
-    call_builtin_args_to_positional, internal_builtin_by_ref_temporary_fatal_result,
-    request_filter_input_arrays, sorted_request_env,
-};
-use builtin_array_callbacks::is_array_callback_builtin_name;
-use builtin_array_sort::is_array_sort_builtin_name;
-use builtin_classes::*;
-use builtin_fileinfo::FileinfoMethodCall;
-use builtin_filter_callbacks::is_filter_callback_builtin_name;
-use builtin_pcre_callbacks::is_pcre_callback_builtin_name;
-use calls::*;
-use class_context::*;
-use class_operations::*;
-use class_relations::*;
-use class_validation::*;
-use closure_operations::*;
-use dense_pcre_support::*;
-use diagnostics::*;
-use dim_execution_support::*;
-use dispatch_contract::{
-    DenseExecutionRequest, RichBinaryError, RichBinaryRequest, RichCompareRequest,
-    RichDispatchOutcome, RichUnaryRequest, dense_bytecode_unsupported_reason, dense_opcode_family,
-    next_dense_block_index,
-};
-use exception_dispatch::*;
-use execution_control::{
-    ExceptionHandler, ExecutionLimitExceeded, PendingControl, RaiseOutcome,
-    execution_limit_exceeded, next_block_id,
-};
-use execution_cursor::{ExecutionCursor, ExecutionView};
-use execution_state::{
-    DeclarationKind, DeclarationLoadKind, DeclarationOrigin, DestructorEntry, DestructorSweep,
-    DestructorVisibility, DynamicClassEntry, DynamicConstantEntry, DynamicFunctionEntry,
-    ErrorHandlerEntry, ExecutionState, GcObjectIdSet, LastErrorEntry, MagicMethodCall,
-    MagicPropertyCall, PropertyHookCall, ShutdownFunctionEntry, destructor_candidates_for_value,
-    gc_root_count_from_vm_roots, gc_snapshot_from_vm_roots,
-    php_visible_non_register_root_object_ids, php_visible_root_object_ids,
-    preserved_destructor_object_ids, release_unrooted_direct_object_handle,
-    release_unrooted_object_handles,
-};
-use execution_tiering::JitLeafRequest;
-use ext_redis::*;
-use generator_fiber::{
-    FiberContinuation, FiberContinuationState, FiberResumeInput, FiberSuspension,
-    GeneratorContinuation, GeneratorResumeInput, GeneratorYield, YieldFromDelegation, YieldFromKey,
-    YieldFromStep, new_fiber_object,
-};
-use include_execution::{
-    IncludeExecutionRequest, include_failure_allows_continuation, include_vm_error,
-};
-use inline_cache_access::{DenseInlineCacheSite, IrInlineCacheSite, UnitInlineCacheSite};
-use instrumentation::*;
-use iteration::{
-    ForeachInvalidSourceBehavior, ForeachIterator, foreach_array_keys_from_local_at_frame,
-    foreach_iterator_candidate_value, format_foreach_iterator_kind,
-    object_property_iteration_entries,
-};
-use jit_state::*;
-use method_cache_metadata::*;
-use method_dispatch::MagicStaticCallRequest;
-pub use options::{
-    BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
-    JitBlacklistMode, JitMode, SuperinstructionMode, VmOptions,
-};
-use property_cache_metadata::*;
-use property_execution::PropertyDimProbe;
-use property_resolution::*;
-use property_state::*;
-use reflection::*;
-use request_lifecycle::RequestLifecycleState;
+pub use native_compile_cache::NativeCompileCacheStats;
+pub use options::{NativeBlacklistMode, NativeOptimizationPolicy, VmOptions};
 pub use result::VmResult;
-use rich_exception_dispatch::*;
-use rich_foreach_dispatch::*;
-pub(crate) use runtime_class_metadata::dense_new_object_lowering_supported;
-use runtime_class_metadata::*;
-pub(crate) use runtime_class_support::normalize_function_name;
-use runtime_class_support::*;
-use runtime_environment_support::*;
-use runtime_operations::{object_has_public_to_string_in_state, packed_array_get};
-use scalar_handlers::{
-    checked_int_binary, execute_arithmetic, execute_bitwise, execute_power, execute_rich_binary_op,
-    execute_rich_compare_op, execute_rich_unary_op, implicit_int_deprecation_message,
-    int_int_specialization_for_binary_op,
-};
-use spl::*;
-use static_property_predicates::*;
-use symbol_resolution::*;
-use value_support::*;
 
-use self::execution_optimization::{
-    ClassStaticCacheLookup, ObjectClassResolution, ResolvedConstantTables,
-};
-use crate::aliasing::{AliasState, slot_alias_state};
-use crate::bytecode::{
-    DenseBytecodeUnit, DenseCallArg, DenseCallShapeMeta, DenseCallableKind, DenseClosureCapture,
-    DenseExecutionPlan, DenseFunction, DenseFunctionPlan, DenseInstruction, DenseOpcode,
-    DenseOperand, DenseOperandKind, DenseOperands, SuperinstructionSelectionReport,
-};
-use crate::compiled_unit::{
-    CompiledClass, CompiledUnit, DenseExecutionArtifactKey, DenseExecutionArtifactMode,
-    PreparedClassValidationError, PreparedFunctionFacts,
-};
-#[cfg(feature = "jit-cranelift")]
-use crate::counters::JitCompileDescriptor;
-use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
-use crate::error::VmError;
-use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument, TraceArguments};
-use crate::include::{IncludeCacheStats, LoadedInclude};
-use crate::inline_cache::{
-    AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
-    AutoloadClassLookupKind, CallReferenceMask, ClassConstantStaticPropertyCacheKind,
-    ClassConstantStaticPropertyCacheTarget, ClassRelationCache, ClassRelationCacheKey,
-    ClassRelationCacheLookup, ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind,
-    FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
-    FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget, InlineCacheId, InlineCacheKind,
-    InlineCacheObservation, InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget,
-    MethodCallDispatchRoute, MethodCallGuardMetadata, MethodCallResolvedTarget,
-    MethodCallRouteIdentity, MethodCallShape, PropertyAssignCacheTarget,
-    PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget, PropertyFetchCacheTarget,
-    PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
-};
-use crate::literal_pool::LiteralPool;
-use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
-use crate::tiering::{ExecutionTier, TieringState};
-#[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-pub(crate) use jit_abi::jit_property_load_fetch;
-#[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-pub(crate) use jit_abi::jit_property_store_commit;
-#[cfg(feature = "jit-cranelift")]
+use crate::compiled_unit::CompiledUnit;
 use jit_abi::{
-    JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT, JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT,
-    JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT, JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT,
-    jit_array_fetch_int_slow_abi, jit_array_len_abi, jit_concat_string_string_fast,
-    jit_count_known_abi, jit_guard_kind_for_side_exit, jit_property_load_monomorphic_fast,
-    jit_record_array_lookup_abi, jit_strlen_known_abi,
+    NativeExecutionContext, activate_native_context, jit_native_argument_check_abi,
+    jit_native_array_fetch_abi, jit_native_array_insert_abi, jit_native_array_new_abi,
+    jit_native_array_spread_abi, jit_native_array_unset_abi, jit_native_binary_abi,
+    jit_native_call_dispatch_abi, jit_native_cast_abi, jit_native_compare_abi,
+    jit_native_constant_fetch_abi, jit_native_dynamic_code_abi, jit_native_echo_abi,
+    jit_native_exception_new_abi, jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi,
+    jit_native_foreach_init_abi, jit_native_foreach_next_abi, jit_native_frame_alloc_abi,
+    jit_native_frame_release_abi, jit_native_function_resolve_abi, jit_native_local_fetch_abi,
+    jit_native_local_store_abi, jit_native_object_clone_abi, jit_native_object_clone_with_abi,
+    jit_native_object_new_abi, jit_native_property_assign_abi, jit_native_property_fetch_abi,
+    jit_native_reference_bind_abi, jit_native_return_check_abi, jit_native_runtime_fatal_abi,
+    jit_native_truthy_abi, jit_native_unary_abi, jit_native_value_lifecycle_abi,
 };
-use operand_read::{
-    DenseOperandRead, operand_truthy_at_frame, read_operand, read_operand_at_frame,
-    read_operand_ref_at_frame, take_discard_operand_at_frame,
-    unset_consumed_assignment_value_operand_at_frame, unset_dense_register_operand,
-    unset_register_operand_at_frame,
-};
-use php_extensions::BuiltinRegistry;
-use php_ir::constants::IrConstant;
-use php_ir::function::{IrFunction, IrParam, IrReturnType};
-use php_ir::ids::{BlockId, ClassId, ConstId, FunctionId, InstrId, LocalId, RegId, UnitId};
-use php_ir::instruction::{
-    BinaryOp, CallableKind, CastKind, ClosureCaptureArg, CompareOp, IncludeKind, Instruction,
-    InstructionKind, IrCallArg, IrCallArgValueKind, IrDiagnosticSeverity, TerminatorKind, UnaryOp,
-};
-use php_ir::module::{
-    ClassConstantReference, ClassEntry, ClassPropertyEntry, DeferredConstExpr, IrUnit,
-    NamedConstantReference, display_class_name, normalize_class_name,
-};
-use php_ir::operand::Operand;
-use php_ir::source_map::IrSpan;
-use php_runtime::api::IniRegistry;
-use php_runtime::api::ResourceTable;
-use php_runtime::api::{
-    ArrayKey, AttributeEntry as RuntimeAttributeEntry, AutoloadRegistry, BuiltinContext,
-    BuiltinEntry, CallableMethodTarget, CallableValue,
-    ClassConstantEntry as RuntimeClassConstantEntry,
-    ClassConstantFlags as RuntimeClassConstantFlags, ClassEntry as RuntimeClassEntry,
-    ClassEnumBackingType as RuntimeClassEnumBackingType,
-    ClassEnumCaseEntry as RuntimeClassEnumCaseEntry, ClassFlags as RuntimeClassFlags,
-    ClassMethodEntry as RuntimeClassMethodEntry, ClassMethodFlags as RuntimeClassMethodFlags,
-    ClassPropertyEntry as RuntimeClassPropertyEntry,
-    ClassPropertyFlags as RuntimeClassPropertyFlags,
-    ClassPropertyHooks as RuntimeClassPropertyHooks, ClosureCaptureValue, ClosureContext,
-    ClosureDebugInfo, ClosureDebugParameter, ClosurePayload, ExecutionStatus, FiberRef, FiberState,
-    GeneratorCallContext, GeneratorRef, GeneratorState, GlobalSymbolTable, JsonDiagnosticContext,
-    Lvalue, LvalueKind, NumericValue, ObjectRef, OutputBuffer, PhpArray, PhpArrayKind,
-    PhpArrayShapeKind, PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpString,
-    ProcessCapability, ReferenceCell, RuntimeBringupDiagnosticContext, RuntimeContext,
-    RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeHttpResponseState, RuntimeSeverity,
-    RuntimeSourceSpan, RuntimeStackFrame, RuntimeType, Slot, UnserializeOptions, UploadRegistry,
-    Value, VmCompileDiagnostic, array_to_string_warning, compare, division_by_zero_mvp,
-    emit_php_diagnostic, equal, error_reporting_allows_level, identical,
-    reset_float_string_precision, runtime_type_name, serialize as serialize_value,
-    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
-    to_string, to_string_php, undefined_function, undefined_global_variable_warning,
-    undefined_variable_warning, unserialize as unserialize_value, unsupported_feature,
-    value_matches_runtime_type, value_type_name,
-};
-use php_runtime::debug::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcSnapshot, scan_roots};
-use php_runtime::experimental::numeric_string::{
-    NumericStringKind, NumericStringValue, classify_php_string,
-};
-use request_profile::{RequestProfileFrame, RequestProfileOperationCategory};
-use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use php_runtime::api::{OutputBuffer, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const MAX_EVAL_DEPTH: usize = 16;
-const DENSE_EXECUTION_PLAN_THREAD_CACHE_MAX: usize = 4096;
-const SORT_REGULAR: i64 = 0;
-const SORT_NUMERIC: i64 = 1;
-const SORT_STRING: i64 = 2;
-const SORT_DESC: i64 = 3;
-const SORT_ASC: i64 = 4;
-const SORT_LOCALE_STRING: i64 = 5;
-const SORT_NATURAL: i64 = 6;
-const SPL_RUNTIME_CLASS_PROPERTY: &str = "__spl_runtime_class";
-const HASH_CONTEXT_ALGORITHM_PROPERTY: &str = "__phrust_hash_algorithm";
-const HASH_CONTEXT_FLAGS_PROPERTY: &str = "__phrust_hash_flags";
-const HASH_CONTEXT_DATA_PROPERTY: &str = "__phrust_hash_data";
-const HASH_CONTEXT_FINALIZED_PROPERTY: &str = "__phrust_hash_finalized";
-const HASH_HMAC_FLAG: i64 = 1;
-const SPL_PRIORITY_QUEUE_EXTR_DATA: i64 = 1;
-const SPL_PRIORITY_QUEUE_EXTR_PRIORITY: i64 = 2;
-const SPL_PRIORITY_QUEUE_EXTR_BOTH: i64 = 3;
-const SPL_DLLIST_IT_MODE_FIFO: i64 = 0;
-const SPL_DLLIST_IT_MODE_LIFO: i64 = 2;
-const SPL_DLLIST_IT_MODE_KEEP: i64 = 0;
-const SPL_ARRAY_OBJECT_STD_PROP_LIST: i64 = 1;
-const SPL_ARRAY_OBJECT_ARRAY_AS_PROPS: i64 = 2;
-const SPL_FILESYSTEM_CURRENT_AS_PATHNAME: i64 = 32;
-const SPL_FILESYSTEM_CURRENT_AS_FILEINFO: i64 = 0;
-const SPL_FILESYSTEM_CURRENT_AS_SELF: i64 = 16;
-const SPL_FILESYSTEM_CURRENT_MODE_MASK: i64 = 240;
-const SPL_FILESYSTEM_KEY_AS_PATHNAME: i64 = 0;
-const SPL_FILESYSTEM_KEY_AS_FILENAME: i64 = 256;
-const SPL_FILESYSTEM_KEY_MODE_MASK: i64 = 3840;
-const SPL_FILESYSTEM_FOLLOW_SYMLINKS: i64 = 16384;
-const SPL_FILESYSTEM_OTHER_MODE_MASK: i64 = 28672;
-const SPL_FILESYSTEM_SKIP_DOTS: i64 = 4096;
-const SPL_FILESYSTEM_UNIX_PATHS: i64 = 8192;
-const ZIP_CREATE: i64 = 1;
-const ZIP_EXCL: i64 = 2;
-const ZIP_CHECKCONS: i64 = 4;
-const ZIP_OVERWRITE: i64 = 8;
-const ZIP_RDONLY: i64 = 16;
-const ZIP_FL_NOCASE: i64 = 1;
-const ZIP_FL_NODIR: i64 = 2;
-const ZIP_FL_UNCHANGED: i64 = 8;
-const ZIP_FL_OVERWRITE: i64 = 8192;
-const ZIP_FL_OPEN_FILE_NOW: i64 = 1 << 30;
-const ZIP_LENGTH_TO_END: i64 = 0;
-const ZIP_CM_DEFAULT: i64 = -1;
-const ZIP_CM_STORE: i64 = 0;
-const ZIP_CM_DEFLATE: i64 = 8;
-const ZIP_CM_BZIP2: i64 = 12;
-const ZIP_CM_XZ: i64 = 95;
-const ZIP_EM_NONE: i64 = 0;
-const ZIP_EM_TRAD_PKWARE: i64 = 1;
-const ZIP_EM_AES_128: i64 = 257;
-const ZIP_EM_AES_192: i64 = 258;
-const ZIP_EM_AES_256: i64 = 259;
-const ZIP_ER_EXISTS: i64 = 10;
-const ZIP_ER_COMPNOTSUPP: i64 = 16;
-const ZIP_ER_RDONLY: i64 = 25;
-const ZIP_AFL_RDONLY: i64 = 2;
-const ZIP_AFL_CREATE_OR_KEEP_FILE_FOR_EMPTY_ARCHIVE: i64 = 16;
-const SPL_REGEX_MATCH: i64 = 0;
-const SPL_REGEX_GET_MATCH: i64 = 1;
-const SPL_REGEX_ALL_MATCHES: i64 = 2;
-const SPL_REGEX_SPLIT: i64 = 3;
-const SPL_REGEX_REPLACE: i64 = 4;
-const SPL_REGEX_USE_KEY: i64 = 1;
-const SPL_REGEX_INVERT_MATCH: i64 = 2;
-const SPL_RII_LEAVES_ONLY: i64 = 0;
-const SPL_RII_SELF_FIRST: i64 = 1;
-const SPL_RII_CHILD_FIRST: i64 = 2;
-const SPL_RII_CATCH_GET_CHILD: i64 = 16;
-const SPL_RTI_BYPASS_CURRENT: i64 = 4;
-const SPL_RTI_BYPASS_KEY: i64 = 8;
-const SORT_FLAG_CASE: i64 = 8;
-const NORMALIZER_FORM_C: i64 = php_runtime::api::NORMALIZER_FORM_C;
-#[cfg(feature = "jit-cranelift")]
-const JIT_BLACKLIST_SIDE_EXIT_THRESHOLD: u64 = 2;
-#[cfg(feature = "jit-cranelift")]
-const JIT_BLACKLIST_GUARD_FAILURE_THRESHOLD: u64 = 2;
-#[cfg(feature = "jit-cranelift")]
-const JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD: u64 = 1;
-#[cfg(feature = "jit-cranelift")]
-const JIT_BLACKLIST_ABI_MISMATCH_THRESHOLD: u64 = 1;
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AutoloadTraceOrigin {
-    function_name: &'static str,
-    span: php_ir::IrSpan,
-}
-
-enum PropertyFetchCacheRead {
-    Value(Value),
-    Fallback,
-}
-
-#[cfg(feature = "jit-cranelift")]
-fn value_as_jit_int(value: &Value) -> Result<i64, ()> {
-    match value {
-        Value::Int(value) => Ok(*value),
-        _ => Err(()),
-    }
-}
-
-enum PropertyAssignCacheWrite {
-    Written(Value),
-    Fallback,
-}
-
-enum SemanticHelperResult {
-    FastHit,
-    Fallback(&'static str),
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct DenseExecutionPlanThreadCacheKey {
-    compiled_identity: u64,
-    artifact: DenseExecutionArtifactKey,
-}
-
-/// Tracks declarations observed by this worker and its lookup invalidation epoch.
-/// Stable include replay preserves slot-indexed inline caches across requests.
-struct WorkerSymbolLedger {
-    epoch: Cell<u64>,
-    seen_units: RefCell<HashSet<u64>>,
-}
-
-thread_local! {
-    static WORKER_SYMBOL_LEDGER: WorkerSymbolLedger = WorkerSymbolLedger {
-        epoch: Cell::new(0),
-        seen_units: RefCell::new(HashSet::new()),
+fn validate_native_class_table(unit: &php_ir::IrUnit) -> Result<(), String> {
+    let find_class = |name: &str| {
+        let normalized = php_ir::module::normalize_class_name(name);
+        unit.classes.iter().find(|class| class.name == normalized)
     };
-}
+    for class in unit
+        .classes
+        .iter()
+        .filter(|class| !class.flags.is_conditional)
+    {
+        if let Some(parent_name) = class.parent.as_deref()
+            && let Some(parent) = find_class(parent_name)
+        {
+            if parent.flags.is_final || parent.flags.is_enum {
+                return Err(format!(
+                    "Class {} cannot extend final class {}",
+                    class.display_name, parent.display_name
+                ));
+            }
+            for method in &class.methods {
+                let mut ancestor = Some(parent);
+                while let Some(current) = ancestor {
+                    if current.methods.iter().any(|candidate| {
+                        candidate.name.eq_ignore_ascii_case(&method.name)
+                            && candidate.flags.is_final
+                    }) {
+                        return Err(format!(
+                            "Cannot override final method {}::{}()",
+                            current.display_name, method.name
+                        ));
+                    }
+                    ancestor = current.parent.as_deref().and_then(&find_class);
+                }
+            }
+        }
 
-thread_local! {
-    static DENSE_EXECUTION_PLAN_THREAD_CACHE:
-        RefCell<HashMap<DenseExecutionPlanThreadCacheKey, Arc<DenseExecutionPlan>>> =
-            RefCell::new(HashMap::new());
-}
-
-enum BytecodeEntryAttempt {
-    Executed(Box<VmResult>),
-    Unsupported(String),
-}
-
-#[allow(clippy::large_enum_variant)] // Continue variants carry the live FunctionCall.
-enum BytecodeFunctionAttempt<'a> {
-    Executed(Box<VmResult>, BytecodeFunctionTier),
-    Unsupported(String, FunctionCall<'a>),
-}
-
-enum BytecodeFunctionTier {
-    Dense,
-    RichFallback(String),
-}
-
-#[allow(clippy::large_enum_variant)] // Continue variants carry the live FunctionCall.
-enum CachedDenseFunctionDispatch<'a> {
-    Executed(Box<VmResult>),
-    Continue(FunctionCall<'a>),
-}
-
-enum ClassStaticCacheRead {
-    Value(Value),
-    Fallback,
-}
-
-/// Outcome of [`Vm::fetch_class_constant_value`] when it cannot produce a value.
-/// The shared helper never routes control flow itself; each executor's arm
-/// translates the fault into its own routing (the rich interpreter routes
-/// through in-frame handlers, the dense executor propagates to outer frames).
-enum ClassConstantFetch {
-    /// Autoload raised a throwable; carries the pre-routing result.
-    Throwable(Box<VmResult>),
-    /// A catchable runtime `\Error` must be raised at this span.
-    Raise(IrSpan, String),
-    /// A non-catchable internal error with this message.
-    Fatal(String),
-}
-
-/// Outcome of [`Vm::assign_property_dim_value`] when it cannot produce a value.
-/// Like [`ClassConstantFetch`], the shared helper never routes control flow; the
-/// caller translates the fault (rich routes/returns in-frame, dense propagates).
-/// Outcome of a shared static-property assignment attempt.
-enum StaticPropertyAssignError {
-    /// Autoload or nested user code produced a final result.
-    Vm(Box<VmResult>),
-    /// A catchable runtime `\Error` must be raised at this span.
-    Raise(IrSpan, String),
-    /// A non-catchable runtime error with this message.
-    Fatal(String),
-}
-
-enum PropertyDimAssign {
-    /// A catchable runtime `\Error` must be raised at this span.
-    Raise(IrSpan, String),
-    /// A non-catchable internal error with this message.
-    Fatal(String),
-    /// Return this result directly (a userland ArrayAccess::offsetSet threw or
-    /// otherwise produced a final result); it is not routed through handlers.
-    Return(Box<VmResult>),
-}
-
-enum ClassDependencyValidationFailure {
-    Throwable(Value),
-    Result(Box<VmResult>),
-}
-
-enum InternalBuiltinArgError {
-    Message(String),
-    Fatal(Box<VmResult>),
-}
-
-struct MultisortArraySpec {
-    cell: ReferenceCell,
-    entries: Vec<(ArrayKey, Value)>,
-    numeric_values: Option<Vec<f64>>,
-    descending: bool,
-    flags: i64,
-}
-
-struct TokenizerStaticCallTraceContext {
-    call: String,
-    values: Vec<Value>,
-    call_span: php_ir::IrSpan,
-}
-
-enum ArrayCallbackError {
-    Runtime(Box<VmResult>),
-    BuiltinType {
-        function: &'static str,
-        actual: String,
-    },
-    BuiltinTypeMessage(String),
-    Message(String),
-}
-
-type UnitFunctionKey = (u64, u32);
-type TrivialMethodPlanCache = Rc<RefCell<HashMap<UnitFunctionKey, Option<TrivialMethodPlan>>>>;
-type LastUseMovePlanCache =
-    Rc<RefCell<HashMap<UnitFunctionKey, Rc<crate::last_use::LastUseMovePlan>>>>;
-type WorkerQuickeningTables = Rc<RefCell<HashMap<u64, QuickeningTable>>>;
-
-struct WorkerQuickeningLease<'a> {
-    request_table: &'a RefCell<QuickeningTable>,
-    worker_tables: WorkerQuickeningTables,
-    unit_key: u64,
-    enabled: bool,
-}
-
-impl<'a> WorkerQuickeningLease<'a> {
-    fn begin(
-        request_table: &'a RefCell<QuickeningTable>,
-        worker_tables: WorkerQuickeningTables,
-        unit_key: u64,
-        enabled: bool,
-    ) -> Self {
-        let table = if enabled {
-            worker_tables
-                .borrow_mut()
-                .remove(&unit_key)
-                .unwrap_or_default()
-        } else {
-            QuickeningTable::default()
+        if class.flags.is_abstract || class.flags.is_interface || class.flags.is_trait {
+            continue;
+        }
+        let implements = |name: &str| {
+            let mut current = Some(class);
+            while let Some(candidate) = current {
+                if let Some(method) = candidate
+                    .methods
+                    .iter()
+                    .find(|method| method.name.eq_ignore_ascii_case(name))
+                {
+                    return Some(method);
+                }
+                current = candidate.parent.as_deref().and_then(&find_class);
+            }
+            None
         };
-        *request_table.borrow_mut() = table;
-        Self {
-            request_table,
-            worker_tables,
-            unit_key,
-            enabled,
+        let mut required = Vec::new();
+        let mut ancestor = class.parent.as_deref().and_then(&find_class);
+        while let Some(current) = ancestor {
+            required.extend(
+                current
+                    .methods
+                    .iter()
+                    .filter(|method| method.flags.is_abstract)
+                    .map(|method| (current, method)),
+            );
+            ancestor = current.parent.as_deref().and_then(&find_class);
+        }
+        for interface_name in &class.interfaces {
+            if let Some(interface) = find_class(interface_name) {
+                required.extend(interface.methods.iter().map(|method| (interface, method)));
+            }
+        }
+        for (owner, method) in required {
+            let Some(implementation) = implements(&method.name) else {
+                return Err(format!(
+                    "Class {} contains an abstract method {}::{}()",
+                    class.display_name, owner.display_name, method.name
+                ));
+            };
+            if implementation.flags.is_abstract {
+                return Err(format!(
+                    "Class {} contains an abstract method {}::{}()",
+                    class.display_name, owner.display_name, method.name
+                ));
+            }
+            if owner.flags.is_interface
+                && (implementation.flags.is_private || implementation.flags.is_protected)
+            {
+                return Err(format!(
+                    "Access level to {}::{}() must be public",
+                    class.display_name, method.name
+                ));
+            }
         }
     }
+    Ok(())
 }
 
-impl Drop for WorkerQuickeningLease<'_> {
-    fn drop(&mut self) {
-        let table = std::mem::take(&mut *self.request_table.borrow_mut());
-        if self.enabled {
-            self.worker_tables.borrow_mut().insert(self.unit_key, table);
-        }
-    }
-}
-
-/// Minimal interpreter VM.
-#[derive(Clone, Debug)]
-pub struct Vm {
-    options: VmOptions,
-    trace: RefCell<Vec<String>>,
-    counters: RefCell<Option<VmCounters>>,
-    literal_pool: RefCell<LiteralPool>,
-    quickening: RefCell<QuickeningTable>,
-    worker_quickening_tables: WorkerQuickeningTables,
-    /// Final invalidation epochs of the last `execute` call, stashed before
-    /// request state drops so the persistent-feedback writer can stamp entries
-    /// with the true observation state instead of cold-start zeros.
-    persistent_feedback_epochs: Cell<Option<crate::persistent_feedback::PersistentFeedbackEpochs>>,
-    /// IC-table unit key (`compiled_unit_cache_key`) of the last executed
-    /// entry unit, for scoping persistent callsite exports to replay-stable
-    /// (entry-unit) IC sites.
-    persistent_feedback_entry_unit_key: Cell<Option<u64>>,
-    inline_caches: Rc<RefCell<InlineCacheTable>>,
-    #[allow(dead_code)]
-    jit: Rc<RefCell<JitRuntimeState>>,
-    tiering: Rc<RefCell<TieringState>>,
-    internal_function_dispatch_cache: Rc<RefCell<InternalFunctionDispatchCache>>,
-    /// Memoized per-(unit, function) trivial-method inline plans.
-    trivial_method_plans: TrivialMethodPlanCache,
-    /// Memoized activation-context class-name handles keyed by the exact name
-    /// spelling dispatch sees. The normalized/display forms of a spelling never
-    /// change, so hot method-call sites attach shared handles with refcount
-    /// bumps instead of re-normalizing three fresh `String`s per call.
-    class_name_handles: Rc<RefCell<HashMap<String, ClassNameHandles>>>,
-    /// Memoized resolved runtime class entries so repeated instantiations of a
-    /// class do not rebuild the whole entry (lineage walk, property/constant
-    /// evaluation, method mapping) on every `new`. Invalidated whenever the
-    /// class table changes (tracked by `ExecutionState::class_table_epoch`).
-    runtime_class_entry_cache: Rc<RefCell<RuntimeClassEntryCache>>,
-    /// Memoized raw IR class entries (shared via `Rc`) so repeated `new` of a
-    /// class does not deep-clone the whole class definition per instantiation.
-    /// Invalidated by `ExecutionState::class_table_epoch`.
-    ir_class_entry_cache: Rc<RefCell<IrClassEntryCache>>,
-    /// Memoized default declared-slot templates so the hot `new C(...)` path
-    /// clones a prebuilt slot vector instead of re-running the per-property
-    /// default-materialization loop on every instantiation. Invalidated by
-    /// `ExecutionState::class_table_epoch`, so a redefinition rebuilds it from
-    /// the current class entry.
-    default_slot_template_cache: Rc<RefCell<DefaultSlotTemplateCache>>,
-    /// Memoized `__construct` resolution outcomes so the hot `new C(...)` path
-    /// does not re-run the inheritance + visibility method-resolution walk on
-    /// every instantiation. Keyed by (normalized class name, normalized caller
-    /// scope) and guarded by `ExecutionState::class_table_epoch`, so a
-    /// redeclaration or autoload (both bump the epoch) drops stale outcomes.
-    constructor_resolution_cache: Rc<RefCell<ConstructorResolutionCache>>,
-    adaptive_tiny_unit_setup_skipped: Cell<bool>,
-    include_execution_depth: Cell<u32>,
-    request_profile_stack: RefCell<Vec<RequestProfileFrame>>,
-    /// Memoized per-(unit, function) last-use move plans (Runtime lever R3).
-    /// Built only when `options.last_use_moves` is on; empty and never consulted
-    /// otherwise, keeping the default dense read path byte-identical.
-    last_use_move_plans: LastUseMovePlanCache,
-    /// Per-request receiver-class lookup by shared class-name identity.
-    object_class_resolution: Rc<RefCell<ObjectClassResolution>>,
-    class_relation_cache: Rc<RefCell<ClassRelationCache>>,
-    /// Per-unit resolved constant tables (zend literal-table parity): each
-    /// materializable `IrConstant` resolves once into an interned value and
-    /// every later operand read is an indexed refcount bump instead of a
-    /// fresh allocation (strings) or a full rebuild (constant arrays).
-    /// Keyed by the compiled unit's cache identity; unit constant tables
-    /// are immutable per identity, so entries never invalidate.
-    resolved_constants: Rc<RefCell<ResolvedConstantTables>>,
-}
-
-/// Engine-owned caches retained by one worker across isolated requests.
-/// PHP-visible request state, frames, globals, resources and live IC values
-/// are intentionally absent.
+/// Process-owned state shared by native request coordinators.
 #[derive(Clone, Debug)]
 pub struct VmWorkerState {
-    trivial_method_plans: TrivialMethodPlanCache,
-    class_name_handles: Rc<RefCell<HashMap<String, ClassNameHandles>>>,
-    last_use_move_plans: LastUseMovePlanCache,
-    resolved_constants: Rc<RefCell<ResolvedConstantTables>>,
-    internal_function_dispatch_cache: Rc<RefCell<InternalFunctionDispatchCache>>,
-    jit: Rc<RefCell<JitRuntimeState>>,
-    tiering: Rc<RefCell<TieringState>>,
-    inline_caches: Rc<RefCell<InlineCacheTable>>,
-    quickening_tables: WorkerQuickeningTables,
-    runtime_class_entry_cache: Rc<RefCell<RuntimeClassEntryCache>>,
-    ir_class_entry_cache: Rc<RefCell<IrClassEntryCache>>,
-    default_slot_template_cache: Rc<RefCell<DefaultSlotTemplateCache>>,
-    constructor_resolution_cache: Rc<RefCell<ConstructorResolutionCache>>,
-    object_class_resolution: Rc<RefCell<ObjectClassResolution>>,
-    class_relation_cache: Rc<RefCell<ClassRelationCache>>,
+    native_compiles: Arc<native_compile_cache::NativeCompileCache>,
+    loaded_native_units: Arc<native_compile_cache::LoadedNativeUnitRegistry>,
+}
+
+static PROCESS_LOADED_NATIVE_UNITS: std::sync::OnceLock<
+    Arc<native_compile_cache::LoadedNativeUnitRegistry>,
+> = std::sync::OnceLock::new();
+
+impl Default for VmWorkerState {
+    fn default() -> Self {
+        Self {
+            native_compiles: Arc::new(native_compile_cache::NativeCompileCache::default()),
+            loaded_native_units: Arc::clone(PROCESS_LOADED_NATIVE_UNITS.get_or_init(|| {
+                Arc::new(native_compile_cache::LoadedNativeUnitRegistry::default())
+            })),
+        }
+    }
 }
 
 impl VmWorkerState {
     #[must_use]
-    pub fn new(tiering: crate::tiering::TieringOptions) -> Self {
+    pub fn new(_tiering: crate::tiering::TieringOptions) -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn isolated_for_restart_test() -> Self {
         Self {
-            trivial_method_plans: Rc::new(RefCell::new(HashMap::new())),
-            class_name_handles: Rc::new(RefCell::new(HashMap::new())),
-            last_use_move_plans: Rc::new(RefCell::new(HashMap::new())),
-            resolved_constants: Rc::new(RefCell::new(ResolvedConstantTables::default())),
-            internal_function_dispatch_cache: Rc::new(RefCell::new(
-                InternalFunctionDispatchCache::default(),
-            )),
-            jit: Rc::new(RefCell::new(JitRuntimeState::default())),
-            tiering: Rc::new(RefCell::new(TieringState::new(tiering))),
-            inline_caches: Rc::new(RefCell::new(InlineCacheTable::default())),
-            quickening_tables: Rc::new(RefCell::new(HashMap::new())),
-            runtime_class_entry_cache: Rc::new(RefCell::new(RuntimeClassEntryCache::default())),
-            ir_class_entry_cache: Rc::new(RefCell::new(IrClassEntryCache::default())),
-            default_slot_template_cache: Rc::new(RefCell::new(DefaultSlotTemplateCache::default())),
-            constructor_resolution_cache: Rc::new(RefCell::new(
-                ConstructorResolutionCache::default(),
-            )),
-            object_class_resolution: Rc::new(RefCell::new(ObjectClassResolution::default())),
-            class_relation_cache: Rc::new(RefCell::new(ClassRelationCache::default())),
+            native_compiles: Arc::new(native_compile_cache::NativeCompileCache::default()),
+            loaded_native_units: Arc::new(native_compile_cache::LoadedNativeUnitRegistry::default()),
         }
     }
-}
 
-impl Default for VmWorkerState {
-    fn default() -> Self {
-        Self::new(crate::tiering::TieringOptions::default())
-    }
-}
-impl Vm {
-    /// Creates a VM with default options.
+    /// Returns worker-stable native compile-record cache counters.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_options(VmOptions::default())
+    pub fn native_compile_cache_stats(&self) -> NativeCompileCacheStats {
+        self.native_compiles.stats()
     }
 
-    /// Creates a VM with explicit options.
-    #[must_use]
-    pub fn with_options(options: VmOptions) -> Self {
-        let worker_state = VmWorkerState::new(options.tiering.clone());
-        Self::with_options_and_worker_state(options, worker_state)
+    fn get_or_load_native_unit(
+        &self,
+        identity: &php_jit::NativeCacheIdentity,
+        load: impl FnOnce() -> Result<Option<php_jit::NativeLoadedArtifact>, php_jit::NativeCacheError>,
+    ) -> Result<Option<Arc<native_compile_cache::LoadedNativeUnit>>, php_jit::NativeCacheError>
+    {
+        self.loaded_native_units.get_or_load(identity, load)
     }
 
-    /// Creates an isolated request VM backed by engine-only worker caches.
-    #[must_use]
-    pub fn with_options_and_worker_state(options: VmOptions, worker_state: VmWorkerState) -> Self {
-        Self {
-            options,
-            trace: RefCell::new(Vec::new()),
-            counters: RefCell::new(None),
-            literal_pool: RefCell::new(LiteralPool::default()),
-            trivial_method_plans: worker_state.trivial_method_plans,
-            class_name_handles: worker_state.class_name_handles,
-            runtime_class_entry_cache: worker_state.runtime_class_entry_cache,
-            ir_class_entry_cache: worker_state.ir_class_entry_cache,
-            default_slot_template_cache: worker_state.default_slot_template_cache,
-            constructor_resolution_cache: worker_state.constructor_resolution_cache,
-            quickening: RefCell::new(QuickeningTable::default()),
-            worker_quickening_tables: worker_state.quickening_tables,
-            persistent_feedback_epochs: Cell::new(None),
-            persistent_feedback_entry_unit_key: Cell::new(None),
-            inline_caches: worker_state.inline_caches,
-            jit: worker_state.jit,
-            tiering: worker_state.tiering,
-            internal_function_dispatch_cache: worker_state.internal_function_dispatch_cache,
-            adaptive_tiny_unit_setup_skipped: Cell::new(false),
-            include_execution_depth: Cell::new(0),
-            request_profile_stack: RefCell::new(Vec::new()),
-            last_use_move_plans: worker_state.last_use_move_plans,
-            resolved_constants: worker_state.resolved_constants,
-            object_class_resolution: worker_state.object_class_resolution,
-            class_relation_cache: worker_state.class_relation_cache,
-        }
+    fn loaded_native_unit_stats(&self) -> native_compile_cache::LoadedNativeUnitRegistryStats {
+        self.loaded_native_units.stats()
     }
 
-    /// Executes a compiled unit from its entry function.
-    #[must_use]
-    pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
-        let unit = unit.into();
-        let entry_unit_key = compiled_unit_cache_key(&unit);
-        let _quickening_lease = WorkerQuickeningLease::begin(
-            &self.quickening,
-            Rc::clone(&self.worker_quickening_tables),
-            entry_unit_key,
-            self.options.persistent_adaptive_state && self.options.quickening.enabled(),
-        );
-        let persistent_quickening_reused_sites = self.quickening.borrow().touched_site_count();
-        self.tiering
-            .borrow_mut()
-            .begin_request(self.options.tiering.clone());
-        let skip_adaptive_tiny_unit_setup = self.should_skip_adaptive_tiny_unit_setup(unit.unit());
-        self.adaptive_tiny_unit_setup_skipped
-            .set(skip_adaptive_tiny_unit_setup);
-        let mut output = OutputBuffer::with_capacity(output_preallocation_hint(unit.unit()));
-        self.trace.borrow_mut().clear();
-        *self.literal_pool.borrow_mut() = LiteralPool::default();
-        self.persistent_feedback_epochs.set(None);
-        // IC slots and the entry-unit scope filter share the compiled unit's
-        // stable cache identity.
-        self.persistent_feedback_entry_unit_key
-            .set(Some(entry_unit_key));
-        let mut persistent_feedback_seeded_sites = 0usize;
-        if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
-            persistent_feedback_seeded_sites = self
-                .quickening
-                .borrow_mut()
-                .seed_persistent_sites(&self.options.quickening_seed);
-        }
-        let dynamic_ic_invalidations = self
-            .inline_caches
-            .borrow_mut()
-            .begin_request(self.options.persistent_adaptive_state);
-        let mut persistent_feedback_seeded_callsites = 0usize;
-        if self.options.inline_caches.enabled() && !self.options.callsite_seed.is_empty() {
-            // Only seed a callsite whose recorded target function still exists
-            // in this unit and whose normalized name equals the recorded call
-            // name. The lookup guard matches name/arity/epoch but never
-            // re-resolves name→target, so this is the one place a seed with a
-            // stale or tampered (name, target) pair — including a
-            // namespace-fallback call whose namespaced definition now exists —
-            // is rejected before it can dispatch the wrong function.
-            let entry_functions = &unit.unit().functions;
-            persistent_feedback_seeded_callsites = self
-                .inline_caches
-                .borrow_mut()
-                .seed_persistent_function_callsites(
-                    compiled_unit_cache_key(&unit),
-                    &self.options.callsite_seed,
-                    |site| {
-                        entry_functions
-                            .get(site.target_function as usize)
-                            .is_some_and(|function| {
-                                normalize_function_name(&function.name) == site.lowered_name
-                            })
-                    },
-                );
-        }
-        self.include_execution_depth.set(0);
-        *self.counters.borrow_mut() = self.options.collect_counters.then(|| {
-            let mut counters = VmCounters::default();
-            counters.set_jit_config(self.options.jit.as_str(), self.options.jit_threshold);
-            if skip_adaptive_tiny_unit_setup {
-                counters.record_adaptive_tiny_unit_setup_skip();
-            }
-            if persistent_feedback_seeded_sites > 0 {
-                counters.record_persistent_feedback_seeded_sites(
-                    persistent_feedback_seeded_sites as u64,
-                );
-            }
-            if persistent_feedback_seeded_callsites > 0 {
-                counters.record_persistent_feedback_seeded_callsites(
-                    persistent_feedback_seeded_callsites as u64,
-                );
-            }
-            if persistent_quickening_reused_sites > 0 {
-                counters.record_persistent_worker_quickening_reuse(
-                    persistent_quickening_reused_sites as u64,
-                );
-            }
-            counters
-        });
-        for _ in 0..dynamic_ic_invalidations {
-            self.record_counter_persistent_worker_invalidation("dynamic_unit_target");
-        }
-        if self.options.collect_counters {
-            php_runtime::experimental::numeric_string::reset_cache_and_stats();
-            php_runtime::experimental::layout_stats::reset_layout_stats();
-            if self.options.collect_layout_source_attribution {
-                php_runtime::experimental::layout_stats::enable_layout_source_attribution();
-            } else {
-                php_runtime::experimental::layout_stats::disable_layout_source_attribution();
-            }
-        } else {
-            php_runtime::experimental::layout_stats::disable_layout_source_attribution();
-        }
-        reset_float_string_precision();
-
-        if self.options.verify_ir {
-            let prepared_ir_errors = unit.prepared_ir_verification_errors();
-            if self.options.revalidate_prepared_unit {
-                let recomputed_ir_errors = php_ir::verify::verify_unit(unit.unit())
-                    .map_or_else(|errors| errors.len(), |()| 0);
-                if recomputed_ir_errors != prepared_ir_errors {
-                    return VmResult::compile_error(
-                        output,
-                        format!(
-                            "E_PHP_VM_PREPARED_VALIDATION_MISMATCH: cached IR errors={prepared_ir_errors}, recomputed={recomputed_ir_errors}"
-                        ),
-                    );
-                }
-            }
-            if prepared_ir_errors > 0 {
-                return VmResult::compile_error(
-                    output,
-                    format!("IR verifier failed with {prepared_ir_errors} error(s)"),
-                );
-            }
-        }
-
-        let entry = unit.unit().entry;
-        if unit.unit().functions.get(entry.index()).is_none() {
-            return VmResult::compile_error(output, "entry function is missing");
-        }
-        let prepared_class_validation = unit.prepared_class_validation(|| {
-            validate_class_table(&unit).map_err(|error| {
-                let (message, diagnostic) = error.into_parts();
-                Box::new(PreparedClassValidationError {
-                    message,
-                    diagnostic,
-                })
-            })
-        });
-        if self.options.revalidate_prepared_unit {
-            let recomputed = validate_class_table(&unit).err().map(|error| error.message);
-            let prepared = prepared_class_validation
-                .as_ref()
-                .err()
-                .map(|error| error.message.as_str());
-            if recomputed.as_deref() != prepared {
-                return VmResult::compile_error(
-                    output,
-                    "E_PHP_VM_PREPARED_VALIDATION_MISMATCH: class validation changed",
-                );
-            }
-        }
-        if let Err(error) = prepared_class_validation {
-            let message = error.message;
-            let diagnostic = error.diagnostic;
-            return match diagnostic {
-                Some(diagnostic) => VmResult {
-                    status: ExecutionStatus::compile_error(message),
-                    output,
-                    diagnostics: vec![diagnostic],
-                    http_response: None,
-                    upload_registry: None,
-                    session: None,
-                    return_value: None,
-                    returned_explicitly: false,
-                    process_exit_code: None,
-                    process_exit_terminates_process: false,
-                    yielded: None,
-                    fiber_suspension: None,
-                    return_ref: None,
-                    trace: Vec::new(),
-                    counters: None,
-                    tiering_stats: None,
-                },
-                None => VmResult::compile_error(output, message),
-            };
-        }
-        #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
-        if self
-            .options
-            .copy_patch_leaf_override
-            .unwrap_or_else(crate::copy_patch_bridge::copy_patch_leaf_enabled)
-        {
-            let stats = crate::copy_patch_bridge::prewarm_copy_patch_leaves(
-                &unit,
-                64,
-                std::time::Duration::from_millis(10),
-            );
-            self.record_counter_native_leaf_prewarm(&stats);
-        }
-        self.warm_literal_pool(unit.unit());
-
-        let mut stack = CallStack::new();
-        let ini = self.options.runtime_context.ini_registry();
-        let parsed_include_path = parse_ini_include_path(&ini);
-        let env = sorted_request_env(&self.options.runtime_context.env);
-        let filter_input_arrays = request_filter_input_arrays(&self.options.runtime_context);
-        let network_requests_enabled = env
-            .iter()
-            .any(|(name, value)| name == "PHRUST_NET_TESTS" && value == "1");
-        let mut state = ExecutionState {
-            worker_symbol_epoch: self.options.worker_symbol_epoch,
-            function_table_epoch: if self.options.worker_symbol_epoch {
-                WORKER_SYMBOL_LEDGER.with(|ledger| ledger.epoch.get())
-            } else {
-                0
-            },
-            cwd: self.options.runtime_context.cwd.clone(),
-            ini,
-            parsed_include_path,
-            default_timezone: php_runtime::api::datetime::DEFAULT_TIMEZONE.to_owned(),
-            env,
-            filter_input_arrays,
-            network_requests_enabled,
-            spl_autoload_extensions: ".inc,.php".to_owned(),
-            class_relation_cache: Rc::clone(&self.class_relation_cache),
-            request: RequestLifecycleState::from_runtime_context(&self.options.runtime_context),
-            execution_deadline_at: self
-                .options
-                .runtime_context
-                .execution_time_limit
-                .and_then(|limit| Instant::now().checked_add(limit)),
-            execution_deadline_mutable: self.options.runtime_context.execution_time_limit.is_some(),
-            ..ExecutionState::default()
-        };
-        state.stdin = Some(
-            state
-                .resources
-                .register_stdin(self.options.runtime_context.stdin.to_vec()),
-        );
-        register_dynamic_unit(&mut state, &unit, unit.clone(), DeclarationLoadKind::Main);
-        apply_float_string_precision(&state.ini);
-        let auto_start_span = unit
+    fn compile_native(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
+        let function_metadata = unit
             .unit()
             .functions
-            .get(entry.index())
-            .map_or_else(RuntimeSourceSpan::default, |function| {
-                runtime_source_span(&unit, function.span)
-            });
-        auto_start_session_if_configured(&mut state, auto_start_span);
-        seed_runtime_globals(&mut state.globals, &self.options.runtime_context);
-        emit_private_final_method_warnings(&unit, &mut output, &mut state);
-        emit_serializable_interface_deprecations(&unit, &mut output, &mut state);
-        let mut result = if self.options.execution_format.attempts_bytecode() {
-            match self.try_execute_bytecode_entry(&unit, &mut output, &mut stack, &mut state) {
-                BytecodeEntryAttempt::Executed(result) => *result,
-                BytecodeEntryAttempt::Unsupported(message) => {
-                    let reason = dense_bytecode_unsupported_reason(&message);
-                    self.record_counter_bytecode_unsupported_reason(reason);
-                    if self.options.execution_format.is_strict_bytecode() {
-                        VmResult {
-                            status: ExecutionStatus::unsupported(message),
-                            output: output.clone(),
-                            diagnostics: Vec::new(),
-                            return_value: None,
-                            returned_explicitly: false,
-                            process_exit_code: None,
-                            process_exit_terminates_process: false,
-                            yielded: None,
-                            fiber_suspension: None,
-                            return_ref: None,
-                            trace: Vec::new(),
-                            counters: None,
-                            tiering_stats: None,
-                            http_response: None,
-                            upload_registry: None,
-                            session: None,
-                        }
-                    } else {
-                        self.record_counter_bytecode_unsupported_fallback();
-                        self.record_counter_bytecode_auto_fallback_reason(reason);
-                        self.execute_function(
-                            &unit,
-                            entry,
-                            FunctionCall::new(Vec::new(), Vec::new()),
-                            &mut output,
-                            &mut stack,
-                            &mut state,
-                        )
-                    }
-                }
-            }
-        } else {
-            self.execute_function(
-                &unit,
-                entry,
-                FunctionCall::new(Vec::new(), Vec::new()),
-                &mut output,
-                &mut stack,
-                &mut state,
-            )
-        };
-        // A throwable that unwound past `main` without a handler is uncaught:
-        // render it as PHP's fatal error here, at the top of the call stack.
-        if let Some(throwable) = state.pending_throw.take()
-            && !vm_result_has_php_fatal_output(&result)
-        {
-            result = self.handle_uncaught_exception(
-                &unit,
-                &mut output,
-                &mut stack,
-                &mut state,
-                throwable,
-            );
-        }
-        if result.status.is_success()
-            && let Some(error) = self.validate_runtime_class_dependencies(
-                &unit,
-                &unit,
-                &mut output,
-                &mut stack,
-                &mut state,
-            )
-        {
-            result = error;
-        }
-        if result.status.is_success() {
-            match self.run_shutdown_functions(&unit, &mut output, &mut state) {
-                Ok(diagnostics) => {
-                    result.diagnostics.extend(diagnostics);
-                }
-                Err(error) => {
-                    result = *error;
-                }
-            }
-        }
-        if result.status.is_success() {
-            match self.run_shutdown_user_stream_wrappers(&unit, &mut output, &mut state) {
-                Ok(diagnostics) => {
-                    result.diagnostics.extend(diagnostics);
-                }
-                Err(error) => {
-                    result = *error;
-                }
-            }
-        }
-        if result.status.is_success() {
-            match self.run_shutdown_destructors(&unit, &mut output, &mut state) {
-                Ok(diagnostics) => {
-                    result.diagnostics.extend(diagnostics);
-                }
-                Err(error) => {
-                    result = *error;
-                }
-            }
-        }
-        if self.options.trace_runtime {
-            self.record_gc_root_trace_event(&stack, &state);
-        }
-        output.flush_all_buffers();
-        let output_len = output.len();
-        let output_stats = output.stats();
-        sync_session_state_from_globals(&mut state);
-        self.persistent_feedback_epochs.set(Some(
-            crate::persistent_feedback::PersistentFeedbackEpochs {
-                class_table: state.class_table_epoch,
-                function_table: state.function_table_epoch,
-                autoload: state.autoload_stack_epoch,
-                include_path: state.include_config_epoch,
-            },
-        ));
-        result.diagnostics.extend(state.diagnostics);
-        result.http_response = Some(Box::new(state.request.http_response));
-        result.upload_registry = Some(Box::new(state.request.upload_registry));
-        result.session = Some(Box::new(state.request.session));
-        if self.options.trace || self.options.trace_runtime || self.options.trace_includes {
-            result.trace = self.trace.borrow().clone();
-        }
-        if self.options.collect_counters {
-            let stats = php_runtime::experimental::numeric_string::take_cache_stats();
-            let layout_stats = php_runtime::experimental::layout_stats::take_layout_stats();
-            let layout_source_stats =
-                php_runtime::experimental::layout_stats::take_layout_source_stats();
-            let (interned_names, interned_name_bytes) =
-                php_runtime::experimental::string::symbol_interner_footprint();
-            if let Some(counters) = self.counters.borrow_mut().as_mut() {
-                counters.record_numeric_string_cache_stats(stats);
-                counters.record_runtime_layout_stats(layout_stats);
-                counters.record_runtime_layout_source_stats(layout_source_stats);
-                counters.record_output_stats(output_len, output_stats);
-                counters.record_persistent_engine_footprint(interned_names, interned_name_bytes);
-                counters.fold_scratch_counters();
-            }
-            result.counters = self.counters.borrow().clone().map(Box::new);
-        }
-        if self.options.tiering.collect_stats {
-            result.tiering_stats = Some(Box::new(self.tiering.borrow().stats()));
-        }
-        result.output = output;
-        result
-    }
-
-    /// Exports adaptive quickening sites observed by the last `execute` call
-    /// for persistent feedback. Empty when quickening was disabled.
-    #[must_use]
-    pub fn export_persistent_quickening(&self) -> Vec<crate::quickening::QuickeningSiteSnapshot> {
-        self.quickening.borrow().export_persistent_sites()
-    }
-
-    /// Final invalidation epochs of the last `execute` call, for stamping
-    /// persistent-feedback entries with their true observation state. `None`
-    /// when the last execution ended before request teardown (compile
-    /// errors), which callers must treat as cold-start zeros.
-    #[must_use]
-    pub fn export_persistent_feedback_epochs(
-        &self,
-    ) -> Option<crate::persistent_feedback::PersistentFeedbackEpochs> {
-        self.persistent_feedback_epochs.get()
-    }
-
-    /// Exports the last `execute` call's replay-stable monomorphic
-    /// function-call IC sites (entry unit only) for persistent feedback.
-    #[must_use]
-    pub fn export_persistent_function_callsites(
-        &self,
-    ) -> Vec<crate::inline_cache::FunctionCallSiteSnapshot> {
-        let Some(entry_unit_key) = self.persistent_feedback_entry_unit_key.get() else {
-            return Vec::new();
-        };
-        self.inline_caches
-            .borrow()
-            .export_persistent_function_callsites(entry_unit_key)
-    }
-
-    fn should_skip_adaptive_tiny_unit_setup(&self, unit: &IrUnit) -> bool {
-        let Some(threshold) = self.options.adaptive_tiny_unit_setup_threshold else {
-            return false;
-        };
-        if !self.options.tiering.enabled || !self.options.quickening.enabled() {
-            return false;
-        }
-        ir_unit_instruction_count(unit) <= threshold
-    }
-
-    fn record_include_cache_stats_delta(
-        &self,
-        before: IncludeCacheStats,
-        after: IncludeCacheStats,
-    ) {
-        if !self.options.collect_counters {
-            return;
-        }
-        if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            for _ in 0..after.resolution_hits.saturating_sub(before.resolution_hits) {
-                counters.record_include_resolution_hit();
-            }
-            for _ in 0..after
-                .resolution_misses
-                .saturating_sub(before.resolution_misses)
-            {
-                counters.record_include_resolution_miss();
-            }
-            for _ in 0..after.compile_hits.saturating_sub(before.compile_hits) {
-                counters.record_include_compile_hit();
-            }
-            for _ in 0..after.compile_misses.saturating_sub(before.compile_misses) {
-                counters.record_include_compile_miss();
-            }
-            for _ in 0..after
-                .stale_invalidations
-                .saturating_sub(before.stale_invalidations)
-            {
-                counters.record_include_stale_invalidation_by_reason("file_fingerprint_changed");
-            }
-            for _ in 0..after
-                .directory_version_hits
-                .saturating_sub(before.directory_version_hits)
-            {
-                counters.record_directory_version_hit();
-            }
-            for _ in 0..after
-                .directory_version_misses
-                .saturating_sub(before.directory_version_misses)
-            {
-                counters.record_directory_version_miss();
-            }
-            for _ in 0..after
-                .negative_cache_hits
-                .saturating_sub(before.negative_cache_hits)
-            {
-                counters.record_negative_include_cache_hit();
-            }
-            for _ in 0..after
-                .negative_cache_installs
-                .saturating_sub(before.negative_cache_installs)
-            {
-                counters.record_negative_include_cache_install();
-            }
-            for _ in 0..after
-                .negative_cache_invalidations
-                .saturating_sub(before.negative_cache_invalidations)
-            {
-                counters.record_negative_include_cache_invalidation();
-            }
-            for _ in 0..after
-                .negative_cache_blocked_unversioned
-                .saturating_sub(before.negative_cache_blocked_unversioned)
-            {
-                counters.record_negative_include_cache_blocked("candidate_directory_unversioned");
-            }
-            for _ in 0..after
-                .negative_cache_blocked_capacity
-                .saturating_sub(before.negative_cache_blocked_capacity)
-            {
-                counters.record_negative_include_cache_blocked("capacity");
-            }
-        }
-    }
-
-    fn record_include_graph_resolution_fallback(&self, path: &str, message: &str) {
-        if php_runtime::api::phar::is_phar_uri(path) {
-            self.record_counter_fallback_by_path_semantics("phar_stream");
-        } else if path.contains("://") {
-            self.record_counter_fallback_by_path_semantics("stream_wrapper");
-        } else if message.contains("OUTSIDE_ROOT") {
-            self.record_counter_fallback_by_path_semantics("outside_allowed_root");
-        } else if message.contains("MISSING") {
-            self.record_counter_fallback_by_path_semantics("missing_path");
-            // The shared include cache installs directory-version-guarded
-            // negative entries for missing paths (its install/blocked
-            // accounting arrives via the cache stats delta). The request-local
-            // IC path performs no such validation, so its misses stay
-            // uncached and record why.
-            if self.options.include_cache.is_none() {
-                self.record_counter_negative_include_cache_blocked(
-                    "directory_versions_unvalidated",
-                );
-            }
-        } else {
-            self.record_counter_fallback_by_path_semantics("loader_error");
-        }
-    }
-
-    /// Returns the request's Composer autoload-map fingerprint, computing it
-    /// once on first use. The value is stable for the whole request, so wiring
-    /// it into autoload cache keys never changes hit/miss behavior within a
-    /// request; it only keys the (request-local) entries on the deployment's
-    /// autoload maps. `None` means no map was detected — unknown, which any
-    /// future persistent reuse must treat as blocking.
-    fn composer_map_fingerprint(&self, state: &mut ExecutionState) -> Option<Arc<str>> {
-        // The fingerprint keys only the (request-local) autoload inline cache;
-        // when inline caches are disabled (baseline/oracle mode) the key is
-        // never stored or compared, so skip the ~10-stat vendor/composer probe
-        // entirely rather than paying it per lookup for a discarded key.
-        if !self.options.inline_caches.enabled() {
-            return None;
-        }
-        if state.composer_map_fingerprint.is_none() {
-            let fingerprint = self
-                .composer_probe_anchor(state)
-                .and_then(|anchor| crate::include::composer_autoload_map_fingerprint(&anchor))
-                .map(Arc::<str>::from);
-            if self.options.collect_counters
-                && let Some(counters) = self.counters.borrow_mut().as_mut()
-            {
-                counters.record_composer_fingerprint(fingerprint.is_some());
-            }
-            if let Some(cache) = &self.options.include_cache
-                && matches!(
-                    cache.note_composer_fingerprint(fingerprint.as_deref()),
-                    crate::include::ComposerFingerprintTransition::Changed
-                )
-                && self.options.collect_counters
-                && let Some(counters) = self.counters.borrow_mut().as_mut()
-            {
-                counters.record_composer_fingerprint_stale();
-            }
-            state.composer_map_fingerprint = Some(fingerprint);
-        }
-        state.composer_map_fingerprint.clone().unwrap_or(None)
-    }
-
-    /// Anchor directory for the Composer map probe: the entry script's
-    /// directory (HTTP script filename or CLI argv[0]), falling back to the
-    /// request CWD.
-    fn composer_probe_anchor(&self, state: &ExecutionState) -> Option<PathBuf> {
-        let script = match &self.options.runtime_context.request_mode {
-            php_runtime::api::RuntimeRequestMode::Http(request) => {
-                Some(PathBuf::from(&request.script_filename))
-            }
-            _ => self.options.runtime_context.argv.first().map(PathBuf::from),
-        };
-        let script = script.filter(|path| !path.as_os_str().is_empty())?;
-        let script = if script.is_absolute() {
-            script
-        } else {
-            state.cwd.join(script)
-        };
-        script
-            .parent()
-            .map(Path::to_path_buf)
-            .or_else(|| Some(state.cwd.clone()))
-    }
-
-    fn record_tiering_backedge(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        current: BlockId,
-        target: BlockId,
-    ) {
-        self.tiering.borrow_mut().record_loop_backedge(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            current,
-            target,
+            .get(function.index())
+            .ok_or_else(|| format!("native function {} is missing", function.raw()))?;
+        let function_key = php_jit::native_function_key(
+            unit.prepared_ir_fingerprint().to_owned(),
+            function.raw(),
+            function_metadata.params.len(),
+            function_metadata.local_count,
+            options.native_optimization.is_optimizing(),
+            0,
         );
-    }
-
-    fn object_instanceof_cached(
-        &self,
-        compiled: &CompiledUnit,
-        state: &mut ExecutionState,
-        value: &Value,
-        class_name: &str,
-    ) -> Result<bool, String> {
-        if !self.options.inline_caches.enabled() {
-            return object_instanceof_in_state(compiled, state, value, class_name);
-        }
-        let Some(subject) = class_relation_subject_name(value) else {
-            return object_instanceof_in_state(compiled, state, value, class_name);
-        };
-        let key = ClassRelationCacheKey {
-            kind: ClassRelationKind::InstanceOf,
-            subject,
-            target: normalize_class_name(class_name),
-            member: None,
-            visibility_context: None,
-            config_fingerprint: class_relation_config_fingerprint(compiled),
-        };
-        let epochs = state.class_relation_epochs();
-        let lookup = state.class_relation_cache.borrow_mut().lookup(&key, epochs);
-        match lookup {
-            ClassRelationCacheLookup::Hit(target) => {
-                self.record_counter_persistent_worker_ic("class_relation", true);
-                self.record_counter_class_relation_cache_hit();
-                self.record_counter_instanceof_cache_hit();
-                return Ok(target.matches);
-            }
-            ClassRelationCacheLookup::Invalidated => {
-                self.record_counter_persistent_worker_ic("class_relation", false);
-                self.record_counter_class_relation_cache_invalidation();
-                self.record_counter_instanceof_cache_miss();
-            }
-            ClassRelationCacheLookup::Miss => {
-                self.record_counter_persistent_worker_ic("class_relation", false);
-                self.record_counter_class_relation_cache_miss();
-                self.record_counter_instanceof_cache_miss();
-            }
-        }
-        let matches = object_instanceof_in_state(compiled, state, value, class_name)?;
-        state.class_relation_cache.borrow_mut().install(
-            key,
-            epochs,
-            ClassRelationCacheTarget {
-                matches,
-                method_slot: None,
-                declaring_class: None,
-            },
+        let external_signatures_hash = external_function_signatures_hash(external_signatures);
+        let key = native_compile_cache::NativeCompileCacheKey::new(
+            unit.cache_identity(),
+            function,
+            options.native_optimization.is_optimizing(),
+            external_signatures_hash,
         );
-        Ok(matches)
-    }
-
-    fn php_token_static_method_error_result(
-        &self,
-        compiled: &CompiledUnit,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        error: PhpTokenStaticMethodError,
-    ) -> VmResult {
-        self.runtime_error(output, compiled, stack, error.into_message())
-    }
-
-    fn route_tokenizer_static_method_diagnostics(
-        &self,
-        compiled: &CompiledUnit,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        diagnostics: Vec<RuntimeDiagnostic>,
-        trace_context: Option<&TokenizerStaticCallTraceContext>,
-    ) -> Result<(), Box<VmResult>> {
-        for diagnostic in diagnostics {
-            let (level, channel) = match diagnostic.severity() {
-                RuntimeSeverity::Warning => (
-                    php_runtime::api::PHP_E_WARNING,
-                    php_runtime::api::PhpDiagnosticChannel::Warning,
-                ),
-                RuntimeSeverity::Deprecation => (
-                    php_runtime::api::PHP_E_DEPRECATED,
-                    php_runtime::api::PhpDiagnosticChannel::Deprecated,
-                ),
-                _ => {
-                    state.diagnostics.push(diagnostic);
-                    continue;
-                }
-            };
-            let handled = match self.dispatch_error_handler(
-                compiled,
-                output,
-                stack,
-                state,
-                level,
-                &diagnostic,
-            ) {
-                Ok(handled) => handled,
-                Err(result) => {
-                    if let Some(trace_context) = trace_context {
-                        attach_tokenizer_static_error_handler_throw_trace(
-                            compiled,
-                            stack,
-                            state,
-                            &result,
-                            trace_context,
-                            level,
-                            &diagnostic,
-                        );
-                    }
-                    return Err(result);
-                }
-            };
-            if handled {
-                continue;
-            }
-            if error_reporting_allows(state, level) {
-                Self::record_last_error(state, level, &diagnostic);
-                emit_vm_diagnostic(output, state, &diagnostic, channel, level);
-                state.diagnostics.push(diagnostic);
-            }
-        }
-        Ok(())
-    }
-
-    fn php_token_static_method_value_for_class(
-        &self,
-        compiled: &CompiledUnit,
-        state: &ExecutionState,
-        class: &php_ir::module::ClassEntry,
-        called_class_name: &str,
-        args: Vec<CallArgument>,
-    ) -> Result<PhpTokenStaticMethodValue, PhpTokenStaticMethodError> {
-        let runtime_class = runtime_class_entry(
-            compiled,
-            state,
-            class,
-            &|value| self.constant_value(compiled.unit(), value),
-            &|reference| class_constant_reference_value(compiled, state, reference),
-            &|reference| named_constant_reference_value(compiled, state, reference),
-        )
-        .map_err(PhpTokenStaticMethodError::RuntimeClass)?;
-        validate_object_mvp_with_display_name(&runtime_class, &class.display_name)
-            .map_err(PhpTokenStaticMethodError::Runtime)?;
-        php_token_static_method_value_for_class_with_diagnostics(
-            called_class_name,
-            "tokenize",
-            args,
-            &runtime_class,
-            class.display_name.clone(),
-        )
-        .map_err(PhpTokenStaticMethodError::Runtime)
-    }
-
-    fn call_static_method_callable(
-        &self,
-        cursor: ExecutionCursor<'_>,
-        request: StaticMethodCallableRequest<'_>,
-    ) -> VmResult {
-        let ExecutionCursor {
-            compiled,
-            output,
-            stack,
-            state,
-        } = cursor;
-        let StaticMethodCallableRequest {
-            class_name,
-            method,
-            args,
-            call_span,
-            allow_by_ref_value_warnings,
-            by_ref_warning_callable_name,
-        } = request;
-        if is_closure_runtime_class(class_name) {
-            let value = match closure_static_method_value(
-                compiled,
-                state,
-                stack,
-                method,
-                args,
-                output,
-                RuntimeSourceSpan::default(),
-            ) {
-                Ok(value) => value,
-                Err(message) => return self.runtime_error(output, compiled, stack, message),
-            };
-            return VmResult::success_no_output(Some(value));
-        }
-        if is_php_token_runtime_class(class_name) {
-            let trace_values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
-            let result =
-                match php_token_static_method_value_with_diagnostics(class_name, method, args) {
-                    Ok(result) => result,
-                    Err(message) => return self.runtime_error(output, compiled, stack, message),
-                };
-            let trace_context = call_span.map(|call_span| TokenizerStaticCallTraceContext {
-                call: format!("{class_name}::{method}"),
-                values: trace_values,
-                call_span,
-            });
-            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
-                compiled,
-                output,
-                stack,
-                state,
-                result.diagnostics,
-                trace_context.as_ref(),
-            ) {
-                return *result;
-            }
-            return VmResult::success_no_output(Some(result.value));
-        }
-        if internal_extension_static_class(class_name) {
-            let values = args.into_iter().map(|arg| arg.value).collect();
-            let value = match call_internal_extension_static_method(class_name, method, values) {
-                Ok(value) => value,
-                Err(message) => return self.runtime_error(output, compiled, stack, message),
-            };
-            return VmResult::success_no_output(Some(value));
-        }
-        if let Err(result) = self.autoload_static_class_if_missing(
-            ExecutionCursor::new(compiled, output, stack, state),
-            class_name,
-            call_span.unwrap_or_default(),
-            None,
-        ) {
-            return *result;
-        }
-        let class = match resolve_static_class_name(compiled, state, stack, class_name) {
-            Ok(class) => class,
-            Err(message) => return self.runtime_error(output, compiled, stack, message),
-        };
-        if let Err(result) =
-            self.autoload_class_parents_if_missing(compiled, &class, output, stack, state)
-        {
-            return *result;
-        }
-        let normalized_method = normalize_method_name(method);
-        if class.flags.is_enum && matches!(normalized_method.as_str(), "cases" | "from" | "tryfrom")
-        {
-            let value = match enum_static_method(compiled, state, &class, method, args, &|value| {
-                self.constant_value(compiled.unit(), value)
-            }) {
-                Ok(value) => value,
-                Err(message) => return self.runtime_error(output, compiled, stack, message),
-            };
-            return VmResult::success_no_output(Some(value));
-        }
-        if class_extends_php_token(compiled, state, &class) && normalized_method == "tokenize" {
-            let trace_values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
-            let result = match self
-                .php_token_static_method_value_for_class(compiled, state, &class, class_name, args)
+        self.native_compiles.get_or_compile(key, || {
+            if let Ok(manager) = php_jit::global_code_manager()
+                && let Some((cell, handle)) = manager.published_function(&function_key)
+                && cell
+                    .resolve(
+                        function_key.signature_hash,
+                        function_key.invalidation_generation,
+                    )
+                    .is_some()
             {
-                Ok(result) => result,
-                Err(error) => {
-                    return self.runtime_error(output, compiled, stack, error.into_message());
-                }
-            };
-            let trace_context = call_span.map(|call_span| TokenizerStaticCallTraceContext {
-                call: format!("{class_name}::{method}"),
-                values: trace_values,
-                call_span,
-            });
-            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
-                compiled,
-                output,
-                stack,
-                state,
-                result.diagnostics,
-                trace_context.as_ref(),
-            ) {
-                return *result;
-            }
-            return VmResult::success_no_output(Some(result.value));
-        }
-        let scope = method_lookup_scope_for_static_call(compiled, stack, class_name);
-        let resolved = match lookup_resolved_method_in_state(
-            compiled,
-            state,
-            &class.name,
-            method,
-            scope.as_deref(),
-        ) {
-            Ok(Some(method)) => method,
-            Ok(None) => {
-                let called_class =
-                    called_class_for_static_call(compiled, stack, class_name, &class);
-                return match self.call_magic_static_method(
-                    ExecutionCursor::new(compiled, output, stack, state),
-                    MagicStaticCallRequest {
-                        class: &class,
-                        magic_method: "__callStatic",
-                        called_method: method,
-                        args,
-                        called_class,
-                        call_span,
+                return Ok(vec![php_jit::JitUnitCompileRecord {
+                    function,
+                    result: php_jit::JitCompileResult {
+                        status: php_jit::JitCompileStatus::Compiled,
+                        handle: Some(handle),
+                        diagnostics: vec![format!(
+                            "native function {} resolved through its published indirection cell",
+                            function.raw()
+                        )],
+                        stats: php_jit::JitStats::default(),
                     },
-                ) {
-                    Ok(Some(result)) => result,
-                    Ok(None) => self.runtime_error(
-                        output,
-                        compiled,
-                        stack,
-                        format!(
-                            "E_PHP_VM_UNKNOWN_METHOD: method {}::{} is not defined",
-                            class.name, method
-                        ),
-                    ),
-                    Err(result) => *result,
-                };
+                }]);
             }
-            Err(message) => return self.runtime_error(output, compiled, stack, message),
-        };
-        let method_entry = &resolved.method;
-        let declaring_class = &resolved.class;
-        let is_constructor_call = normalize_method_name(method) == "__construct";
-        let bound_this_for_scoped_call =
-            scoped_static_call_this_object(compiled, state, stack, declaring_class, method_entry);
-        if !method_entry.flags.is_static && bound_this_for_scoped_call.is_none() {
-            return self.runtime_error(
-                output,
-                compiled,
-                stack,
-                format!(
-                    "E_PHP_VM_NON_STATIC_METHOD_CALL: method {}::{} is not static",
-                    declaring_class.name, method_entry.name
+            compile_native_function_graph(
+                unit.unit(),
+                function,
+                options,
+                unit.prepared_ir_fingerprint(),
+                &format!(
+                    "{}-external-signatures-{external_signatures_hash:016x}",
+                    unit.prepared_dependency_identity()
                 ),
-            );
-        }
-        if !is_constructor_call
-            && (method_entry.flags.is_private || method_entry.flags.is_protected)
-            && let Err(inaccessible) = validate_method_callable_in_state_scope(
-                compiled,
-                state,
-                current_scope_class(compiled, stack).as_deref(),
-                declaring_class,
-                method_entry,
+                external_signatures,
             )
-        {
-            let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
-            return match self.call_magic_static_method(
-                ExecutionCursor::new(compiled, output, stack, state),
-                MagicStaticCallRequest {
-                    class: &class,
-                    magic_method: "__callStatic",
-                    called_method: method,
-                    args,
-                    called_class,
-                    call_span,
-                },
-            ) {
-                Ok(Some(result)) => result,
-                Ok(None) => self.runtime_error(output, compiled, stack, inaccessible),
-                Err(result) => *result,
-            };
-        }
-        let visibility = if is_constructor_call {
-            validate_scoped_constructor_callable_in_state_scope(
-                compiled,
-                state,
-                scope.as_deref(),
-                declaring_class,
-                method_entry,
-            )
-        } else {
-            validate_method_callable_in_state_scope(
-                compiled,
-                state,
-                current_scope_class(compiled, stack).as_deref(),
-                declaring_class,
-                method_entry,
-            )
-        };
-        if let Err(message) = visibility {
-            return self.runtime_error(output, compiled, stack, message);
-        }
-        let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
-        let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
-        let mut call = FunctionCall::new(args, Vec::new())
-            .with_call_site_strict_types(call_site_strictness(compiled, call_span))
-            .with_class_context_handles(
-                self.class_name_handles(&declaring_class.name).normalized,
-                self.class_name_handles(&called_class).display,
-                self.class_name_handles(&declaring_class.name).normalized,
-            )
-            .with_optional_call_span(call_span);
-        if let Some(bound_this) = bound_this_for_scoped_call {
-            call = call.with_this(bound_this);
-        }
-        let call = if allow_by_ref_value_warnings {
-            call.with_by_ref_value_warnings()
-        } else {
-            call
-        }
-        .with_optional_by_ref_warning_callable_name(by_ref_warning_callable_name);
-        self.execute_function(
-            &class_owner,
-            method_entry.function,
-            call,
-            output,
-            stack,
-            state,
-        )
+        })
     }
 }
+
+fn external_function_signatures_hash(signatures: &[php_jit::JitExternalFunctionSignature]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for signature in signatures {
+        for byte in signature.name.bytes() {
+            hash =
+                (hash ^ u64::from(byte.to_ascii_lowercase())).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        for parameter in &signature.params {
+            for byte in parameter.name.bytes() {
+                hash = (hash ^ u64::from(byte.to_ascii_lowercase()))
+                    .wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            hash = (hash ^ u64::from(parameter.by_ref)).wrapping_mul(0x0000_0100_0000_01b3);
+            hash = (hash ^ u64::from(parameter.variadic)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// Coordinates mandatory native compilation and outer result assembly.
+pub struct Vm {
+    options: VmOptions,
+    worker_state: VmWorkerState,
+}
+
+/// Native-only compilation result for one selected authoritative IR function.
+#[derive(Clone, Debug)]
+pub struct NativeCompileProbeReport {
+    pub function: php_ir::FunctionId,
+    pub function_name: String,
+    pub result: php_jit::JitCompileResult,
+}
+
 impl Default for Vm {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl Vm {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_options(VmOptions::default())
+    }
+
+    #[must_use]
+    pub fn with_options(options: VmOptions) -> Self {
+        let worker_state = VmWorkerState::new(options.tiering.clone());
+        Self::with_options_and_worker_state(options, worker_state)
+    }
+
+    #[must_use]
+    pub fn with_options_and_worker_state(options: VmOptions, worker_state: VmWorkerState) -> Self {
+        Self {
+            options,
+            worker_state,
+        }
+    }
+
+    /// Compile and publish native entries without entering application code.
+    #[must_use]
+    pub fn prewarm_cranelift(&self, unit: &CompiledUnit) -> u64 {
+        let entry = unit.unit().entry;
+        if unit.unit().functions.get(entry.index()).is_none() {
+            return 0;
+        }
+        self.compile_native(unit, entry).map_or(0, |records| {
+            records
+                .0
+                .iter()
+                .filter(|record| {
+                    matches!(record.result.status, php_jit::JitCompileStatus::Compiled)
+                })
+                .count() as u64
+        })
+    }
+
+    /// Compiles one selected function with the production Cranelift helper ABI
+    /// without entering PHP code.
+    pub fn probe_cranelift(
+        &self,
+        unit: &CompiledUnit,
+        function_name: Option<&str>,
+    ) -> Result<NativeCompileProbeReport, String> {
+        if self.options.verify_ir && unit.prepared_ir_verification_errors() > 0 {
+            return Err(format!(
+                "IR verifier failed with {} error(s)",
+                unit.prepared_ir_verification_errors()
+            ));
+        }
+        validate_native_class_table(unit.unit())?;
+        let selected_function = if let Some(name) = function_name {
+            Some(
+                unit.unit()
+                    .functions
+                    .iter()
+                    .position(|function| function.name.eq_ignore_ascii_case(name))
+                    .map(|index| php_ir::FunctionId::new(index as u32))
+                    .ok_or_else(|| format!("native compile probe function not found: {name}"))?,
+            )
+        } else {
+            None
+        };
+        let function = selected_function.unwrap_or(unit.unit().entry);
+        let function_entry = unit.unit().functions.get(function.index()).ok_or_else(|| {
+            format!(
+                "native compile probe function {} is missing",
+                function.raw()
+            )
+        })?;
+        let function_name = function_entry.name.clone();
+        let mut compiler = php_jit::JitEngine::new();
+        let request = php_jit::JitCompileRequest::new(format!(
+            "probe.unit.{}.function.{}",
+            unit.unit().id.raw(),
+            function.raw()
+        ))
+        .with_function_name(function_name.clone())
+        .with_opt_level(if self.options.native_optimization.is_optimizing() {
+            2
+        } else {
+            0
+        });
+        let result = compiler
+            .compile_function_with_runtime_helpers(
+                unit.unit(),
+                function,
+                request,
+                runtime_helper_addresses(),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(NativeCompileProbeReport {
+            function,
+            function_name,
+            result,
+        })
+    }
+
+    /// Compile the entry function from authoritative IR and enter it. Other
+    /// declared functions compile through native dispatch on first execution.
+    #[must_use]
+    pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
+        self.execute_with_external_function_signatures(unit, &[])
+    }
+
+    pub(super) fn execute_with_external_function_signatures(
+        &self,
+        unit: impl Into<CompiledUnit>,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> VmResult {
+        let unit = unit.into();
+        let output = OutputBuffer::default();
+        let entry = unit.unit().entry;
+        let Some(function) = unit.unit().functions.get(entry.index()) else {
+            return VmResult::compile_error(output, "entry function is missing");
+        };
+        if self.options.verify_ir && unit.prepared_ir_verification_errors() > 0 {
+            return VmResult::compile_error(
+                output,
+                format!(
+                    "IR verifier failed with {} error(s)",
+                    unit.prepared_ir_verification_errors()
+                ),
+            );
+        }
+        if let Err(error) = validate_native_class_table(unit.unit()) {
+            return VmResult::compile_error(output, error);
+        }
+
+        let worker_cache_before = self.worker_state.native_compile_cache_stats();
+        let mut cache_load_time = Duration::ZERO;
+        let mut native_compile_time = Duration::ZERO;
+        let cache_candidate = native_cache_candidate(unit.unit(), entry);
+        let cache = match cache_candidate {
+            true => match self.native_cache() {
+                Ok(cache) => cache,
+                Err(error) => {
+                    return VmResult::compile_error(
+                        output,
+                        format!("E_NATIVE_CACHE_SETUP: {error}"),
+                    );
+                }
+            },
+            false => None,
+        };
+        let cache_identity = cache
+            .as_ref()
+            .and_then(|_| native_cache_identity(&unit, entry, &self.options).ok());
+        let mut cached_compile_records = None;
+        let mut cached_compile_error = None;
+
+        if let (Some(cache), Some(identity)) = (&cache, &cache_identity) {
+            if cache.config().mode.can_write() {
+                let cache_started = Instant::now();
+                let result = self.worker_state.get_or_load_native_unit(identity, || {
+                    cache
+                        .get_or_compile(identity, resolve_native_cache_helper, || {
+                            let compile_started = Instant::now();
+                            let (records, disposition) = match self
+                                .compile_native_with_external_function_signatures(
+                                    &unit,
+                                    entry,
+                                    external_signatures,
+                                ) {
+                                Ok(records) => records,
+                                Err(error) => {
+                                    native_compile_time += compile_started.elapsed();
+                                    cached_compile_error = Some(error.clone());
+                                    return Err(php_jit::NativeCacheError::InvalidHeader(error));
+                                }
+                            };
+                            if disposition.compiled() {
+                                native_compile_time += compile_started.elapsed();
+                            }
+                            let image = cache_image(identity.clone(), entry, &records);
+                            cached_compile_records = Some(records);
+                            image
+                        })
+                        .map(|(artifact, _)| Some(artifact))
+                });
+                cache_load_time += cache_started.elapsed().saturating_sub(native_compile_time);
+                let cache_error = match result {
+                    Ok(Some(loaded)) => {
+                        let result = self.execute_cached_entry(&unit, loaded, entry, output);
+                        return self.attach_native_cache_metrics(
+                            result,
+                            cache,
+                            cache_load_time,
+                            native_compile_time,
+                            worker_cache_before,
+                        );
+                    }
+                    Ok(None) => php_jit::NativeCacheError::InvalidHeader(
+                        "native cache write produced no loaded unit".to_owned(),
+                    ),
+                    Err(error) => error,
+                };
+                if let Some(error) = cached_compile_error {
+                    let result =
+                        VmResult::compile_error(output, format!("E_NATIVE_COMPILE_SETUP: {error}"));
+                    return self.attach_native_cache_metrics(
+                        result,
+                        cache,
+                        cache_load_time,
+                        native_compile_time,
+                        worker_cache_before,
+                    );
+                }
+                let result = VmResult::compile_error(
+                    output,
+                    format!("E_NATIVE_CACHE_ARTIFACT: {cache_error}"),
+                );
+                return self.attach_native_cache_metrics(
+                    result,
+                    cache,
+                    cache_load_time,
+                    native_compile_time,
+                    worker_cache_before,
+                );
+            } else if cache.config().mode.can_read() {
+                let cache_started = Instant::now();
+                let loaded = self.worker_state.get_or_load_native_unit(identity, || {
+                    cache.load(identity, resolve_native_cache_helper)
+                });
+                cache_load_time += cache_started.elapsed();
+                if let Ok(Some(loaded)) = loaded {
+                    let result = self.execute_cached_entry(&unit, loaded, entry, output);
+                    return self.attach_native_cache_metrics(
+                        result,
+                        cache,
+                        cache_load_time,
+                        native_compile_time,
+                        worker_cache_before,
+                    );
+                }
+            }
+        }
+
+        let compile_started = Instant::now();
+        let records = match cached_compile_records {
+            Some(records) => records,
+            None => match self.compile_native_with_external_function_signatures(
+                &unit,
+                entry,
+                external_signatures,
+            ) {
+                Ok((records, disposition)) => {
+                    if disposition.compiled() {
+                        native_compile_time += compile_started.elapsed();
+                    }
+                    records
+                }
+                Err(error) => {
+                    native_compile_time += compile_started.elapsed();
+                    let result =
+                        VmResult::compile_error(output, format!("E_NATIVE_COMPILE_SETUP: {error}"));
+                    return self.attach_optional_native_cache_metrics(
+                        result,
+                        cache.as_ref(),
+                        cache_load_time,
+                        native_compile_time,
+                        worker_cache_before,
+                    );
+                }
+            },
+        };
+        let Some(entry_record) = records.iter().find(|record| record.function == entry) else {
+            let result =
+                VmResult::compile_error(output, "E_NATIVE_COMPILE_SETUP: entry record missing");
+            return self.attach_optional_native_cache_metrics(
+                result,
+                cache.as_ref(),
+                cache_load_time,
+                native_compile_time,
+                worker_cache_before,
+            );
+        };
+        if let Some(rejected) = records
+            .iter()
+            .find(|record| !matches!(&record.result.status, php_jit::JitCompileStatus::Compiled))
+        {
+            let name = unit
+                .unit()
+                .functions
+                .get(rejected.function.index())
+                .map_or("<missing>", |function| function.name.as_str());
+            let reason = match &rejected.result.status {
+                php_jit::JitCompileStatus::Rejected { reason } => reason.as_str(),
+                php_jit::JitCompileStatus::Compiled => "compiler reported no native code",
+            };
+            let detail = rejected
+                .result
+                .diagnostics
+                .first()
+                .map_or("", String::as_str);
+            let result = VmResult::compile_error(
+                output,
+                format!("E_NATIVE_UNSUPPORTED_LOWERING: function={name}: {reason}: {detail}"),
+            );
+            return self.attach_optional_native_cache_metrics(
+                result,
+                cache.as_ref(),
+                cache_load_time,
+                native_compile_time,
+                worker_cache_before,
+            );
+        }
+        let compiled = &entry_record.result;
+        let Some(handle) = compiled.handle.as_ref() else {
+            let reason = match &compiled.status {
+                php_jit::JitCompileStatus::Rejected { reason } => reason.clone(),
+                php_jit::JitCompileStatus::Compiled => {
+                    "compiler reported success without a native entry".to_owned()
+                }
+            };
+            let result = VmResult::compile_error(output, format!("E_NATIVE_COMPILE: {reason}"));
+            return self.attach_optional_native_cache_metrics(
+                result,
+                cache.as_ref(),
+                cache_load_time,
+                native_compile_time,
+                worker_cache_before,
+            );
+        };
+        let native_entries = records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .result
+                    .handle
+                    .as_ref()
+                    .cloned()
+                    .map(|handle| (record.function, handle))
+            })
+            .collect();
+        let native_entries = Arc::new(native_entries);
+        let mut context = NativeExecutionContext::new(
+            &unit,
+            unit.cache_identity(),
+            &self.options,
+            &self.worker_state,
+            output,
+            native_entries,
+        );
+        context.install_root_dynamic_unit(unit.clone());
+        let native_execution_started_at =
+            self.options.collect_counters.then(std::time::Instant::now);
+        context.record_native_direct_calls(handle);
+        let guard = activate_native_context(&mut context);
+        let outcome = handle.invoke_i64_with_native_unwind(
+            &[],
+            php_jit::JIT_RUNTIME_ABI_HASH,
+            |types, value| {
+                let class = context
+                    .decode_result(value)
+                    .ok()
+                    .and_then(native_exception_fields)
+                    .map(|(class, _, _)| class);
+                class.is_some_and(|class| {
+                    types.iter().any(|type_| {
+                        type_.eq_ignore_ascii_case(&class)
+                            || type_.eq_ignore_ascii_case("Throwable")
+                            || (type_.eq_ignore_ascii_case("Exception")
+                                && class.ends_with("Exception"))
+                            || (type_.eq_ignore_ascii_case("Error")
+                                && (class == "Error" || class.ends_with("Error")))
+                    })
+                })
+            },
+        );
+        let (exception_handled, exception_handler_error) = match &outcome {
+            Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
+                if *status == php_jit::JitCallStatus::THROW.0 as i32 =>
+            {
+                match context.handle_uncaught_throwable(*value) {
+                    Ok(handled) => (handled, None),
+                    Err(error) => (false, Some(error)),
+                }
+            }
+            _ => (false, None),
+        };
+        let mut shutdown_throwable = None;
+        let shutdown_error = exception_handler_error.or_else(|| {
+            context.run_shutdown_callbacks().err().and_then(|error| {
+                if error == "E_PHP_RETHROW"
+                    && let Some(throwable) = context.take_pending_throwable()
+                {
+                    shutdown_throwable = Some(throwable);
+                    None
+                } else {
+                    Some(error)
+                }
+            })
+        });
+        context.output.flush_all_buffers();
+        drop(guard);
+        context.publish_include_globals();
+        let native_execution_time_nanos = native_execution_started_at.map_or(0, |started_at| {
+            started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+        });
+        let mut runtime_counters = context.runtime_counters();
+        runtime_counters.native_execution_entries =
+            runtime_counters.native_execution_entries.saturating_add(1);
+        runtime_counters.native_region_entries =
+            runtime_counters.native_region_entries.saturating_add(1);
+        runtime_counters.native_execution_time_nanos = native_execution_time_nanos;
+        let http_response = std::mem::take(&mut context.http_response);
+        let upload_registry = std::mem::take(&mut context.upload_registry);
+        let session = std::mem::take(&mut context.session);
+        let process_exit_terminates_process = context.process_exit_terminates_process();
+        let mut result = if let Some(throwable) = shutdown_throwable {
+            native_uncaught_throwable_result(context.output, Some(throwable))
+        } else if let Some(error) = shutdown_error {
+            VmResult::runtime_error(
+                context.output,
+                context.diagnostic,
+                format!("E_NATIVE_SHUTDOWN: {error}"),
+            )
+        } else if exception_handled {
+            VmResult::success(context.output, Some(Value::Null))
+        } else {
+            match outcome {
+                Ok(php_jit::JitI64InvokeOutcome::Returned(value)) => {
+                    match context.decode_result(value) {
+                        Ok(value) => {
+                            let mut result = VmResult::success(context.output, Some(value));
+                            result.diagnostics.extend(context.diagnostic);
+                            result
+                        }
+                        Err(error) => VmResult::runtime_error(
+                            context.output,
+                            context.diagnostic,
+                            format!("E_NATIVE_VALUE: {error}"),
+                        ),
+                    }
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
+                    if status == php_jit::JitCallStatus::EXIT.0 as i32 =>
+                {
+                    let exit_code = match context.decode_result(value) {
+                        Ok(Value::String(value)) => {
+                            context.output.write_bytes(value.as_bytes());
+                            0
+                        }
+                        Ok(Value::Int(value)) => i32::try_from(value).unwrap_or(0),
+                        Ok(Value::Bool(value)) => i32::from(value),
+                        _ => 0,
+                    };
+                    VmResult::success_exit(context.output, exit_code)
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
+                    if status == php_jit::JitCallStatus::THROW.0 as i32 =>
+                {
+                    let throwable = context.decode_result(value).ok();
+                    native_uncaught_throwable_result(context.output, throwable)
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                    if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
+                {
+                    let message = context
+                        .diagnostic
+                        .as_ref()
+                        .map_or("native runtime operation failed", |diagnostic| {
+                            diagnostic.message()
+                        })
+                        .to_owned();
+                    if context.diagnostic.as_ref().is_some_and(|diagnostic| {
+                        diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
+                    }) && context
+                        .output
+                        .as_bytes()
+                        .windows(b"Fatal error".len())
+                        .any(|window| window == b"Fatal error")
+                    {
+                        VmResult::fatal(context.output, context.diagnostic, message)
+                    } else {
+                        VmResult::runtime_error(context.output, context.diagnostic, message)
+                    }
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                    if status == php_jit::JitCallStatus::RETURN_REFERENCE.0 as i32 =>
+                {
+                    VmResult::success(context.output, None)
+                }
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. }) => {
+                    VmResult::runtime_error(
+                        context.output,
+                        context.diagnostic,
+                        format!("native entry returned status {status}"),
+                    )
+                }
+                Err(error) => VmResult::compile_error(
+                    context.output,
+                    format!("E_NATIVE_ENTRY: native entry invocation failed: {error:?}"),
+                ),
+            }
+        };
+        result.process_exit_terminates_process = process_exit_terminates_process;
+        result.http_response = Some(Box::new(http_response));
+        result.upload_registry = Some(Box::new(upload_registry));
+        result.session = Some(Box::new(session));
+        if self.options.collect_counters {
+            result.counters = Some(Box::new(runtime_counters));
+        }
+        if self.options.trace {
+            result.trace.push(format!(
+                "vm-trace: function={}({}) native_entry=cranelift output_len={}",
+                function.name,
+                entry.raw(),
+                result.output.as_bytes().len()
+            ));
+        }
+        self.attach_optional_native_cache_metrics(
+            result,
+            cache.as_ref(),
+            cache_load_time,
+            native_compile_time,
+            worker_cache_before,
+        )
+    }
+
+    fn compile_native(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
+        self.worker_state
+            .compile_native(unit, function, &self.options, &[])
+    }
+
+    fn compile_native_with_external_function_signatures(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
+        self.worker_state
+            .compile_native(unit, function, &self.options, external_signatures)
+    }
+
+    fn native_cache(
+        &self,
+    ) -> Result<Option<php_jit::NativeArtifactCache>, php_jit::NativeCacheError> {
+        if self.options.native_cache == php_jit::NativeCacheMode::Off {
+            return Ok(None);
+        }
+        php_jit::NativeArtifactCache::new(php_jit::NativeCacheConfig {
+            mode: self.options.native_cache,
+            directory: self.options.native_cache_dir.clone(),
+            ..php_jit::NativeCacheConfig::default()
+        })
+        .map(Some)
+    }
+
+    fn attach_optional_native_cache_metrics(
+        &self,
+        result: VmResult,
+        cache: Option<&php_jit::NativeArtifactCache>,
+        cache_load_time: Duration,
+        native_compile_time: Duration,
+        worker_cache_before: NativeCompileCacheStats,
+    ) -> VmResult {
+        self.attach_native_metrics(
+            result,
+            cache.map(php_jit::NativeArtifactCache::stats),
+            cache_load_time,
+            native_compile_time,
+            worker_cache_before,
+        )
+    }
+
+    fn attach_native_cache_metrics(
+        &self,
+        result: VmResult,
+        cache: &php_jit::NativeArtifactCache,
+        cache_load_time: Duration,
+        native_compile_time: Duration,
+        worker_cache_before: NativeCompileCacheStats,
+    ) -> VmResult {
+        self.attach_native_metrics(
+            result,
+            Some(cache.stats()),
+            cache_load_time,
+            native_compile_time,
+            worker_cache_before,
+        )
+    }
+
+    fn attach_native_metrics(
+        &self,
+        mut result: VmResult,
+        cache_stats: Option<php_jit::NativeCacheStats>,
+        cache_load_time: Duration,
+        native_compile_time: Duration,
+        worker_cache_before: NativeCompileCacheStats,
+    ) -> VmResult {
+        let worker_cache = self
+            .worker_state
+            .native_compile_cache_stats()
+            .saturating_delta(worker_cache_before);
+        result.native_cache_load_nanos =
+            cache_load_time.as_nanos().min(u128::from(u64::MAX)) as u64;
+        result.native_compile_nanos = worker_cache
+            .compile_time_nanos
+            .max(native_compile_time.as_nanos().min(u128::from(u64::MAX)) as u64);
+        if self.options.native_cache_stats
+            && let Some(stats) = cache_stats
+        {
+            result.native_cache_stats = Some(Box::new(stats));
+        }
+        if self.options.collect_counters {
+            let mut counters = result
+                .counters
+                .take()
+                .map_or_else(crate::counters::VmCounters::default, |counters| *counters);
+            let executed = result.status.is_success();
+            counters.native_compile_attempts = worker_cache.misses;
+            counters.native_compile_successes = worker_cache.insertions;
+            counters.native_compile_failures = worker_cache.compile_failures;
+            counters.native_compile_time_nanos = result.native_compile_nanos;
+            counters.native_execution_entries =
+                counters.native_execution_entries.max(u64::from(executed));
+            counters.native_region_entries =
+                counters.native_region_entries.max(u64::from(executed));
+            counters.native_version_published = worker_cache.insertions;
+            let code_stats = php_jit::cranelift_code_manager_stats();
+            counters.native_function_body_compile_count = code_stats.function_body_compile_count;
+            counters.native_duplicate_function_body_count =
+                code_stats.duplicate_function_publications;
+            let loaded_stats = self.worker_state.loaded_native_unit_stats();
+            counters.native_loaded_artifact_registry_hits = loaded_stats.hits;
+            counters.native_loaded_artifact_maps = loaded_stats.maps;
+            counters.native_loaded_entry_table_constructions =
+                loaded_stats.entry_table_constructions;
+            counters.native_mapped_executable_bytes = loaded_stats.mapped_executable_bytes;
+            if let Some(stats) = cache_stats {
+                counters.native_cache_hits = stats.hits;
+                counters.native_cache_misses = stats.misses;
+                counters.native_cache_writes = stats.writes;
+                counters.native_cache_rebuilds = stats.rebuilds;
+                counters.native_cache_invalid_artifacts = stats.invalid_artifacts;
+                counters.native_cache_compile_waits = stats.compile_waits;
+                counters.native_cache_bytes_loaded = stats.bytes_loaded;
+                counters.native_cache_bytes_written = stats.bytes_written;
+            }
+            result.counters = Some(Box::new(counters));
+        }
+        result
+    }
+}
+
+pub(super) fn compile_native_function_graph(
+    unit: &php_ir::IrUnit,
+    function: php_ir::FunctionId,
+    options: &VmOptions,
+    ir_fingerprint: &str,
+    dependency_identity: &str,
+    external_signatures: &[php_jit::JitExternalFunctionSignature],
+) -> Result<Vec<php_jit::JitUnitCompileRecord>, String> {
+    let function_name = unit
+        .functions
+        .get(function.index())
+        .ok_or_else(|| format!("native function {} is missing", function.raw()))?
+        .name
+        .clone();
+    let mut compiler = php_jit::JitEngine::new();
+    let result = compiler
+        .compile_function_with_runtime_helpers(
+            unit,
+            function,
+            php_jit::JitCompileRequest::new(format!("unit.{}", unit.id.raw()))
+                .with_function_name(function_name)
+                .with_ir_fingerprint(ir_fingerprint)
+                .with_dependency_identity(dependency_identity)
+                .with_external_function_signatures(external_signatures.to_vec())
+                .with_opt_level(if options.native_optimization.is_optimizing() {
+                    2
+                } else {
+                    0
+                }),
+            runtime_helper_addresses(),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(vec![php_jit::JitUnitCompileRecord { function, result }])
+}
+
+fn native_exception_fields(value: Value) -> Option<(String, String, String)> {
+    if let Value::Object(object) = value {
+        let string = |value: Value| match value {
+            Value::String(value) => Some(String::from_utf8_lossy(value.as_bytes()).into_owned()),
+            Value::Null => Some(String::new()),
+            _ => None,
+        };
+        let message = object
+            .get_property("message")
+            .and_then(string)
+            .unwrap_or_default();
+        let file = object
+            .get_property("file")
+            .and_then(string)
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        return Some((object.display_name(), message, file));
+    }
+    let Value::Array(array) = value else {
+        return None;
+    };
+    let field = |name: &str| {
+        array.get(&php_runtime::api::ArrayKey::String(
+            php_runtime::api::PhpString::from_bytes(name.as_bytes().to_vec()),
+        ))
+    };
+    let string = |value: &Value| match value {
+        Value::String(value) => Some(String::from_utf8_lossy(value.as_bytes()).into_owned()),
+        Value::Null => Some(String::new()),
+        _ => None,
+    };
+    let raw_class = string(field("class")?)?;
+    let class = match raw_class.to_ascii_lowercase().as_str() {
+        "exception" => "Exception".to_owned(),
+        "runtimeexception" => "RuntimeException".to_owned(),
+        "error" => "Error".to_owned(),
+        "typeerror" => "TypeError".to_owned(),
+        "valueerror" => "ValueError".to_owned(),
+        "argumentcounterror" => "ArgumentCountError".to_owned(),
+        "divisionbyzeroerror" => "DivisionByZeroError".to_owned(),
+        _ => raw_class,
+    };
+    Some((class, string(field("message")?)?, string(field("file")?)?))
+}
+
+fn native_exception_detailed_output(
+    value: &Value,
+    class: &str,
+    message: &str,
+    file: &str,
+) -> Option<String> {
+    let Value::Array(exception) = value else {
+        return None;
+    };
+    let key = |name: &str| {
+        php_runtime::api::ArrayKey::String(php_runtime::api::PhpString::from_bytes(
+            name.as_bytes().to_vec(),
+        ))
+    };
+    let Value::Int(line) = exception.get(&key("line"))? else {
+        return None;
+    };
+    let line = usize::try_from(*line).ok()?;
+    let trace = match exception.get(&key("trace")) {
+        Some(Value::Array(trace)) => trace,
+        _ => {
+            return Some(format!(
+                "\nFatal error: Uncaught {class}: {message} in {file}:{line}\nStack trace:\n#0 {{main}}\n  thrown in {file} on line {line}\n"
+            ));
+        }
+    };
+    let frames = trace
+        .iter()
+        .filter_map(|(_, value)| {
+            let Value::Array(frame) = value else {
+                return None;
+            };
+            let string = |name: &str| match frame.get(&key(name)) {
+                Some(Value::String(value)) => {
+                    Some(String::from_utf8_lossy(value.as_bytes()).into_owned())
+                }
+                _ => None,
+            };
+            let internal = matches!(frame.get(&key("internal")), Some(Value::Bool(true)));
+            let frame_line = match frame.get(&key("line")) {
+                Some(Value::Int(value)) => usize::try_from(*value).ok(),
+                _ => None,
+            };
+            let function = string("function")?;
+            let frame_file = string("file");
+            let args = match frame.get(&key("args")) {
+                Some(Value::Array(args)) => args
+                    .iter()
+                    .map(|(_, value)| native_trace_argument(value))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => String::new(),
+            };
+            if !internal && (frame_file.is_none() || frame_line.is_none()) {
+                return None;
+            }
+            Some((frame_file, frame_line, function, args, internal))
+        })
+        .collect::<Vec<_>>();
+    if frames.is_empty() {
+        return Some(format!(
+            "\nFatal error: Uncaught {class}: {message} in {file}:{line}\nStack trace:\n#0 {{main}}\n  thrown in {file} on line {line}\n"
+        ));
+    }
+    let detailed_message = match &frames[0] {
+        (_, _, _, _, true) => format!("{message} in {file}:{line}"),
+        (Some(call_file), Some(call_line), _, _, false) => format!(
+            "{message}, called in {call_file} on line {call_line} and defined in {file}:{line}"
+        ),
+        _ => format!("{message} in {file}:{line}"),
+    };
+    let mut output = format!("\nFatal error: Uncaught {class}: {detailed_message}\nStack trace:\n");
+    for (index, (frame_file, frame_line, function, args, internal)) in frames.iter().enumerate() {
+        if *internal {
+            output.push_str(&format!(
+                "#{index} [internal function]: {function}({args})\n"
+            ));
+        } else if let (Some(frame_file), Some(frame_line)) = (frame_file, frame_line) {
+            output.push_str(&format!(
+                "#{index} {frame_file}({frame_line}): {function}({args})\n"
+            ));
+        }
+    }
+    output.push_str(&format!(
+        "#{} {{main}}\n  thrown in {file} on line {line}\n",
+        frames.len()
+    ));
+    Some(output)
+}
+
+fn native_uncaught_throwable_result(
+    mut output: php_runtime::api::OutputBuffer,
+    throwable: Option<Value>,
+) -> VmResult {
+    let (class, message, file) = throwable
+        .clone()
+        .and_then(native_exception_fields)
+        .unwrap_or_else(|| {
+            (
+                "Exception".to_owned(),
+                "unknown exception".to_owned(),
+                "<unknown>".to_owned(),
+            )
+        });
+    let rendered = throwable
+        .as_ref()
+        .and_then(|value| native_exception_detailed_output(value, &class, &message, &file))
+        .unwrap_or_else(|| {
+            format!(
+                "\nFatal error: Uncaught {class}: {message}\nStack trace:\n#0 {{main}}\n  thrown in {file}\n"
+            )
+        });
+    output.write_bytes(rendered);
+    let diagnostic = php_runtime::api::RuntimeDiagnostic::new(
+        "E_PHP_VM_UNCAUGHT_THROWABLE",
+        php_runtime::api::RuntimeSeverity::FatalError,
+        format!("Uncaught {class}: {message}"),
+        php_runtime::api::RuntimeSourceSpan {
+            file: Some(file),
+            start: 0,
+            end: 0,
+        },
+        Vec::new(),
+        None,
+    );
+    VmResult::fatal(output, Some(diagnostic), "uncaught throwable")
+}
+
+fn native_trace_argument(value: &Value) -> String {
+    match value {
+        Value::String(value) => format!("'{}'", String::from_utf8_lossy(value.as_bytes())),
+        Value::Array(_) => "Array".to_owned(),
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) => value.to_f64().to_string(),
+        Value::Bool(true) => "true".to_owned(),
+        Value::Bool(false) => "false".to_owned(),
+        Value::Null | Value::Uninitialized => "NULL".to_owned(),
+        Value::Object(object) => format!("Object({})", object.display_name()),
+        _ => "...".to_owned(),
+    }
+}
+
+fn native_cache_candidate(unit: &php_ir::IrUnit, entry: php_ir::FunctionId) -> bool {
+    // Each persistent image is rooted at exactly one PHP function. Dormant
+    // declarations never contribute code, relocations, or cache bytes.
+    unit.functions.get(entry.index()).is_some()
+}
+
+fn native_cache_identity(
+    unit: &CompiledUnit,
+    function: php_ir::FunctionId,
+    options: &VmOptions,
+) -> Result<php_jit::NativeCacheIdentity, php_jit::CraneliftHostIsaError> {
+    let isa = php_jit::cranelift_host_isa_identity()?;
+    let optimization_tier = options.native_optimization.as_str().to_owned();
+    Ok(php_jit::NativeCacheIdentity {
+        source_hash: format!(
+            "compiled-source-v2-{:016x}-function-{}",
+            unit.artifact_identity(),
+            function.raw()
+        ),
+        ir_hash: unit.prepared_ir_fingerprint().to_owned(),
+        dependency_graph_hash: unit.prepared_dependency_identity().to_owned(),
+        build_id: option_env!("PHRUST_BUILD_ID")
+            .unwrap_or(env!("PHRUST_AUTO_BUILD_ID"))
+            .to_owned(),
+        cranelift_version: php_jit::CRANELIFT_VERSION.to_owned(),
+        cranelift_settings_hash: isa.feature_fingerprint,
+        region_ir_schema_version: php_jit::region_ir::REGION_IR_SCHEMA_VERSION,
+        runtime_abi_hash: php_jit::JIT_RUNTIME_ABI_HASH
+            ^ php_runtime::api::NATIVE_OPERATION_ABI_HASH,
+        helper_abi_hash: php_jit::JIT_HELPER_REGISTRY_ABI_HASH,
+        target_triple: isa.target_triple,
+        pointer_width: usize::BITS as u8,
+        cpu_feature_fingerprint: isa.feature_fingerprint,
+        optimization_tier,
+        optimization_config_hash: u64::from(options.native_optimization.is_optimizing()),
+        php_semantic_config_hash: 0x0008_0005_0007,
+    })
+}
+
+fn cache_image(
+    identity: php_jit::NativeCacheIdentity,
+    _entry: php_ir::FunctionId,
+    records: &[php_jit::JitUnitCompileRecord],
+) -> Result<php_jit::NativeArtifactImage, php_jit::NativeCacheError> {
+    php_jit::NativeArtifactImage::from_compile_records(identity, records)
+}
+
+fn runtime_helper_addresses() -> php_jit::JitRuntimeHelperAddresses {
+    php_jit::JitRuntimeHelperAddresses {
+        native_call_dispatch: jit_native_call_dispatch_abi as *const () as usize,
+        native_function_resolve: jit_native_function_resolve_abi as *const () as usize,
+        native_frame_alloc: jit_native_frame_alloc_abi as *const () as usize,
+        native_frame_release: jit_native_frame_release_abi as *const () as usize,
+        native_dynamic_code: jit_native_dynamic_code_abi as *const () as usize,
+        native_unary: jit_native_unary_abi as *const () as usize,
+        native_binary: jit_native_binary_abi as *const () as usize,
+        native_compare: jit_native_compare_abi as *const () as usize,
+        native_cast: jit_native_cast_abi as *const () as usize,
+        native_echo: jit_native_echo_abi as *const () as usize,
+        native_local_fetch: jit_native_local_fetch_abi as *const () as usize,
+        native_local_store: jit_native_local_store_abi as *const () as usize,
+        native_value_lifecycle: jit_native_value_lifecycle_abi as *const () as usize,
+        native_reference_bind: jit_native_reference_bind_abi as *const () as usize,
+        native_argument_check: jit_native_argument_check_abi as *const () as usize,
+        native_return_check: jit_native_return_check_abi as *const () as usize,
+        native_exception_new: jit_native_exception_new_abi as *const () as usize,
+        native_array_new: jit_native_array_new_abi as *const () as usize,
+        native_object_new: jit_native_object_new_abi as *const () as usize,
+        native_property_fetch: jit_native_property_fetch_abi as *const () as usize,
+        native_property_assign: jit_native_property_assign_abi as *const () as usize,
+        native_object_clone: jit_native_object_clone_abi as *const () as usize,
+        native_object_clone_with: jit_native_object_clone_with_abi as *const () as usize,
+        native_array_insert: jit_native_array_insert_abi as *const () as usize,
+        native_array_fetch: jit_native_array_fetch_abi as *const () as usize,
+        native_array_unset: jit_native_array_unset_abi as *const () as usize,
+        native_array_spread: jit_native_array_spread_abi as *const () as usize,
+        native_foreach_init: jit_native_foreach_init_abi as *const () as usize,
+        native_foreach_next: jit_native_foreach_next_abi as *const () as usize,
+        native_foreach_cleanup: jit_native_foreach_cleanup_abi as *const () as usize,
+        native_constant_fetch: jit_native_constant_fetch_abi as *const () as usize,
+        native_truthy: jit_native_truthy_abi as *const () as usize,
+        native_runtime_fatal: jit_native_runtime_fatal_abi as *const () as usize,
+        native_execution_poll: jit_native_execution_poll_abi as *const () as usize,
+    }
+}
+
+fn resolve_native_cache_helper(stable_id: u32) -> Option<usize> {
+    php_jit::resolve_helper_address(
+        php_runtime::api::JitHelperId(stable_id),
+        runtime_helper_addresses(),
+    )
+}
+
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use php_ir::builder::IrBuilder;
+    use php_ir::{
+        ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags, FunctionFlags,
+        InstructionKind, IrConstant, IrParam, IrReturnType, IrSpan, Operand, UnitId,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn returning_unit(value: i64) -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(991));
+        let file = builder.add_file("native-cache-vm.php");
+        let span = IrSpan::new(file, 0, 20);
+        let constant = builder.intern_constant(IrConstant::Int(value));
+        let function = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let block = builder.append_block(function);
+        let register = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadConst {
+                dst: register,
+                constant,
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(register)), span);
+        builder.set_entry(function);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn declaration_heavy_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(9_901));
+        let file = builder.add_file("function-on-demand-breadth.php");
+        let span = IrSpan::new(file, 0, 32);
+        let constant = builder.intern_constant(IrConstant::Int(17));
+        for index in 0..121 {
+            let function = builder.start_function(
+                format!("breadth_function_{index}"),
+                FunctionFlags::default(),
+                span,
+            );
+            builder.set_return_type(function, Some(IrReturnType::Int));
+            let block = builder.append_block(function);
+            let value = builder.alloc_register(function);
+            builder.emit(
+                function,
+                block,
+                InstructionKind::LoadConst {
+                    dst: value,
+                    constant,
+                },
+                span,
+            );
+            builder.terminate_return(function, block, Some(Operand::Register(value)), span);
+            if index == 0 {
+                builder.set_entry(function);
+            }
+        }
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn looping_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(992));
+        let file = builder.add_file("native-deadline-vm.php");
+        let span = IrSpan::new(file, 0, 24);
+        let function = builder.start_function("main", FunctionFlags::default(), span);
+        let block = builder.append_block(function);
+        builder.terminate_jump(function, block, block, span);
+        builder.set_entry(function);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn direct_call_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(993));
+        let file = builder.add_file("native-direct-counter.php");
+        let span = IrSpan::new(file, 0, 24);
+        let constant = builder.intern_constant(IrConstant::Int(42));
+        let callee = builder.start_function("callee", FunctionFlags::default(), span);
+        builder.set_return_type(callee, Some(IrReturnType::Int));
+        let callee_block = builder.append_block(callee);
+        let value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadConst {
+                dst: value,
+                constant,
+            },
+            span,
+        );
+        builder.terminate_return(callee, callee_block, Some(Operand::Register(value)), span);
+        builder.register_function_name("callee", callee);
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(entry, Some(IrReturnType::Int));
+        let entry_block = builder.append_block(entry);
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "callee".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn typed_direct_call_unit(strict_types: bool) -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(998));
+        let file = builder.add_file("native-typed-direct.php");
+        builder.set_file_strict_types(file, strict_types);
+        builder.set_strict_types(strict_types);
+        let span = IrSpan::new(file, 0, 32);
+        let callee = builder.start_function("typed_callee", FunctionFlags::default(), span);
+        builder.set_return_type(callee, Some(IrReturnType::Int));
+        let parameter = builder.intern_local(callee, "value");
+        builder.push_param(
+            callee,
+            IrParam {
+                name: "value".to_owned(),
+                local: parameter,
+                required: true,
+                default: None,
+                type_: Some(IrReturnType::Int),
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            },
+        );
+        let callee_block = builder.append_block(callee);
+        let value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadLocal {
+                dst: value,
+                local: parameter,
+            },
+            span,
+        );
+        builder.terminate_return(callee, callee_block, Some(Operand::Register(value)), span);
+        builder.register_function_name("typed_callee", callee);
+
+        let argument = builder.intern_constant(IrConstant::String("42".to_owned()));
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(entry, Some(IrReturnType::Int));
+        let entry_block = builder.append_block(entry);
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "typed_callee".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Constant(argument),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn invalid_return_type_on_demand_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(9_999));
+        let file = builder.add_file("native-return-type-on-demand.php");
+        let span = IrSpan::new(file, 0, 48);
+        let invalid = builder.intern_constant(IrConstant::Array(Vec::new()));
+        let callee = builder.start_function("invalid_return", FunctionFlags::default(), span);
+        builder.set_return_type(callee, Some(IrReturnType::String));
+        let callee_block = builder.append_block(callee);
+        let value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadConst {
+                dst: value,
+                constant: invalid,
+            },
+            span,
+        );
+        builder.terminate_return(callee, callee_block, Some(Operand::Register(value)), span);
+        builder.register_function_name("invalid_return", callee);
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        let entry_block = builder.append_block(entry);
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "invalid_return".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn direct_builtin_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(994));
+        let file = builder.add_file("native-direct-builtin.php");
+        let span = IrSpan::new(file, 0, 32);
+        let string = builder.intern_constant(IrConstant::String("phrust".to_owned()));
+        let function = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(function, Some(IrReturnType::Int));
+        let block = builder.append_block(function);
+        let result = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "strlen".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Constant(string),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+        builder.set_entry(function);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn bounded_inline_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(997));
+        let file = builder.add_file("native-inline-constant.php");
+        let span = IrSpan::new(file, 0, 32);
+        let constant = builder.intern_constant(IrConstant::Int(19));
+        let callee = builder.start_function("constant_wrapper", FunctionFlags::default(), span);
+        let callee_block = builder.append_block(callee);
+        let value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadConst {
+                dst: value,
+                constant,
+            },
+            span,
+        );
+        builder.terminate_return(callee, callee_block, Some(Operand::Register(value)), span);
+        builder.register_function_name("constant_wrapper", callee);
+
+        let main = builder.start_function("main", FunctionFlags::default(), span);
+        let main_block = builder.append_block(main);
+        let result = builder.alloc_register(main);
+        builder.emit(
+            main,
+            main_block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "constant_wrapper".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(main, main_block, Some(Operand::Register(result)), span);
+        builder.set_entry(main);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn unbounded_recursive_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(995));
+        let file = builder.add_file("native-frame-depth.php");
+        let span = IrSpan::new(file, 0, 32);
+        let function = builder.start_function("recurse", FunctionFlags::default(), span);
+        builder.register_function_name("recurse", function);
+        let block = builder.append_block(function);
+        let result = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "recurse".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+        builder.set_entry(function);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn polymorphic_method_pic_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(996));
+        let file = builder.add_file("native-method-pic.php");
+        let span = IrSpan::new(file, 0, 64);
+        let seven = builder.intern_constant(IrConstant::Int(7));
+
+        let method = builder.start_function(
+            "Widget::value",
+            FunctionFlags {
+                is_method: true,
+                ..FunctionFlags::default()
+            },
+            span,
+        );
+        builder.intern_local(method, "this");
+        builder.set_return_type(method, Some(IrReturnType::Int));
+        let method_block = builder.append_block(method);
+        let method_value = builder.alloc_register(method);
+        builder.emit(
+            method,
+            method_block,
+            InstructionKind::LoadConst {
+                dst: method_value,
+                constant: seven,
+            },
+            span,
+        );
+        builder.terminate_return(
+            method,
+            method_block,
+            Some(Operand::Register(method_value)),
+            span,
+        );
+
+        let factory = builder.start_function("make_widget", FunctionFlags::default(), span);
+        let factory_block = builder.append_block(factory);
+        let object = builder.alloc_register(factory);
+        builder.emit(
+            factory,
+            factory_block,
+            InstructionKind::NewObject {
+                dst: object,
+                display_class_name: "Widget".to_owned(),
+                class_name: "widget".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(
+            factory,
+            factory_block,
+            Some(Operand::Register(object)),
+            span,
+        );
+        builder.register_function_name("make_widget", factory);
+
+        let call_value = builder.start_function("call_value", FunctionFlags::default(), span);
+        builder.set_return_type(call_value, Some(IrReturnType::Int));
+        let receiver_local = builder.intern_local(call_value, "receiver");
+        builder.push_required_param(call_value, "receiver", receiver_local);
+        let call_value_block = builder.append_block(call_value);
+        let receiver_value = builder.alloc_register(call_value);
+        builder.emit(
+            call_value,
+            call_value_block,
+            InstructionKind::LoadLocal {
+                dst: receiver_value,
+                local: receiver_local,
+            },
+            span,
+        );
+        let call_value_result = builder.alloc_register(call_value);
+        builder.emit(
+            call_value,
+            call_value_block,
+            InstructionKind::CallMethod {
+                dst: call_value_result,
+                object: Operand::Register(receiver_value),
+                method: "value".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(
+            call_value,
+            call_value_block,
+            Some(Operand::Register(call_value_result)),
+            span,
+        );
+        builder.register_function_name("call_value", call_value);
+
+        let main = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(main, Some(IrReturnType::Int));
+        let main_block = builder.append_block(main);
+        let receiver = builder.alloc_register(main);
+        builder.emit(
+            main,
+            main_block,
+            InstructionKind::CallFunction {
+                dst: receiver,
+                name: "make_widget".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        let first = builder.alloc_register(main);
+        builder.emit(
+            main,
+            main_block,
+            InstructionKind::CallFunction {
+                dst: first,
+                name: "call_value".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Register(receiver),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        let second = builder.alloc_register(main);
+        builder.emit(
+            main,
+            main_block,
+            InstructionKind::CallFunction {
+                dst: second,
+                name: "call_value".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Register(receiver),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        builder.terminate_return(main, main_block, Some(Operand::Register(second)), span);
+        builder.push_class(ClassEntry {
+            id: ClassId::new(0),
+            name: "widget".to_owned(),
+            display_name: "Widget".to_owned(),
+            parent: None,
+            parent_display_name: None,
+            interfaces: Vec::new(),
+            methods: vec![ClassMethodEntry {
+                name: "value".to_owned(),
+                origin_class: "widget".to_owned(),
+                function: method,
+                flags: ClassMethodFlags {
+                    has_body: true,
+                    ..ClassMethodFlags::default()
+                },
+                attributes: Vec::new(),
+            }],
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor: None,
+            flags: ClassFlags::default(),
+            span,
+        });
+        builder.set_entry(main);
+        CompiledUnit::new(builder.finish())
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn same_unit_call_resolves_on_demand_then_calls_native() {
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let result = Vm::with_options_and_worker_state(
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+            worker.clone(),
+        )
+        .execute(direct_call_unit());
+
+        assert_eq!(result.return_value, Some(Value::Int(42)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_call_direct, 1);
+        assert_eq!(counters.native_same_unit_direct_executed, 1);
+        assert_eq!(counters.native_call_dynamic, 0);
+        assert_eq!(counters.native_transition_count, 0);
+        assert_eq!(counters.native_tail_calls, 0);
+        assert!(counters.native_frame_arena_high_water_bytes > 0);
+        let compile_stats = worker.native_compile_cache_stats();
+        assert_eq!(compile_stats.entries, 2);
+        assert_eq!(compile_stats.misses, 2);
+        assert_eq!(compile_stats.insertions, 2);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn typed_function_on_demand_call_preserves_coercion() {
+        let result = Vm::with_options(VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        })
+        .execute(typed_direct_call_unit(false));
+
+        assert_eq!(result.return_value, Some(Value::Int(42)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_call_direct, 1);
+        assert_eq!(counters.native_same_unit_direct_executed, 1);
+        assert_eq!(counters.native_call_dynamic, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn typed_function_on_demand_call_preserves_throw() {
+        let result = Vm::with_options(VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        })
+        .execute(typed_direct_call_unit(true));
+
+        assert_eq!(
+            result.status.exit_status(),
+            php_runtime::api::ExitStatus::Fatal,
+            "{result:#?}"
+        );
+        assert!(
+            String::from_utf8_lossy(result.output.as_bytes()).contains(
+                "Uncaught TypeError: typed_callee(): Argument #1 ($value) must be of type int, string given"
+            ),
+            "{result:#?}"
+        );
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_call_direct, 1);
+        assert_eq!(counters.native_same_unit_direct_executed, 1);
+        assert_eq!(counters.native_call_dynamic, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn function_on_demand_call_preserves_runtime_diagnostic() {
+        let result = Vm::new().execute(invalid_return_type_on_demand_unit());
+
+        assert_eq!(
+            result.status.exit_status(),
+            php_runtime::api::ExitStatus::RuntimeError,
+            "{result:#?}"
+        );
+        assert_eq!(
+            result.diagnostics.first().map(|diagnostic| diagnostic.id()),
+            Some("E_PHP_VM_RETURN_TYPE_MISMATCH"),
+            "{result:#?}"
+        );
+        assert!(
+            result.status.message().is_some_and(|message| message
+                .contains("invalid_return(): Return value must be of type string, array returned")),
+            "{result:#?}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn stable_builtin_uses_helper_id_without_generic_dynamic_count() {
+        let result = Vm::with_options(VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        })
+        .execute(direct_builtin_unit());
+
+        assert_eq!(result.return_value, Some(Value::Int(6)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_call_direct, 1);
+        assert_eq!(counters.native_builtin_direct_eligible, 1);
+        assert_eq!(counters.native_builtin_direct_executed, 1);
+        assert_eq!(counters.native_call_dynamic, 0);
+        assert_eq!(counters.native_call_argument_allocation_bytes, 0);
+        assert!(counters.native_frame_arena_high_water_bytes > 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn baseline_does_not_inline_or_widen_for_constant_wrapper() {
+        let result = Vm::with_options(VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        })
+        .execute(bounded_inline_unit());
+
+        assert_eq!(result.return_value, Some(Value::Int(19)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_inlined_calls, 0);
+        assert_eq!(counters.native_inline_calls_removed, 0);
+        assert_eq!(counters.native_call_direct, 1);
+        assert_eq!(counters.native_call_dynamic, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn warmed_method_pic_reclassifies_stable_call_as_direct() {
+        let vm = Vm::with_options(VmOptions {
+            collect_counters: true,
+            ..VmOptions::default()
+        });
+        let unit = polymorphic_method_pic_unit();
+        let result = vm.execute(unit.clone());
+
+        assert_eq!(result.return_value, Some(Value::Int(7)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert!(counters.native_method_monomorphic_eligible >= 2);
+        assert!(counters.native_method_monomorphic_executed >= 1);
+        assert!(counters.native_call_direct >= 2);
+
+        // The descriptor is compiled-unit metadata shared across requests.
+        // Both calls in the second request should therefore hit the persistent
+        // monomorphic entry rather than warming another request-local table.
+        let warm = vm.execute(unit);
+        assert_eq!(warm.return_value, Some(Value::Int(7)), "{warm:#?}");
+        let warm_counters = warm.counters.expect("diagnostic counters");
+        assert!(warm_counters.native_method_monomorphic_executed >= 2);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn deep_direct_recursion_hits_php_frame_limit_without_stack_abort() {
+        let result = Vm::new().execute(unbounded_recursive_unit());
+
+        assert!(!result.status.is_success(), "{result:#?}");
+        assert_eq!(
+            result.diagnostics.first().map(|diagnostic| diagnostic.id()),
+            Some("E_PHP_VM_NATIVE_FRAME_LIMIT"),
+            "{result:#?}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn native_compile_probe_uses_production_helpers_without_execution() {
+        let report = Vm::new()
+            .probe_cranelift(&returning_unit(42), Some("main"))
+            .expect("native compile probe");
+        assert_eq!(report.function_name, "main");
+        assert!(matches!(
+            report.result.status,
+            php_jit::JitCompileStatus::Compiled
+        ));
+        assert!(
+            Vm::new()
+                .probe_cranelift(&returning_unit(42), Some("missing"))
+                .expect_err("unknown function must be strict")
+                .contains("function not found")
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn native_loop_poll_reports_stable_execution_timeout() {
+        let result = Vm::with_options(VmOptions {
+            runtime_context: php_runtime::api::RuntimeContext::controlled_cli(
+                "native-deadline-vm.php",
+                Vec::new(),
+            )
+            .with_execution_time_limit(Some(Duration::ZERO)),
+            ..VmOptions::default()
+        })
+        .execute(looping_unit());
+
+        assert_eq!(
+            result.status.exit_status(),
+            php_runtime::api::ExitStatus::RuntimeError
+        );
+        assert_eq!(result.diagnostics.len(), 1, "{result:#?}");
+        assert_eq!(result.diagnostics[0].id(), "E_PHP_VM_EXECUTION_TIMEOUT");
+    }
+
+    #[test]
+    fn declaration_units_are_native_cache_candidates() {
+        let unit = returning_unit(42);
+        assert!(native_cache_candidate(unit.unit(), unit.unit().entry));
+
+        let mut declaration_unit = unit.unit().clone();
+        declaration_unit.classes.push(ClassEntry {
+            id: ClassId::new(0),
+            name: "cacheddeclaration".to_owned(),
+            display_name: "CachedDeclaration".to_owned(),
+            parent: None,
+            parent_display_name: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor: None,
+            flags: ClassFlags::default(),
+            span: IrSpan::new(declaration_unit.files[0].id, 6, 32),
+        });
+        assert!(native_cache_candidate(
+            &declaration_unit,
+            declaration_unit.entry
+        ));
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn worker_cache_skips_region_rebuild_and_invalidates_exactly() {
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let unit = returning_unit(73);
+        let options = VmOptions::default();
+
+        let first = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        let second = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        assert_eq!(first.return_value, Some(Value::Int(73)));
+        assert_eq!(second.return_value, Some(Value::Int(73)));
+        assert_eq!(second.native_compile_nanos, 0);
+        let warm_stats = worker.native_compile_cache_stats();
+        assert_eq!(warm_stats.entries, 1);
+        assert_eq!(warm_stats.hits, 1);
+        assert_eq!(warm_stats.misses, 1);
+        assert_eq!(warm_stats.insertions, 1);
+        assert_eq!(warm_stats.evictions, 0);
+        assert_eq!(warm_stats.compile_waits, 0);
+        assert_eq!(warm_stats.compile_failures, 0);
+        assert!(warm_stats.compile_time_nanos > 0);
+
+        // A separately built artifact must not borrow handles merely because
+        // its source and IR happen to be equal.
+        let replacement = returning_unit(73);
+        let replacement_result =
+            Vm::with_options_and_worker_state(options, worker.clone()).execute(replacement);
+        assert_eq!(replacement_result.return_value, Some(Value::Int(73)));
+
+        // Optimization policy is part of the cache key even for the same
+        // immutable compiled-unit allocation.
+        let optimizing = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            ..VmOptions::default()
+        };
+        let optimizing_result =
+            Vm::with_options_and_worker_state(optimizing, worker.clone()).execute(unit);
+        assert_eq!(optimizing_result.return_value, Some(Value::Int(73)));
+        let stats = worker.native_compile_cache_stats();
+        assert_eq!(stats.entries, 3);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 3);
+        assert_eq!(stats.insertions, 3);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn loading_declaration_heavy_unit_compiles_only_entry_and_declares_other_cells() {
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let unit = declaration_heavy_unit();
+        let result = Vm::with_options_and_worker_state(VmOptions::default(), worker.clone())
+            .execute(unit.clone());
+
+        assert_eq!(result.return_value, Some(Value::Int(17)), "{result:#?}");
+        let stats = worker.native_compile_cache_stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.insertions, 1);
+
+        let manager = php_jit::global_code_manager().expect("global code manager");
+        let mut published = 0;
+        let mut unpublished = 0;
+        for (index, function) in unit.unit().functions.iter().enumerate() {
+            let key = php_jit::native_function_key(
+                unit.prepared_ir_fingerprint().to_owned(),
+                index as u32,
+                function.params.len(),
+                function.local_count,
+                false,
+                0,
+            );
+            let cell = manager.function_cell(&key).expect("declared function cell");
+            match cell.state() {
+                php_jit::NativeIndirectionState::Published => published += 1,
+                php_jit::NativeIndirectionState::Unpublished => unpublished += 1,
+                php_jit::NativeIndirectionState::Retired => panic!("fresh cell was retired"),
+            }
+        }
+        assert_eq!(published, 1);
+        assert_eq!(unpublished, 120);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn vm_reloads_native_artifact_without_compilation() {
+        let directory = std::env::temp_dir().join(format!(
+            "phrust-vm-pna-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let unit = returning_unit(42);
+        let first = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_cache: php_jit::NativeCacheMode::ReadWrite,
+                native_cache_dir: directory.clone(),
+                native_cache_stats: true,
+                ..VmOptions::default()
+            },
+            VmWorkerState::isolated_for_restart_test(),
+        )
+        .execute(unit.clone());
+        assert_eq!(
+            first.return_value,
+            Some(Value::Int(42)),
+            "cache population result: {first:#?}"
+        );
+        assert_eq!(first.native_cache_stats.unwrap().writes, 1);
+
+        let second = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_cache: php_jit::NativeCacheMode::Read,
+                native_cache_dir: directory.clone(),
+                native_cache_stats: true,
+                ..VmOptions::default()
+            },
+            VmWorkerState::isolated_for_restart_test(),
+        )
+        .execute(unit);
+        assert_eq!(
+            second.return_value,
+            Some(Value::Int(42)),
+            "cached execution result: {second:#?}"
+        );
+        assert_eq!(second.native_cache_stats.unwrap().hits, 1);
+        assert_eq!(second.native_compile_nanos, 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn worker_registry_reuses_loaded_artifact_without_remapping_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "phrust-vm-loaded-unit-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let before = worker.loaded_native_unit_stats();
+        let unit = returning_unit(91);
+        let options = VmOptions {
+            native_cache: php_jit::NativeCacheMode::ReadWrite,
+            native_cache_dir: directory.clone(),
+            ..VmOptions::default()
+        };
+        let first = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        assert_eq!(first.return_value, Some(Value::Int(91)), "{first:#?}");
+
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "pna") {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+
+        let second = Vm::with_options_and_worker_state(options, worker.clone()).execute(unit);
+        assert_eq!(second.return_value, Some(Value::Int(91)), "{second:#?}");
+        assert_eq!(second.native_compile_nanos, 0);
+        let loaded = worker.loaded_native_unit_stats();
+        assert_eq!(loaded.maps.saturating_sub(before.maps), 1);
+        assert_eq!(
+            loaded
+                .entry_table_constructions
+                .saturating_sub(before.entry_table_constructions),
+            1
+        );
+        assert_eq!(loaded.hits.saturating_sub(before.hits), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn vm_reloads_helper_using_native_artifact_without_compilation() {
+        let directory = std::env::temp_dir().join(format!(
+            "phrust-vm-pna-helper-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut ir = returning_unit(91).unit().clone();
+        ir.functions[ir.entry.index()].return_type = None;
+        let unit = CompiledUnit::from(ir);
+        let first = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_cache: php_jit::NativeCacheMode::ReadWrite,
+                native_cache_dir: directory.clone(),
+                native_cache_stats: true,
+                ..VmOptions::default()
+            },
+            VmWorkerState::isolated_for_restart_test(),
+        )
+        .execute(unit.clone());
+        assert_eq!(first.return_value, Some(Value::Int(91)), "{first:#?}");
+        assert_eq!(first.native_cache_stats.unwrap().writes, 1);
+
+        let second = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_cache: php_jit::NativeCacheMode::Read,
+                native_cache_dir: directory.clone(),
+                native_cache_stats: true,
+                ..VmOptions::default()
+            },
+            VmWorkerState::isolated_for_restart_test(),
+        )
+        .execute(unit);
+        assert_eq!(second.return_value, Some(Value::Int(91)), "{second:#?}");
+        assert_eq!(second.native_cache_stats.unwrap().hits, 1);
+        assert_eq!(second.native_compile_nanos, 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}

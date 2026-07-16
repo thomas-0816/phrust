@@ -40,6 +40,13 @@ execution state is request-local and permits are released on cancellation.
 The metrics endpoint exposes admitted, queued, current, saturated, rejected,
 cancelled, and queue-timeout totals plus the cumulative `cpu_queue` phase.
 
+Pinned PHP workers reserve a 16 MiB OS-thread stack by default. Set
+`PHRUST_SERVER_PHP_WORKER_STACK_BYTES` to a positive byte count when a measured
+deployment needs a different bound. The older
+`PHRUST_SERVER_TOKIO_WORKER_STACK_BYTES` setting remains a fallback for the PHP
+pool as well as configuring Tokio workers, but the dedicated setting takes
+precedence.
+
 Prefix request rewrites are a webserver-only routing feature. Configure them
 with `--rewrite-prefix-query /api=route` or
 `rewrite_prefix_query = "/api=route"` for `phrust-server`, or set
@@ -131,25 +138,14 @@ deployment root and stock PHP-FPM with OPcache behind nginx. Reports land under
 `target/performance/wordpress-root/` and include p50/p95, throughput, CPU/RSS
 where supported, response equivalence, identities, and Phrust/PHP ratios. Use
 `just wordpress-root-benchmark-feedback-ab` for persistent-feedback A/B with a
-joint off/on ratio report and
-`just wordpress-root-benchmark-cranelift` for the explicit experimental-JIT
-arm. Use `just wordpress-root-diagnostics` for a separate instrumented Phrust
+joint off/on ratio report. The main WordPress benchmark uses the mandatory
+Cranelift engine. Use `just wordpress-root-diagnostics` for a separate
+instrumented Phrust
 pass; diagnostic samples are never mixed into clean timing.
 
-See [WordPress smoke workflow](contributor/wordpress-smoke.md) for the profile
-schema and how to interpret clone, fallback, dense/rich, array, object, builtin,
-include, output, and native attribution families.
-
-To focus specifically on value churn after a profile exists, run:
-
-```bash
-nix develop -c just wordpress-clone-churn-report
-```
-
-The report lands under `target/performance/clone-churn/` and ranks value clone,
-array-handle clone, COW separation, reference-cell creation, and by-reference
-fallback source families. Set `PHRUST_CLONE_CHURN_BASELINE` to an earlier
-request-profile JSON to include before/after clone counter deltas.
+See [WordPress smoke workflow](contributor/wordpress-smoke.md) for request-profile
+schema 3 and its phase timings plus native compilation, execution, side-exit,
+runtime-helper, and version-publication counters.
 
 ## Related Docs
 

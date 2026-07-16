@@ -397,7 +397,7 @@ def self_test() -> int:
         "string_allocations",
     ], top
     report = build_report(
-        [{"scenario": "sample", "row": "phrust-fast-preset", "counters": counters}]
+        [{"scenario": "sample", "row": "phrust-default", "counters": counters}]
     )
     assert report["schema"] == OVERHEAD_SCHEMA
     rendered = render_markdown(report)

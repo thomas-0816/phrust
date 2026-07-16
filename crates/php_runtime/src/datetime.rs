@@ -211,6 +211,34 @@ pub fn current_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
+/// Builds a Unix timestamp from PHP-style date components, including overflow
+/// normalization for month, day, and time fields.
+pub fn timestamp_from_components(
+    mut year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    timezone: &str,
+) -> Option<i64> {
+    if (0..=69).contains(&year) {
+        year += 2000;
+    } else if (70..=100).contains(&year) {
+        year += 1900;
+    }
+    let zero_based_month = month.checked_sub(1)?;
+    year = year.checked_add(zero_based_month.div_euclid(12))?;
+    let month = u8::try_from(zero_based_month.rem_euclid(12) + 1).ok()?;
+    let year = i32::try_from(year).ok()?;
+    let days = days_from_civil(year, month, 1).checked_add(day.checked_sub(1)?)?;
+    days.checked_mul(86_400)?
+        .checked_add(hour.checked_mul(3_600)?)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?
+        .checked_sub(timezone_offset_seconds(timezone))
+}
+
 /// Formats a timestamp with a PHP-date-format MVP.
 #[must_use]
 pub fn format_timestamp(timestamp: i64, timezone: &str, format: &str) -> String {
@@ -283,6 +311,83 @@ pub fn format_timestamp(timestamp: i64, timezone: &str, format: &str) -> String 
                 timezone_offset_text(offset).replace(':', "")
             )),
             _ => output.push(marker),
+        }
+    }
+    output
+}
+
+/// Formats a timestamp using the locale-independent `C` subset exposed by
+/// PHP's deprecated `strftime()` and `gmstrftime()` functions.
+#[must_use]
+pub fn format_strftime_timestamp(timestamp: i64, timezone: &str, format: &str) -> String {
+    let offset = timezone_offset_seconds(timezone);
+    let local_timestamp = timestamp.saturating_add(offset);
+    let parts = timestamp_to_parts(local_timestamp);
+    let mut output = String::new();
+    let mut directives = format.chars();
+    while let Some(character) = directives.next() {
+        if character != '%' {
+            output.push(character);
+            continue;
+        }
+        let Some(directive) = directives.next() else {
+            output.push('%');
+            break;
+        };
+        match directive {
+            '%' => output.push('%'),
+            'a' => output.push_str(short_weekday_name(local_timestamp)),
+            'A' => output.push_str(full_weekday_name(local_timestamp)),
+            'b' | 'h' => output.push_str(short_month_name(parts.month)),
+            'B' => output.push_str(full_month_name(parts.month)),
+            'C' => output.push_str(&format!("{:02}", parts.year.div_euclid(100))),
+            'd' => output.push_str(&format!("{:02}", parts.day)),
+            'D' | 'x' => output.push_str(&format!(
+                "{:02}/{:02}/{:02}",
+                parts.month,
+                parts.day,
+                parts.year.rem_euclid(100)
+            )),
+            'e' => output.push_str(&format!("{:2}", parts.day)),
+            'F' => output.push_str(&format!(
+                "{:04}-{:02}-{:02}",
+                parts.year, parts.month, parts.day
+            )),
+            'H' => output.push_str(&format!("{:02}", parts.hour)),
+            'I' => output.push_str(&format!("{:02}", hour_12(parts.hour))),
+            'j' => output.push_str(&format!(
+                "{:03}",
+                day_of_year(parts.year, parts.month, parts.day) + 1
+            )),
+            'm' => output.push_str(&format!("{:02}", parts.month)),
+            'M' => output.push_str(&format!("{:02}", parts.minute)),
+            'n' => output.push('\n'),
+            'p' => output.push_str(if parts.hour < 12 { "AM" } else { "PM" }),
+            'r' => output.push_str(&format!(
+                "{:02}:{:02}:{:02} {}",
+                hour_12(parts.hour),
+                parts.minute,
+                parts.second,
+                if parts.hour < 12 { "AM" } else { "PM" }
+            )),
+            'R' => output.push_str(&format!("{:02}:{:02}", parts.hour, parts.minute)),
+            's' => output.push_str(&timestamp.to_string()),
+            'S' => output.push_str(&format!("{:02}", parts.second)),
+            't' => output.push('\t'),
+            'T' | 'X' => output.push_str(&format!(
+                "{:02}:{:02}:{:02}",
+                parts.hour, parts.minute, parts.second
+            )),
+            'u' => output.push_str(&iso_weekday_number(local_timestamp).to_string()),
+            'w' => output.push_str(&weekday_number(local_timestamp).to_string()),
+            'y' => output.push_str(&format!("{:02}", parts.year.rem_euclid(100))),
+            'Y' => output.push_str(&format!("{:04}", parts.year)),
+            'z' => output.push_str(&timezone_offset_text(offset).replace(':', "")),
+            'Z' => output.push_str(&timezone_abbreviation(timezone)),
+            other => {
+                output.push('%');
+                output.push(other);
+            }
         }
     }
     output
@@ -503,6 +608,9 @@ fn parse_absolute_datetime(text: &str) -> Option<i64> {
     if let Ok(timestamp) = text.parse::<i64>() {
         return Some(timestamp);
     }
+    if let Some(timestamp) = parse_named_month_datetime(text) {
+        return Some(timestamp);
+    }
 
     let normalized = strip_supported_timezone_suffix(text)
         .trim_end_matches('Z')
@@ -526,6 +634,48 @@ fn parse_absolute_datetime(text: &str) -> Option<i64> {
     let second = parse_second_component(time_parts.next().unwrap_or("0"))?;
     let timestamp = parts_to_timestamp(year, month, day, hour, minute, second);
     Some(offset.map_or(timestamp, |offset| timestamp.saturating_sub(offset)))
+}
+
+fn parse_named_month_datetime(text: &str) -> Option<i64> {
+    let mut fields = text.split_whitespace();
+    let clock = fields.next()?;
+    let meridiem = fields.next()?;
+    let month = parse_month_name(fields.next()?)?;
+    let day = fields.next()?.trim_end_matches(',').parse::<u8>().ok()?;
+    let year = fields.next()?.parse::<i32>().ok()?;
+    if fields.next().is_some() || !(1..=days_in_month(year, month)).contains(&day) {
+        return None;
+    }
+
+    let mut clock = clock.split(':');
+    let mut hour = clock.next()?.parse::<u8>().ok()?;
+    let minute = clock.next()?.parse::<u8>().ok()?;
+    let second = clock
+        .next()
+        .map(parse_second_component)
+        .unwrap_or(Some(0))?;
+    if clock.next().is_some() || !(1..=12).contains(&hour) || minute > 59 || second > 59 {
+        return None;
+    }
+    if meridiem.eq_ignore_ascii_case("am") {
+        if hour == 12 {
+            hour = 0;
+        }
+    } else if meridiem.eq_ignore_ascii_case("pm") {
+        if hour != 12 {
+            hour += 12;
+        }
+    } else {
+        return None;
+    }
+    Some(parts_to_timestamp(year, month, day, hour, minute, second))
+}
+
+fn parse_month_name(name: &str) -> Option<u8> {
+    (1..=12).find(|month| {
+        name.eq_ignore_ascii_case(full_month_name(*month))
+            || name.eq_ignore_ascii_case(short_month_name(*month))
+    })
 }
 
 fn split_time_and_offset(time: &str) -> Option<(&str, Option<i64>)> {
@@ -806,7 +956,9 @@ fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_interval, format_timestamp, parse_datetime_text};
+    use super::{
+        format_interval, format_strftime_timestamp, format_timestamp, parse_datetime_text,
+    };
 
     #[test]
     fn interval_format_supports_unpadded_and_padded_fields() {
@@ -831,6 +983,31 @@ mod tests {
         assert_eq!(
             format_timestamp(1_704_198_485, "UTC", "g h a A"),
             "12 12 pm PM"
+        );
+    }
+
+    #[test]
+    fn strftime_format_supports_c_locale_and_timezone_markers() {
+        let timestamp = parse_datetime_text("2005-07-01 00:00:00", 0).unwrap();
+        assert_eq!(
+            format_strftime_timestamp(timestamp, "Australia/Sydney", "%r %B%e %Y %Z %z"),
+            "10:00:00 AM July 1 2005 AEST +1000"
+        );
+        assert_eq!(
+            format_strftime_timestamp(timestamp, "GMT", "%F %T %Z %z"),
+            "2005-07-01 00:00:00 GMT +0000"
+        );
+    }
+
+    #[test]
+    fn datetime_parser_accepts_twelve_hour_named_month_text() {
+        assert_eq!(
+            parse_datetime_text("10:00:00 AM July 1 2005", 0),
+            Some(1_120_212_000)
+        );
+        assert_eq!(
+            parse_datetime_text("12:30 PM Jul 1, 2005", 0),
+            Some(1_120_221_000)
         );
     }
 

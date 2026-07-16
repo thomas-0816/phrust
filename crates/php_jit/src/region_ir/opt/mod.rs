@@ -1,22 +1,24 @@
-//! No-exec region IR optimization prototypes.
+//! Region IR optimization analyses and executable transformations.
 
 pub mod cfg;
 pub mod dominators;
+pub mod executable;
 pub mod gcm;
 pub mod loops;
 pub mod report;
 pub mod sccp;
 
-use crate::region_ir::{RegionGraph, dump_region_graph};
+use crate::region_ir::{OptimizerRegionGraph, dump_region_graph};
 
 pub use cfg::{RegionCfg, build_cfg};
 pub use dominators::{DominatorTree, compute_dominators};
+pub use executable::{ExecutableOptReport, optimize_executable_region};
 pub use gcm::{GcmReport, run_gcm};
 pub use loops::{LoopInfo, RegionLoop, detect_loops};
 pub use report::{RegionOptReport, RegionScheduleDecision};
 pub use sccp::{SccpReport, SccpValue, run_sccp};
 
-/// Full no-exec optimization analysis result.
+/// Diagnostic optimization analysis result for the compact report graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionOptResult {
     /// SCCP result.
@@ -29,9 +31,11 @@ pub struct RegionOptResult {
     pub gcm: GcmReport,
 }
 
-/// Runs the no-exec SCCP/GCM prototype over a region graph.
+/// Runs the diagnostic SCCP/GCM analysis used by stable reports. Production
+/// lowering applies the corresponding transformations through
+/// [`optimize_executable_region`].
 #[must_use]
-pub fn analyze_region_graph(graph: &RegionGraph) -> RegionOptResult {
+pub fn analyze_region_graph(graph: &OptimizerRegionGraph) -> RegionOptResult {
     let sccp = run_sccp(graph);
     let dominators = compute_dominators(&sccp.cfg);
     let loops = detect_loops(&sccp.cfg, &dominators);
@@ -47,7 +51,7 @@ pub fn analyze_region_graph(graph: &RegionGraph) -> RegionOptResult {
 
 /// Stable before/after dump for optimization reports and tests.
 #[must_use]
-pub fn dump_region_optimization(graph: &RegionGraph, result: &RegionOptResult) -> String {
+pub fn dump_region_optimization(graph: &OptimizerRegionGraph, result: &RegionOptResult) -> String {
     let mut out = String::new();
     out.push_str("before:\n");
     out.push_str(&dump_region_graph(graph));
@@ -140,15 +144,15 @@ pub fn dump_region_optimization(graph: &RegionGraph, result: &RegionOptResult) -
 #[cfg(test)]
 mod tests {
     use crate::region_ir::{
-        NodeId, RegionBuilder, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode,
-        RegionNodeKind, RegionPlacement, RegionValueType, SnapshotEntry, VmSlotId,
+        NodeId, OptimizerRegionGraph, RegionBuilder, RegionConst, RegionEffects, RegionId,
+        RegionNode, RegionNodeKind, RegionPlacement, RegionValueType, SnapshotEntry, VmSlotId,
     };
 
     use super::{analyze_region_graph, dump_region_optimization};
 
     #[test]
     fn opt_dump_marks_constant_branch_and_dead_edge() {
-        let mut graph = RegionGraph::new(RegionId::new(330), "constant-branch");
+        let mut graph = OptimizerRegionGraph::new(RegionId::new(330), "constant-branch");
         let start = control_node(&mut graph, RegionNodeKind::Start, None);
         let constant = graph.add_constant(RegionConst::Bool(true));
         let condition = graph.add_node(RegionNode::new(
@@ -184,7 +188,7 @@ mod tests {
 
     #[test]
     fn gcm_keeps_loop_invariant_add_at_shallow_anchor() {
-        let mut graph = RegionGraph::new(RegionId::new(331), "loop-invariant");
+        let mut graph = OptimizerRegionGraph::new(RegionId::new(331), "loop-invariant");
         let start = control_node(&mut graph, RegionNodeKind::Start, None);
         let loop_header = graph.add_node(RegionNode::new(
             RegionNodeKind::LoopBegin,
@@ -281,7 +285,7 @@ mod tests {
     }
 
     fn control_node(
-        graph: &mut RegionGraph,
+        graph: &mut OptimizerRegionGraph,
         kind: RegionNodeKind,
         control: Option<NodeId>,
     ) -> NodeId {
@@ -295,7 +299,7 @@ mod tests {
         ))
     }
 
-    fn const_i64(graph: &mut RegionGraph, value: i64) -> NodeId {
+    fn const_i64(graph: &mut OptimizerRegionGraph, value: i64) -> NodeId {
         let constant = graph.add_constant(RegionConst::I64(value));
         graph.add_node(RegionNode::new(
             RegionNodeKind::Const(constant),

@@ -1,7 +1,23 @@
 use crate::persistent_metadata::PersistentMetadataStats;
 use hyper::StatusCode;
 use php_executor::IncludeCacheStats;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ops::Deref;
+use std::sync::atomic::{AtomicU64 as RawAtomicU64, Ordering};
+
+/// Cache-line-isolated hot metric. Independent workers update different
+/// counters concurrently; keeping each counter on its own line prevents a
+/// request on one core from invalidating an unrelated counter's line.
+#[derive(Debug, Default)]
+#[repr(align(64))]
+pub(crate) struct AtomicU64(RawAtomicU64);
+
+impl Deref for AtomicU64 {
+    type Target = RawAtomicU64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct ServerMetrics {
@@ -30,6 +46,12 @@ pub(crate) struct ServerMetrics {
     pub(crate) static_precompressed_hits: AtomicU64,
     pub(crate) script_cache_preload_successes: AtomicU64,
     pub(crate) script_cache_preload_failures: AtomicU64,
+    pub(crate) script_cache_ready: AtomicU64,
+    pub(crate) native_prewarm_complete: AtomicU64,
+    pub(crate) native_compile_queue_empty: AtomicU64,
+    pub(crate) native_code_cache_generation: AtomicU64,
+    pub(crate) native_prewarm_entries: AtomicU64,
+    pub(crate) native_prewarm_nanos: AtomicU64,
     pub(crate) persistent_engine_policy_reuses: AtomicU64,
     pub(crate) persistent_engine_immutable_metadata_reuses: AtomicU64,
     pub(crate) persistent_engine_misses: AtomicU64,
@@ -139,7 +161,7 @@ impl ServerMetrics {
                 format!("phrust_server_script_cache_shard_entries{{shard=\"{shard}\"}} {entries}\n")
             })
             .collect::<String>();
-        format!(
+        let mut output = format!(
             "# phrust-server MVP internal metrics\n\
 phrust_server_requests_total {}\n\
 phrust_server_static_responses_total {}\n\
@@ -361,7 +383,39 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
                 .load(Ordering::Relaxed),
             self.persistent_engine_feedback_template_absorptions
                 .load(Ordering::Relaxed),
-        )
+        );
+        use std::fmt::Write as _;
+        let _ = writeln!(
+            output,
+            "phrust_server_script_cache_ready {}",
+            self.script_cache_ready.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            output,
+            "phrust_server_native_prewarm_complete {}",
+            self.native_prewarm_complete.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            output,
+            "phrust_server_native_compile_queue_empty {}",
+            self.native_compile_queue_empty.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            output,
+            "phrust_server_native_code_cache_generation {}",
+            self.native_code_cache_generation.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            output,
+            "phrust_server_native_prewarm_entries_total {}",
+            self.native_prewarm_entries.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            output,
+            "phrust_server_native_prewarm_nanos_total {}",
+            self.native_prewarm_nanos.load(Ordering::Relaxed)
+        );
+        output
     }
 }
 
@@ -485,6 +539,34 @@ mod tests {
             "phrust_server_include_conservative_misses_total 16\n",
         ] {
             assert_eq!(rendered.matches(expected).count(), 1, "{expected}");
+        }
+    }
+
+    #[test]
+    fn native_readiness_metrics_are_machine_readable() {
+        let metrics = ServerMetrics::default();
+        metrics.script_cache_ready.store(1, Ordering::Relaxed);
+        metrics.native_prewarm_complete.store(1, Ordering::Relaxed);
+        metrics
+            .native_compile_queue_empty
+            .store(1, Ordering::Relaxed);
+        metrics
+            .native_code_cache_generation
+            .store(3, Ordering::Relaxed);
+        let rendered = metrics.render(
+            0,
+            0,
+            php_executor::CompiledScriptCacheStats::default(),
+            IncludeCacheStats::default(),
+            PersistentMetadataStats::default(),
+        );
+        for expected in [
+            "phrust_server_script_cache_ready 1\n",
+            "phrust_server_native_prewarm_complete 1\n",
+            "phrust_server_native_compile_queue_empty 1\n",
+            "phrust_server_native_code_cache_generation 3\n",
+        ] {
+            assert!(rendered.contains(expected), "{expected}");
         }
     }
 }

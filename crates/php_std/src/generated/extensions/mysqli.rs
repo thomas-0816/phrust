@@ -539,6 +539,7 @@ const CONSTANTS: &[ConstantDescriptor] = &[
     ConstantDescriptor::with_value("MYSQLI_REPORT_ERROR", "mysqli", ConstantValue::Int(1)),
     ConstantDescriptor::with_value("MYSQLI_REPORT_STRICT", "mysqli", ConstantValue::Int(2)),
     ConstantDescriptor::with_value("MYSQLI_REPORT_INDEX", "mysqli", ConstantValue::Int(4)),
+    ConstantDescriptor::with_value("MYSQLI_REPORT_ALL", "mysqli", ConstantValue::Int(255)),
     ConstantDescriptor::with_value(
         "MYSQLI_OPT_CONNECT_TIMEOUT",
         "mysqli",

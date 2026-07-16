@@ -24,9 +24,6 @@ pub struct LoweringOptions {
     pub source_path: String,
     /// Source text used for line-sensitive magic constants.
     pub source_text: Option<String>,
-    /// Whether unsupported HIR features should also produce IR marker
-    /// instructions in the top-level block.
-    pub emit_unsupported_instructions: bool,
 }
 
 impl Default for LoweringOptions {
@@ -35,7 +32,6 @@ impl Default for LoweringOptions {
             unit_id: UnitId::new(0),
             source_path: "<memory>".to_string(),
             source_text: None,
-            emit_unsupported_instructions: true,
         }
     }
 }

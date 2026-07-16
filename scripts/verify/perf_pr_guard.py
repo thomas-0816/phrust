@@ -162,7 +162,7 @@ def self_test() -> int:
         ),
         (
             "native report without native code fails",
-            ["scripts/performance/native_region_report.py"],
+            ["scripts/performance/perf_report.py"],
             True,
         ),
         (

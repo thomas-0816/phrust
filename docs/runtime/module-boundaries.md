@@ -14,7 +14,7 @@ imports rather than ad hoc root imports.
 | Core services | `datetime`, `serialization`, `session` | Backend-free runtime semantics shared by the VM and extensions |
 | Legacy full-runtime integration | `builtins`, `pcre`, `tokenizer`, `xml`, `xml_backend`, `phar`, `sqlite`, `db` | Feature-gated compatibility surface while extension implementations migrate outward |
 | Extension contract | `extension`, `source_span` | Registration descriptors, call ABI metadata, capabilities, state factories, and shared source locations |
-| Instrumentation and integration | `jit_array`, `layout_stats`, `numeric_string`, `runtime_memory` | JIT/runtime ABI helpers, counters, audited memory access, and measurement-only metadata |
+| Native execution and instrumentation | `native_ops`, `layout_stats`, `numeric_string`, `runtime_memory` | Typed native operation/helper contracts, counters, audited memory access, and measurement-only metadata |
 
 Every top-level runtime module must be represented in this table. New modules
 need an ownership group before they are added to `crates/php_runtime/src/lib.rs`.

@@ -21,6 +21,7 @@ result-*
 # Local PHP reference checkouts and builds
 /third_party/php-src/
 /third_party/php-src-*
+/third_party/php-ai-client/
 !/third_party/.gitkeep
 
 # Generated reports and extracted corpora

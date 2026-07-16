@@ -143,29 +143,6 @@ fn lower_frontend_into_builder(
     context.lower_function_declarations(builder, function);
     context.lower_class_declarations(builder, function);
     let current_block = context.lower_top_level(builder, function, block);
-    if context.options.emit_unsupported_instructions
-        && !builder.is_terminated(function, current_block)
-    {
-        for diagnostic in &context.diagnostics {
-            let instruction = builder.emit(
-                function,
-                current_block,
-                InstructionKind::Unsupported {
-                    diagnostic_id: diagnostic.id.clone(),
-                },
-                diagnostic.span,
-            );
-            builder.add_source_map(
-                IrSourceMapTarget::Instruction {
-                    function,
-                    block: current_block,
-                    instruction,
-                },
-                diagnostic.id.clone(),
-                diagnostic.span,
-            );
-        }
-    }
     if !builder.is_terminated(function, current_block) {
         builder.terminate_return(
             function,

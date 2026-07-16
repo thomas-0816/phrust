@@ -104,9 +104,49 @@ pub(crate) fn runtime_context_for(
     if let Some(default_input_filter_flags) = input.ini.default_input_filter_flags {
         context.ini.default_input_filter_flags = default_input_filter_flags;
     }
-    let mut capabilities = FilesystemCapabilities::none().with_stdio(true);
-    if let Some(loader) = include_loader {
-        capabilities = capabilities.with_allowed_roots(loader.allowed_roots().to_vec());
-    }
+    let mut allowed_roots = include_loader
+        .map(|loader| loader.allowed_roots().to_vec())
+        .unwrap_or_default();
+    // This helper exclusively builds the CLI-compatible request context.
+    // PHP CLI scripts may create file-backed temporary resources without
+    // granting the same host path to server requests.
+    allowed_roots.push(std::env::temp_dir());
+    let capabilities = FilesystemCapabilities::none()
+        .with_stdio(true)
+        .with_standard_devices(cfg!(target_os = "linux"))
+        .with_allowed_roots(allowed_roots);
     context.with_filesystem_capabilities(capabilities)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_runtime_context_allows_the_system_temporary_directory() {
+        let cwd = std::env::current_dir().expect("current directory");
+        let input = EngineInput {
+            source: "<?php".to_owned(),
+            source_path: "temp-capability.php".to_owned(),
+            real_path: None,
+            script_name: "temp-capability.php".to_owned(),
+            script_args: Vec::new(),
+            cwd,
+            env: Vec::new(),
+            ini: Default::default(),
+            stdin: Vec::new(),
+            php_binary: "phrust-php".to_owned(),
+            debug: false,
+            debug_log: None,
+            debug_format: php_diagnostics::DiagnosticOutputFormat::Text,
+        };
+
+        let context = runtime_context_for(&input, None);
+
+        assert!(context.filesystem.allows_path(&std::env::temp_dir()));
+        assert_eq!(
+            context.filesystem.allows_standard_devices(),
+            cfg!(target_os = "linux")
+        );
+    }
 }

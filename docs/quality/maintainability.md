@@ -20,7 +20,7 @@ validation, server boundaries, and quality gates explicit.
 - Server filesystem and PHP execution work run behind explicit blocking
   boundaries.
 - Server smoke/verification and CI coverage are part of the validation surface.
-- CLI bytecode artifact cache and server compiled-script cache boundaries are
+- Persistent native artifact and server compiled-script cache boundaries are
   documented separately.
 - Runtime fixture execution is manifest-driven and wired into runtime gates.
 - Known gaps have machine-readable manifests and validator coverage.
@@ -54,22 +54,22 @@ The following remain explicit deferred work:
 | Generated arginfo | `scripts/stdlib/generate_arginfo.py`, `scripts/stdlib/verify_generated_arginfo.sh`, `crates/php_std/src/generated/arginfo.rs` | Committed snapshot, strict drift check against pinned PHP 8.5.7. |
 | Compile/execute orchestration | `crates/php_executor` | Canonical normal execution path for CLI-compatible and server execution. |
 | PHP diagnostic formatting for execution | `crates/php_executor/src/diagnostics.rs` | One PHP-shaped stderr/status mapping path for executor-backed execution. |
-| CLI process behavior | `crates/php_vm_cli` | Args, compatibility binaries, bytecode disk cache policy, debug/report commands. |
+| CLI process behavior | `crates/php_vm_cli` | Args, compatibility binaries, native cache policy, debug/report commands. |
 | HTTP transport | `crates/php_server` | Routing, static files, request limits, metrics, response mapping, blocking boundaries. |
 | Runtime values and request state | `php_runtime::api` | Stable runtime values, context, diagnostics, resources, output, status, builtins. |
 | Runtime debug metadata | `php_runtime::debug` / `php_runtime::experimental` | GC graph inspection and test/debug-only weak handles. |
 | VM execution | `php_vm::api` | `Vm`, `VmOptions`, `VmResult`, compiled unit and include-loader API. |
-| VM instrumentation | `php_vm::experimental` | Counters, quickening, inline caches, tiering, fallback, deopt, dense bytecode. |
+| Native execution instrumentation | `php_vm::experimental` | Native counters, compile/cache statistics, transition metadata, and diagnostics. |
 | Known gaps | `docs/known_gaps/*.jsonl`, `scripts/known_gaps/validate.py` | One machine-readable validation path for runtime, performance, and PHPT accepted non-green gaps. |
 | Server cache | `php_executor::CompiledScriptCache` | Process-local compiled entry-script cache for HTTP requests only. |
-| CLI bytecode cache | `php_bytecode_cache`, `php_vm_cli` | Disk artifact cache for local CLI/performance use only. |
+| Persistent native cache | `php_jit`, `php_vm`, `php_vm_cli` | Validated restart-persistent PNA2 unit bundles with symbolic helper relocation and W^X publication. |
 
 ## Remaining Duplicate Hot Spots
 
 - `crates/php_vm_cli/src/commands.rs` still owns many specialized report/debug
   paths. Normal `run` execution delegates through the executor, but inspection
   commands legitimately need frontend, optimizer, bytecode, and VM internals.
-- CLI bytecode artifact cache and server compiled-script cache remain separate.
+- Persistent native artifacts and server compiled-script caches remain separate.
   This is intentional because they have different lifetimes and trust
   boundaries, but both must preserve the same "miss over unsafe reuse" rule.
 - Some diagnostics formatting remains command-specific for non-execution

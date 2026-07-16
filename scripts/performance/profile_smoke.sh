@@ -69,13 +69,13 @@ else
 fi
 
 if [ -n "${flamegraph_bin}" ]; then
-    printf 'cargo flamegraph command: %s -p php_vm_cli --bin php-vm -o %s/%s-flamegraph.svg -- run %s --opt-level=2 --quickening=on --inline-caches=on --counters=on\n' \
+    printf 'cargo flamegraph command: %s -p php_vm_cli --bin php-vm -o %s/%s-flamegraph.svg -- run %s --engine-preset=default --counters=on\n' \
         "${flamegraph_bin}" "${target_dir}/performance/profiles" "${mode}" "${fixture}"
     if [ "${PHRUST_PERF_PROFILE_RUN:-0}" = "1" ]; then
         if [ "${flamegraph_bin}" = "cargo-flamegraph" ]; then
-            cargo-flamegraph -p php_vm_cli --bin php-vm -o "${out_dir}/${mode}-flamegraph.svg" -- run "${fixture_path}" --opt-level=2 --quickening=on --inline-caches=on --counters=on
+            cargo-flamegraph -p php_vm_cli --bin php-vm -o "${out_dir}/${mode}-flamegraph.svg" -- run "${fixture_path}" --engine-preset=default --counters=on
         else
-            cargo flamegraph -p php_vm_cli --bin php-vm -o "${out_dir}/${mode}-flamegraph.svg" -- run "${fixture_path}" --opt-level=2 --quickening=on --inline-caches=on --counters=on
+            cargo flamegraph -p php_vm_cli --bin php-vm -o "${out_dir}/${mode}-flamegraph.svg" -- run "${fixture_path}" --engine-preset=default --counters=on
         fi
     fi
 else
@@ -83,20 +83,20 @@ else
 fi
 
 if command -v perf >/dev/null 2>&1; then
-    printf 'linux perf command: perf record -g -o %s/%s.perf.data -- %s run %s --opt-level=2 --quickening=on --inline-caches=on --counters=on\n' \
+    printf 'linux perf command: perf record -g -o %s/%s.perf.data -- %s run %s --engine-preset=default --counters=on\n' \
         "${target_dir}/performance/profiles" "${mode}" "${target_dir}/debug/php-vm" "${fixture}"
     if [ "${PHRUST_PERF_PROFILE_RUN:-0}" = "1" ]; then
-        perf record -g -o "${out_dir}/${mode}.perf.data" -- "${engine}" run "${fixture_path}" --opt-level=2 --quickening=on --inline-caches=on --counters=on
+        perf record -g -o "${out_dir}/${mode}.perf.data" -- "${engine}" run "${fixture_path}" --engine-preset=default --counters=on
     fi
 else
     printf '[skip] linux perf is not installed.\n'
 fi
 
 if command -v xctrace >/dev/null 2>&1; then
-    printf 'macOS instruments command: xctrace record --template "Time Profiler" --output %s/%s.trace -- %s run %s --opt-level=2 --quickening=on --inline-caches=on --counters=on\n' \
+    printf 'macOS instruments command: xctrace record --template "Time Profiler" --output %s/%s.trace -- %s run %s --engine-preset=default --counters=on\n' \
         "${target_dir}/performance/profiles" "${mode}" "${target_dir}/debug/php-vm" "${fixture}"
     if [ "${PHRUST_PERF_PROFILE_RUN:-0}" = "1" ]; then
-        xctrace record --template "Time Profiler" --output "${out_dir}/${mode}.trace" -- "${engine}" run "${fixture_path}" --opt-level=2 --quickening=on --inline-caches=on --counters=on
+        xctrace record --template "Time Profiler" --output "${out_dir}/${mode}.trace" -- "${engine}" run "${fixture_path}" --engine-preset=default --counters=on
     fi
 else
     printf '[skip] macOS xctrace is not installed.\n'

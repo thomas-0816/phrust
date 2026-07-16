@@ -20,20 +20,14 @@ fi
 work_dir="$repo_root/target/diagnostics-smoke"
 mkdir -p "$work_dir"
 
-# The smoke asserts full-pipeline debug events (frontend analyze, optimizer),
-# so keep every run cold: isolate the default bytecode cache into this run's
-# work dir and clear it up front.
-export PHRUST_BYTECODE_CACHE_DIR="$work_dir/bytecode-cache"
-rm -rf "$PHRUST_BYTECODE_CACHE_DIR"
-
 cd "$repo_root"
 cargo build -p php_vm_cli -p php_server >/dev/null
 
-json_required_fields='kind schema_version code layer phase message'
+json_required_fields=(kind schema_version code layer phase message)
 
 assert_json_lines() {
   local path="$1"
-  python3 - "$path" $json_required_fields <<'PY'
+  python3 - "$path" "${json_required_fields[@]}" <<'PY'
 import json
 import sys
 
@@ -67,6 +61,7 @@ assert_first_json_line() {
 
 assert_no_vague_text() {
   local path="$1"
+  # shellcheck disable=SC2016 # `$` is not interpolation in this literal regex.
   if grep -Eq 'called `Result::unwrap\\(\\)`|called `Option::unwrap\\(\\)`|PhpExecutionError::|panic at' "$path"; then
     printf '[fail] vague diagnostic text in %s\n' "$path" >&2
     cat "$path" >&2
@@ -129,16 +124,19 @@ run_diagnostics_smoke() {
   assert_no_vague_text "$tmp/lexer.err"
   cargo test -p php_lexer unterminated_string_diagnostic_has_stable_code --quiet >/dev/null
 
+  # shellcheck disable=SC2016 # `$x` is literal PHP source.
   printf '<?php $x = ;\n' > "$tmp/parser.php"
   expect_failure "$bin_dir/php-vm" run "$tmp/parser.php" >"$tmp/parser.out" 2>"$tmp/parser.err"
   grep -q 'expected_expression' "$tmp/parser.err"
   assert_no_vague_text "$tmp/parser.err"
 
+  # shellcheck disable=SC2016 # `$x` is literal PHP source.
   printf '<?php function f($x, $x) {}\n' > "$tmp/semantic.php"
   expect_failure "$bin_dir/php-vm" run "$tmp/semantic.php" >"$tmp/semantic.out" 2>"$tmp/semantic.err"
   grep -q 'duplicate' "$tmp/semantic.err"
   assert_no_vague_text "$tmp/semantic.err"
 
+  # shellcheck disable=SC2016 # `$x` is literal PHP source.
   printf '<?php $x = ;\n' > "$tmp/ir-unsupported.php"
   expect_failure env PHRUST_ERROR_FORMAT=json "$bin_dir/php-vm" run "$tmp/ir-unsupported.php" >"$tmp/ir-unsupported.out" 2>"$tmp/ir-unsupported.err"
   assert_json_lines "$tmp/ir-unsupported.err"
@@ -148,7 +146,8 @@ run_diagnostics_smoke() {
 
   printf '<?php missing_func();\n' > "$tmp/runtime.php"
   expect_failure "$bin_dir/php-vm" run "$tmp/runtime.php" >"$tmp/runtime.out" 2>"$tmp/runtime.err"
-  grep -q 'E_PHP_RUNTIME_UNDEFINED_FUNCTION' "$tmp/runtime.err"
+  grep -q 'Call to undefined function missing_func()' "$tmp/runtime.out"
+  assert_no_vague_text "$tmp/runtime.out"
   assert_no_vague_text "$tmp/runtime.err"
 
   printf '<?php require "missing.php";\n' > "$tmp/include.php"
@@ -196,7 +195,7 @@ run_diagnostics_smoke() {
   grep -q 'req-00000001' "$tmp/server-runtime.jsonl"
   grep -q 'D_PHRUST_SERVER_EXECUTE_END' "$tmp/server-runtime.jsonl"
   grep -q '"runtime_diagnostic_count":"1"' "$tmp/server-runtime.jsonl"
-  grep -q 'E_PHP_RUNTIME_UNDEFINED_FUNCTION' "$tmp/server-runtime.jsonl"
+  grep -q 'E_PHP_VM_UNCAUGHT_THROWABLE' "$tmp/server-runtime.jsonl"
 
   printf '%s\n' '[ok] diagnostics smoke passed.'
 }
@@ -206,23 +205,31 @@ run_debug_smoke() {
   rm -rf "$tmp"
   mkdir -p "$tmp"
 
-  "$bin_dir/php-vm" run --debug --error-format json fixtures/runtime/valid/variables/assignment.php >"$tmp/php-vm.out" 2>"$tmp/php-vm.err"
+  "$bin_dir/php-vm" run \
+    --timings-json "$tmp/php-vm-timings.json" \
+    --counters-json "$tmp/php-vm-counters.json" \
+    fixtures/runtime/valid/variables/assignment.php \
+    >"$tmp/php-vm.out" 2>"$tmp/php-vm.err"
   printf '1\n' > "$tmp/php-vm.expected"
   cmp "$tmp/php-vm.expected" "$tmp/php-vm.out"
-  assert_json_lines "$tmp/php-vm.err"
-  grep -q 'D_PHRUST_FRONTEND_ANALYZE_START' "$tmp/php-vm.err"
-  grep -q 'D_PHRUST_VM_TRACE' "$tmp/php-vm.err"
+  test ! -s "$tmp/php-vm.err"
+  python3 - "$tmp/php-vm-timings.json" "$tmp/php-vm-counters.json" <<'PY'
+import json
+import sys
+
+timings = json.load(open(sys.argv[1], encoding="utf-8"))
+counters = json.load(open(sys.argv[2], encoding="utf-8"))
+if timings.get("schema_version") != 4 or "native_execution_ms" not in timings.get("phases_ms", {}):
+    raise SystemExit("php-vm timings report lacks native phase telemetry")
+if not isinstance(counters, dict):
+    raise SystemExit("php-vm counters report is not a JSON object")
+PY
 
   env PHRUST_DEBUG=1 PHRUST_ERROR_FORMAT=json "$bin_dir/phrust-php" -r 'echo "ok\n";' >"$tmp/phrust-php.out" 2>"$tmp/phrust-php.err"
   printf 'ok\n' > "$tmp/phrust-php.expected"
   cmp "$tmp/phrust-php.expected" "$tmp/phrust-php.out"
   assert_json_lines "$tmp/phrust-php.err"
   grep -q 'D_PHRUST_VM_TRACE' "$tmp/phrust-php.err"
-
-  env PHRUST_DEBUG_LOG="$tmp/php-vm-debug.jsonl" "$bin_dir/php-vm" run --debug --error-format json fixtures/runtime/valid/hello.php >"$tmp/php-vm-log.out" 2>"$tmp/php-vm-log.err"
-  test ! -s "$tmp/php-vm-log.err"
-  assert_json_lines "$tmp/php-vm-debug.jsonl"
-  grep -q 'D_PHRUST_VM_EXECUTE_END' "$tmp/php-vm-debug.jsonl"
 
   mkdir -p "$tmp/docroot"
   printf '<?php echo "server ok\\n";\n' > "$tmp/docroot/index.php"

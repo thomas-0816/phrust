@@ -16,7 +16,8 @@ nix develop -c target/debug/php-vm run --opt-level=2 tests/fixtures/performance/
 
 `--opt-level=0` skips the optimizer pipeline. `--opt-level=1` and
 `--opt-level=2` run the Performance pass pipeline and are tested against the
-baseline by `optimizer-diff`, `performance-regression`, and `perf-flag-matrix`.
+baseline by `optimizer-diff`, `performance-regression`, and
+`default-profile-smoke`.
 
 ## Implemented Pass Families
 
@@ -27,6 +28,15 @@ baseline by `optimizer-diff`, `performance-regression`, and `perf-flag-matrix`.
 | Peepholes | Removes no-op instructions and self moves where safe. | Must keep effectful and register-defining instructions. |
 | CFG cleanup | Simplifies constant branches, forwards empty blocks, and trims unreachable empty tails. | Must preserve exception boundaries, source maps, and verifier-valid definitions. |
 | Literal pooling/string interning | Reuses immutable literals through existing IR/runtime mechanisms. | Must not expose identity changes through PHP-visible mutation or references. |
+
+The optimizing native tier additionally runs transformations over the
+authoritative executable `RegionGraph`. Its SCCP-style scalar folding, constant
+branch selection, scalar GVN/CSE, ownership-aware DCE, and conservative
+LICM/GCM placement alter the instructions consumed by Cranelift. PHP-specific
+CFG, dominance-frontier phi planning, and value-flow facts then select direct
+CLIF for proven integer/scalar operations and promoted locals. Overflow,
+coercion, diagnostics, references, globals, magic behavior, and unknown value
+classes retain typed runtime slow paths.
 
 ## Verification And Rollback Ownership
 
@@ -69,17 +79,18 @@ optimizer module is below 500 lines.
 
 `just optimizer-diff` is the retained regression benchmark for small optimizer
 fixtures, selected medium runtime/stdlib fixtures, and the configured
-application corpus. In addition to output, diagnostics, exit status, and runtime
-counters, it archives each compile report under
-`target/performance/optimizer-diff/optimizer-reports/` and fails these ownership
-invariants:
+application corpus. It compares output, diagnostics, exit status, and runtime
+counters across O0, O1, and O2. The same recipe runs the `php_optimizer` unit
+tests, which enforce these ownership invariants directly:
 
 - a no-op pass creates a snapshot or reports a mutation scope;
 - an unchanged pass invokes the verifier;
 - a changed pass invokes the verifier other than exactly once.
 
-Aggregate snapshot bytes, snapshot counts, verifier calls, and transformations
-are written to `target/performance/optimizer-diff/summary.json`. Use
+The differential result is written to
+`target/performance/optimizer-diff/summary.json`. The native-only product CLI no
+longer emits internal optimizer reports, so the gate does not launch duplicate
+compile-only processes for every fixture. Use
 `just architecture-performance-baseline --scope compile --scope benchmarks`
 when wall time, peak RSS, and incremental compile measurements are required;
 the compiler row runs `optimizer-diff`, while the WordPress row runs the pinned
@@ -94,6 +105,7 @@ Use the narrow gate while iterating:
 nix develop -c cargo test -p php_optimizer
 nix develop -c cargo test -p php_ir verify --lib
 nix develop -c just optimizer-diff
+nix develop -c just native-ssa-ratchet
 ```
 
 Before finishing optimizer work, run:

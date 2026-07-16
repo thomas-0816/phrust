@@ -41,6 +41,7 @@ rmp = { version = "0.8", optional = true }
 rusqlite = { version = "0.32", optional = true }
 rustyline = { version = "18.0.1", default-features = false, optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
+socket2 = { version = "0.6", optional = true }
 sha1 = { version = "0.10", optional = true }
 sha2 = { version = "0.10", optional = true }
 sha3 = { version = "0.10", optional = true }
@@ -105,6 +106,7 @@ full-runtime = [
     "dep:sha1",
     "dep:sha2",
     "dep:sha3",
+    "dep:socket2",
     "dep:ssh2",
     "dep:suppaftp",
     "dep:tiger",

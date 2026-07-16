@@ -781,7 +781,7 @@ def run_self_test() -> int:
             "git_commit": "abc123",
             "rust_target_triple": "fixture-target",
             "opt_flags": ["--opt-level=1"],
-            "feature_flags": {"jit-cranelift": False},
+            "feature_flags": {"cranelift": True},
             "extra": {"tz": "UTC", "lc_all": "C", "platform": "fixture"},
         },
         "measurements": [

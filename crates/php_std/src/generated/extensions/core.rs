@@ -603,9 +603,21 @@ const CONSTANTS: &[ConstantDescriptor] = &[
         "core",
         ConstantValue::Float(FloatValue::from_f64(f64::from_bits(4503599627370496))),
     ),
-    ConstantDescriptor::with_value("PHP_OS", "core", ConstantValue::String("Darwin")),
-    ConstantDescriptor::with_value("PHP_OS_FAMILY", "core", ConstantValue::String("Darwin")),
-    ConstantDescriptor::with_value("PHP_EOL", "core", ConstantValue::String("\n")),
+    ConstantDescriptor::with_value(
+        "PHP_OS",
+        "core",
+        ConstantValue::String(crate::constants::PHP_OS),
+    ),
+    ConstantDescriptor::with_value(
+        "PHP_OS_FAMILY",
+        "core",
+        ConstantValue::String(crate::constants::PHP_OS_FAMILY),
+    ),
+    ConstantDescriptor::with_value(
+        "PHP_EOL",
+        "core",
+        ConstantValue::String(crate::constants::PHP_EOL),
+    ),
     ConstantDescriptor::with_value("PHP_SAPI", "core", ConstantValue::String("cli")),
     ConstantDescriptor::with_value("PHP_BINARY", "core", ConstantValue::String("phrust-php")),
     ConstantDescriptor::with_value(

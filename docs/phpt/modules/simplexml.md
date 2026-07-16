@@ -16,6 +16,7 @@ libxml2 namespace, XPath, or live DOM identity semantics.
 - `tests/phpt/generated/simplexml/load-file.phpt`
 - `tests/phpt/generated/simplexml/wordpress-snippets.phpt`
 - `tests/phpt/generated/simplexml/dom-interop.phpt`
+- `tests/phpt/generated/simplexml/libxml-namespaces-cdata.phpt`
 
 ## Covered surface
 
@@ -37,16 +38,20 @@ libxml2 namespace, XPath, or live DOM identity semantics.
 Run with the pinned PHP source oracle:
 
 ```bash
-REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php \
-PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src \
+REFERENCE_PHP=third_party/php-src/sapi/cli/php \
+PHP_SRC_DIR=third_party/php-src \
 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_DISABLE_REFERENCE_REUSE=1 \
 PHPT_TIMEOUT_SECONDS=20 \
-PHPT_WORK_DIR=/private/tmp/phrust-phpt-simplexml-selected-dom-interop \
+PHPT_WORK_DIR=target/phpt-work/simplexml-selected \
 nix develop -c just phpt-dev-module MODULE=simplexml
 ```
 
-Verified selected summary after this slice: reference `SKIP 10`, target
-`PASS 10`.
+Verified selected summary after the native adapter slice: reference `PASS 11`,
+target `PASS 11`, with result reuse disabled.
+
+The native adapter lives in
+`crates/php_vm/src/vm/jit_abi/internal_classes/simple_xml.rs`; XML parsing and
+SimpleXML data semantics remain owned by `php_runtime::xml`.
 
 ## Remaining gaps
 

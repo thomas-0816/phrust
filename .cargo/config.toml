@@ -2,6 +2,10 @@
 # Several VM recursion and inline-cache fixtures exceed the platform default
 # Rust test-thread stack on macOS debug builds.
 RUST_MIN_STACK = "33554432"
+# PHP 8.5 requires PCRE2 features newer than several supported host distributions
+# provide (notably caseless-restrict `/r`). The sys crate carries a compatible
+# PCRE2 source release, so always build that deterministic copy.
+PCRE2_SYS_STATIC = { value = "1", force = true }
 
 [target.'cfg(unix)']
 runner = "env RUST_MIN_STACK=33554432"

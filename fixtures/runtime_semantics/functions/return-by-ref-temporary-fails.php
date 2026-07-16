@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: expect=fail
+// runtime-semantics: expect=pass
 function &bad_ref() {
     return 1;
 }

@@ -237,8 +237,13 @@ pub fn verify_unit(unit: &IrUnit) -> Result<(), Vec<VerificationError>> {
             ));
         }
     }
-    for function in &unit.functions {
-        verify_function(unit, function, &mut errors);
+    for (index, function) in unit.functions.iter().enumerate() {
+        verify_function_body(
+            unit,
+            crate::ids::FunctionId::new(index as u32),
+            function,
+            &mut errors,
+        );
     }
 
     if errors.is_empty() {
@@ -248,7 +253,33 @@ pub fn verify_unit(unit: &IrUnit) -> Result<(), Vec<VerificationError>> {
     }
 }
 
-fn verify_function(unit: &IrUnit, function: &IrFunction, errors: &mut Vec<VerificationError>) {
+/// Verifies one function and its operands without rescanning unrelated functions.
+pub fn verify_function(
+    unit: &IrUnit,
+    function_id: crate::ids::FunctionId,
+) -> Result<(), Vec<VerificationError>> {
+    let Some(function) = unit.functions.get(function_id.index()) else {
+        return Err(vec![error(
+            VerificationErrorCode::InvalidFunctionId,
+            format!("function {} is not defined", function_id.raw()),
+        )]);
+    };
+    let mut errors = Vec::new();
+    verify_function_body(unit, function_id, function, &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn verify_function_body(
+    unit: &IrUnit,
+    function_id: crate::ids::FunctionId,
+    function: &IrFunction,
+    errors: &mut Vec<VerificationError>,
+) {
+    let header_errors = errors.len();
     verify_span(unit, function.span, errors);
     if function.locals.len() != function.local_count as usize {
         errors.push(error(
@@ -266,20 +297,49 @@ fn verify_function(unit: &IrUnit, function: &IrFunction, errors: &mut Vec<Verifi
     for capture in &function.captures {
         verify_local(capture.local, function.local_count, errors);
     }
+    contextualize_errors(
+        errors,
+        header_errors,
+        format!(
+            "function={} span={}:{}-{} state",
+            function_id.raw(),
+            function.span.file.raw(),
+            function.span.start,
+            function.span.end
+        ),
+    );
     for (index, block) in function.blocks.iter().enumerate() {
+        let block_errors = errors.len();
         verify_block_id(block.id, index, errors);
-        verify_block(unit, function, block, errors);
+        contextualize_errors(
+            errors,
+            block_errors,
+            format!(
+                "function={} block={} state",
+                function_id.raw(),
+                block.id.raw()
+            ),
+        );
+        verify_block(unit, function_id, function, block, errors);
     }
+    let register_errors = errors.len();
     verify_register_definitions(function, errors);
+    contextualize_errors(
+        errors,
+        register_errors,
+        format!("function={} register-state", function_id.raw()),
+    );
 }
 
 fn verify_block(
     unit: &IrUnit,
+    function_id: crate::ids::FunctionId,
     function: &IrFunction,
     block: &BasicBlock,
     errors: &mut Vec<VerificationError>,
 ) {
     for (index, instruction) in block.instructions.iter().enumerate() {
+        let instruction_errors = errors.len();
         if instruction.id.index() != index {
             errors.push(error(
                 VerificationErrorCode::InvalidInstrId,
@@ -291,13 +351,51 @@ fn verify_block(
             ));
         }
         verify_instruction(unit, function, instruction, errors);
+        contextualize_errors(
+            errors,
+            instruction_errors,
+            format!(
+                "function={} block={} instruction={} span={}:{}-{} operand/state",
+                function_id.raw(),
+                block.id.raw(),
+                instruction.id.raw(),
+                instruction.span.file.raw(),
+                instruction.span.start,
+                instruction.span.end
+            ),
+        );
     }
     match &block.terminator {
-        Some(terminator) => verify_terminator(unit, function, terminator, errors),
+        Some(terminator) => {
+            let terminator_errors = errors.len();
+            verify_terminator(unit, function, terminator, errors);
+            contextualize_errors(
+                errors,
+                terminator_errors,
+                format!(
+                    "function={} block={} terminator span={}:{}-{} operand/state",
+                    function_id.raw(),
+                    block.id.raw(),
+                    terminator.span.file.raw(),
+                    terminator.span.start,
+                    terminator.span.end
+                ),
+            );
+        }
         None => errors.push(error(
             VerificationErrorCode::MissingTerminator,
-            format!("block {} has no terminator", block.id.raw()),
+            format!(
+                "function={} block={} terminator-state: block has no terminator",
+                function_id.raw(),
+                block.id.raw()
+            ),
         )),
+    }
+}
+
+fn contextualize_errors(errors: &mut [VerificationError], start: usize, context: String) {
+    for error in &mut errors[start..] {
+        error.message = format!("{context}: {}", error.message);
     }
 }
 
@@ -312,7 +410,6 @@ fn verify_instruction(
         InstructionKind::Nop
         | InstructionKind::DeclareClass { .. }
         | InstructionKind::EmitDiagnostic { .. }
-        | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => {}
         InstructionKind::LoadConst { dst, constant } => {
             verify_register(*dst, function.register_count, errors);
@@ -1232,7 +1329,11 @@ fn verify_operand(
     }
 }
 
-fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
+/// Appends every register read by one instruction in semantic operand order.
+///
+/// This is shared by verification and downstream lifetime analyses so there is
+/// only one authoritative operand walk when the IR instruction set grows.
+pub fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
     match kind {
         InstructionKind::Nop
         | InstructionKind::DeclareFunction { .. }
@@ -1254,7 +1355,6 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::EmitDiagnostic { .. }
-        | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => {}
         InstructionKind::RegisterConstant { value, .. } => operand_register_uses(value, uses),
         InstructionKind::Move { src, .. }
@@ -1624,12 +1724,12 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::EmitDiagnostic { .. }
-        | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => {}
     }
 }
 
-fn terminator_register_uses(kind: &TerminatorKind, uses: &mut Vec<RegId>) {
+/// Appends every register read by one block terminator.
+pub fn terminator_register_uses(kind: &TerminatorKind, uses: &mut Vec<RegId>) {
     match kind {
         TerminatorKind::Jump { .. } => {}
         TerminatorKind::JumpIfFalse { condition, .. }

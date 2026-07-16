@@ -1,7 +1,7 @@
 //! Conservative Global Code Motion placement prototype.
 
 use crate::region_ir::{
-    NodeId, RegionEffects, RegionGraph, RegionNodeKind, RegionPlacement, RegionValueType,
+    NodeId, OptimizerRegionGraph, RegionEffects, RegionNodeKind, RegionPlacement, RegionValueType,
 };
 
 use super::{
@@ -23,7 +23,7 @@ pub struct GcmReport {
 /// Runs a conservative GCM classifier over the region graph.
 #[must_use]
 pub fn run_gcm(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     cfg: &RegionCfg,
     dominators: &DominatorTree,
     loops: &LoopInfo,
@@ -104,7 +104,7 @@ fn is_gcm_movable(
 }
 
 fn schedule_early_anchor(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     cfg: &RegionCfg,
     dominators: &DominatorTree,
     id: NodeId,
@@ -122,7 +122,7 @@ fn schedule_early_anchor(
 }
 
 fn schedule_late_anchor(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     cfg: &RegionCfg,
     dominators: &DominatorTree,
     id: NodeId,
@@ -138,7 +138,7 @@ fn schedule_late_anchor(
         .or_else(|| anchors.first().copied())
 }
 
-fn control_anchor(graph: &RegionGraph, cfg: &RegionCfg, id: NodeId) -> Option<NodeId> {
+fn control_anchor(graph: &OptimizerRegionGraph, cfg: &RegionCfg, id: NodeId) -> Option<NodeId> {
     let node = graph.node(id)?;
     if node.value_type == RegionValueType::Control || node.kind.is_control() {
         Some(id)

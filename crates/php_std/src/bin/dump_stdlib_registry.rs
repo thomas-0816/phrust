@@ -61,8 +61,9 @@ fn main() {
         let constants = extension.constants();
         for (index, constant) in constants.iter().enumerate() {
             print!(
-                "        {{\"name\": \"{}\", \"value\": {}, \"deprecation\": {}}}",
+                "        {{\"name\": \"{}\", \"has_value\": {}, \"value\": {}, \"deprecation\": {}}}",
                 json_escape(constant.name()),
+                constant.value().is_some(),
                 constant_value_json(constant.value()),
                 constant
                     .deprecation()

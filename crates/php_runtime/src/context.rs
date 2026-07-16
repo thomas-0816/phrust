@@ -277,6 +277,16 @@ impl RuntimeHttpResponseState {
         let name = name.trim();
         let value = value.trim();
         validate_header_name(name)?;
+        // PHP treats a Location header without an explicit response code as a
+        // redirect. It preserves 201 and existing 3xx statuses, matching the
+        // special-case behavior documented for header().
+        if response_code.is_none()
+            && name.eq_ignore_ascii_case("Location")
+            && self.status_code != 201
+            && !(300..=399).contains(&self.status_code)
+        {
+            self.status_code = 302;
+        }
         if replace {
             self.headers
                 .retain(|header| !header.name.eq_ignore_ascii_case(name));
@@ -1777,6 +1787,29 @@ mod tests {
             .add_header_line("X-Status: yes", true, Some(201))
             .unwrap();
         assert_eq!(state.status_code, 201);
+    }
+
+    #[test]
+    fn http_response_state_location_header_uses_php_redirect_status_rules() {
+        let mut state = RuntimeHttpResponseState::default();
+        state
+            .add_header_line("Location: /next", true, None)
+            .unwrap();
+        assert_eq!(state.status_code, 302);
+
+        let mut created = RuntimeHttpResponseState::default();
+        created.set_status_code(201);
+        created
+            .add_header_line("Location: /created", true, None)
+            .unwrap();
+        assert_eq!(created.status_code, 201);
+
+        let mut temporary = RuntimeHttpResponseState::default();
+        temporary.set_status_code(307);
+        temporary
+            .add_header_line("Location: /temporary", true, None)
+            .unwrap();
+        assert_eq!(temporary.status_code, 307);
     }
 
     #[test]

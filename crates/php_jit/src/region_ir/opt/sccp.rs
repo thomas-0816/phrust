@@ -1,6 +1,8 @@
 //! Minimal SCCP lattice and worklist reporting for region IR.
 
-use crate::region_ir::{NodeId, RegionCompareOp, RegionConst, RegionGraph, RegionNodeKind};
+use crate::region_ir::{
+    NodeId, OptimizerRegionGraph, RegionCompareOp, RegionConst, RegionNodeKind,
+};
 
 use super::cfg::{RegionCfg, build_cfg};
 
@@ -47,7 +49,7 @@ pub struct SccpReport {
 
 /// Runs the minimal scalar SCCP prototype.
 #[must_use]
-pub fn run_sccp(graph: &RegionGraph) -> SccpReport {
+pub fn run_sccp(graph: &OptimizerRegionGraph) -> SccpReport {
     let cfg = build_cfg(graph);
     let mut values = vec![SccpValue::Top; graph.nodes().len()];
     let mut changed = true;
@@ -83,7 +85,7 @@ pub fn run_sccp(graph: &RegionGraph) -> SccpReport {
 }
 
 fn evaluate_node(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     values: &[SccpValue],
     id: NodeId,
     kind: &RegionNodeKind,
@@ -226,7 +228,7 @@ fn pair_fallback(inputs: &[NodeId], values: &[SccpValue]) -> SccpValue {
 }
 
 fn executable_edges(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     cfg: &RegionCfg,
     values: &[SccpValue],
 ) -> (Vec<(NodeId, NodeId)>, Vec<NodeId>) {

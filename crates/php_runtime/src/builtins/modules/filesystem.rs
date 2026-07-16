@@ -4,7 +4,7 @@ use super::core::*;
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
 };
-use crate::{StreamWrapperRegistry, Value};
+use crate::{PhpArray, StreamWrapperRegistry, Value};
 #[cfg(unix)]
 use nix::unistd::{Gid, Group, Uid, User, chown};
 #[cfg(unix)]
@@ -15,6 +15,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 const FILE_APPEND_FLAG: i64 = 8;
+const FILE_IGNORE_NEW_LINES_FLAG: i64 = 2;
+const FILE_SKIP_EMPTY_LINES_FLAG: i64 = 4;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("basename", builtin_basename, BuiltinCompatibility::Php),
@@ -39,6 +41,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_disk_total_space,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("file", builtin_file, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "file_exists",
         builtin_file_exists,
@@ -648,6 +651,49 @@ pub(in crate::builtins::modules) fn builtin_file_get_contents(
         )),
         value => Ok(value),
     }
+}
+
+pub(in crate::builtins::modules) fn builtin_file(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.is_empty() || args.len() > 3 {
+        return Err(arity_error("file", "one to three argument(s)"));
+    }
+    let path = string_arg("file", &args[0])?.to_string_lossy();
+    let flags = args
+        .get(1)
+        .map(|value| int_arg("file", value))
+        .transpose()?
+        .unwrap_or(0);
+    let contents = match read_file_value(context, "file", &path, span)? {
+        Value::String(contents) => contents,
+        value => return Ok(value),
+    };
+    let ignore_new_lines = flags & FILE_IGNORE_NEW_LINES_FLAG != 0;
+    let skip_empty = flags & FILE_SKIP_EMPTY_LINES_FLAG != 0;
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let bytes = contents.as_bytes();
+    while start < bytes.len() {
+        let end = bytes[start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |offset| start + offset + 1);
+        let mut line = bytes[start..end].to_vec();
+        if ignore_new_lines && line.last() == Some(&b'\n') {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+        }
+        if !skip_empty || !line.is_empty() {
+            lines.push(Value::string(line));
+        }
+        start = end;
+    }
+    Ok(Value::Array(PhpArray::from_packed(lines)))
 }
 
 fn file_get_contents_slice(bytes: &[u8], offset: i64, length: Option<i64>) -> Vec<u8> {

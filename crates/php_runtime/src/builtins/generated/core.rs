@@ -29,6 +29,22 @@ pub const FUNCTIONS: &[GeneratedBuiltinDescriptor] = &[
         variadic: true,
     },
     GeneratedBuiltinDescriptor {
+        name: "error_clear_last",
+        extension: "standard",
+        return_type: Some("void"),
+        required_parameters: 0,
+        total_parameters: 0,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
+        name: "error_get_last",
+        extension: "standard",
+        return_type: Some("?array"),
+        required_parameters: 0,
+        total_parameters: 0,
+        variadic: false,
+    },
+    GeneratedBuiltinDescriptor {
         name: "error_log",
         extension: "standard",
         return_type: Some("bool"),

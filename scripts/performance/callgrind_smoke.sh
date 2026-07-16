@@ -90,9 +90,7 @@ for scenario in "${SCENARIOS[@]}"; do
         --quiet \
         --callgrind-out-file="$callgrind_out" \
         "$ENGINE" run \
-        --opt-level=1 \
-        --quickening=on \
-        --inline-caches=on \
+        --engine-preset=default \
         "$fixture" \
         > "$stdout" \
         2> "$stderr"

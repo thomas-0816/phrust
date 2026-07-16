@@ -1021,6 +1021,8 @@ fn report_duplicate_declaration(
     reporter: &mut DiagnosticReporter,
     duplicate: DuplicateDeclaration,
 ) {
+    let name = duplicate.name().to_owned();
+    let kind = duplicate.kind();
     reporter.report(
         SemanticDiagnostic::with_span(
             DiagnosticId::DuplicateDeclaration,
@@ -1033,6 +1035,7 @@ fn report_duplicate_declaration(
             ),
             duplicate.duplicate_span(),
         )
+        .with_duplicate_declaration(name, kind)
         .with_label(DiagnosticLabel::new(
             duplicate.previous_span(),
             "previous declaration is here",

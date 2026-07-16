@@ -1222,6 +1222,7 @@ fn literal_label(constant: &IrConstant) -> String {
         IrConstant::NamedConstant(name) => format!("const:{}", truncate(name, 40)),
         IrConstant::ClassConstant {
             class_name,
+            display_class_name: _,
             constant_name,
         } => format!(
             "class_const:{}::{}",

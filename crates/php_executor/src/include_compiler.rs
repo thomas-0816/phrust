@@ -39,7 +39,10 @@ impl IncludeCompiler for ExecutorIncludeCompiler {
     }
 
     fn compile_eval(&self, source_path: &str, source: &str) -> Result<CompiledUnit, VmError> {
-        let frontend = php_semantics::analyze_source(source);
+        // `eval()` receives PHP code without an opening tag, while the shared
+        // frontend consumes complete PHP source files.
+        let source = format!("<?php {source}");
+        let frontend = php_semantics::analyze_source(&source);
         if frontend.has_errors() {
             return Err(include_compile_error(
                 "E_PHP_VM_EVAL_PARSE_ERROR",
@@ -52,7 +55,7 @@ impl IncludeCompiler for ExecutorIncludeCompiler {
             &frontend,
             php_ir::LoweringOptions {
                 source_path: source_path.to_owned(),
-                source_text: Some(source.to_owned()),
+                source_text: Some(source.clone()),
                 ..php_ir::LoweringOptions::default()
             },
         );
@@ -157,7 +160,7 @@ fn compile_include(
                 session.add_autoload_dependency(
                     file_id,
                     &request.normalized_name,
-                    &request.normalized_name,
+                    &request.resolved_name,
                     path.to_string_lossy().into_owned(),
                     dependency_source.loaded().source.clone(),
                 )
@@ -300,7 +303,9 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use php_vm::api::IncludeCache;
 
     fn fixture(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -332,6 +337,35 @@ mod tests {
             .load_validated_resolved(&resolved)
             .expect("load source");
         (loader, source)
+    }
+
+    #[test]
+    fn include_cache_invalidates_compiled_include_after_file_edit() {
+        let root = fixture("compiled-stale");
+        write(&root, "lib.php", "<?php echo 'one';\n");
+        let loader = IncludeLoader::for_root(&root).expect("loader");
+        let cache = IncludeCache::new_with_revalidation_interval(1, Duration::ZERO);
+        let compiler = ExecutorIncludeCompiler::new(OptimizationLevel::O0);
+
+        let first_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&root))
+            .expect("first resolve");
+        let first = cache
+            .get_or_compile_include(&loader, &first_resolved, &compiler)
+            .expect("first compile");
+
+        write(&root, "lib.php", "<?php echo 'two'; echo '!';\n");
+        let second_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&root))
+            .expect("second resolve");
+        let second = cache
+            .get_or_compile_include(&loader, &second_resolved, &compiler)
+            .expect("second compile");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(cache.cache_stats().compile_misses, 2);
+        assert!(cache.cache_stats().stale_invalidations >= 1);
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
@@ -373,7 +407,7 @@ mod tests {
         assert_eq!(compiled.unit.unit().files.len(), 2);
         assert_eq!(
             compiled.unit.unit().linked_entry_autoload_declarations,
-            vec![Some("acme\\support\\withthing".to_owned()), None]
+            vec![Some("Acme\\Support\\WithThing".to_owned()), None]
         );
         assert_eq!(compiled.dependencies.len(), 2);
         fs::remove_dir_all(root).expect("remove fixture");
@@ -418,7 +452,7 @@ spl_autoload_register(static function ($class_name) use ($prefix, $prefix_len, $
         assert_eq!(compiled.unit.unit().files.len(), 2);
         assert_eq!(
             compiled.unit.unit().linked_entry_autoload_declarations,
-            vec![Some("acme\\support\\withthing".to_owned()), None]
+            vec![Some("Acme\\Support\\WithThing".to_owned()), None]
         );
         assert_eq!(compiled.dependencies.len(), 2);
         fs::remove_dir_all(root).expect("remove fixture");

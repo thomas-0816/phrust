@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: expect=fail
+// runtime-semantics: expect=pass
 function value_only() {
     $x = 1;
     return $x;

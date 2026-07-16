@@ -6,10 +6,9 @@ use php_ir::ids::FunctionId;
 use php_ir::module::{ClassEntry, normalize_class_name, normalized_class_name};
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
-use php_runtime::api::RuntimeDiagnostic;
 use php_source::{BytePos, LineIndex};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ops::Deref,
     sync::{
         Arc, OnceLock,
@@ -19,7 +18,7 @@ use std::{
 
 static NEXT_COMPILED_UNIT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Compiled unit handed to the interpreter.
+/// Authoritative IR unit handed to the native execution coordinator.
 #[derive(Clone)]
 pub struct CompiledUnit {
     inner: Arc<CompiledUnitInner>,
@@ -166,29 +165,212 @@ impl SymbolIndex {
 #[derive(Debug)]
 struct PreparedUnit {
     ir_verification_errors: OnceLock<usize>,
-    class_validation: OnceLock<Result<(), Box<PreparedClassValidationError>>>,
+    native_indexes: OnceLock<PreparedNativeIndexes>,
+    ir_fingerprint: OnceLock<String>,
+    dependency_identity: OnceLock<String>,
     ir_verification_runs: AtomicU64,
+    continuation_index_runs: AtomicU64,
+    ir_fingerprint_runs: AtomicU64,
+    dependency_identity_runs: AtomicU64,
     class_validation_runs: AtomicU64,
-    function_facts: Box<[OnceLock<PreparedFunctionFacts>]>,
 }
 
 impl PreparedUnit {
-    fn new(function_count: usize) -> Self {
+    fn new() -> Self {
         Self {
             ir_verification_errors: OnceLock::new(),
-            class_validation: OnceLock::new(),
+            native_indexes: OnceLock::new(),
+            ir_fingerprint: OnceLock::new(),
+            dependency_identity: OnceLock::new(),
             ir_verification_runs: AtomicU64::new(0),
+            continuation_index_runs: AtomicU64::new(0),
+            ir_fingerprint_runs: AtomicU64::new(0),
+            dependency_identity_runs: AtomicU64::new(0),
             class_validation_runs: AtomicU64::new(0),
-            function_facts: (0..function_count).map(|_| OnceLock::new()).collect(),
         }
     }
 }
 
-/// Immutable class-validation failure retained with a compiled artifact.
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedClassValidationError {
-    pub(crate) message: String,
-    pub(crate) diagnostic: Option<RuntimeDiagnostic>,
+#[derive(Debug)]
+struct PreparedNativeIndexes {
+    continuation_instructions: Arc<BTreeMap<(u32, u32), Arc<php_ir::Instruction>>>,
+    callsites: Arc<BTreeMap<(u32, u32), Arc<NativeCallSiteDescriptor>>>,
+}
+
+/// Typed operation selected by one native callsite descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeCallSiteKind {
+    Function,
+    Method,
+    StaticMethod,
+    Closure,
+    Callable,
+    Pipe,
+    Constructor,
+    DynamicConstructor,
+    Semantic,
+}
+
+/// Immutable callsite metadata prepared once with the compiled unit.
+///
+/// Generated code passes the stable continuation ID. The runtime resolves it
+/// directly to this descriptor, so it never scans blocks or reconstructs an IR
+/// instruction on the request path. `semantic_instruction` is retained only as
+/// the typed semantic payload for operation helpers that have not yet split
+/// their source-location argument from their operation-specific metadata.
+#[derive(Debug)]
+pub(crate) struct NativeCallSiteDescriptor {
+    pub kind: NativeCallSiteKind,
+    pub function_id: u32,
+    pub continuation_id: u32,
+    pub source_block_id: u32,
+    pub source_instruction_id: u32,
+    pub span: IrSpan,
+    pub target_symbol: Option<Arc<str>>,
+    pub target_function: Option<FunctionId>,
+    pub arguments: Arc<[php_ir::instruction::IrCallArg]>,
+    pub argument_operand_offset: usize,
+    pub result_slot: u32,
+    pub returns_by_reference: bool,
+    pub pic_slot: u64,
+    semantic_instruction: Arc<php_ir::Instruction>,
+    method_pic: PersistentNativeMethodPic,
+}
+
+impl NativeCallSiteDescriptor {
+    pub(crate) fn semantic_instruction(&self) -> &php_ir::Instruction {
+        self.semantic_instruction.as_ref()
+    }
+
+    pub(crate) fn lookup_method_pic(
+        &self,
+        receiver_class: &str,
+        method: &str,
+        class_layout_epoch: u64,
+        method_table_epoch: u64,
+    ) -> Option<(FunctionId, bool)> {
+        self.method_pic.lookup(
+            receiver_class,
+            method,
+            class_layout_epoch,
+            method_table_epoch,
+        )
+    }
+
+    pub(crate) fn install_method_pic(
+        &self,
+        receiver_class: &str,
+        method: &str,
+        class_layout_epoch: u64,
+        method_table_epoch: u64,
+        function: FunctionId,
+        is_static: bool,
+    ) -> bool {
+        self.method_pic.install(PersistentNativeMethodPicEntry {
+            receiver_class: Arc::from(receiver_class),
+            method: Arc::from(method),
+            class_layout_epoch,
+            method_table_epoch,
+            function,
+            is_static,
+        })
+    }
+}
+
+const PERSISTENT_NATIVE_METHOD_PIC_LIMIT: usize = 4;
+
+#[derive(Debug)]
+struct PersistentNativeMethodPicEntry {
+    receiver_class: Arc<str>,
+    method: Arc<str>,
+    class_layout_epoch: u64,
+    method_table_epoch: u64,
+    function: FunctionId,
+    is_static: bool,
+}
+
+#[derive(Debug)]
+struct PersistentNativeMethodPic {
+    entries:
+        [std::sync::OnceLock<PersistentNativeMethodPicEntry>; PERSISTENT_NATIVE_METHOD_PIC_LIMIT],
+    megamorphic: std::sync::atomic::AtomicBool,
+}
+
+impl Default for PersistentNativeMethodPic {
+    fn default() -> Self {
+        Self {
+            entries: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            megamorphic: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl PersistentNativeMethodPic {
+    fn matches(
+        entry: &PersistentNativeMethodPicEntry,
+        receiver_class: &str,
+        method: &str,
+        class_layout_epoch: u64,
+        method_table_epoch: u64,
+    ) -> bool {
+        entry.receiver_class.eq_ignore_ascii_case(receiver_class)
+            && entry.method.eq_ignore_ascii_case(method)
+            && entry.class_layout_epoch == class_layout_epoch
+            && entry.method_table_epoch == method_table_epoch
+    }
+
+    fn lookup(
+        &self,
+        receiver_class: &str,
+        method: &str,
+        class_layout_epoch: u64,
+        method_table_epoch: u64,
+    ) -> Option<(FunctionId, bool)> {
+        if self.megamorphic.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        self.entries.iter().find_map(|entry| {
+            let entry = entry.get()?;
+            Self::matches(
+                entry,
+                receiver_class,
+                method,
+                class_layout_epoch,
+                method_table_epoch,
+            )
+            .then_some((entry.function, entry.is_static))
+        })
+    }
+
+    fn install(&self, mut candidate: PersistentNativeMethodPicEntry) -> bool {
+        if self.megamorphic.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        loop {
+            for entry in &self.entries {
+                if let Some(entry) = entry.get()
+                    && Self::matches(
+                        entry,
+                        &candidate.receiver_class,
+                        &candidate.method,
+                        candidate.class_layout_epoch,
+                        candidate.method_table_epoch,
+                    )
+                {
+                    return true;
+                }
+            }
+            let Some(empty) = self.entries.iter().find(|entry| entry.get().is_none()) else {
+                self.megamorphic
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return false;
+            };
+            match empty.set(candidate) {
+                Ok(()) => return true,
+                Err(returned) => candidate = returned,
+            }
+        }
+    }
 }
 
 /// Number of immutable preparation passes performed for a compiled unit.
@@ -196,6 +378,12 @@ pub(crate) struct PreparedClassValidationError {
 pub struct PreparedUnitStats {
     /// IR verification passes.
     pub ir_verification_runs: u64,
+    /// Native continuation-source indexes built.
+    pub continuation_index_runs: u64,
+    /// Stable full-IR fingerprints computed.
+    pub ir_fingerprint_runs: u64,
+    /// Stable dependency identities computed.
+    pub dependency_identity_runs: u64,
     /// Static class-table validation passes.
     pub class_validation_runs: u64,
 }
@@ -217,39 +405,6 @@ pub struct CompiledUnitLayoutStats {
     pub indexed_symbols: usize,
     /// Name bytes duplicated by lookup indexes (always zero).
     pub duplicated_symbol_name_bytes: usize,
-}
-
-/// Function-invariant execution facts shared by all requests for a unit.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PreparedFunctionFacts {
-    pub(crate) observes_argument_vector: bool,
-    pub(crate) has_try_or_finally: bool,
-    pub(crate) may_hold_destructor_sensitive_value: bool,
-    pub(crate) has_inline_blocker: bool,
-}
-
-/// Dense executable artifact kind cached for one compiled unit.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum DenseExecutionArtifactMode {
-    /// Mixed dense/rich plan used by automatic bytecode execution.
-    Mixed,
-    /// Strict fully dense plan used by bytecode-only execution.
-    Strict,
-}
-
-/// Execution options that affect dense bytecode layout and validity.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct DenseExecutionArtifactKey {
-    /// Dense lowering mode.
-    pub mode: DenseExecutionArtifactMode,
-    /// Whether dense superinstructions have been selected.
-    pub superinstructions: bool,
-    /// Whether profiled dense layout has been applied.
-    pub profiled_layout: bool,
-    /// Profile entries used by profiled layout, kept in stable map order.
-    pub layout_profile_entries: Vec<(String, u64)>,
-    /// Whether dense jump threading has been applied.
-    pub dense_jump_threading: bool,
 }
 
 impl CompiledUnit {
@@ -296,7 +451,6 @@ impl CompiledUnit {
     }
 
     fn with_source_slots(unit: IrUnit, sources: Vec<Option<Arc<str>>>) -> Self {
-        let function_count = unit.functions.len();
         let function_lookup = SymbolIndex::new(
             unit.function_table
                 .iter()
@@ -352,7 +506,7 @@ impl CompiledUnit {
                 class_lookup,
                 unit_class_lookup,
                 sources,
-                prepared: PreparedUnit::new(function_count),
+                prepared: PreparedUnit::new(),
             }),
         }
     }
@@ -446,22 +600,111 @@ impl CompiledUnit {
         })
     }
 
-    /// Returns cached static class validation, computing it at most once.
-    pub(crate) fn prepared_class_validation(
+    fn prepared_native_indexes(&self) -> &PreparedNativeIndexes {
+        self.inner.prepared.native_indexes.get_or_init(|| {
+            self.inner
+                .prepared
+                .continuation_index_runs
+                .fetch_add(1, Ordering::Relaxed);
+            let mut instructions = BTreeMap::new();
+            let mut callsites = BTreeMap::new();
+            let metadata = php_jit::region_ir::CompileMetadata::default();
+            for function_index in 0..self.inner.unit.functions.len() {
+                let function = FunctionId::new(function_index as u32);
+                if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
+                    &self.inner.unit,
+                    function,
+                    &metadata,
+                ) {
+                    for block in &region.blocks {
+                        for instruction in &block.instructions {
+                            let semantic_instruction = Arc::new(php_ir::Instruction {
+                                id: instruction.id,
+                                span: instruction.span,
+                                kind: instruction.source_kind.clone(),
+                            });
+                            instructions.insert(
+                                (function.raw(), instruction.continuation_id),
+                                Arc::clone(&semantic_instruction),
+                            );
+                            if let php_jit::region_ir::RegionInstructionKind::NativeCall(call) =
+                                &instruction.kind
+                            {
+                                let (kind, target_symbol, target_function) =
+                                    native_callsite_target(&call.target);
+                                let result_slot = match call.result {
+                                    php_jit::region_ir::RegionCallResult::Register(register) => {
+                                        register.raw()
+                                    }
+                                    php_jit::region_ir::RegionCallResult::ReferenceLocal(local) => {
+                                        local.raw()
+                                    }
+                                    php_jit::region_ir::RegionCallResult::Discard => u32::MAX,
+                                };
+                                let pic_slot = (u64::from(function.raw()) << 32)
+                                    | u64::from(instruction.continuation_id);
+                                callsites.insert(
+                                    (function.raw(), instruction.continuation_id),
+                                    Arc::new(NativeCallSiteDescriptor {
+                                        kind,
+                                        function_id: function.raw(),
+                                        continuation_id: instruction.continuation_id,
+                                        source_block_id: block.id.raw(),
+                                        source_instruction_id: instruction.id.raw(),
+                                        span: instruction.span,
+                                        target_symbol,
+                                        target_function,
+                                        arguments: Arc::from(call.args.clone()),
+                                        argument_operand_offset: call.argument_operand_offset,
+                                        result_slot,
+                                        returns_by_reference: call.returns_by_reference,
+                                        pic_slot,
+                                        semantic_instruction,
+                                        method_pic: PersistentNativeMethodPic::default(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            PreparedNativeIndexes {
+                continuation_instructions: Arc::new(instructions),
+                callsites: Arc::new(callsites),
+            }
+        })
+    }
+
+    pub(crate) fn prepared_continuation_instructions(
         &self,
-        prepare: impl FnOnce() -> Result<(), Box<PreparedClassValidationError>>,
-    ) -> Result<(), Box<PreparedClassValidationError>> {
-        self.inner
-            .prepared
-            .class_validation
-            .get_or_init(|| {
-                self.inner
-                    .prepared
-                    .class_validation_runs
-                    .fetch_add(1, Ordering::Relaxed);
-                prepare()
-            })
-            .clone()
+    ) -> Arc<BTreeMap<(u32, u32), Arc<php_ir::Instruction>>> {
+        Arc::clone(&self.prepared_native_indexes().continuation_instructions)
+    }
+
+    pub(crate) fn prepared_native_callsites(
+        &self,
+    ) -> Arc<BTreeMap<(u32, u32), Arc<NativeCallSiteDescriptor>>> {
+        Arc::clone(&self.prepared_native_indexes().callsites)
+    }
+
+    pub(crate) fn prepared_ir_fingerprint(&self) -> &str {
+        self.inner.prepared.ir_fingerprint.get_or_init(|| {
+            self.inner
+                .prepared
+                .ir_fingerprint_runs
+                .fetch_add(1, Ordering::Relaxed);
+            php_jit::stable_ir_fingerprint(&self.inner.unit)
+        })
+    }
+
+    pub(crate) fn prepared_dependency_identity(&self) -> &str {
+        self.inner.prepared.dependency_identity.get_or_init(|| {
+            self.inner
+                .prepared
+                .dependency_identity_runs
+                .fetch_add(1, Ordering::Relaxed);
+            php_jit::stable_dependency_identity(&self.inner.unit)
+        })
     }
 
     /// Preparation counters for validation and diagnostics.
@@ -473,24 +716,27 @@ impl CompiledUnit {
                 .prepared
                 .ir_verification_runs
                 .load(Ordering::Relaxed),
+            continuation_index_runs: self
+                .inner
+                .prepared
+                .continuation_index_runs
+                .load(Ordering::Relaxed),
+            ir_fingerprint_runs: self
+                .inner
+                .prepared
+                .ir_fingerprint_runs
+                .load(Ordering::Relaxed),
+            dependency_identity_runs: self
+                .inner
+                .prepared
+                .dependency_identity_runs
+                .load(Ordering::Relaxed),
             class_validation_runs: self
                 .inner
                 .prepared
                 .class_validation_runs
                 .load(Ordering::Relaxed),
         }
-    }
-
-    /// Returns immutable per-function facts, scanning a function at most once.
-    pub(crate) fn prepared_function_facts(
-        &self,
-        function: FunctionId,
-        prepare: impl FnOnce() -> PreparedFunctionFacts,
-    ) -> PreparedFunctionFacts {
-        let Some(facts) = self.inner.prepared.function_facts.get(function.index()) else {
-            return prepare();
-        };
-        *facts.get_or_init(prepare)
     }
 
     /// Finds a user function by normalized name.
@@ -580,14 +826,6 @@ impl CompiledUnit {
                 normalize_class_name(&self.inner.unit.classes[*index].name) == normalized.as_ref()
             })?;
         Some(CompiledClass::in_unit(self.clone(), index))
-    }
-
-    pub(crate) fn class_handle(&self, index: usize) -> Option<CompiledClass> {
-        self.inner
-            .unit
-            .classes
-            .get(index)
-            .map(|_| CompiledClass::in_unit(self.clone(), index))
     }
 
     /// Returns the VM lookup table.
@@ -687,6 +925,41 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     hash_bytes(0xcbf2_9ce4_8422_2325, bytes)
 }
 
+fn native_callsite_target(
+    target: &php_jit::region_ir::RegionCallTarget,
+) -> (NativeCallSiteKind, Option<Arc<str>>, Option<FunctionId>) {
+    use php_jit::region_ir::RegionCallTarget;
+    match target {
+        RegionCallTarget::Function { name, function } => (
+            NativeCallSiteKind::Function,
+            Some(Arc::from(name.as_str())),
+            *function,
+        ),
+        RegionCallTarget::Method { method, .. } => (
+            NativeCallSiteKind::Method,
+            Some(Arc::from(method.as_str())),
+            None,
+        ),
+        RegionCallTarget::StaticMethod { method, .. } => (
+            NativeCallSiteKind::StaticMethod,
+            Some(Arc::from(method.as_str())),
+            None,
+        ),
+        RegionCallTarget::Closure { .. } => (NativeCallSiteKind::Closure, None, None),
+        RegionCallTarget::Callable { .. } => (NativeCallSiteKind::Callable, None, None),
+        RegionCallTarget::Pipe { .. } => (NativeCallSiteKind::Pipe, None, None),
+        RegionCallTarget::Constructor { class_name, .. } => (
+            NativeCallSiteKind::Constructor,
+            Some(Arc::from(class_name.as_str())),
+            None,
+        ),
+        RegionCallTarget::DynamicConstructor { .. } => {
+            (NativeCallSiteKind::DynamicConstructor, None, None)
+        }
+        RegionCallTarget::Semantic { .. } => (NativeCallSiteKind::Semantic, None, None),
+    }
+}
+
 fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -734,6 +1007,28 @@ mod tests {
             },
             span: IrSpan::default(),
         }
+    }
+
+    #[test]
+    fn continuation_instruction_index_is_shared_per_compiled_unit() {
+        let compiled = CompiledUnit::new(IrUnit::new(UnitId::new(0)));
+
+        let first = compiled.prepared_continuation_instructions();
+        let second = compiled.prepared_continuation_instructions();
+        let first_ir_fingerprint = compiled.prepared_ir_fingerprint();
+        let second_ir_fingerprint = compiled.prepared_ir_fingerprint();
+        let first_dependency_identity = compiled.prepared_dependency_identity();
+        let second_dependency_identity = compiled.prepared_dependency_identity();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(std::ptr::eq(first_ir_fingerprint, second_ir_fingerprint));
+        assert!(std::ptr::eq(
+            first_dependency_identity,
+            second_dependency_identity
+        ));
+        assert_eq!(compiled.prepared_unit_stats().continuation_index_runs, 1);
+        assert_eq!(compiled.prepared_unit_stats().ir_fingerprint_runs, 1);
+        assert_eq!(compiled.prepared_unit_stats().dependency_identity_runs, 1);
     }
 
     #[test]

@@ -23,7 +23,7 @@
 // value parameters, whose bind-time coercion the native path would skip — are
 // rejected at recognition time, so those functions always interpret.
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs
+// Native differential fixture; the native runtime gate runs
 // this with the native tier off and on and asserts identical output, and
 // against the pinned PHP 8.5.7 reference when available.
 

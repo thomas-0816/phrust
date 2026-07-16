@@ -1,7 +1,8 @@
 //! Region IR verifier.
 
 use super::{
-    NodeId, RegionGraph, RegionNode, RegionNodeKind, RegionPlacement, RegionValueType, SnapshotId,
+    NodeId, OptimizerRegionGraph, RegionNode, RegionNodeKind, RegionPlacement, RegionValueType,
+    SnapshotId,
 };
 
 /// Stable verifier error.
@@ -26,7 +27,7 @@ impl RegionVerifyError {
 }
 
 /// Verifies a region graph.
-pub fn verify_region_graph(graph: &RegionGraph) -> Result<(), Vec<RegionVerifyError>> {
+pub fn verify_region_graph(graph: &OptimizerRegionGraph) -> Result<(), Vec<RegionVerifyError>> {
     let mut errors = Vec::new();
 
     for (index, node) in graph.nodes().iter().enumerate() {
@@ -56,7 +57,7 @@ pub fn verify_region_graph(graph: &RegionGraph) -> Result<(), Vec<RegionVerifyEr
 }
 
 fn verify_references(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     id: NodeId,
     node: &RegionNode,
     errors: &mut Vec<RegionVerifyError>,
@@ -101,7 +102,7 @@ fn verify_references(
 }
 
 fn verify_node_shape(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     id: NodeId,
     node: &RegionNode,
     errors: &mut Vec<RegionVerifyError>,
@@ -261,7 +262,7 @@ fn verify_node_shape(
 }
 
 fn expect_snapshot(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     id: NodeId,
     snapshot: SnapshotId,
     errors: &mut Vec<RegionVerifyError>,
@@ -310,7 +311,7 @@ fn expect_input_count(
 }
 
 fn expect_inputs_type(
-    graph: &RegionGraph,
+    graph: &OptimizerRegionGraph,
     id: NodeId,
     node: &RegionNode,
     expected: RegionValueType,

@@ -217,9 +217,9 @@ def run_rows(args: argparse.Namespace, reference: Path, reference_available: boo
                 (str(engine), "run", "--engine-preset=baseline"),
             ),
             Row(
-                "phrust-fast-preset",
+                "phrust-default",
                 "phrust",
-                (str(engine), "run", "--engine-preset=fast"),
+                (str(engine), "run", "--engine-preset=default"),
                 counters=True,
             ),
         ]
@@ -229,7 +229,7 @@ def run_rows(args: argparse.Namespace, reference: Path, reference_available: boo
             Row(
                 "phrust-release-fast",
                 "phrust",
-                (str(release_engine), "run", "--engine-preset=fast"),
+                (str(release_engine), "run", "--engine-preset=default"),
                 optional=True,
                 counters=True,
             )
@@ -997,13 +997,13 @@ def run_matrix(args: argparse.Namespace) -> int:
 
         if reference_sample is None and not reference_available:
             baseline = scenario_results.get("phrust-baseline-ir")
-            fast = scenario_results.get("phrust-fast-preset")
+            fast = scenario_results.get("phrust-default")
             if baseline and fast:
                 correctness, reason = compare_sample(
                     scenario, matrix_rows[1], fast[0], baseline[0], scale
                 )
                 if correctness == "fail":
-                    failures.append(f"{scenario.id} phrust-fast-preset: {reason}")
+                    failures.append(f"{scenario.id} phrust-default: {reason}")
 
     summary = build_summary(
         mode=mode,
@@ -1150,7 +1150,7 @@ def self_test() -> int:
         [
             {
                 "scenario": scenarios[0].id,
-                "row": "phrust-fast-preset",
+                "row": "phrust-default",
                 "counters": {"value_clones": 5, "array_handle_clones": 2},
             }
         ]

@@ -34,6 +34,12 @@ The generator reads php-src `*.stub.php` declarations without executing C or
 PHP code, applies deterministic manual overrides from
 `fixtures/stdlib/arginfo_overrides.txt`, and writes a manually reviewable Rust
 metadata file under `crates/php_std/src/generated/arginfo.rs` by default. The
+snapshot also records internal class parents/interfaces, declared properties,
+methods, and class constants so native introspection can follow the same
+descriptor hierarchy without name-specific tables. Engine-provided enum
+members absent from stubs are synthesized from the enum declaration: every
+enum has readonly `name`, while backed enums also have readonly `value`,
+`from()`, and `tryFrom()`. The
 `stdlib-docs` gate runs the same generator against a local fixture so the
 parser, header, by-reference metadata, variadic metadata, and override path
 stay covered without requiring a vendored php-src checkout.

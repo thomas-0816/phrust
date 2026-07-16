@@ -19,7 +19,7 @@
 // recognition (its suppressed warning is indistinguishable from the loud one
 // at the helper boundary).
 //
-// Differential harness: scripts/performance/copy_patch_native_diff.py runs
+// Native differential fixture; the native runtime gate runs
 // this with the native tier off and on and asserts identical output, and
 // against the pinned PHP 8.5.7 reference when available.
 

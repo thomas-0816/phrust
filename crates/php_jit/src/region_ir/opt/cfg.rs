@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::region_ir::{NodeId, RegionGraph, RegionNodeKind, RegionValueType};
+use crate::region_ir::{NodeId, OptimizerRegionGraph, RegionNodeKind, RegionValueType};
 
 /// A node-level CFG view reconstructed from explicit control dependencies.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -36,7 +36,7 @@ impl RegionCfg {
 
 /// Reconstructs a conservative CFG over control-typed nodes.
 #[must_use]
-pub fn build_cfg(graph: &RegionGraph) -> RegionCfg {
+pub fn build_cfg(graph: &OptimizerRegionGraph) -> RegionCfg {
     let control_nodes: Vec<NodeId> = graph
         .nodes()
         .iter()

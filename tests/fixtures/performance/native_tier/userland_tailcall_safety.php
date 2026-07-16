@@ -5,7 +5,7 @@
 // native prefix's Int guard fails, or the VM's call-time validation rejects the
 // callee, execution falls back to the interpreter and behaves identically.
 //
-// Differential: scripts/performance/copy_patch_native_diff.py runs this native
+// Native differential fixture; the native runtime gate runs this native
 // off vs on and against PHP 8.5.7.
 
 // A recognized tail-call leaf: computes an int arg natively, then tail-calls a
