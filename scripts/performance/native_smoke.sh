@@ -22,7 +22,7 @@ printf '32\n' | cmp -s - "$OUT_DIR/native-smoke.out" || {
     exit 1
 }
 jq -e '
-  .schema_version == 6 and
+  .schema_version == 8 and
   .native_execution_entries > 0 and
   ((.native_compile_successes + .native_cache_hits) > 0)
 ' "$counters" >/dev/null

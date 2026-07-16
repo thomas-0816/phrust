@@ -50,6 +50,10 @@ TELEMETRY_FAMILIES = (
     "native_call",
     "native_version",
     "native_transition",
+    "native_ssa",
+    "native_ownership",
+    "native_value_table",
+    "native_slow_path",
     "runtime_helper",
     "gc_safepoint",
 )

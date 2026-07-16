@@ -1,7 +1,8 @@
-//! No-exec region IR optimization prototypes.
+//! Region IR optimization analyses and executable transformations.
 
 pub mod cfg;
 pub mod dominators;
+pub mod executable;
 pub mod gcm;
 pub mod loops;
 pub mod report;
@@ -11,12 +12,13 @@ use crate::region_ir::{OptimizerRegionGraph, dump_region_graph};
 
 pub use cfg::{RegionCfg, build_cfg};
 pub use dominators::{DominatorTree, compute_dominators};
+pub use executable::{ExecutableOptReport, optimize_executable_region};
 pub use gcm::{GcmReport, run_gcm};
 pub use loops::{LoopInfo, RegionLoop, detect_loops};
 pub use report::{RegionOptReport, RegionScheduleDecision};
 pub use sccp::{SccpReport, SccpValue, run_sccp};
 
-/// Full no-exec optimization analysis result.
+/// Diagnostic optimization analysis result for the compact report graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionOptResult {
     /// SCCP result.
@@ -29,7 +31,9 @@ pub struct RegionOptResult {
     pub gcm: GcmReport,
 }
 
-/// Runs the no-exec SCCP/GCM prototype over a region graph.
+/// Runs the diagnostic SCCP/GCM analysis used by stable reports. Production
+/// lowering applies the corresponding transformations through
+/// [`optimize_executable_region`].
 #[must_use]
 pub fn analyze_region_graph(graph: &OptimizerRegionGraph) -> RegionOptResult {
     let sccp = run_sccp(graph);

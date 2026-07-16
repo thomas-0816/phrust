@@ -30,6 +30,7 @@ Implementation and profiling notes:
 - [Profiling workflow](profiling-workflow.md)
 - [Performance ratchet](ratchet.md)
 - [Native compile-record cache](native-compile-cache.md)
+- [Executable native SSA and value lifetimes](native-ssa-lifetimes.md)
 - [Region profiling](region-profiling.md)
 - [Release build profile](release-build-profile.md)
 - [Shared-cache research](research-shared-cache.md)

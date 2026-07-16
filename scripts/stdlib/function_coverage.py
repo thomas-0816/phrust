@@ -15,7 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "target/stdlib/function-coverage"
 JSON_REPORT = OUT_DIR / "coverage.json"
 DOC_REPORT = REPO_ROOT / "docs/stdlib/function-coverage.md"
-RUST_DUMP = REPO_ROOT / "target/debug/dump_stdlib_registry"
+_cargo_target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+if not _cargo_target.is_absolute():
+    _cargo_target = REPO_ROOT / _cargo_target
+RUST_DUMP = _cargo_target / "debug/dump_stdlib_registry"
 EXTENSIONS = ["core", "standard", "json", "pcre", "date", "spl", "reflection", "tokenizer"]
 KNOWN_GAP_BY_EXTENSION = {
     "standard": "STDLIB-GAP-FULL-PARITY",

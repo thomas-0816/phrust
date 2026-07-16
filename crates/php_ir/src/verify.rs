@@ -1231,7 +1231,11 @@ fn verify_operand(
     }
 }
 
-fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
+/// Appends every register read by one instruction in semantic operand order.
+///
+/// This is shared by verification and downstream lifetime analyses so there is
+/// only one authoritative operand walk when the IR instruction set grows.
+pub fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
     match kind {
         InstructionKind::Nop
         | InstructionKind::DeclareFunction { .. }
@@ -1626,7 +1630,8 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
     }
 }
 
-fn terminator_register_uses(kind: &TerminatorKind, uses: &mut Vec<RegId>) {
+/// Appends every register read by one block terminator.
+pub fn terminator_register_uses(kind: &TerminatorKind, uses: &mut Vec<RegId>) {
     match kind {
         TerminatorKind::Jump { .. } => {}
         TerminatorKind::JumpIfFalse { condition, .. }

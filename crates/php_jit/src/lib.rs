@@ -173,6 +173,10 @@ pub const JIT_VALUE_RUNTIME_TAG: u64 = 0x7ff2_0000_0000_0000;
 const JIT_VALUE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
 /// Reserved constant handle used for a local that has not been initialized.
 pub const JIT_VALUE_UNINITIALIZED: u32 = u32::MAX - 1;
+/// Reserved immutable handle for PHP `false`.
+pub const JIT_VALUE_FALSE: u32 = u32::MAX - 2;
+/// Reserved immutable handle for PHP `true`.
+pub const JIT_VALUE_TRUE: u32 = u32::MAX - 3;
 
 /// Encodes one IR constant identity in an i64 native slot.
 #[must_use]
@@ -329,6 +333,9 @@ pub struct JitFunctionHandle {
     code_bytes: u64,
     helper_calls_per_invocation: u64,
     fast_path_hits_per_invocation: u64,
+    ssa_promoted_locals: u64,
+    ssa_promoted_registers: u64,
+    ownership_moves: u64,
     region_state_metadata: Option<Arc<JitRegionStateMetadata>>,
     relocatable_code: Option<Arc<JitRelocatableCode>>,
     code_lifetime: Option<SharedJitCodeHandle>,
@@ -345,6 +352,9 @@ impl PartialEq for JitFunctionHandle {
             && self.code_bytes == other.code_bytes
             && self.helper_calls_per_invocation == other.helper_calls_per_invocation
             && self.fast_path_hits_per_invocation == other.fast_path_hits_per_invocation
+            && self.ssa_promoted_locals == other.ssa_promoted_locals
+            && self.ssa_promoted_registers == other.ssa_promoted_registers
+            && self.ownership_moves == other.ownership_moves
             && self.region_state_metadata == other.region_state_metadata
             && self.relocatable_code == other.relocatable_code
             && self.code_lifetime == other.code_lifetime
@@ -645,6 +655,9 @@ impl JitFunctionHandle {
             code_bytes: function_image.code_len,
             helper_calls_per_invocation: 0,
             fast_path_hits_per_invocation: 0,
+            ssa_promoted_locals: 0,
+            ssa_promoted_registers: 0,
+            ownership_moves: 0,
             region_state_metadata: region_state_metadata.map(Arc::new),
             relocatable_code: None,
             code_lifetime: None,
@@ -668,6 +681,9 @@ impl JitFunctionHandle {
             code_bytes: 0,
             helper_calls_per_invocation: 0,
             fast_path_hits_per_invocation: 0,
+            ssa_promoted_locals: 0,
+            ssa_promoted_registers: 0,
+            ownership_moves: 0,
             region_state_metadata: None,
             relocatable_code: None,
             code_lifetime: None,
@@ -700,6 +716,9 @@ impl JitFunctionHandle {
             code_bytes,
             helper_calls_per_invocation: 0,
             fast_path_hits_per_invocation: 0,
+            ssa_promoted_locals: 0,
+            ssa_promoted_registers: 0,
+            ownership_moves: 0,
             region_state_metadata: None,
             relocatable_code: None,
             code_lifetime: None,
@@ -735,6 +754,9 @@ impl JitFunctionHandle {
             code_bytes,
             helper_calls_per_invocation,
             fast_path_hits_per_invocation,
+            ssa_promoted_locals: 0,
+            ssa_promoted_registers: 0,
+            ownership_moves: 0,
             region_state_metadata: Some(Arc::new(region_state_metadata)),
             relocatable_code: None,
             code_lifetime: None,
@@ -746,6 +768,17 @@ impl JitFunctionHandle {
     pub(crate) fn bind_code_lifetime(&mut self, lifetime: SharedJitCodeHandle) {
         debug_assert_eq!(self.native_entry_address(), Some(lifetime.entry_address()));
         self.code_lifetime = Some(lifetime);
+    }
+
+    pub(crate) fn bind_ssa_metrics(
+        &mut self,
+        promoted_locals: u64,
+        promoted_registers: u64,
+        ownership_moves: u64,
+    ) {
+        self.ssa_promoted_locals = promoted_locals;
+        self.ssa_promoted_registers = promoted_registers;
+        self.ownership_moves = ownership_moves;
     }
 
     pub(crate) fn bind_code_manager_event(&mut self, event: CraneliftCodeManagerEvent) {
@@ -817,6 +850,16 @@ impl JitFunctionHandle {
     #[must_use]
     pub const fn fast_path_hits_per_invocation(&self) -> u64 {
         self.fast_path_hits_per_invocation
+    }
+
+    /// Static executable SSA metrics for this compiled region graph.
+    #[must_use]
+    pub const fn ssa_metrics(&self) -> (u64, u64, u64) {
+        (
+            self.ssa_promoted_locals,
+            self.ssa_promoted_registers,
+            self.ownership_moves,
+        )
     }
 
     /// Native call sites executed by one successful straight-line invocation.

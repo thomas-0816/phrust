@@ -11,6 +11,113 @@ use php_ir::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NATIVE_DYNAMIC_EFFECTS: AtomicUsize = AtomicUsize::new(0);
+static SSA_FORBIDDEN_HELPER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn forbidden_local_fetch(
+    _context: u64,
+    _op: u32,
+    _value: i64,
+    _function: i64,
+    _local: i64,
+    _file: i64,
+    _start: i64,
+    _out: *mut i64,
+) -> i32 {
+    SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
+extern "C" fn forbidden_local_store(
+    _context: u64,
+    _op: u32,
+    _current: i64,
+    _value: i64,
+    _function: i64,
+    _local: i64,
+    _out: *mut i64,
+) -> i32 {
+    SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
+extern "C" fn forbidden_lifecycle(_context: u64, _op: u32, _value: i64, _out: *mut i64) -> i32 {
+    SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
+#[allow(unsafe_code)]
+extern "C" fn frame_cleanup_only_lifecycle(
+    _context: u64,
+    op: u32,
+    value: i64,
+    out: *mut i64,
+) -> i32 {
+    let is_frame_cleanup =
+        op & 0x8000_0000 != 0 && op & 1 == 1 && ((op >> 11) & 0x0f_ffff) == 0x0f_ffff;
+    if !is_frame_cleanup || out.is_null() {
+        SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+        return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+    }
+    // SAFETY: generated code owns this synchronous stack output slot.
+    unsafe { out.write(value) };
+    0
+}
+
+extern "C" fn forbidden_binary(
+    _context: u64,
+    _op: u32,
+    _lhs: i64,
+    _rhs: i64,
+    _function: i64,
+    _continuation: i64,
+    _out: *mut i64,
+) -> i32 {
+    SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
+extern "C" fn forbidden_compare(
+    _context: u64,
+    _op: u32,
+    _lhs: i64,
+    _rhs: i64,
+    _out: *mut i64,
+) -> i32 {
+    SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
+extern "C" fn forbidden_truthy(_context: u64, _value: i64, _out: *mut i64) -> i32 {
+    SSA_FORBIDDEN_HELPER_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
+#[allow(unsafe_code)]
+extern "C" fn test_array_new(_context: u64, _op: u32, out: *mut i64) -> i32 {
+    if out.is_null() {
+        return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+    }
+    // SAFETY: generated code owns this synchronous stack output slot.
+    unsafe { out.write(crate::jit_encode_runtime_value(7)) };
+    0
+}
+
+#[allow(unsafe_code)]
+extern "C" fn test_array_insert(
+    _context: u64,
+    append: u32,
+    array: i64,
+    _key: i64,
+    _value: i64,
+    out: *mut i64,
+) -> i32 {
+    if append != 1 || out.is_null() {
+        return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+    }
+    // SAFETY: generated code owns this synchronous stack output slot.
+    unsafe { out.write(array) };
+    0
+}
 
 #[test]
 fn lifecycle_operation_carries_function_and_continuation_context() {
@@ -76,6 +183,379 @@ fn builds_and_verifies_standalone_trivial_add_clif_smoke() {
     assert!(result.stats.verified);
     assert_eq!(result.stats.blocks_lowered, 1);
     assert_eq!(result.stats.instructions_lowered, 2);
+}
+
+#[test]
+fn optimizing_scalar_ssa_executes_without_local_truthy_or_lifecycle_helpers() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_202));
+    let file = builder.add_file("optimizing-ssa.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function = builder.start_function("optimizing_ssa", FunctionFlags::default(), span);
+    let local = builder.intern_local(function, "value");
+    let entry = builder.append_block(function);
+    let success = builder.append_block(function);
+    let failure = builder.append_block(function);
+    let forty = builder.intern_constant(IrConstant::Int(40));
+    let two = builder.intern_constant(IrConstant::Int(2));
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::StoreLocal {
+            local,
+            src: Operand::Constant(forty),
+        },
+        span,
+    );
+    let loaded = builder.alloc_register(function);
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::LoadLocal { dst: loaded, local },
+        span,
+    );
+    let copied = builder.alloc_register(function);
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::Move {
+            dst: copied,
+            src: Operand::Register(loaded),
+        },
+        span,
+    );
+    let sum = builder.alloc_register(function);
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::Binary {
+            dst: sum,
+            op: BinaryOp::Add,
+            lhs: Operand::Register(copied),
+            rhs: Operand::Constant(two),
+        },
+        span,
+    );
+    builder.terminate_jump_if(
+        function,
+        entry,
+        Operand::Register(sum),
+        success,
+        failure,
+        span,
+    );
+    builder.terminate_return(function, success, Some(Operand::Register(sum)), span);
+    builder.terminate_return(function, failure, Some(Operand::Constant(two)), span);
+    let unit = builder.finish();
+    let mut backend = CraneliftNativeCompiler;
+    let request = JitCompileRequest::new("cl.optimizing.executable-ssa").with_opt_level(2);
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &request,
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_binary: forbidden_binary as *const () as usize,
+            native_local_fetch: forbidden_local_fetch as *const () as usize,
+            native_local_store: forbidden_local_store as *const () as usize,
+            native_value_lifecycle: forbidden_lifecycle as *const () as usize,
+            native_truthy: forbidden_truthy as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    let handle = outcome.handle.expect("optimizing SSA handle");
+    let (promoted_locals, promoted_registers, _) = handle.ssa_metrics();
+    assert!(promoted_locals > 0);
+    assert!(promoted_registers > 0);
+    assert_eq!(
+        handle
+            .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("optimizing SSA execution"),
+        42
+    );
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn optimizing_integer_shift_keeps_php_large_shift_semantics_in_clif() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_206));
+    let file = builder.add_file("optimizing-shift.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function = builder.start_function("optimizing_shift", FunctionFlags::default(), span);
+    let local = builder.intern_local(function, "value");
+    builder.push_param(
+        function,
+        IrParam {
+            name: "value".to_owned(),
+            local,
+            required: true,
+            default: None,
+            type_: Some(IrReturnType::Int),
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+    );
+    let block = builder.append_block(function);
+    let loaded = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::LoadLocal { dst: loaded, local },
+        span,
+    );
+    let amount = builder.intern_constant(IrConstant::Int(65));
+    let shifted = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::Binary {
+            dst: shifted,
+            op: BinaryOp::ShiftRight,
+            lhs: Operand::Register(loaded),
+            rhs: Operand::Constant(amount),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(shifted)), span);
+    let unit = builder.finish();
+    let mut backend = CraneliftNativeCompiler;
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.shift").with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_binary: forbidden_binary as *const () as usize,
+            native_local_fetch: forbidden_local_fetch as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    assert_eq!(
+        outcome
+            .handle
+            .expect("optimizing shift handle")
+            .invoke_i64(&[-3], JIT_RUNTIME_ABI_HASH)
+            .expect("optimizing shift execution"),
+        -1
+    );
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn optimizing_boolean_relational_compare_normalizes_tagged_payloads() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_209));
+    let file = builder.add_file("optimizing-bool-compare.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function =
+        builder.start_function("optimizing_bool_compare", FunctionFlags::default(), span);
+    let local = builder.intern_local(function, "value");
+    builder.push_param(
+        function,
+        IrParam {
+            name: "value".to_owned(),
+            local,
+            required: true,
+            default: None,
+            type_: Some(IrReturnType::Bool),
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+    );
+    let block = builder.append_block(function);
+    let loaded = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::LoadLocal { dst: loaded, local },
+        span,
+    );
+    let true_ = builder.intern_constant(IrConstant::Bool(true));
+    let compared = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::Compare {
+            dst: compared,
+            op: php_ir::CompareOp::Less,
+            lhs: Operand::Register(loaded),
+            rhs: Operand::Constant(true_),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(compared)), span);
+    let unit = builder.finish();
+    let mut backend = CraneliftNativeCompiler;
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.bool-compare").with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_compare: forbidden_compare as *const () as usize,
+            native_local_fetch: forbidden_local_fetch as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    let handle = outcome.handle.expect("optimizing bool compare");
+    assert_eq!(
+        handle
+            .invoke_i64(
+                &[crate::jit_encode_constant(crate::JIT_VALUE_FALSE)],
+                JIT_RUNTIME_ABI_HASH,
+            )
+            .expect("false < true"),
+        crate::jit_encode_constant(crate::JIT_VALUE_TRUE)
+    );
+    assert_eq!(
+        handle
+            .invoke_i64(
+                &[crate::jit_encode_constant(crate::JIT_VALUE_TRUE)],
+                JIT_RUNTIME_ABI_HASH,
+            )
+            .expect("true < true"),
+        crate::jit_encode_constant(crate::JIT_VALUE_FALSE)
+    );
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn optimizing_owned_handle_moves_into_plain_local_without_refcount_pair() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_207));
+    let file = builder.add_file("optimizing-handle-move.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function = builder.start_function("optimizing_handle_move", FunctionFlags::default(), span);
+    let local = builder.intern_local(function, "value");
+    let block = builder.append_block(function);
+    let array = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::NewArray { dst: array },
+        span,
+    );
+    builder.emit(
+        function,
+        block,
+        InstructionKind::StoreLocal {
+            local,
+            src: Operand::Register(array),
+        },
+        span,
+    );
+    builder.emit(
+        function,
+        block,
+        InstructionKind::Discard {
+            src: Operand::Register(array),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, None, span);
+    let unit = builder.finish();
+    let mut backend = CraneliftNativeCompiler;
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.handle-move").with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_array_new: test_array_new as *const () as usize,
+            native_local_store: forbidden_local_store as *const () as usize,
+            native_value_lifecycle: frame_cleanup_only_lifecycle as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    let handle = outcome.handle.expect("optimizing handle move");
+    assert!(handle.ssa_metrics().2 > 0);
+    handle
+        .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+        .expect("optimizing handle move execution");
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn optimizing_array_append_keeps_promoted_array_out_of_local_helpers() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_210));
+    let file = builder.add_file("optimizing-array-append.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function =
+        builder.start_function("optimizing_array_append", FunctionFlags::default(), span);
+    let local = builder.intern_local(function, "items");
+    let block = builder.append_block(function);
+    let array = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::NewArray { dst: array },
+        span,
+    );
+    builder.emit(
+        function,
+        block,
+        InstructionKind::StoreLocal {
+            local,
+            src: Operand::Register(array),
+        },
+        span,
+    );
+    builder.emit(
+        function,
+        block,
+        InstructionKind::Discard {
+            src: Operand::Register(array),
+        },
+        span,
+    );
+    let nine = builder.intern_constant(IrConstant::Int(9));
+    let result = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::AppendDim {
+            dst: result,
+            local,
+            dims: Vec::new(),
+            value: Operand::Constant(nine),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+    let unit = builder.finish();
+    let mut backend = CraneliftNativeCompiler;
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.array-append").with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_array_new: test_array_new as *const () as usize,
+            native_array_insert: test_array_insert as *const () as usize,
+            native_local_fetch: forbidden_local_fetch as *const () as usize,
+            native_local_store: forbidden_local_store as *const () as usize,
+            native_value_lifecycle: frame_cleanup_only_lifecycle as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    assert_eq!(
+        outcome
+            .handle
+            .expect("optimizing array append handle")
+            .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("optimizing array append execution"),
+        9
+    );
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
 }
 
 #[test]

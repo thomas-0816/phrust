@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 fn lower_region_condition(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
@@ -8,8 +9,27 @@ fn lower_region_condition(
     native_operations: NativeOperationFunctions,
     result_out: ir::Value,
     condition: RegionOperand,
+    constants: &[IrConstant],
+    value_flow: &ExecutableValueFlow,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let value = lower_region_operand(builder, locals, registers, condition)?;
+    let fact = value_flow.operand_fact(constants, condition);
+    match fact.class {
+        SsaValueClass::Int if fact.certainty != crate::region_ir::SsaCertainty::Unknown => {
+            return Ok(builder.ins().icmp_imm(IntCC::NotEqual, value, 0));
+        }
+        SsaValueClass::Null if fact.certainty != crate::region_ir::SsaCertainty::Unknown => {
+            return Ok(builder.ins().icmp(IntCC::NotEqual, value, value));
+        }
+        SsaValueClass::Bool if fact.certainty != crate::region_ir::SsaCertainty::Unknown => {
+            return Ok(builder.ins().icmp_imm(
+                IntCC::Equal,
+                value,
+                crate::jit_encode_constant(crate::JIT_VALUE_TRUE),
+            ));
+        }
+        _ => {}
+    }
     if let Some(helper) = native_operations.truthy {
         let slot =
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
@@ -42,6 +62,8 @@ pub(super) fn lower_region_terminator(
     function: FunctionId,
     return_check_required: bool,
     terminator: &RegionTerminator,
+    constants: &[IrConstant],
+    value_flow: &ExecutableValueFlow,
 ) -> Result<(), CraneliftLoweringError> {
     match terminator {
         RegionTerminator::Jump { target } => {
@@ -60,6 +82,8 @@ pub(super) fn lower_region_terminator(
                 native_operations,
                 result_out,
                 *condition,
+                constants,
+                value_flow,
             )?;
             let false_block = cranelift_block(blocks, *target)?;
             let true_block = cranelift_block(blocks, *fallthrough)?;
@@ -80,6 +104,8 @@ pub(super) fn lower_region_terminator(
                 native_operations,
                 result_out,
                 *condition,
+                constants,
+                value_flow,
             )?;
             let true_block = cranelift_block(blocks, *target)?;
             let false_block = cranelift_block(blocks, *fallthrough)?;
@@ -100,6 +126,8 @@ pub(super) fn lower_region_terminator(
                 native_operations,
                 result_out,
                 *condition,
+                constants,
+                value_flow,
             )?;
             builder.ins().brif(
                 condition,
@@ -130,12 +158,17 @@ pub(super) fn lower_region_terminator(
             lower_region_frame_exit(
                 builder,
                 blocks,
+                locals,
                 result_out,
                 pending_status,
                 pending_value,
                 value,
                 status,
                 *finally,
+                module,
+                native_operations,
+                value_flow,
+                function,
             )?;
         }
         RegionTerminator::ReturnReference { local, finally } => {
@@ -147,12 +180,17 @@ pub(super) fn lower_region_terminator(
             lower_region_frame_exit(
                 builder,
                 blocks,
+                locals,
                 result_out,
                 pending_status,
                 pending_value,
                 value,
                 status,
                 *finally,
+                module,
+                native_operations,
+                value_flow,
+                function,
             )?;
         }
         RegionTerminator::Exit { value, finally } => {
@@ -166,12 +204,17 @@ pub(super) fn lower_region_terminator(
             lower_region_frame_exit(
                 builder,
                 blocks,
+                locals,
                 result_out,
                 pending_status,
                 pending_value,
                 value,
                 status,
                 *finally,
+                module,
+                native_operations,
+                value_flow,
+                function,
             )?;
         }
         RegionTerminator::MissingLowering => {
@@ -188,22 +231,65 @@ pub(super) fn lower_region_terminator(
 fn lower_region_frame_exit(
     builder: &mut FunctionBuilder<'_>,
     blocks: &[ir::Block],
+    locals: &BTreeMap<LocalId, Variable>,
     result_out: ir::Value,
     pending_status: Variable,
     pending_value: Variable,
     value: ir::Value,
     status: ir::Value,
     finally: Option<BlockId>,
+    module: &mut JITModule,
+    native_operations: NativeOperationFunctions,
+    value_flow: &ExecutableValueFlow,
+    function: FunctionId,
 ) -> Result<(), CraneliftLoweringError> {
     if let Some(finally) = finally {
         builder.def_var(pending_status, status);
         builder.def_var(pending_value, value);
         builder.ins().jump(cranelift_block(blocks, finally)?, &[]);
     } else {
+        lower_owned_frame_locals(
+            module,
+            builder,
+            locals,
+            native_operations,
+            value_flow,
+            function,
+            result_out,
+        )?;
         builder
             .ins()
             .store(MemFlagsData::new(), value, result_out, 0);
         builder.ins().return_(&[status]);
+    }
+    Ok(())
+}
+
+pub(super) fn lower_owned_frame_locals(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    locals: &BTreeMap<LocalId, Variable>,
+    native_operations: NativeOperationFunctions,
+    value_flow: &ExecutableValueFlow,
+    function: FunctionId,
+    result_out: ir::Value,
+) -> Result<(), CraneliftLoweringError> {
+    for (local, variable) in locals {
+        let fact = value_flow.local_fact(*local);
+        if value_flow.releases_local_at_frame_exit(*local)
+            && fact.has_runtime_lifecycle()
+            && fact.ownership == SsaOwnership::Owned
+        {
+            let value = builder.use_var(*variable);
+            let _ = lower_native_value_operation(
+                module,
+                builder,
+                native_operations.value_lifecycle,
+                native_frame_cleanup_operation(function),
+                &[value],
+                result_out,
+            )?;
+        }
     }
     Ok(())
 }

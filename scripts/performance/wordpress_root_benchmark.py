@@ -1967,8 +1967,8 @@ def self_test() -> int:
     assert "requires --mode clean" in " ".join(validate_configuration(invalid_ab))
     assert cranelift_dependency_version()
     source_abi = native_source_abi_identity()
-    assert source_abi["version"] == 17
-    assert source_abi["hash"] == 0x0DC1_A817_0000_0026
+    assert source_abi["version"] == 18
+    assert source_abi["hash"] == 0x0DC1_A818_0000_0027
     host_cpu = cpu_identity()
     assert len(host_cpu["feature_fingerprint_sha256"]) == 64
     ab_off = {

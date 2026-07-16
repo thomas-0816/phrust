@@ -137,6 +137,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             };
             let instruction_kind = format!("{:?}", instruction.kind);
             let helper_id = call_dispatch_helper_id(&instruction);
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             if context.options.collect_counters {
                 context.enter_runtime_helper(helper_id);
             }

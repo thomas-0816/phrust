@@ -29,6 +29,15 @@ baseline by `optimizer-diff`, `performance-regression`, and
 | CFG cleanup | Simplifies constant branches, forwards empty blocks, and trims unreachable empty tails. | Must preserve exception boundaries, source maps, and verifier-valid definitions. |
 | Literal pooling/string interning | Reuses immutable literals through existing IR/runtime mechanisms. | Must not expose identity changes through PHP-visible mutation or references. |
 
+The optimizing native tier additionally runs transformations over the
+authoritative executable `RegionGraph`. Its SCCP-style scalar folding, constant
+branch selection, scalar GVN/CSE, ownership-aware DCE, and conservative
+LICM/GCM placement alter the instructions consumed by Cranelift. PHP-specific
+CFG, dominance-frontier phi planning, and value-flow facts then select direct
+CLIF for proven integer/scalar operations and promoted locals. Overflow,
+coercion, diagnostics, references, globals, magic behavior, and unknown value
+classes retain typed runtime slow paths.
+
 ## Verification And Rollback Ownership
 
 `PassPipeline` is the sole owner of optimizer verification and rollback. It
@@ -96,6 +105,7 @@ Use the narrow gate while iterating:
 nix develop -c cargo test -p php_optimizer
 nix develop -c cargo test -p php_ir verify --lib
 nix develop -c just optimizer-diff
+nix develop -c just native-ssa-ratchet
 ```
 
 Before finishing optimizer work, run:

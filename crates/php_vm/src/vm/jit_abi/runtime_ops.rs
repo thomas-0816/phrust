@@ -8,6 +8,58 @@ fn helper_status(status: php_runtime::api::NativeOperationStatus) -> i32 {
     }
 }
 
+const fn unary_operation_name(op: u32) -> &'static str {
+    match op {
+        0 => "unary_plus",
+        1 => "unary_minus",
+        2 => "unary_not",
+        _ => "unary_bit_not",
+    }
+}
+
+const fn binary_operation_name(op: u32) -> &'static str {
+    match op {
+        0 => "binary_add",
+        1 => "binary_sub",
+        2 => "binary_mul",
+        3 => "binary_div",
+        4 => "binary_mod",
+        5 => "binary_concat",
+        6 => "binary_pow",
+        7 => "binary_bit_and",
+        8 => "binary_bit_or",
+        9 => "binary_bit_xor",
+        10 => "binary_shift_left",
+        _ => "binary_shift_right",
+    }
+}
+
+const fn compare_operation_name(op: u32) -> &'static str {
+    match op {
+        0 => "compare_equal",
+        1 => "compare_not_equal",
+        2 => "compare_identical",
+        3 => "compare_not_identical",
+        4 => "compare_less",
+        5 => "compare_less_equal",
+        6 => "compare_greater",
+        7 => "compare_greater_equal",
+        _ => "compare_spaceship",
+    }
+}
+
+const fn cast_operation_name(op: u32) -> &'static str {
+    match op {
+        0 => "cast_bool",
+        1 => "cast_int",
+        2 => "cast_float",
+        3 => "cast_string",
+        4 => "cast_array",
+        5 => "cast_object",
+        _ => "cast_void",
+    }
+}
+
 fn dereference_native_dimension_value(mut value: Value) -> Value {
     for _ in 0..16 {
         let Value::Reference(reference) = value else {
@@ -60,18 +112,20 @@ pub(in crate::vm) extern "C" fn jit_native_unary_abi(
     out: *mut i64,
 ) -> i32 {
     with_native_context_for("unary", |context| {
-        let (op, source) = if op & 0x8000_0000 != 0 {
+        let (op, function, source) = if op & 0x8000_0000 != 0 {
             let function = (op >> 2) & 0x03ff;
             let continuation = (op >> 12) & 0x07_ffff;
             (
                 op & 0x3,
+                Some(function),
                 context
                     .instruction_for_continuation(function, continuation)
                     .cloned(),
             )
         } else {
-            (op, None)
+            (op, None, None)
         };
+        context.attribute_active_helper(unary_operation_name(op), function);
         let Ok(src) = context.decode(src) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
@@ -152,6 +206,10 @@ pub(in crate::vm) extern "C" fn jit_native_binary_abi(
     out: *mut i64,
 ) -> i32 {
     with_native_context_for("binary", |context| {
+        context.attribute_active_helper(
+            binary_operation_name(op),
+            u32::try_from(function).ok(),
+        );
         let source = u32::try_from(function)
             .ok()
             .zip(u32::try_from(continuation).ok())
@@ -339,6 +397,7 @@ pub(in crate::vm) extern "C" fn jit_native_compare_abi(
     out: *mut i64,
 ) -> i32 {
     with_native_context_for("compare", |context| {
+        context.attribute_active_helper(compare_operation_name(op), None);
         let (Ok(lhs), Ok(rhs)) = (context.decode(lhs), context.decode(rhs)) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
@@ -377,18 +436,20 @@ pub(in crate::vm) extern "C" fn jit_native_cast_abi(
     out: *mut i64,
 ) -> i32 {
     with_native_context_for("cast", |context| {
-        let (op, source) = if op & 0x8000_0000 != 0 {
+        let (op, function, source) = if op & 0x8000_0000 != 0 {
             let function = (op >> 3) & 0x03ff;
             let continuation = (op >> 13) & 0x03_ffff;
             (
                 op & 0x7,
+                Some(function),
                 context
                     .instruction_for_continuation(function, continuation)
                     .cloned(),
             )
         } else {
-            (op, None)
+            (op, None, None)
         };
+        context.attribute_active_helper(cast_operation_name(op), function);
         let Ok(mut src) = context.decode(src) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
@@ -520,6 +581,20 @@ pub(in crate::vm) extern "C" fn jit_native_cast_abi(
 
 pub(in crate::vm) extern "C" fn jit_native_echo_abi(_vm_context: u64, src: i64) -> i32 {
     with_native_context_for("echo", |context| {
+        if php_jit::jit_decode_runtime_value(src).is_none() {
+            if let Some(constant) = php_jit::jit_decode_constant(src) {
+                if constant == u32::MAX || constant == php_jit::JIT_VALUE_FALSE {
+                    return 0;
+                }
+                if constant == php_jit::JIT_VALUE_TRUE {
+                    context.output.write_bytes("1");
+                    return 0;
+                }
+            } else {
+                context.output.write_bytes(src.to_string());
+                return 0;
+            }
+        }
         let Ok(mut src) = context.decode(src) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
@@ -553,18 +628,46 @@ pub(in crate::vm) extern "C" fn jit_native_local_fetch_abi(
         return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
     }
     with_native_context_for("local_fetch", |context| {
+        context.attribute_active_helper("load_local", u32::try_from(function).ok());
         let Some(function) = usize::try_from(function)
             .ok()
             .and_then(|index| context.unit.functions.get(index))
         else {
+            context.record_local_read_reason("unknown");
             return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
         };
         let Some(local) = usize::try_from(local).ok() else {
+            context.record_local_read_reason("unknown");
             return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
         };
         let Some(name) = function.locals.get(local).cloned() else {
-            return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
+            context.record_local_read_reason("synthetic_compiler_local");
+            let decoded = match context.decode(value) {
+                Ok(Value::Reference(reference)) => reference.get(),
+                Ok(Value::Uninitialized) => Value::Null,
+                Ok(value) => value,
+                Err(_) => return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+            };
+            return match context.encode(decoded) {
+                Ok(value) if write_native_value(out, value) => 0,
+                _ => php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+            };
         };
+        let global_reason = if name == "GLOBALS" {
+            Some("GLOBALS")
+        } else if matches!(
+            name.as_str(),
+            "_SERVER" | "_GET" | "_POST" | "_FILES" | "_COOKIE" | "_SESSION" | "_REQUEST" | "_ENV"
+        ) {
+            Some("superglobal")
+        } else if function.flags.is_top_level {
+            Some("top_level_global")
+        } else {
+            None
+        };
+        if let Some(reason) = global_reason {
+            context.record_local_read_reason(reason);
+        }
         if name == "GLOBALS" {
             let globals = native_globals_array(context);
             return match context.encode(globals) {
@@ -627,6 +730,13 @@ pub(in crate::vm) extern "C" fn jit_native_local_fetch_abi(
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             }
         };
+        if global_reason.is_none() {
+            context.record_local_read_reason(match decoded {
+                Value::Reference(_) => "reference_dereference",
+                Value::Uninitialized if quiet == 0 => "uninitialized_warning",
+                _ => "plain_initialized_local",
+            });
+        }
         // Reading a PHP variable yields the referenced value. The reference
         // cell itself remains in the native local slot so subsequent stores
         // still write through the alias.
@@ -680,19 +790,25 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
         return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
     }
     with_native_context_for("local_store", |context| {
+        context.attribute_active_helper("store_local", u32::try_from(function).ok());
         let Some(function) = usize::try_from(function)
             .ok()
             .and_then(|index| context.unit.functions.get(index))
         else {
+            context.record_local_store_reason("unknown");
             return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
         };
         let Some(local) = usize::try_from(local).ok() else {
+            context.record_local_store_reason("unknown");
             return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
         };
         // Region lowering may append deterministic synthetic locals for
         // closure snapshots. They have no PHP-visible name to publish into an
         // include scope, but otherwise use the same local-store operation.
         let name = function.locals.get(local).cloned();
+        if function.flags.is_top_level || name.as_deref() == Some("GLOBALS") {
+            context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+        }
         let inherited_reference = function
             .flags
             .is_top_level
@@ -716,6 +832,31 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             }
         };
+        context.record_local_store_reason(if name.is_none() {
+            "synthetic_compiler_local"
+        } else if name.as_deref() == Some("GLOBALS") {
+            "GLOBALS"
+        } else if name.as_deref().is_some_and(|name| {
+            matches!(
+                name,
+                "_SERVER"
+                    | "_GET"
+                    | "_POST"
+                    | "_FILES"
+                    | "_COOKIE"
+                    | "_SESSION"
+                    | "_REQUEST"
+                    | "_ENV"
+            )
+        }) {
+            "superglobal"
+        } else if function.flags.is_top_level {
+            "top_level_global"
+        } else if matches!(current_value, Value::Reference(_)) {
+            "reference_dereference"
+        } else {
+            "plain_initialized_local"
+        });
         let mut replacement = match context.decode(value) {
             Ok(value) => value,
             Err(error) => {
@@ -834,18 +975,48 @@ pub(in crate::vm) extern "C" fn jit_native_value_lifecycle_abi(
         "value_release"
     };
     with_native_context_for(helper_id, |context| {
-        let (op, source) = if op & 0x8000_0000 != 0 {
+        let frame_cleanup = op & 0x8000_0000 != 0 && (op >> 11) & 0x0f_ffff == 0x0f_ffff;
+        let (op, function, source) = if op & 0x8000_0000 != 0 {
             let function = (op >> 1) & 0x03ff;
             let continuation = (op >> 11) & 0x0f_ffff;
             (
                 op & 1,
-                context
-                    .instruction_for_continuation(function, continuation)
-                    .cloned(),
+                Some(function),
+                (!frame_cleanup)
+                    .then(|| {
+                        context
+                            .instruction_for_continuation(function, continuation)
+                            .cloned()
+                    })
+                    .flatten(),
             )
         } else {
-            (op, None)
+            (op, None, None)
         };
+        context.attribute_active_helper("value_lifecycle", function);
+        let lifecycle_reason = if frame_cleanup {
+            "frame_cleanup"
+        } else {
+            source
+                .as_ref()
+                .map_or("helper_result", |instruction| match instruction.kind {
+                    php_ir::InstructionKind::Move { .. } => "copy",
+                    php_ir::InstructionKind::StoreLocal { .. } => "store",
+                    php_ir::InstructionKind::CallFunction { .. }
+                    | php_ir::InstructionKind::CallMethod { .. }
+                    | php_ir::InstructionKind::CallStaticMethod { .. }
+                    | php_ir::InstructionKind::CallCallable { .. } => "argument",
+                    php_ir::InstructionKind::Discard { .. }
+                    | php_ir::InstructionKind::UnsetLocal { .. }
+                    | php_ir::InstructionKind::UnsetDim { .. } => "temporary",
+                    php_ir::InstructionKind::Throw { .. } => "exception_cleanup",
+                    _ => "helper_result",
+                })
+        };
+        context.record_lifecycle_reason(op == 0, lifecycle_reason);
+        if op == 0 {
+            context.record_ownership_clone();
+        }
         let result = match op {
             0 => context.retain(encoded),
             1 => context.release(encoded),
@@ -2185,10 +2356,13 @@ pub(in crate::vm) extern "C" fn jit_native_property_assign_abi(
             };
         }
         if bind_reference {
+            context.mark_rooted_container_dirty(&Value::Object(object.clone()));
             object.set_property(property, value.clone());
         } else if let Some(Value::Reference(reference)) = object.get_property(&property) {
+            context.mark_rooted_container_dirty(&Value::Object(object.clone()));
             reference.set(value.clone());
         } else {
+            context.mark_rooted_container_dirty(&Value::Object(object.clone()));
             object.set_property(property, value.clone());
         }
         match context.encode(value) {
@@ -3010,9 +3184,25 @@ pub(in crate::vm) extern "C" fn jit_native_truthy_abi(
     out: *mut i64,
 ) -> i32 {
     with_native_context_for("truthy", |context| {
+        context.attribute_active_helper("truthy", None);
         let Ok(src) = context.decode(src) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
+        context.record_truthy_class(match &src {
+            Value::Uninitialized => "uninitialized",
+            Value::Null => "null",
+            Value::Bool(_) => "bool",
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+            Value::Reference(_) => "reference",
+            Value::Callable(_) => "callable",
+            Value::Resource(_) => "resource",
+            Value::Generator(_) => "generator",
+            Value::Fiber(_) => "fiber",
+        });
         let mut operation = php_runtime::api::NativeOperationContext::default();
         let mut result = Value::Null;
         let status = php_runtime::api::native_cast(

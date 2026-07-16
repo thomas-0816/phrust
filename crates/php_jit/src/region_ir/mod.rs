@@ -8,7 +8,7 @@
 ///
 /// Increment this whenever serialized cache identity or lowering semantics can
 /// no longer be shared with code produced from an earlier Region IR shape.
-pub const REGION_IR_SCHEMA_VERSION: u32 = 12;
+pub const REGION_IR_SCHEMA_VERSION: u32 = 13;
 
 mod bind;
 mod builder;
@@ -19,8 +19,11 @@ mod ids;
 mod node;
 pub mod opt;
 mod osr;
+pub mod ownership;
 mod rules;
+pub mod ssa;
 pub mod templates;
+pub mod value_flow;
 mod verify;
 
 pub use bind::{
@@ -53,7 +56,16 @@ pub use osr::{
     RegionOsrEntry, RegionOsrEntryMap, RegionOsrMotionPolicy, RegionOsrReport,
     region_osr_motion_policy, select_region_osr_entries,
 };
+pub use ownership::{
+    HelperInputOwnership, HelperOwnershipContract, HelperResultOwnership,
+    helper_ownership_contract, value_copy_requires_retain, value_release_required,
+};
 pub use rules::{dump_region_rule_selection, select_region_rules};
+pub use ssa::{
+    ExecutableSsaGraph, SsaCertainty, SsaOwnership, SsaValueClass, SsaValueFact,
+    build_executable_ssa,
+};
+pub use value_flow::{ExecutableValueFlow, LocalStorageClass, analyze_executable_value_flow};
 pub use verify::{RegionVerifyError, verify_region_graph};
 
 /// Def-use side table for compact node storage.

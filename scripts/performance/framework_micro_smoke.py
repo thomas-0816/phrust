@@ -5,13 +5,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ENGINE = ROOT / "target/debug/php-vm"
+_cargo_target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+if not _cargo_target.is_absolute():
+    _cargo_target = ROOT / _cargo_target
+DEFAULT_ENGINE = _cargo_target / "debug/php-vm"
 DEFAULT_FIXTURES = ROOT / "tests/fixtures/performance/framework_smoke"
 DEFAULT_OUT = ROOT / "target/performance/framework-smoke/summary.json"
 DEFAULT_MARKDOWN_OUT = ROOT / "target/performance/framework-smoke/summary.md"

@@ -18,7 +18,10 @@ from normalize_perf_output import normalize
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ENGINE = ROOT / "target/debug/php-vm"
+_cargo_target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+if not _cargo_target.is_absolute():
+    _cargo_target = ROOT / _cargo_target
+DEFAULT_ENGINE = _cargo_target / "debug/php-vm"
 DEFAULT_OUT_DIR = ROOT / "target/performance/default-profile"
 
 RUNTIME_FIXTURES = (
@@ -56,6 +59,10 @@ NATIVE_FAMILIES = (
     "native_call",
     "native_version",
     "native_transition",
+    "native_value_table",
+    "native_ssa",
+    "native_ownership",
+    "native_slow_path",
     "runtime_helper",
     "gc_safepoint",
 )

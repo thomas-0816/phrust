@@ -81,7 +81,30 @@ pub(super) fn compile_region_graph_native(
     request: &JitCompileRequest,
 ) -> Result<NativeScalarRegionCompileResult, CraneliftLoweringError> {
     validate_region_native_coverage(region)?;
-    let regions = collect_region_graphs(unit, region)?;
+    let mut regions = collect_region_graphs(unit, region)?;
+    for candidate in regions.values_mut() {
+        if candidate.compile_metadata.tier == NativeCompilerTier::Optimizing {
+            let _ = crate::region_ir::opt::optimize_executable_region(candidate);
+        }
+    }
+    let ssa_metrics = regions
+        .values()
+        .filter(|candidate| candidate.compile_metadata.tier == NativeCompilerTier::Optimizing)
+        .map(|candidate| {
+            let flow = crate::region_ir::analyze_executable_value_flow(candidate, &unit.constants);
+            (
+                flow.promoted_local_count() as u64,
+                flow.promoted_register_count() as u64,
+                flow.ownership_move_count() as u64,
+            )
+        })
+        .fold((0_u64, 0_u64, 0_u64), |total, metrics| {
+            (
+                total.0.saturating_add(metrics.0),
+                total.1.saturating_add(metrics.1),
+                total.2.saturating_add(metrics.2),
+            )
+        });
     let function = region.function;
     let arity = region_arity(region)?;
     let fast_path_hits = regions
@@ -1007,6 +1030,7 @@ pub(super) fn compile_region_graph_native(
                 let mut defined = define_region_graph_function(
                     module,
                     candidate,
+                    &unit.constants,
                     func_id,
                     &functions,
                     &function_params,
@@ -1109,8 +1133,10 @@ pub(super) fn compile_region_graph_native(
             Ok((handle, code_bytes))
         },
     )?;
+    let mut handle = compiled.handle;
+    handle.bind_ssa_metrics(ssa_metrics.0, ssa_metrics.1, ssa_metrics.2);
     Ok(NativeScalarRegionCompileResult {
-        handle: compiled.handle,
+        handle,
         code_bytes: compiled.code_bytes,
         fast_path_hits,
         has_control_flow,
@@ -1478,6 +1504,7 @@ fn capture_relocation(
 fn define_region_graph_function(
     module: &mut JITModule,
     region: &RegionGraph,
+    constants: &[IrConstant],
     func_id: FuncId,
     functions: &BTreeMap<FunctionId, FuncId>,
     function_params: &BTreeMap<FunctionId, NativeFunctionMetadata>,
@@ -1485,6 +1512,15 @@ fn define_region_graph_function(
     native_dynamic_code_helper: Option<NativeHelper>,
     native_operations: NativeOperationFunctions,
 ) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    let value_flow = if region.compile_metadata.tier == NativeCompilerTier::Optimizing {
+        let flow = crate::region_ir::analyze_executable_value_flow(region, constants);
+        flow.verify_ownership(region).map_err(|error| {
+            CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_OWNERSHIP", error)
+        })?;
+        flow
+    } else {
+        ExecutableValueFlow::default()
+    };
     let pointer_type = module.target_config().pointer_type();
     let mut ctx = module.make_context();
     ctx.func.signature = region_graph_signature(module, region)?;
@@ -1833,6 +1869,8 @@ fn define_region_graph_function(
                     &mut registers,
                     region_block.id,
                     instruction,
+                    constants,
+                    &value_flow,
                     result_out,
                     deopt_out,
                     resume_state,
@@ -1867,6 +1905,8 @@ fn define_region_graph_function(
                 region.function,
                 region.return_type.is_some(),
                 &region_block.terminator,
+                constants,
+                &value_flow,
             )?;
         }
         builder.seal_all_blocks();

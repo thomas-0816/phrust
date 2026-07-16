@@ -418,6 +418,35 @@ pub struct RegionInstruction {
     pub kind: RegionInstructionKind,
 }
 
+impl RegionInstruction {
+    /// Returns actual register reads after executable optimizer rewrites. The
+    /// retained source instruction remains authoritative for every form the
+    /// optimizer does not rewrite.
+    #[must_use]
+    pub fn register_uses(&self) -> Vec<RegId> {
+        let mut uses = Vec::new();
+        let mut push = |operand: RegionOperand| {
+            if let RegionOperand::Register(register) = operand {
+                uses.push(register);
+            }
+        };
+        match self.kind {
+            RegionInstructionKind::Move { src, .. }
+            | RegionInstructionKind::Unary { src, .. }
+            | RegionInstructionKind::Cast { src, .. }
+            | RegionInstructionKind::Discard { src }
+            | RegionInstructionKind::Echo { src } => push(src),
+            RegionInstructionKind::Binary { lhs, rhs, .. }
+            | RegionInstructionKind::Compare { lhs, rhs, .. } => {
+                push(lhs);
+                push(rhs);
+            }
+            _ => php_ir::instruction_register_uses(&self.source_kind, &mut uses),
+        }
+        uses
+    }
+}
+
 /// Instruction kinds in the initial general scalar region.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RegionInstructionKind {
@@ -683,6 +712,27 @@ pub enum RegionTerminator {
     MissingLowering,
 }
 
+impl RegionTerminator {
+    /// Returns actual register reads after branch folding.
+    #[must_use]
+    pub fn register_uses(&self) -> Vec<RegId> {
+        let operand = match self {
+            Self::Jump { .. } | Self::ReturnReference { .. } | Self::MissingLowering => None,
+            Self::JumpIfFalse { condition, .. }
+            | Self::JumpIfTrue { condition, .. }
+            | Self::JumpIf { condition, .. }
+            | Self::Return {
+                value: condition, ..
+            } => Some(*condition),
+            Self::Exit { value, .. } => *value,
+        };
+        match operand {
+            Some(RegionOperand::Register(register)) => vec![register],
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// One basic block in an executable region.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionBlock {
@@ -858,7 +908,7 @@ impl RegionGraph {
 }
 
 impl RegionTerminator {
-    fn targets(&self) -> Vec<BlockId> {
+    pub(crate) fn targets(&self) -> Vec<BlockId> {
         match self {
             Self::Jump { target } => vec![*target],
             Self::JumpIfFalse {
@@ -3948,6 +3998,9 @@ fn lower_constant(
 ) -> Result<RegionOperand, NativeCompileError> {
     match unit.constants.get(constant.index()) {
         Some(IrConstant::Int(value)) => Ok(RegionOperand::I64(*value)),
+        Some(IrConstant::Null) => Ok(RegionOperand::Constant(u32::MAX)),
+        Some(IrConstant::Bool(false)) => Ok(RegionOperand::Constant(crate::JIT_VALUE_FALSE)),
+        Some(IrConstant::Bool(true)) => Ok(RegionOperand::Constant(crate::JIT_VALUE_TRUE)),
         Some(_) => Ok(RegionOperand::Constant(constant.raw())),
         None => Err(NativeCompileError::new(
             "JIT_REGION_REJECT_CONSTANT",

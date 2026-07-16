@@ -138,6 +138,7 @@ help:
       'Performance:' \
       '  just cache-roundtrip      Run native artifact/cache roundtrip gates' \
       '  just optimizer-diff       Run optimizer differential gate' \
+      '  just native-ssa-ratchet   Enforce executable SSA and lifetime lowering' \
       '  just inline-cache-model-tests Test the retained cache data model' \
       '  just native-smoke         Run mandatory native smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
@@ -494,7 +495,7 @@ verify-stdlib:
 # Correctness-focused performance gates. Sub-gates share one engine build
 # through the perf-build dependency (deduplicated within this invocation).
 # Release-profile and report gates live in verify-performance-extended.
-verify-performance: wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke cache-roundtrip optimizer-diff templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
+verify-performance: wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke cache-roundtrip optimizer-diff native-ssa-ratchet templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
 # Heavy release-profile and report gates, split out of verify-performance so
@@ -1448,6 +1449,15 @@ templates-smoke:
 optimizer-diff:
     @just ir-verify
     scripts/performance/optimizer_diff_smoke.sh
+
+native-ssa-ratchet:
+    scripts/verify/native_ssa_ratchet.py
+
+# Render the B9 evidence bundle from the deterministic native smoke fixture.
+native-ssa-report:
+    scripts/performance/native_ssa_acceptance_report.py \
+        --after target/performance/native-smoke-counters.json \
+        --after-kind validation-fixture
 
 inline-cache-model-tests:
     cargo test -p php_vm inline_cache::

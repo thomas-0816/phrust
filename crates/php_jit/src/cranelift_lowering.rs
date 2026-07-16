@@ -2,10 +2,11 @@
 
 use crate::code_manager::ManagedCompileError;
 use crate::region_ir::{
-    BaselineRegionBuilder, CompileMetadata, NativeCompilerTier, RegionBinaryOp, RegionCallResult,
-    RegionCallTarget, RegionCastOp, RegionCompareOpCode, RegionGraph, RegionInstruction,
-    RegionInstructionKind, RegionNativeCall, RegionNativeControl, RegionNativeDynamicCode,
-    RegionNativeSuspend, RegionOperand, RegionTerminator, RegionUnaryOp,
+    BaselineRegionBuilder, CompileMetadata, ExecutableValueFlow, NativeCompilerTier,
+    RegionBinaryOp, RegionCallResult, RegionCallTarget, RegionCastOp, RegionCompareOpCode,
+    RegionGraph, RegionInstruction, RegionInstructionKind, RegionNativeCall, RegionNativeControl,
+    RegionNativeDynamicCode, RegionNativeSuspend, RegionOperand, RegionTerminator, RegionUnaryOp,
+    SsaOwnership, SsaValueClass, value_copy_requires_retain, value_release_required,
 };
 use crate::{
     CraneliftCodeKey, CraneliftCompilerIdentity, JIT_RUNTIME_ABI_HASH, JitCompileRequest,
@@ -24,7 +25,7 @@ use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module, ModuleReloc, ModuleRelocTarget};
-use php_ir::{BlockId, FunctionId, IrSpan, IrUnit, LocalId, RegId};
+use php_ir::{BlockId, FunctionId, IrConstant, IrSpan, IrUnit, LocalId, RegId};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -36,11 +37,13 @@ mod dynamic_code;
 mod executable_region;
 mod fallback_helpers;
 mod terminators;
+mod value_lowering;
 
 use call_metadata::*;
 use dynamic_code::*;
 use fallback_helpers::*;
-use terminators::lower_region_terminator;
+use terminators::{lower_owned_frame_locals, lower_region_terminator};
+use value_lowering::{encode_native_bool, lower_direct_cast, lower_direct_compare, scalar_truthy};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeScalarRegionCompileResult {
@@ -1103,10 +1106,18 @@ const fn native_cast_opcode(op: RegionCastOp) -> u32 {
 }
 
 const fn native_dim_operation(low_bits: u32, function: FunctionId, continuation: u32) -> u32 {
-    if function.raw() <= 0x3ff && continuation <= 0x0f_ffff {
+    if function.raw() <= 0x3ff && continuation < 0x0f_ffff {
         0x8000_0000 | low_bits | (function.raw() << 1) | (continuation << 11)
     } else {
         low_bits
+    }
+}
+
+const fn native_frame_cleanup_operation(function: FunctionId) -> u32 {
+    if function.raw() <= 0x3ff {
+        0x8000_0001 | (function.raw() << 1) | (0x0f_ffff << 11)
+    } else {
+        1
     }
 }
 
@@ -1130,6 +1141,8 @@ fn lower_region_instruction(
     registers: &mut BTreeMap<RegId, Variable>,
     source_block: BlockId,
     instruction: &RegionInstruction,
+    constants: &[IrConstant],
+    value_flow: &ExecutableValueFlow,
     result_out: ir::Value,
     deopt_out: ir::Value,
     resume_state: ir::Value,
@@ -1144,60 +1157,122 @@ fn lower_region_instruction(
         RegionInstructionKind::Nop => {}
         RegionInstructionKind::Move { dst, src } => {
             let cl_value = lower_region_operand(builder, locals, registers, *src)?;
-            let cl_value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.value_lifecycle,
-                native_dim_operation(0, function, instruction.continuation_id),
-                &[cl_value],
-                result_out,
-            )?;
+            let fact = value_flow.operand_fact(constants, *src);
+            let cl_value = if value_copy_requires_retain(fact) {
+                lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.value_lifecycle,
+                    native_dim_operation(0, function, instruction.continuation_id),
+                    &[cl_value],
+                    result_out,
+                )?
+            } else {
+                cl_value
+            };
             define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::LoadLocal { dst, local, quiet } => {
             let value = use_local_variable(builder, locals, *local)?;
-            let value = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                value,
-                *quiet,
-                function,
-                *local,
-                instruction.span,
-                result_out,
-            )?;
+            let fact = value_flow.local_fact(*local);
+            let direct = value_flow.local_storage(*local).is_promoted()
+                && instruction.live_locals.contains(local)
+                && (!value_copy_requires_retain(fact)
+                    || value_flow.can_borrow_local_load(instruction.continuation_id));
+            let value = if direct {
+                value
+            } else {
+                lower_native_local_fetch(
+                    module,
+                    builder,
+                    native_operations.local_fetch,
+                    value,
+                    *quiet,
+                    function,
+                    *local,
+                    instruction.span,
+                    result_out,
+                )?
+            };
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::StoreLocal { local, src } => {
             let current = use_local_variable(builder, locals, *local)?;
-            let src = lower_region_operand(builder, locals, registers, *src)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let cl_value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.local_store,
-                0,
-                &[current, src, function_value, local_value],
-                result_out,
-            )?;
+            let src_operand = *src;
+            let src = lower_region_operand(builder, locals, registers, src_operand)?;
+            let fact = value_flow.operand_fact(constants, src_operand);
+            let direct = value_flow.local_storage(*local).is_promoted()
+                && fact.certainty != crate::region_ir::SsaCertainty::Unknown
+                && !matches!(
+                    fact.class,
+                    SsaValueClass::ReferenceHandle | SsaValueClass::MixedHandle
+                );
+            let cl_value = if direct {
+                let stored = if value_copy_requires_retain(fact)
+                    && !value_flow.moves_value_into_local(instruction.continuation_id)
+                {
+                    lower_native_value_operation(
+                        module,
+                        builder,
+                        native_operations.value_lifecycle,
+                        native_dim_operation(0, function, instruction.continuation_id),
+                        &[src],
+                        result_out,
+                    )?
+                } else {
+                    src
+                };
+                let current_fact = value_flow.local_fact(*local);
+                if instruction.live_locals.contains(local)
+                    && (current_fact.certainty == crate::region_ir::SsaCertainty::Unknown
+                        || value_release_required(current_fact))
+                {
+                    let _ = lower_native_value_operation(
+                        module,
+                        builder,
+                        native_operations.value_lifecycle,
+                        native_dim_operation(1, function, instruction.continuation_id),
+                        &[current],
+                        result_out,
+                    )?;
+                }
+                stored
+            } else {
+                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
+                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
+                lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.local_store,
+                    0,
+                    &[current, src, function_value, local_value],
+                    result_out,
+                )?
+            };
             let variable = local_variable(locals, *local)?;
             builder.def_var(variable, cl_value);
         }
         RegionInstructionKind::AssignLocalResult { dst, local, value } => {
             let current = use_local_variable(builder, locals, *local)?;
-            let value = lower_region_operand(builder, locals, registers, *value)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let stored = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.local_store,
-                0,
-                &[current, value, function_value, local_value],
-                result_out,
-            )?;
+            let value_operand = *value;
+            let value = lower_region_operand(builder, locals, registers, value_operand)?;
+            let fact = value_flow.operand_fact(constants, value_operand);
+            let direct =
+                value_flow.local_storage(*local).is_promoted() && !value_copy_requires_retain(fact);
+            let stored = if direct {
+                value
+            } else {
+                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
+                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
+                lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.local_store,
+                    0,
+                    &[current, value, function_value, local_value],
+                    result_out,
+                )?
+            };
             builder.def_var(local_variable(locals, *local)?, stored);
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
@@ -1792,20 +1867,62 @@ fn lower_region_instruction(
             builder.def_var(local_variable(locals, *local)?, reference);
         }
         RegionInstructionKind::Discard { src } => {
+            if value_flow.elides_discard(instruction.continuation_id) {
+                return Ok(());
+            }
             let value = lower_region_operand(builder, locals, registers, *src)?;
-            let _ = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.value_lifecycle,
-                native_dim_operation(1, function, instruction.continuation_id),
-                &[value],
-                result_out,
-            )?;
+            let fact = value_flow.operand_fact(constants, *src);
+            if value_release_required(fact) {
+                let _ = lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.value_lifecycle,
+                    native_dim_operation(1, function, instruction.continuation_id),
+                    &[value],
+                    result_out,
+                )?;
+            }
         }
         RegionInstructionKind::Binary { dst, op, lhs, rhs } => {
-            let lhs = lower_region_operand(builder, locals, registers, *lhs)?;
-            let rhs = lower_region_operand(builder, locals, registers, *rhs)?;
-            let cl_value = if native_operations.binary.is_some() {
+            let lhs_operand = *lhs;
+            let rhs_operand = *rhs;
+            let lhs = lower_region_operand(builder, locals, registers, lhs_operand)?;
+            let rhs = lower_region_operand(builder, locals, registers, rhs_operand)?;
+            let lhs_fact = value_flow.operand_fact(constants, lhs_operand);
+            let rhs_fact = value_flow.operand_fact(constants, rhs_operand);
+            let direct_int = lhs_fact.class == SsaValueClass::Int
+                && rhs_fact.class == SsaValueClass::Int
+                && lhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown
+                && rhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown
+                && matches!(
+                    op,
+                    RegionBinaryOp::Add
+                        | RegionBinaryOp::Sub
+                        | RegionBinaryOp::Mul
+                        | RegionBinaryOp::BitAnd
+                        | RegionBinaryOp::BitOr
+                        | RegionBinaryOp::BitXor
+                        | RegionBinaryOp::ShiftLeft
+                        | RegionBinaryOp::ShiftRight
+                );
+            let cl_value = if direct_int {
+                lower_checked_region_binary(
+                    module,
+                    builder,
+                    native_operations.binary,
+                    *op,
+                    lhs,
+                    rhs,
+                    result_out,
+                    deopt_out,
+                    function,
+                    local_count,
+                    instruction,
+                    locals,
+                    registers,
+                    native_version,
+                )?
+            } else if native_operations.binary.is_some() {
                 lower_native_binary_operation(
                     module,
                     builder,
@@ -1823,24 +1940,17 @@ fn lower_region_instruction(
                     native_version,
                 )?
             } else {
-                lower_checked_region_binary(
-                    builder,
-                    *op,
-                    lhs,
-                    rhs,
-                    deopt_out,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    registers,
-                    native_version,
-                )?
+                return Err(CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
+                    format!("binary operation {op:?} has no typed runtime helper"),
+                ));
             };
             define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::Unary { dst, op, src } => {
-            let src = lower_region_operand(builder, locals, registers, *src)?;
+            let src_operand = *src;
+            let src = lower_region_operand(builder, locals, registers, src_operand)?;
+            let fact = value_flow.operand_fact(constants, src_operand);
             let unary_operation =
                 if function.raw() <= 0x03ff && instruction.continuation_id <= 0x07_ffff {
                     0x8000_0000
@@ -1850,13 +1960,33 @@ fn lower_region_instruction(
                 } else {
                     native_unary_opcode(*op)
                 };
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.unary,
-                unary_operation,
-                &[src],
-                result_out,
+            let value = if fact.certainty != crate::region_ir::SsaCertainty::Unknown {
+                match (*op, fact.class) {
+                    (RegionUnaryOp::Not, class) => {
+                        scalar_truthy(builder, src, class).map(|truthy| {
+                            let inverted = builder.ins().bxor_imm(truthy, 1);
+                            encode_native_bool(builder, inverted)
+                        })
+                    }
+                    (RegionUnaryOp::Plus, SsaValueClass::Int) => Some(src),
+                    (RegionUnaryOp::BitNot, SsaValueClass::Int) => Some(builder.ins().bnot(src)),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    lower_native_value_operation(
+                        module,
+                        builder,
+                        native_operations.unary,
+                        unary_operation,
+                        &[src],
+                        result_out,
+                    )
+                },
+                Ok,
             )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
@@ -1878,6 +2008,7 @@ fn lower_region_instruction(
                     native_call_helper,
                     native_operations.reference_bind,
                     native_operations.value_lifecycle,
+                    value_flow,
                     locals,
                     register_variables,
                     registers,
@@ -2179,6 +2310,15 @@ fn lower_region_instruction(
                     builder.ins().jump(cranelift_block(blocks, *finally)?, &[]);
                 } else {
                     let value = builder.use_var(pending_value);
+                    lower_owned_frame_locals(
+                        module,
+                        builder,
+                        locals,
+                        native_operations,
+                        value_flow,
+                        function,
+                        result_out,
+                    )?;
                     publish_native_call_state(
                         builder,
                         deopt_out,
@@ -2217,6 +2357,15 @@ fn lower_region_instruction(
                     builder.def_var(pending_value, value);
                     builder.ins().jump(cranelift_block(blocks, *finally)?, &[]);
                 } else {
+                    lower_owned_frame_locals(
+                        module,
+                        builder,
+                        locals,
+                        native_operations,
+                        value_flow,
+                        function,
+                        result_out,
+                    )?;
                     publish_native_call_state(
                         builder,
                         deopt_out,
@@ -2293,9 +2442,21 @@ fn lower_region_instruction(
             )?;
         }
         RegionInstructionKind::Compare { dst, op, lhs, rhs } => {
-            let lhs = lower_region_operand(builder, locals, registers, *lhs)?;
-            let rhs = lower_region_operand(builder, locals, registers, *rhs)?;
-            let cl_value = if native_operations.compare.is_some() {
+            let lhs_operand = *lhs;
+            let rhs_operand = *rhs;
+            let lhs = lower_region_operand(builder, locals, registers, lhs_operand)?;
+            let rhs = lower_region_operand(builder, locals, registers, rhs_operand)?;
+            let lhs_fact = value_flow.operand_fact(constants, lhs_operand);
+            let rhs_fact = value_flow.operand_fact(constants, rhs_operand);
+            let direct = (lhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown
+                && rhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown)
+                .then(|| {
+                    lower_direct_compare(builder, *op, lhs, rhs, lhs_fact.class, rhs_fact.class)
+                })
+                .flatten();
+            let cl_value = if let Some(value) = direct {
+                value
+            } else if native_operations.compare.is_some() {
                 lower_native_value_operation(
                     module,
                     builder,
@@ -2311,7 +2472,9 @@ fn lower_region_instruction(
             define_region_register(builder, register_variables, registers, *dst, cl_value)?;
         }
         RegionInstructionKind::Cast { dst, op, src } => {
-            let src = lower_region_operand(builder, locals, registers, *src)?;
+            let src_operand = *src;
+            let src = lower_region_operand(builder, locals, registers, src_operand)?;
+            let fact = value_flow.operand_fact(constants, src_operand);
             let cast_operation =
                 if function.raw() <= 0x03ff && instruction.continuation_id <= 0x03_ffff {
                     0x8000_0000
@@ -2321,14 +2484,21 @@ fn lower_region_instruction(
                 } else {
                     native_cast_opcode(*op)
                 };
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.cast,
-                cast_operation,
-                &[src],
-                result_out,
-            )?;
+            let direct = (fact.certainty != crate::region_ir::SsaCertainty::Unknown)
+                .then(|| lower_direct_cast(builder, *op, src, fact.class))
+                .flatten();
+            let value = if let Some(value) = direct {
+                value
+            } else {
+                lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.cast,
+                    cast_operation,
+                    &[src],
+                    result_out,
+                )?
+            };
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::Echo { src } => {
@@ -2650,17 +2820,25 @@ fn lower_region_instruction(
             )?;
             publish_native_register_state(builder, deopt_out, registers);
             let current = use_local_variable(builder, locals, *local)?;
-            let root = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                current,
-                false,
-                function,
-                *local,
-                instruction.span,
-                result_out,
-            )?;
+            let local_fact = value_flow.local_fact(*local);
+            let direct_array_local = value_flow.local_storage(*local).is_promoted()
+                && local_fact.certainty != crate::region_ir::SsaCertainty::Unknown
+                && local_fact.class == SsaValueClass::ArrayHandle;
+            let root = if direct_array_local {
+                current
+            } else {
+                lower_native_local_fetch(
+                    module,
+                    builder,
+                    native_operations.local_fetch,
+                    current,
+                    false,
+                    function,
+                    *local,
+                    instruction.span,
+                    result_out,
+                )?
+            };
             let keys = keys
                 .iter()
                 .map(|key| lower_region_operand(builder, locals, registers, *key))
@@ -2707,16 +2885,20 @@ fn lower_region_instruction(
                     result_out,
                 )?;
             }
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let stored = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.local_store,
-                0,
-                &[current, updated, function_value, local_value],
-                result_out,
-            )?;
+            let stored = if direct_array_local {
+                updated
+            } else {
+                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
+                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
+                lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.local_store,
+                    0,
+                    &[current, updated, function_value, local_value],
+                    result_out,
+                )?
+            };
             builder.def_var(local_variable(locals, *local)?, stored);
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
@@ -2727,17 +2909,25 @@ fn lower_region_instruction(
             value,
         } => {
             let current = use_local_variable(builder, locals, *local)?;
-            let root = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                current,
-                false,
-                function,
-                *local,
-                instruction.span,
-                result_out,
-            )?;
+            let local_fact = value_flow.local_fact(*local);
+            let direct_array_local = value_flow.local_storage(*local).is_promoted()
+                && local_fact.certainty != crate::region_ir::SsaCertainty::Unknown
+                && local_fact.class == SsaValueClass::ArrayHandle;
+            let root = if direct_array_local {
+                current
+            } else {
+                lower_native_local_fetch(
+                    module,
+                    builder,
+                    native_operations.local_fetch,
+                    current,
+                    false,
+                    function,
+                    *local,
+                    instruction.span,
+                    result_out,
+                )?
+            };
             let keys = keys
                 .iter()
                 .map(|key| lower_region_operand(builder, locals, registers, *key))
@@ -2778,16 +2968,20 @@ fn lower_region_instruction(
                     result_out,
                 )?;
             }
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let stored = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.local_store,
-                0,
-                &[current, updated, function_value, local_value],
-                result_out,
-            )?;
+            let stored = if direct_array_local {
+                updated
+            } else {
+                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
+                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
+                lower_native_value_operation(
+                    module,
+                    builder,
+                    native_operations.local_store,
+                    0,
+                    &[current, updated, function_value, local_value],
+                    result_out,
+                )?
+            };
             builder.def_var(local_variable(locals, *local)?, stored);
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
@@ -3443,6 +3637,7 @@ fn lower_native_call_trampoline(
     native_call_helper: Option<NativeHelper>,
     native_reference_bind_helper: Option<NativeHelper>,
     native_value_lifecycle_helper: Option<NativeHelper>,
+    value_flow: &ExecutableValueFlow,
     locals: &BTreeMap<LocalId, Variable>,
     register_variables: &BTreeMap<RegId, Variable>,
     registers: &mut BTreeMap<RegId, Variable>,
@@ -3554,6 +3749,19 @@ fn lower_native_call_trampoline(
                 .copied()
                 .flatten()
                 .is_some_and(|operand| matches!(operand, RegionOperand::Register(_)))
+                && !call
+                    .operands
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|operand| {
+                        matches!(
+                            operand,
+                            RegionOperand::Register(register)
+                                if value_flow.register_fact(register).ownership
+                                    == SsaOwnership::Borrowed
+                        )
+                    })
                 && matches!(
                     call.target,
                     RegionCallTarget::Function { function: None, .. }
@@ -3955,10 +4163,13 @@ fn lower_native_call_trampoline(
 
 #[allow(clippy::too_many_arguments)]
 fn lower_checked_region_binary(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
+    helper: Option<NativeHelper>,
     op: RegionBinaryOp,
     lhs: ir::Value,
     rhs: ir::Value,
+    result_out: ir::Value,
     deopt_out: ir::Value,
     function: FunctionId,
     local_count: u32,
@@ -3971,15 +4182,67 @@ fn lower_checked_region_binary(
         RegionBinaryOp::Add => builder.ins().sadd_overflow(lhs, rhs),
         RegionBinaryOp::Sub => builder.ins().ssub_overflow(lhs, rhs),
         RegionBinaryOp::Mul => builder.ins().smul_overflow(lhs, rhs),
+        RegionBinaryOp::BitAnd => {
+            return Ok(builder.ins().band(lhs, rhs));
+        }
+        RegionBinaryOp::BitOr => {
+            return Ok(builder.ins().bor(lhs, rhs));
+        }
+        RegionBinaryOp::BitXor => {
+            return Ok(builder.ins().bxor(lhs, rhs));
+        }
+        RegionBinaryOp::ShiftLeft | RegionBinaryOp::ShiftRight => {
+            let slow_block = builder.create_block();
+            let fast_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, types::I64);
+            let negative = builder.ins().icmp_imm(IntCC::SignedLessThan, rhs, 0);
+            builder
+                .ins()
+                .brif(negative, slow_block, &[], fast_block, &[]);
+
+            builder.switch_to_block(slow_block);
+            let slow = lower_native_binary_operation(
+                module,
+                builder,
+                helper,
+                native_binary_opcode(op),
+                lhs,
+                rhs,
+                result_out,
+                deopt_out,
+                function,
+                local_count,
+                instruction,
+                locals,
+                registers,
+                native_version,
+            )?;
+            builder.ins().jump(merge_block, &[slow.into()]);
+
+            builder.switch_to_block(fast_block);
+            let large = builder
+                .ins()
+                .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, rhs, 64);
+            let shifted = if op == RegionBinaryOp::ShiftLeft {
+                builder.ins().ishl(lhs, rhs)
+            } else {
+                builder.ins().sshr(lhs, rhs)
+            };
+            let out_of_range = if op == RegionBinaryOp::ShiftLeft {
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                builder.ins().sshr_imm(lhs, 63)
+            };
+            let fast = builder.ins().select(large, out_of_range, shifted);
+            builder.ins().jump(merge_block, &[fast.into()]);
+            builder.switch_to_block(merge_block);
+            return Ok(builder.block_params(merge_block)[0]);
+        }
         RegionBinaryOp::Div
         | RegionBinaryOp::Mod
         | RegionBinaryOp::Concat
-        | RegionBinaryOp::Pow
-        | RegionBinaryOp::BitAnd
-        | RegionBinaryOp::BitOr
-        | RegionBinaryOp::BitXor
-        | RegionBinaryOp::ShiftLeft
-        | RegionBinaryOp::ShiftRight => {
+        | RegionBinaryOp::Pow => {
             return Err(CraneliftLoweringError::new(
                 "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
                 format!("binary operation {op:?} requires its typed runtime helper"),
@@ -3988,74 +4251,35 @@ fn lower_checked_region_binary(
     };
     let overflow_block = builder.create_block();
     let ok_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
     builder
         .ins()
         .brif(overflow, overflow_block, &[], ok_block, &[]);
     builder.switch_to_block(overflow_block);
-    let function_id = builder.ins().iconst(types::I32, i64::from(function.raw()));
-    builder
-        .ins()
-        .store(MemFlagsData::new(), function_id, deopt_out, 0);
-    let continuation = builder
-        .ins()
-        .iconst(types::I32, i64::from(instruction.continuation_id));
-    builder
-        .ins()
-        .store(MemFlagsData::new(), continuation, deopt_out, 4);
-    let slot_count = builder.ins().iconst(types::I32, i64::from(local_count));
-    builder
-        .ins()
-        .store(MemFlagsData::new(), slot_count, deopt_out, 8);
-    let reserved = builder.ins().iconst(types::I32, i64::from(native_version));
-    builder
-        .ins()
-        .store(MemFlagsData::new(), reserved, deopt_out, 12);
-    publish_native_local_masks(builder, deopt_out, &instruction.live_locals);
-    for local in &instruction.live_locals {
-        let value = use_local_variable(builder, locals, *local)?;
-        let offset = std::mem::offset_of!(crate::JitDeoptState, slots)
-            .saturating_add(local.index().saturating_mul(8));
-        builder
-            .ins()
-            .store(MemFlagsData::new(), value, deopt_out, offset as i32);
-    }
-    let encodable_registers = registers
-        .iter()
-        .filter(|(register, _)| register.index() < crate::JIT_DEOPT_MAX_REGISTERS);
-    let initialized_register_mask = encodable_registers
-        .clone()
-        .fold(0_u64, |mask, (register, _)| {
-            mask | 1_u64.checked_shl(register.raw()).unwrap_or(0)
-        });
-    let register_mask = builder
-        .ins()
-        .iconst(types::I64, initialized_register_mask as i64);
-    builder.ins().store(
-        MemFlagsData::new(),
-        register_mask,
+    let slow = lower_native_binary_operation(
+        module,
+        builder,
+        helper,
+        native_binary_opcode(op),
+        lhs,
+        rhs,
+        result_out,
         deopt_out,
-        std::mem::offset_of!(crate::JitDeoptState, initialized_register_mask) as i32,
-    );
-    for (register, variable) in encodable_registers {
-        let value = builder.use_var(*variable);
-        let value = if builder.func.dfg.value_type(value) == types::I64 {
-            value
-        } else {
-            builder.ins().uextend(types::I64, value)
-        };
-        let offset = std::mem::offset_of!(crate::JitDeoptState, registers)
-            .saturating_add(register.index().saturating_mul(8));
-        builder
-            .ins()
-            .store(MemFlagsData::new(), value, deopt_out, offset as i32);
-    }
-    let status = builder.ins().iconst(
-        types::I32,
-        i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
-    );
-    builder.ins().return_(&[status]);
+        function,
+        local_count,
+        instruction,
+        locals,
+        registers,
+        native_version,
+    )?;
+    let slow_args = [slow.into()];
+    builder.ins().jump(merge_block, &slow_args);
     builder.switch_to_block(ok_block);
-    Ok(result)
+    let result_args = [result.into()];
+    builder.ins().jump(merge_block, &result_args);
+    builder.switch_to_block(merge_block);
+    Ok(builder.block_params(merge_block)[0])
 }
 
 fn region_compare_intcc(op: RegionCompareOpCode) -> IntCC {
