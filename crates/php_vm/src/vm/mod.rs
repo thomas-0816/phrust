@@ -2178,7 +2178,10 @@ mod tests {
             let cell = manager.function_cell(&key).expect("declared function cell");
             match cell.state() {
                 php_jit::NativeIndirectionState::Published => published += 1,
-                php_jit::NativeIndirectionState::Unpublished => unpublished += 1,
+                php_jit::NativeIndirectionState::Declared
+                | php_jit::NativeIndirectionState::Queued
+                | php_jit::NativeIndirectionState::Compiling
+                | php_jit::NativeIndirectionState::Failed => unpublished += 1,
                 php_jit::NativeIndirectionState::Retired => panic!("fresh cell was retired"),
             }
         }

@@ -2231,7 +2231,7 @@ mod tests {
         let cell = manager
             .function_cell(&entry_key)
             .expect("declared entry cell");
-        assert_eq!(cell.state(), crate::NativeIndirectionState::Unpublished);
+        assert_eq!(cell.state(), crate::NativeIndirectionState::Declared);
         assert!(manager.published_function(&entry_key).is_none());
 
         let mut engine = JitEngine::new();

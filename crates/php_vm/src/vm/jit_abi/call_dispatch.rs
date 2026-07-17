@@ -239,7 +239,6 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             let direct_external =
                 frame.flags & php_jit::JitNativeCallFrame::FLAG_DIRECT_EXTERNAL != 0;
             let semantic_operation = semantic_operation_from_frame(frame)?;
-            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             let direct_external_in_place = matches!(
                 descriptor.kind,
                 crate::compiled_unit::NativeCallSiteKind::Function
@@ -1580,7 +1579,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             Some(Err(message)) if message == "E_PHP_RETHROW" => {
                 let source_span = callsite_descriptor.as_ref().map(|source| source.span);
                 let value = with_native_context(|context| {
-                    let mut throwable = context.pending_throwable.take()?;
+                    let mut throwable = context.take_pending_throwable()?;
                     if let Some(source_span) = source_span {
                         throwable =
                             native_throwable_with_call_source(context, throwable, source_span);

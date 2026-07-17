@@ -1,8 +1,16 @@
-use super::{CraneliftNativeCompiler, build_trivial_add_clif_smoke, native_dim_operation};
+use super::executable_region::validate_pre_regalloc_structure;
+use super::{
+    CraneliftNativeCompiler, build_trivial_add_clif_smoke, native_dim_operation,
+    runtime_helper_abi_hash,
+};
+use crate::region_ir::{BaselineRegionBuilder, CompileMetadata, NativeCompilerTier};
 use crate::{
     JIT_RUNTIME_ABI_HASH, JitCompileRequest, JitCompileStatus, NativeCompileRequest,
     NativeCompilerApi,
 };
+use cranelift_codegen::ir::{Function, InstBuilder, Signature, UserFuncName};
+use cranelift_codegen::isa::CallConv;
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use php_ir::instruction::{IrCallArg, IrCallArgValueKind};
 use php_ir::{
     BinaryOp, ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags, FunctionFlags,
@@ -13,6 +21,65 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NATIVE_DYNAMIC_EFFECTS: AtomicUsize = AtomicUsize::new(0);
 static SSA_FORBIDDEN_HELPER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn persistent_helper_abi_identity_ignores_process_addresses() {
+    let first = crate::JitRuntimeHelperAddresses {
+        native_binary: 0x1000,
+        native_local_fetch: 0x2000,
+        ..crate::JitRuntimeHelperAddresses::default()
+    };
+    let second = crate::JitRuntimeHelperAddresses {
+        native_binary: 0x3000,
+        native_local_fetch: 0x4000,
+        ..crate::JitRuntimeHelperAddresses::default()
+    };
+    assert_eq!(
+        runtime_helper_abi_hash(first),
+        runtime_helper_abi_hash(second)
+    );
+}
+
+#[test]
+fn oversized_finished_clif_is_rejected_before_regalloc() {
+    let mut ir_builder = IrBuilder::new(UnitId::new(799));
+    let file = ir_builder.add_file("pre-regalloc-budget.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function = ir_builder.start_function("bounded", FunctionFlags::default(), span);
+    ir_builder.set_entry(function);
+    let block = ir_builder.append_block(function);
+    ir_builder.terminate_return(function, block, None, span);
+    let unit = ir_builder.finish();
+    let region = BaselineRegionBuilder::build(
+        &unit,
+        function,
+        &CompileMetadata {
+            ir_fingerprint: "pre-regalloc-budget".to_owned(),
+            tier: NativeCompilerTier::Baseline,
+            helper_abi_hash: 0,
+            target_cpu: "test".to_owned(),
+            semantic_config_hash: 0,
+            dependency_identity: "test".to_owned(),
+        },
+    )
+    .unwrap();
+    let mut clif =
+        Function::with_name_signature(UserFuncName::user(0, 0), Signature::new(CallConv::SystemV));
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut clif, &mut context);
+        for _ in 0..2_049 {
+            let block = builder.create_block();
+            builder.switch_to_block(block);
+            builder.ins().return_(&[]);
+        }
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    let error = validate_pre_regalloc_structure(&clif, &region, Some(7)).unwrap_err();
+    assert_eq!(error.code, "JIT_CRANELIFT_PRE_REGALLOC_BUDGET");
+    assert!(error.detail.contains("clif_blocks=2049/2048"));
+}
 
 extern "C" fn forbidden_local_fetch(
     _context: u64,
@@ -1949,7 +2016,7 @@ fn oversized_php_cfg_compiles_as_bounded_direct_native_fragments() {
     });
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     assert!(
-        outcome.diagnostics[0].contains("plan_fragments=2"),
+        outcome.diagnostics[0].contains("plan_fragments=5"),
         "{outcome:?}"
     );
     let handle = outcome.handle.expect("fragmented function handle");
@@ -1959,7 +2026,7 @@ fn oversized_php_cfg_compiles_as_bounded_direct_native_fragments() {
     assert_eq!(metadata.function_entries[0].function, function);
     let relocatable = handle.relocatable_code().expect("fragment artifact");
     assert_eq!(relocatable.root, function);
-    assert_eq!(relocatable.functions.len(), 3);
+    assert_eq!(relocatable.functions.len(), 6);
 }
 
 #[test]
@@ -2035,7 +2102,7 @@ fn implicit_method_receiver_survives_native_fragment_boundary() {
     });
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     assert!(
-        outcome.diagnostics[0].contains("plan_fragments=2"),
+        outcome.diagnostics[0].contains("plan_fragments=5"),
         "{outcome:?}"
     );
     let handle = outcome.handle.expect("fragmented method handle");
@@ -2080,7 +2147,7 @@ fn cross_fragment_backedge_does_not_alias_osr_entry_zero() {
     });
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     assert!(
-        outcome.diagnostics[0].contains("plan_fragments=2"),
+        outcome.diagnostics[0].contains("plan_fragments=5"),
         "{outcome:?}"
     );
     let handle = outcome.handle.expect("fragmented backedge handle");

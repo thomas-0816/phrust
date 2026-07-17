@@ -78,7 +78,7 @@ const LIFECYCLE_REASONS: [&str; 9] = [
     "exception_cleanup",
     "helper_result",
 ];
-const ROOT_REASONS: [&str; 9] = [
+const ROOT_REASONS: [&str; 10] = [
     "global_or_static",
     "session",
     "callback_or_handler",
@@ -88,6 +88,7 @@ const ROOT_REASONS: [&str; 9] = [
     "suspension",
     "resource_owned",
     "rooted_container",
+    "call_arguments",
 ];
 const IR_OPERATIONS: [&str; 36] = [
     "unary_plus",

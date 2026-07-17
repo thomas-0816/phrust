@@ -2,12 +2,13 @@
 
 use crate::{JitFunctionHandle, NativeFunctionKey, NativeFunctionTier, NativeIndirectionCell};
 use cranelift_codegen::settings::{self, Configurable};
+use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
-use cranelift_module::default_libcall_names;
-use std::collections::{HashMap, VecDeque};
+use cranelift_module::{Module, default_libcall_names};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, TryLockError};
 
 // Function-on-demand publication keeps dormant declarations code-free. The
 // process owner remains bounded because distinct requested functions may stay
@@ -15,6 +16,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, TryLockError};
 const DEFAULT_CODE_LIMIT: usize = 512 * 1024 * 1024;
 const DEFAULT_GENERATION_LIMIT: usize = 16 * 1024 * 1024;
 const GENERATION_ARENA_RESERVE: usize = 32 * 1024 * 1024;
+const DEFAULT_MAX_CONCURRENT_COMPILES: usize = 1;
+const DEFAULT_MAX_COMPILE_QUEUE: usize = 64;
 
 /// Stable process-cache identity for one compiled specialization.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -27,8 +30,11 @@ pub struct CraneliftCodeKey {
     pub abi_hash: u64,
     /// Compiler tier that produced the code.
     pub compiler_tier: String,
-    /// Runtime-helper ABI/address-set identity.
+    /// Process-independent runtime-helper ABI identity.
     pub helper_abi_hash: u64,
+    /// Process-local helper bindings. This participates only in the in-memory
+    /// code cache and is never part of persistent artifact compatibility.
+    pub helper_binding_hash: u64,
     /// Exact target and host-CPU feature identity.
     pub target_cpu: String,
     /// PHP-visible compiler semantic configuration identity.
@@ -54,6 +60,7 @@ impl CraneliftCodeKey {
             &self.abi_hash.to_le_bytes(),
             self.compiler_tier.as_bytes(),
             &self.helper_abi_hash.to_le_bytes(),
+            &self.helper_binding_hash.to_le_bytes(),
             self.target_cpu.as_bytes(),
             &self.semantic_config_hash.to_le_bytes(),
             self.dependency_identity.as_bytes(),
@@ -106,6 +113,7 @@ struct CodeManagerMetrics {
     generations_live: AtomicUsize,
     active_handles: AtomicUsize,
     evictions: AtomicU64,
+    compile_queue_rejections: AtomicU64,
 }
 
 impl Default for CodeManagerMetrics {
@@ -123,6 +131,7 @@ impl Default for CodeManagerMetrics {
             generations_live: AtomicUsize::new(0),
             active_handles: AtomicUsize::new(0),
             evictions: AtomicU64::new(0),
+            compile_queue_rejections: AtomicU64::new(0),
         }
     }
 }
@@ -144,6 +153,9 @@ pub struct CraneliftCodeManagerStats {
     pub active_handles: usize,
     pub evictions: u64,
     pub eviction_candidates: usize,
+    pub active_compiles: usize,
+    pub queued_compiles: usize,
+    pub compile_queue_rejections: u64,
 }
 
 /// Exact per-request process-cache event plus post-operation ownership gauges.
@@ -161,9 +173,15 @@ pub struct CraneliftCodeManagerEvent {
 
 struct CodeGeneration {
     id: u64,
-    module: Mutex<Option<JITModule>>,
+    compiler: Mutex<GenerationCompiler>,
     bytes: AtomicUsize,
     metrics: Arc<CodeManagerMetrics>,
+}
+
+struct GenerationCompiler {
+    module: Option<JITModule>,
+    context: cranelift_codegen::Context,
+    builder_context: FunctionBuilderContext,
 }
 
 impl fmt::Debug for CodeGeneration {
@@ -179,8 +197,8 @@ impl fmt::Debug for CodeGeneration {
 impl Drop for CodeGeneration {
     fn drop(&mut self) {
         let bytes = self.bytes.load(Ordering::Relaxed);
-        if let Ok(module) = self.module.get_mut()
-            && let Some(module) = module.take()
+        if let Ok(compiler) = self.compiler.get_mut()
+            && let Some(module) = compiler.module.take()
         {
             // SAFETY: the generation is dropped only after its manager/cache
             // owner and every published handle have released their `Arc`.
@@ -299,6 +317,8 @@ pub enum CraneliftCodeManagerError {
     Poisoned(&'static str),
     HelperAddressConflict { symbol: String },
     CodeLimit { limit: usize, live: usize },
+    CompileFailed { detail: String },
+    CompileQueueFull { limit: usize },
 }
 
 impl fmt::Display for CraneliftCodeManagerError {
@@ -315,6 +335,12 @@ impl fmt::Display for CraneliftCodeManagerError {
                 formatter,
                 "Cranelift code limit is exhausted: limit={limit} live={live}"
             ),
+            Self::CompileFailed { detail } => {
+                write!(formatter, "native compilation previously failed: {detail}")
+            }
+            Self::CompileQueueFull { limit } => {
+                write!(formatter, "native compile queue is full: limit={limit}")
+            }
         }
     }
 }
@@ -328,15 +354,39 @@ struct ManagerState {
     cache: HashMap<CraneliftCodeKey, JitFunctionHandle>,
     function_cells: HashMap<NativeFunctionKey, Arc<NativeIndirectionCell>>,
     function_publications: HashMap<NativeFunctionKey, JitFunctionHandle>,
+    compiling: HashSet<CraneliftCodeKey>,
+    compile_failures: HashMap<CraneliftCodeKey, String>,
+}
+
+#[derive(Default)]
+struct CompilerState {
+    active: usize,
+    queued: usize,
 }
 
 /// Process-level compiler owner and bounded code-generation cache.
 pub struct CraneliftCodeManager {
     state: Mutex<ManagerState>,
+    state_changed: Condvar,
+    compiler_state: Mutex<CompilerState>,
+    compiler_changed: Condvar,
     helpers: Arc<RwLock<HashMap<String, usize>>>,
     metrics: Arc<CodeManagerMetrics>,
     code_limit: usize,
     generation_limit: usize,
+}
+
+struct CompilerPermit<'a> {
+    manager: &'a CraneliftCodeManager,
+}
+
+impl Drop for CompilerPermit<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.manager.compiler_state.lock() {
+            state.active = state.active.saturating_sub(1);
+            self.manager.compiler_changed.notify_one();
+        }
+    }
 }
 
 impl fmt::Debug for CraneliftCodeManager {
@@ -369,7 +419,12 @@ impl CraneliftCodeManager {
                 cache: HashMap::new(),
                 function_cells: HashMap::new(),
                 function_publications: HashMap::new(),
+                compiling: HashSet::new(),
+                compile_failures: HashMap::new(),
             }),
+            state_changed: Condvar::new(),
+            compiler_state: Mutex::new(CompilerState::default()),
+            compiler_changed: Condvar::new(),
             helpers,
             metrics,
             code_limit,
@@ -419,12 +474,49 @@ impl CraneliftCodeManager {
                 .map(|address| address as *const u8)
         }));
         metrics.generations_live.fetch_add(1, Ordering::Relaxed);
+        let module = JITModule::new(builder);
+        let context = module.make_context();
         Ok(Arc::new(CodeGeneration {
             id,
-            module: Mutex::new(Some(JITModule::new(builder))),
+            compiler: Mutex::new(GenerationCompiler {
+                module: Some(module),
+                context,
+                builder_context: FunctionBuilderContext::new(),
+            }),
             bytes: AtomicUsize::new(0),
             metrics: Arc::clone(metrics),
         }))
+    }
+
+    fn acquire_compiler(&self) -> Result<CompilerPermit<'_>, CraneliftCodeManagerError> {
+        let mut state = self
+            .compiler_state
+            .lock()
+            .map_err(|_| CraneliftCodeManagerError::Poisoned("compiler scheduler"))?;
+        if state.active < DEFAULT_MAX_CONCURRENT_COMPILES {
+            state.active = state.active.saturating_add(1);
+            return Ok(CompilerPermit { manager: self });
+        }
+        if state.queued >= DEFAULT_MAX_COMPILE_QUEUE {
+            self.metrics
+                .compile_queue_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(CraneliftCodeManagerError::CompileQueueFull {
+                limit: DEFAULT_MAX_COMPILE_QUEUE,
+            });
+        }
+        state.queued = state.queued.saturating_add(1);
+        loop {
+            state = self
+                .compiler_changed
+                .wait(state)
+                .map_err(|_| CraneliftCodeManagerError::Poisoned("compiler scheduler"))?;
+            if state.active < DEFAULT_MAX_CONCURRENT_COMPILES {
+                state.queued = state.queued.saturating_sub(1);
+                state.active = state.active.saturating_add(1);
+                return Ok(CompilerPermit { manager: self });
+            }
+        }
     }
 
     fn lock_state(
@@ -489,69 +581,181 @@ impl CraneliftCodeManager {
             .and_then(|state| state.function_cells.get(key).cloned())
     }
 
-    /// Compiles and publishes exactly once for `key`, serializing Cranelift mutation.
+    /// Compiles and publishes exactly once for `key`.
+    ///
+    /// The manager mutex protects admission and publication only. Cranelift
+    /// lowering, register allocation, and finalization run after that mutex is
+    /// released; unrelated cache reads and declarations therefore cannot be
+    /// serialized behind a pathological compile. The generation-local module
+    /// lock remains the bounded mutable-codegen owner.
+    #[cfg(test)]
     pub(crate) fn compile_once<E>(
         &self,
         key: CraneliftCodeKey,
         helpers: &[(&str, usize)],
         compile: impl FnOnce(&mut JITModule, &str) -> Result<(JitFunctionHandle, u64), E>,
-    ) -> Result<ManagedJitFunction, ManagedCompileError<E>> {
-        let (mut state, waited) = self.lock_state().map_err(ManagedCompileError::Manager)?;
+    ) -> Result<ManagedJitFunction, ManagedCompileError<E>>
+    where
+        E: fmt::Display,
+    {
+        self.compile_once_with_scratch(
+            key,
+            None,
+            helpers,
+            |module, _context, _builder_context, symbol| compile(module, symbol),
+        )
+    }
+
+    pub(crate) fn compile_once_with_scratch<E>(
+        &self,
+        key: CraneliftCodeKey,
+        function_key: Option<NativeFunctionKey>,
+        helpers: &[(&str, usize)],
+        compile: impl FnOnce(
+            &mut JITModule,
+            &mut cranelift_codegen::Context,
+            &mut FunctionBuilderContext,
+            &str,
+        ) -> Result<(JitFunctionHandle, u64), E>,
+    ) -> Result<ManagedJitFunction, ManagedCompileError<E>>
+    where
+        E: fmt::Display,
+    {
         self.register_helpers(helpers)
             .map_err(ManagedCompileError::Manager)?;
-        if let Some(handle) = state.cache.get(&key) {
-            self.metrics
-                .process_cache_hits
-                .fetch_add(1, Ordering::Relaxed);
-            if waited {
-                self.metrics
-                    .duplicate_compiles_avoided
-                    .fetch_add(1, Ordering::Relaxed);
+        let mut waited = false;
+        let (generation, evictions_before, function_cell) = {
+            let (mut state, lock_waited) =
+                self.lock_state().map_err(ManagedCompileError::Manager)?;
+            waited |= lock_waited;
+            loop {
+                if let Some(handle) = state.cache.get(&key) {
+                    self.metrics
+                        .process_cache_hits
+                        .fetch_add(1, Ordering::Relaxed);
+                    if waited {
+                        self.metrics
+                            .duplicate_compiles_avoided
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    let mut handle = handle.clone();
+                    handle.bind_code_manager_event(CraneliftCodeManagerEvent {
+                        process_cache_hits: 1,
+                        compile_waits: u64::from(waited),
+                        duplicate_compiles_avoided: u64::from(waited),
+                        code_bytes_live: self.metrics.bytes_live.load(Ordering::Relaxed),
+                        code_bytes_retired: self.metrics.bytes_retired.load(Ordering::Relaxed),
+                        code_generations: self.metrics.generations_live.load(Ordering::Relaxed),
+                        ..CraneliftCodeManagerEvent::default()
+                    });
+                    return Ok(ManagedJitFunction {
+                        code_bytes: handle.code_bytes(),
+                        handle,
+                        disposition: CraneliftCodeCacheDisposition::Hit,
+                    });
+                }
+                if let Some(detail) = state.compile_failures.get(&key) {
+                    return Err(ManagedCompileError::Manager(
+                        CraneliftCodeManagerError::CompileFailed {
+                            detail: detail.clone(),
+                        },
+                    ));
+                }
+                if state.compiling.insert(key.clone()) {
+                    let function_cell = function_key.as_ref().map(|function_key| {
+                        state
+                            .function_cells
+                            .entry(function_key.clone())
+                            .or_insert_with(|| {
+                                Arc::new(NativeIndirectionCell::new(function_key.clone()))
+                            })
+                            .clone()
+                    });
+                    if let Some(cell) = &function_cell {
+                        cell.mark_queued();
+                    }
+                    self.metrics
+                        .process_cache_misses
+                        .fetch_add(1, Ordering::Relaxed);
+                    let evictions_before = self.metrics.evictions.load(Ordering::Relaxed);
+                    self.evict_retired_generations(&mut state);
+                    let live = self.metrics.bytes_live.load(Ordering::Relaxed);
+                    if live >= self.code_limit {
+                        if let Some(cell) = &function_cell {
+                            cell.reset_declared();
+                        }
+                        state.compiling.remove(&key);
+                        self.state_changed.notify_all();
+                        return Err(ManagedCompileError::Manager(
+                            CraneliftCodeManagerError::CodeLimit {
+                                limit: self.code_limit,
+                                live,
+                            },
+                        ));
+                    }
+                    break (Arc::clone(&state.active), evictions_before, function_cell);
+                }
+                waited = true;
+                self.metrics.compile_waits.fetch_add(1, Ordering::Relaxed);
+                state = self.state_changed.wait(state).map_err(|_| {
+                    ManagedCompileError::Manager(CraneliftCodeManagerError::Poisoned("state"))
+                })?;
             }
-            let mut handle = handle.clone();
-            let stats = self.stats();
-            handle.bind_code_manager_event(CraneliftCodeManagerEvent {
-                process_cache_hits: 1,
-                compile_waits: u64::from(waited),
-                duplicate_compiles_avoided: u64::from(waited),
-                code_bytes_live: stats.code_bytes_live,
-                code_bytes_retired: stats.code_bytes_retired,
-                code_generations: stats.code_generations,
-                ..CraneliftCodeManagerEvent::default()
-            });
-            return Ok(ManagedJitFunction {
-                code_bytes: handle.code_bytes(),
-                handle,
-                disposition: CraneliftCodeCacheDisposition::Hit,
-            });
-        }
-        self.metrics
-            .process_cache_misses
-            .fetch_add(1, Ordering::Relaxed);
-        let evictions_before = self.metrics.evictions.load(Ordering::Relaxed);
-        self.evict_retired_generations(&mut state);
-        let live = self.metrics.bytes_live.load(Ordering::Relaxed);
-        if live >= self.code_limit {
-            return Err(ManagedCompileError::Manager(
-                CraneliftCodeManagerError::CodeLimit {
-                    limit: self.code_limit,
-                    live,
-                },
-            ));
-        }
-
-        let generation = Arc::clone(&state.active);
+        };
         let symbol = key.symbol();
-        let (mut handle, code_bytes) = {
-            let mut module = generation.module.lock().map_err(|_| {
-                ManagedCompileError::Manager(CraneliftCodeManagerError::Poisoned("generation"))
-            })?;
-            let module = module.as_mut().ok_or_else(|| {
-                ManagedCompileError::Manager(CraneliftCodeManagerError::Poisoned(
-                    "retired generation",
-                ))
-            })?;
-            compile(module, &symbol).map_err(ManagedCompileError::Compile)?
+        let compiler_permit = match self.acquire_compiler() {
+            Ok(permit) => permit,
+            Err(error) => {
+                if let Some(cell) = &function_cell {
+                    cell.reset_declared();
+                }
+                if let Ok(mut state) = self.state.lock() {
+                    state.compiling.remove(&key);
+                    self.state_changed.notify_all();
+                }
+                return Err(ManagedCompileError::Manager(error));
+            }
+        };
+        if let Some(cell) = &function_cell {
+            cell.mark_compiling();
+        }
+        let compiled = match generation.compiler.lock() {
+            Ok(mut compiler) => {
+                let GenerationCompiler {
+                    module,
+                    context,
+                    builder_context,
+                } = &mut *compiler;
+                match module.as_mut() {
+                    Some(module) => compile(module, context, builder_context, &symbol)
+                        .map_err(ManagedCompileError::Compile),
+                    None => Err(ManagedCompileError::Manager(
+                        CraneliftCodeManagerError::Poisoned("retired generation"),
+                    )),
+                }
+            }
+            Err(_) => Err(ManagedCompileError::Manager(
+                CraneliftCodeManagerError::Poisoned("generation"),
+            )),
+        };
+        drop(compiler_permit);
+        let (mut handle, code_bytes) = match compiled {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                let detail = match &error {
+                    ManagedCompileError::Manager(error) => error.to_string(),
+                    ManagedCompileError::Compile(error) => error.to_string(),
+                };
+                if let Ok(mut state) = self.state.lock() {
+                    state.compiling.remove(&key);
+                    state.compile_failures.insert(key.clone(), detail);
+                    self.state_changed.notify_all();
+                }
+                if let Some(cell) = &function_cell {
+                    cell.mark_failed();
+                }
+                return Err(error);
+            }
         };
         let code_bytes_usize = usize::try_from(code_bytes).unwrap_or(usize::MAX);
         generation
@@ -571,27 +775,36 @@ impl CraneliftCodeManager {
             entry,
             metadata,
         ));
+        let mut state = self.state.lock().map_err(|_| {
+            ManagedCompileError::Manager(CraneliftCodeManagerError::Poisoned("state"))
+        })?;
         self.publish_function_entries(&mut state, &key, &handle);
-        state.cache.insert(key, handle.clone());
+        state.cache.insert(key.clone(), handle.clone());
+        state.compile_failures.remove(&key);
 
         if generation.bytes.load(Ordering::Relaxed) >= self.generation_limit {
             let id = state.next_generation;
             state.next_generation = state.next_generation.saturating_add(1);
-            let next = Self::new_generation(id, &self.helpers, &self.metrics)
-                .map_err(ManagedCompileError::Manager)?;
-            state.active = Arc::clone(&next);
-            state.generations.push_back(next);
-            self.evict_retired_generations(&mut state);
+            if let Ok(next) = Self::new_generation(id, &self.helpers, &self.metrics) {
+                state.active = Arc::clone(&next);
+                state.generations.push_back(next);
+                self.evict_retired_generations(&mut state);
+            }
         }
-
-        let stats = self.stats();
+        state.compiling.remove(&key);
+        self.state_changed.notify_all();
+        drop(state);
         handle.bind_code_manager_event(CraneliftCodeManagerEvent {
             process_cache_misses: 1,
             compile_waits: u64::from(waited),
-            code_bytes_live: stats.code_bytes_live,
-            code_bytes_retired: stats.code_bytes_retired,
-            code_generations: stats.code_generations,
-            evictions: stats.evictions.saturating_sub(evictions_before),
+            code_bytes_live: self.metrics.bytes_live.load(Ordering::Relaxed),
+            code_bytes_retired: self.metrics.bytes_retired.load(Ordering::Relaxed),
+            code_generations: self.metrics.generations_live.load(Ordering::Relaxed),
+            evictions: self
+                .metrics
+                .evictions
+                .load(Ordering::Relaxed)
+                .saturating_sub(evictions_before),
             ..CraneliftCodeManagerEvent::default()
         });
 
@@ -712,6 +925,12 @@ impl CraneliftCodeManager {
                 )
             })
             .unwrap_or((0, 0));
+        let compiler_snapshot = self
+            .compiler_state
+            .try_lock()
+            .ok()
+            .map(|state| (state.active, state.queued))
+            .unwrap_or((0, 0));
         CraneliftCodeManagerStats {
             process_cache_hits: self.metrics.process_cache_hits.load(Ordering::Relaxed),
             process_cache_misses: self.metrics.process_cache_misses.load(Ordering::Relaxed),
@@ -736,6 +955,12 @@ impl CraneliftCodeManager {
             active_handles: self.metrics.active_handles.load(Ordering::Relaxed),
             evictions: self.metrics.evictions.load(Ordering::Relaxed),
             eviction_candidates: state_snapshot.0,
+            active_compiles: compiler_snapshot.0,
+            queued_compiles: compiler_snapshot.1,
+            compile_queue_rejections: self
+                .metrics
+                .compile_queue_rejections
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -769,14 +994,18 @@ pub fn cranelift_code_manager_stats() -> CraneliftCodeManagerStats {
 #[cfg(test)]
 mod tests {
     use super::{
-        CraneliftCodeCacheDisposition, CraneliftCodeKey, CraneliftCodeManager, ManagedCompileError,
+        CraneliftCodeCacheDisposition, CraneliftCodeKey, CraneliftCodeManager,
+        CraneliftCodeManagerError, ManagedCompileError,
     };
-    use crate::{CraneliftCompilerIdentity, JIT_RUNTIME_ABI_HASH, JitFunctionHandle};
+    use crate::{
+        CraneliftCompilerIdentity, JIT_RUNTIME_ABI_HASH, JitFunctionHandle, NativeFunctionKey,
+    };
     use cranelift_codegen::ir::{AbiParam, InstBuilder, UserFuncName, types};
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use cranelift_module::{Linkage, Module};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::{Duration, Instant};
 
     fn key(index: u64, generation: u64) -> CraneliftCodeKey {
         CraneliftCodeKey {
@@ -785,6 +1014,7 @@ mod tests {
             abi_hash: JIT_RUNTIME_ABI_HASH,
             compiler_tier: "baseline".to_owned(),
             helper_abi_hash: JIT_RUNTIME_ABI_HASH,
+            helper_binding_hash: 0,
             target_cpu: "test-target:test-cpu".to_owned(),
             semantic_config_hash: 7,
             dependency_identity: format!("dependency-{index}"),
@@ -998,5 +1228,115 @@ mod tests {
             1
         );
         assert!(manager.stats().duplicate_compiles_avoided > 0);
+    }
+
+    #[test]
+    fn manager_state_is_not_locked_during_codegen() {
+        let manager = Arc::new(CraneliftCodeManager::new(1024 * 1024, 1024 * 1024).unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let compiler = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || {
+                manager
+                    .compile_once(key(40, 0), &[], |module, symbol| {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        compile_constant(module, symbol, 40)
+                    })
+                    .unwrap()
+            })
+        };
+        started_rx.recv().unwrap();
+        let start = Instant::now();
+        manager
+            .declare_function_cells([NativeFunctionKey {
+                deployment_unit: "lock-free-diagnostic".to_owned(),
+                function_id: 1,
+                signature_hash: 2,
+                compiler_tier: "baseline".to_owned(),
+                version: "test".to_owned(),
+                invalidation_generation: 0,
+            }])
+            .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "manager declaration was serialized behind Cranelift"
+        );
+        release_tx.send(()).unwrap();
+        compiler.join().unwrap();
+    }
+
+    #[test]
+    fn failed_compile_is_sticky_for_the_exact_key() {
+        let manager = CraneliftCodeManager::new(1024 * 1024, 1024 * 1024).unwrap();
+        let attempts = AtomicUsize::new(0);
+        let first = manager.compile_once(key(41, 0), &[], |_module, _symbol| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err::<(JitFunctionHandle, u64), _>("deterministic failure".to_owned())
+        });
+        assert!(matches!(first, Err(ManagedCompileError::Compile(_))));
+        let second = manager.compile_once(key(41, 0), &[], |module, symbol| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            compile_constant(module, symbol, 41)
+        });
+        assert!(matches!(
+            second,
+            Err(ManagedCompileError::Manager(
+                CraneliftCodeManagerError::CompileFailed { .. }
+            ))
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn compiler_scheduler_bounds_distinct_keys() {
+        let manager = Arc::new(CraneliftCodeManager::new(1024 * 1024, 1024 * 1024).unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || {
+                manager
+                    .compile_once(key(42, 0), &[], |module, symbol| {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        compile_constant(module, symbol, 42)
+                    })
+                    .unwrap()
+            })
+        };
+        started_rx.recv().unwrap();
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let second = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || {
+                second_started_tx.send(()).unwrap();
+                manager
+                    .compile_once(key(43, 0), &[], |module, symbol| {
+                        compile_constant(module, symbol, 43)
+                    })
+                    .unwrap()
+            })
+        };
+        second_started_rx.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let stats = manager.stats();
+            if stats.queued_compiles == 1 {
+                assert_eq!(stats.active_compiles, 1);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "second compile never entered the bounded queue"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(manager.stats().active_compiles, 1);
+        assert_eq!(manager.stats().queued_compiles, 1);
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
     }
 }

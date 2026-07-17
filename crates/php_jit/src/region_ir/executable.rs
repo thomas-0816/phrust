@@ -745,6 +745,9 @@ impl RegionTerminator {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionBlock {
     pub id: BlockId,
+    /// Original PHP IR block used by callsite and diagnostic metadata. Native
+    /// fragmentation may assign a different internal CFG `id`.
+    pub source_block: BlockId,
     pub entry_live_locals: Vec<LocalId>,
     /// Locals with a materialized value on at least one incoming path.
     /// Unlike safepoint liveness this includes path-dependent values and is
@@ -3409,6 +3412,7 @@ impl BaselineRegionBuilder {
             let terminator_span = source_terminator.span;
             blocks.push(RegionBlock {
                 id: block.id,
+                source_block: block.id,
                 entry_live_locals: Vec::new(),
                 entry_state_locals: Vec::new(),
                 instructions,

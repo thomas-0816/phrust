@@ -1107,13 +1107,26 @@ pub(super) fn compile_region_graph_native(
         .iter()
         .map(|(name, address)| (name.as_str(), *address))
         .collect::<Vec<_>>();
+    let function_key = native_function_key(
+        request
+            .ir_fingerprint
+            .clone()
+            .unwrap_or_else(|| crate::stable_ir_fingerprint(unit)),
+        function.raw(),
+        unit.functions[function.index()].params.len(),
+        region.local_count,
+        request.opt_level != 0,
+        request.invalidation_generation,
+    );
     let compiled_clif_blocks = std::cell::Cell::new(None);
+    let compiled_maximum_pre_regalloc = std::cell::Cell::new(None);
     let compiled = compile_managed_native(
         request,
         function,
+        function_key,
         BASELINE_FUNCTION_SPECIALIZATION,
         &import_refs,
-        |module, name| {
+        |module, codegen_context, builder_context, name| {
             let helper_address = |symbol: &str| {
                 imports
                     .iter()
@@ -1521,6 +1534,7 @@ pub(super) fn compile_region_graph_native(
 
             let mut code_bytes = 0_u64;
             let mut clif_blocks = 0_usize;
+            let mut maximum_pre_regalloc = PreRegallocMetrics::default();
             let mut native_pc_ranges = Vec::new();
             let mut relocatable_bytes = Vec::new();
             let mut relocatable_functions = Vec::new();
@@ -1611,6 +1625,7 @@ pub(super) fn compile_region_graph_native(
                 let code_offset = relocatable_bytes.len() as u64;
                 let candidate_bytes = defined.code.len() as u64;
                 clif_blocks = clif_blocks.saturating_add(defined.clif_blocks);
+                maximum_pre_regalloc.max_assign(defined.pre_regalloc);
                 relocatable_bytes.extend_from_slice(&defined.code);
                 for relocation in &mut defined.relocations {
                     relocation.offset = relocation.offset.saturating_add(code_offset);
@@ -1627,6 +1642,10 @@ pub(super) fn compile_region_graph_native(
                 native_pc_ranges.append(&mut defined.native_pc_ranges);
                 Ok((candidate_bytes, defined.native_stack_bytes))
             };
+            // A compile group may contain many bounded native fragments. Reuse
+            // Cranelift's allocation-heavy translation scratch sequentially;
+            // `clear_context` preserves its backing allocations after every
+            // fragment while regalloc still sees only one fragment at a time.
             for candidate in regions.values() {
                 if let Some(layout) = &fragment_layout {
                     let mut function_bytes = 0_u64;
@@ -1634,6 +1653,8 @@ pub(super) fn compile_region_graph_native(
                     for fragment in &layout.fragments {
                         let defined = define_region_graph_function(
                             module,
+                            codegen_context,
+                            builder_context,
                             candidate,
                             &unit.constants,
                             fragment_functions[&fragment.id],
@@ -1661,6 +1682,8 @@ pub(super) fn compile_region_graph_native(
                     }
                     let wrapper = define_region_fragment_wrapper(
                         module,
+                        codegen_context,
+                        builder_context,
                         candidate,
                         functions[&candidate.function],
                         &fragment_functions,
@@ -1680,6 +1703,8 @@ pub(super) fn compile_region_graph_native(
                 } else {
                     let defined = define_region_graph_function(
                         module,
+                        codegen_context,
+                        builder_context,
                         candidate,
                         &unit.constants,
                         functions[&candidate.function],
@@ -1849,6 +1874,7 @@ pub(super) fn compile_region_graph_native(
                 relocations: relocatable_relocations,
             });
             compiled_clif_blocks.set(Some(clif_blocks));
+            compiled_maximum_pre_regalloc.set(Some(maximum_pre_regalloc));
             Ok((handle, code_bytes))
         },
     )?;
@@ -1858,6 +1884,7 @@ pub(super) fn compile_region_graph_native(
         handle,
         code_bytes: compiled.code_bytes,
         clif_blocks: compiled_clif_blocks.get(),
+        maximum_pre_regalloc: compiled_maximum_pre_regalloc.get(),
         fast_path_hits,
         has_control_flow,
         plan,
@@ -2228,12 +2255,75 @@ struct DefinedRegionFunction {
     relocations: Vec<crate::JitRelocatableRelocation>,
     native_pc_ranges: Vec<crate::JitNativePcRange>,
     native_stack_bytes: u32,
+    pre_regalloc: PreRegallocMetrics,
 }
 
 const MAX_NATIVE_SPILL_FRAME_BYTES: u32 = 1024 * 1024;
+const MAX_FRAGMENT_CLIF_BLOCKS: usize = 2_048;
+const MAX_FRAGMENT_CLIF_VALUES: usize = 32_768;
+const MAX_FRAGMENT_CLIF_INSTRUCTIONS: usize = 65_536;
+const MAX_FRAGMENT_BLOCK_PARAMETERS: usize = 8_192;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct PreRegallocMetrics {
+    pub(super) blocks: usize,
+    pub(super) values: usize,
+    pub(super) instructions: usize,
+    pub(super) block_parameters: usize,
+}
+
+impl PreRegallocMetrics {
+    fn max_assign(&mut self, other: Self) {
+        self.blocks = self.blocks.max(other.blocks);
+        self.values = self.values.max(other.values);
+        self.instructions = self.instructions.max(other.instructions);
+        self.block_parameters = self.block_parameters.max(other.block_parameters);
+    }
+}
+
+pub(super) fn validate_pre_regalloc_structure(
+    function: &ir::Function,
+    region: &RegionGraph,
+    fragment: Option<u32>,
+) -> Result<PreRegallocMetrics, CraneliftLoweringError> {
+    let blocks = function.layout.blocks().count();
+    let values = function.dfg.num_values();
+    let instructions = function
+        .layout
+        .blocks()
+        .map(|block| function.layout.block_insts(block).count())
+        .sum::<usize>();
+    let block_parameters = function
+        .layout
+        .blocks()
+        .map(|block| function.dfg.block_params(block).len())
+        .sum::<usize>();
+    if blocks > MAX_FRAGMENT_CLIF_BLOCKS
+        || values > MAX_FRAGMENT_CLIF_VALUES
+        || instructions > MAX_FRAGMENT_CLIF_INSTRUCTIONS
+        || block_parameters > MAX_FRAGMENT_BLOCK_PARAMETERS
+    {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_PRE_REGALLOC_BUDGET",
+            format!(
+                "function {} fragment={} exceeds the pre-regalloc ceiling: clif_blocks={blocks}/{MAX_FRAGMENT_CLIF_BLOCKS} clif_values={values}/{MAX_FRAGMENT_CLIF_VALUES} clif_instructions={instructions}/{MAX_FRAGMENT_CLIF_INSTRUCTIONS} block_parameters={block_parameters}/{MAX_FRAGMENT_BLOCK_PARAMETERS}",
+                region.function_name,
+                fragment.map_or_else(|| "whole".to_owned(), |id| id.to_string()),
+            ),
+        ));
+    }
+    Ok(PreRegallocMetrics {
+        blocks,
+        values,
+        instructions,
+        block_parameters,
+    })
+}
 
 fn define_region_fragment_wrapper(
     module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
     region: &RegionGraph,
     func_id: FuncId,
     fragment_functions: &BTreeMap<u32, FuncId>,
@@ -2241,12 +2331,10 @@ fn define_region_fragment_wrapper(
     relocation_functions: &BTreeMap<FunctionId, FuncId>,
 ) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
     let pointer_type = module.target_config().pointer_type();
-    let mut ctx = module.make_context();
     ctx.func.signature = region_graph_signature(module, region)?;
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
-    let mut builder_context = FunctionBuilderContext::new();
     {
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
+        let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
@@ -2332,17 +2420,13 @@ fn define_region_fragment_wrapper(
             .iter()
             .map(|fragment| (fragment.id, builder.create_block()))
             .collect::<BTreeMap<_, _>>();
+        let root_entry = builder.create_block();
+        let mut resume_switch = Switch::new();
         for (encoded_resume, fragment_id) in &layout.resume_owner {
-            let next = builder.create_block();
-            let matches =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, resume_id, i64::from(*encoded_resume));
-            builder
-                .ins()
-                .brif(matches, call_blocks[fragment_id], &[], next, &[]);
-            builder.switch_to_block(next);
+            resume_switch.set_entry(u128::from(*encoded_resume as u32), call_blocks[fragment_id]);
         }
+        resume_switch.emit(&mut builder, resume_id, root_entry);
+        builder.switch_to_block(root_entry);
         let root_fragment = layout.block_owner[&BlockId::new(0)];
         builder.ins().jump(call_blocks[&root_fragment], &[]);
 
@@ -2372,6 +2456,7 @@ fn define_region_fragment_wrapper(
         builder.seal_all_blocks();
         builder.finalize();
     }
+    let pre_regalloc = validate_pre_regalloc_structure(&ctx.func, region, None)?;
     let verifier_flags = settings::Flags::new(settings::builder());
     verify_function(&ctx.func, &verifier_flags).map_err(|error| {
         CraneliftLoweringError::new(
@@ -2380,7 +2465,7 @@ fn define_region_fragment_wrapper(
         )
     })?;
     let clif_blocks = ctx.func.layout.blocks().count();
-    module.define_function(func_id, &mut ctx).map_err(|error| {
+    module.define_function(func_id, ctx).map_err(|error| {
         CraneliftLoweringError::new(
             "JIT_CRANELIFT_REJECT_FRAGMENT_WRAPPER",
             format!("failed to define native fragment wrapper: {error}"),
@@ -2420,7 +2505,7 @@ fn define_region_fragment_wrapper(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    module.clear_context(&mut ctx);
+    module.clear_context(ctx);
     Ok(DefinedRegionFunction {
         code,
         clif_blocks,
@@ -2428,6 +2513,7 @@ fn define_region_fragment_wrapper(
         relocations,
         native_pc_ranges: Vec::new(),
         native_stack_bytes,
+        pre_regalloc,
     })
 }
 
@@ -2533,6 +2619,8 @@ fn capture_relocation(
 #[allow(clippy::too_many_arguments)]
 fn define_region_graph_function(
     module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
     region: &RegionGraph,
     constants: &[IrConstant],
     func_id: FuncId,
@@ -2555,16 +2643,14 @@ fn define_region_graph_function(
         ExecutableValueFlow::default()
     };
     let pointer_type = module.target_config().pointer_type();
-    let mut ctx = module.make_context();
     ctx.func.signature = if fragment.is_some() {
         region_fragment_signature(module, region)?
     } else {
         region_graph_signature(module, region)?
     };
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
-    let mut builder_context = FunctionBuilderContext::new();
     {
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
+        let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
         let owned_blocks = region
             .blocks
             .iter()
@@ -2604,6 +2690,7 @@ fn define_region_graph_function(
             .map(|instruction| (instruction.continuation_id, builder.create_block()))
             .collect::<BTreeMap<_, _>>();
         let terminal_exit = builder.create_block();
+        builder.set_cold_block(terminal_exit);
         builder.append_block_param(terminal_exit, types::I32);
         builder.append_block_param(terminal_exit, types::I64);
         let normal_entry = blocks.values().next().copied().ok_or_else(|| {
@@ -2752,15 +2839,75 @@ fn define_region_graph_function(
                     locals
                 },
             );
+        let handler_resume_loaders = handler_resume_blocks
+            .iter()
+            .map(|target| (*target, builder.create_block()))
+            .collect::<BTreeMap<_, _>>();
+        let suspension_resume_loaders = owned_blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| {
+                matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_))
+            })
+            .map(|instruction| (instruction.continuation_id, builder.create_block()))
+            .collect::<BTreeMap<_, _>>();
+        let transition_resume_loaders = owned_blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| {
+                transition_register_liveness
+                    .get(&instruction.continuation_id)
+                    .is_some_and(|registers| {
+                        instruction_has_native_transition(instruction)
+                            && registers.len() <= crate::JIT_DEOPT_MAX_REGISTERS
+                    })
+            })
+            .map(|instruction| (instruction.continuation_id, builder.create_block()))
+            .collect::<BTreeMap<_, _>>();
+        let osr_entries = region
+            .osr_entries()
+            .into_iter()
+            .filter(|entry| {
+                fragment.is_none_or(|fragment| fragment.fragment.blocks.contains(&entry.block))
+            })
+            .collect::<Vec<_>>();
+        let osr_resume_loaders = osr_entries
+            .iter()
+            .map(|entry| (entry.id, builder.create_block()))
+            .collect::<BTreeMap<_, _>>();
+        let has_resume_entries = !handler_resume_loaders.is_empty()
+            || !suspension_resume_loaders.is_empty()
+            || !transition_resume_loaders.is_empty()
+            || !osr_resume_loaders.is_empty();
+        let resume_default = has_resume_entries.then(|| builder.create_block());
+        let mut resume_switch = Switch::new();
+        for (target, loader) in &handler_resume_loaders {
+            resume_switch.set_entry(
+                u128::from(crate::native_handler_resume_id(*target) as u32),
+                *loader,
+            );
+        }
+        for (continuation, loader) in &suspension_resume_loaders {
+            resume_switch.set_entry(
+                u128::from(crate::native_suspension_resume_id(*continuation) as u32),
+                *loader,
+            );
+        }
+        for (continuation, loader) in &transition_resume_loaders {
+            resume_switch.set_entry(
+                u128::from(crate::native_transition_resume_id(*continuation) as u32),
+                *loader,
+            );
+        }
+        for (id, loader) in &osr_resume_loaders {
+            resume_switch.set_entry(u128::from(*id as u32), *loader);
+        }
+        if let Some(resume_default) = resume_default {
+            resume_switch.emit(&mut builder, resume_id, resume_default);
+        }
+
         for target in handler_resume_blocks {
-            let loader = builder.create_block();
-            let next = builder.create_block();
-            let encoded_resume = crate::native_handler_resume_id(target);
-            let requested =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, resume_id, i64::from(encoded_resume));
-            builder.ins().brif(requested, loader, &[], next, &[]);
+            let loader = handler_resume_loaders[&target];
             builder.switch_to_block(loader);
             let status = builder.ins().load(
                 types::I32,
@@ -2806,22 +2953,13 @@ fn define_region_graph_function(
                 builder.def_var(local_variable(&locals, local)?, local_value);
             }
             builder.ins().jump(cranelift_block(&blocks, target)?, &[]);
-            builder.switch_to_block(next);
         }
         for region_block in &owned_blocks {
             for instruction in &region_block.instructions {
                 if !matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_)) {
                     continue;
                 }
-                let loader = builder.create_block();
-                let next = builder.create_block();
-                let encoded_resume =
-                    crate::native_suspension_resume_id(instruction.continuation_id);
-                let requested =
-                    builder
-                        .ins()
-                        .icmp_imm(IntCC::Equal, resume_id, i64::from(encoded_resume));
-                builder.ins().brif(requested, loader, &[], next, &[]);
+                let loader = suspension_resume_loaders[&instruction.continuation_id];
                 builder.switch_to_block(loader);
                 let control_status = builder.ins().load(
                     types::I32,
@@ -2854,7 +2992,6 @@ fn define_region_graph_function(
                         .expect("suspension block was predeclared"),
                     &[],
                 );
-                builder.switch_to_block(next);
             }
         }
         for region_block in &owned_blocks {
@@ -2864,15 +3001,7 @@ fn define_region_graph_function(
                     .filter(|_| instruction_has_native_transition(instruction))
                     .filter(|registers| registers.len() <= crate::JIT_DEOPT_MAX_REGISTERS)
                 {
-                    let loader = builder.create_block();
-                    let next = builder.create_block();
-                    let encoded_resume =
-                        crate::native_transition_resume_id(instruction.continuation_id);
-                    let requested =
-                        builder
-                            .ins()
-                            .icmp_imm(IntCC::Equal, resume_id, i64::from(encoded_resume));
-                    builder.ins().brif(requested, loader, &[], next, &[]);
+                    let loader = transition_resume_loaders[&instruction.continuation_id];
                     builder.switch_to_block(loader);
                     let control_status = builder.ins().load(
                         types::I32,
@@ -2920,20 +3049,11 @@ fn define_region_graph_function(
                     builder
                         .ins()
                         .jump(transition_blocks[&instruction.continuation_id], &[]);
-                    builder.switch_to_block(next);
                 }
             }
         }
-        for osr_entry in region.osr_entries().into_iter().filter(|entry| {
-            fragment.is_none_or(|fragment| fragment.fragment.blocks.contains(&entry.block))
-        }) {
-            let loader = builder.create_block();
-            let next = builder.create_block();
-            let requested =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, resume_id, i64::from(osr_entry.id));
-            builder.ins().brif(requested, loader, &[], next, &[]);
+        for osr_entry in &osr_entries {
+            let loader = osr_resume_loaders[&osr_entry.id];
             builder.switch_to_block(loader);
             for local in &osr_entry.live_locals {
                 let offset = std::mem::offset_of!(crate::JitDeoptState, slots)
@@ -2949,19 +3069,27 @@ fn define_region_graph_function(
             builder
                 .ins()
                 .jump(cranelift_block(&blocks, osr_entry.block)?, &[]);
-            builder.switch_to_block(next);
+        }
+        if let Some(resume_default) = resume_default {
+            builder.switch_to_block(resume_default);
         }
         if let Some(fragment) = fragment {
             let frame = fragment_frame.expect("fragment signature has a native frame");
             let entry_id = fragment_entry_id.expect("fragment signature has an entry id");
+            let invalid_entry = builder.create_block();
+            let entry_loaders = fragment
+                .fragment
+                .normal_entries
+                .iter()
+                .map(|entry| (*entry, builder.create_block()))
+                .collect::<BTreeMap<_, _>>();
+            let mut entry_switch = Switch::new();
+            for (entry, loader) in &entry_loaders {
+                entry_switch.set_entry(u128::from(entry.raw()), *loader);
+            }
+            entry_switch.emit(&mut builder, entry_id, invalid_entry);
             for entry in &fragment.fragment.normal_entries {
-                let loader = builder.create_block();
-                let next = builder.create_block();
-                let requested =
-                    builder
-                        .ins()
-                        .icmp_imm(IntCC::Equal, entry_id, i64::from(entry.raw()));
-                builder.ins().brif(requested, loader, &[], next, &[]);
+                let loader = entry_loaders[entry];
                 builder.switch_to_block(loader);
                 let entry_block = region.blocks.get(entry.index()).ok_or_else(|| {
                     CraneliftLoweringError::new(
@@ -3002,8 +3130,9 @@ fn define_region_graph_function(
                     builder.def_var(register_variables[register], value);
                 }
                 builder.ins().jump(cranelift_block(&blocks, *entry)?, &[]);
-                builder.switch_to_block(next);
             }
+            builder.switch_to_block(invalid_entry);
+            builder.set_cold_block(invalid_entry);
             let invalid = builder
                 .ins()
                 .iconst(types::I32, i64::from(crate::JitCallStatus::RUNTIME_ERROR.0));
@@ -3069,7 +3198,7 @@ fn define_region_graph_function(
                     &suspension_blocks,
                     &locals,
                     &mut registers,
-                    region_block.id,
+                    region_block.source_block,
                     instruction,
                     transition_register_liveness
                         .get(&instruction.continuation_id)
@@ -3202,6 +3331,11 @@ fn define_region_graph_function(
         builder.seal_all_blocks();
         builder.finalize();
     }
+    let pre_regalloc = validate_pre_regalloc_structure(
+        &ctx.func,
+        region,
+        fragment.map(|fragment| fragment.fragment.id),
+    )?;
     let verifier_flags = settings::Flags::new(settings::builder());
     verify_function(&ctx.func, &verifier_flags).map_err(|error| {
         CraneliftLoweringError::new(
@@ -3210,7 +3344,7 @@ fn define_region_graph_function(
         )
     })?;
     let clif_blocks = ctx.func.layout.blocks().count();
-    module.define_function(func_id, &mut ctx).map_err(|error| {
+    module.define_function(func_id, ctx).map_err(|error| {
         CraneliftLoweringError::new(
             "JIT_CRANELIFT_REJECT_DEFINE",
             format!("failed to define native function: {error}"),
@@ -3265,7 +3399,7 @@ fn define_region_graph_function(
             })
         })
         .collect();
-    module.clear_context(&mut ctx);
+    module.clear_context(ctx);
     Ok(DefinedRegionFunction {
         code,
         clif_blocks,
@@ -3273,6 +3407,7 @@ fn define_region_graph_function(
         relocations,
         native_pc_ranges,
         native_stack_bytes,
+        pre_regalloc,
     })
 }
 

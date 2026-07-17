@@ -263,14 +263,14 @@ pub(super) fn invoke_native_function_with_metadata_strict(
         .chain(&visible_extra)
         .map(|value| context.decode(*value))
         .collect::<Result<Vec<_>, _>>()?;
-    context.call_arguments.push(visible_arguments.clone());
+    context.push_call_arguments(visible_arguments.clone());
     let result = invoke_native_method_with_trace_arguments(
         context,
         function,
         &bound,
         Some(&visible_arguments),
     );
-    context.call_arguments.pop();
+    context.pop_call_arguments();
     result
 }
 

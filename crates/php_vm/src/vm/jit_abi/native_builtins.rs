@@ -1825,6 +1825,7 @@ pub(super) fn execute_native_builtin(
                 return context.encode(Value::Bool(false));
             }
             context.dynamic_constants.insert(name, value);
+            context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
             context.encode(Value::Bool(true))
         }
         "defined" => {
@@ -2604,6 +2605,7 @@ pub(super) fn execute_native_builtin(
             };
             let callback = context.decode(*callback)?;
             context.autoload_callbacks.push(callback);
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(Value::Bool(true))
         }
         "spl_autoload_unregister" => {
@@ -2615,6 +2617,9 @@ pub(super) fn execute_native_builtin(
             context
                 .autoload_callbacks
                 .retain(|candidate| candidate != &callback);
+            if context.autoload_callbacks.len() != previous {
+                context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            }
             context.encode(Value::Bool(context.autoload_callbacks.len() != previous))
         }
         "spl_autoload_functions" => context.encode(Value::Array(
@@ -2634,6 +2639,7 @@ pub(super) fn execute_native_builtin(
                 arguments,
                 source: source.clone(),
             });
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(Value::Null)
         }
         "class_alias" => {
@@ -3296,10 +3302,13 @@ pub(super) fn execute_native_builtin(
             context
                 .error_handlers
                 .push(NativeErrorHandler { callback, levels });
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(previous)
         }
         "restore_error_handler" => {
-            let _ = context.error_handlers.pop();
+            if context.error_handlers.pop().is_some() {
+                context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            }
             context.encode(Value::Bool(true))
         }
         "set_exception_handler" => {
@@ -3322,10 +3331,13 @@ pub(super) fn execute_native_builtin(
                 .cloned()
                 .unwrap_or(Value::Null);
             context.exception_handlers.push(callback);
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(previous)
         }
         "restore_exception_handler" => {
-            let _ = context.exception_handlers.pop();
+            if context.exception_handlers.pop().is_some() {
+                context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            }
             context.encode(Value::Bool(true))
         }
         "get_exception_handler" => context.encode(
@@ -3593,6 +3605,9 @@ pub(super) fn execute_native_builtin(
                 let diagnostics = builtin.take_diagnostics();
                 (result, diagnostics)
             };
+            if normalized.starts_with("session_") {
+                context.mark_roots_dirty(RootMutationReason::Session);
+            }
             for diagnostic in diagnostics {
                 let errno = match diagnostic.severity() {
                     php_runtime::api::RuntimeSeverity::Notice => php_runtime::api::PHP_E_NOTICE,

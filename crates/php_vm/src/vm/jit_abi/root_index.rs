@@ -16,6 +16,7 @@ pub(super) enum RootMutationReason {
     Suspension,
     ResourceOwned,
     RootedContainer,
+    CallArguments,
 }
 
 /// Request-local object membership rebuilt only after a root mutation.
@@ -36,6 +37,10 @@ impl RequestRootIndex {
             dirty: true,
             ..Self::default()
         }
+    }
+
+    pub(super) fn new_clean() -> Self {
+        Self::default()
     }
 
     pub(super) fn mark_dirty(&mut self, reason: RootMutationReason) {
@@ -84,7 +89,7 @@ impl RequestRootIndex {
 }
 
 impl RootMutationReason {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::GlobalOrStatic,
         Self::Session,
         Self::CallbackOrHandler,
@@ -94,6 +99,7 @@ impl RootMutationReason {
         Self::Suspension,
         Self::ResourceOwned,
         Self::RootedContainer,
+        Self::CallArguments,
     ];
 
     pub(super) const fn as_str(self) -> &'static str {
@@ -107,6 +113,7 @@ impl RootMutationReason {
             Self::Suspension => "suspension",
             Self::ResourceOwned => "resource_owned",
             Self::RootedContainer => "rooted_container",
+            Self::CallArguments => "call_arguments",
         }
     }
 }
@@ -191,5 +198,27 @@ mod tests {
         assert!(index.contains_container(&Value::Array(array)));
         assert_eq!(index.rebuilds(), 1);
         reference.set(Value::Null);
+    }
+
+    #[test]
+    fn transient_call_roots_do_not_invalidate_stable_request_roots() {
+        let stable_value =
+            Value::Array(php_runtime::api::PhpArray::from_packed(vec![Value::Int(1)]));
+        let call_value = Value::Array(php_runtime::api::PhpArray::from_packed(vec![Value::Int(2)]));
+
+        let mut stable = RequestRootIndex::new_dirty();
+        stable.replace(collect_root_membership([&stable_value]));
+        let mut transient = RequestRootIndex::new_clean();
+        transient.mark_dirty(RootMutationReason::CallArguments);
+        transient.replace(collect_root_membership([&call_value]));
+
+        assert!(stable.contains_container(&stable_value));
+        assert!(transient.contains_container(&call_value));
+        transient.mark_dirty(RootMutationReason::CallArguments);
+        transient.replace(RootMembership::default());
+
+        assert_eq!(stable.rebuilds(), 1);
+        assert!(stable.contains_container(&stable_value));
+        assert!(!transient.contains_container(&call_value));
     }
 }

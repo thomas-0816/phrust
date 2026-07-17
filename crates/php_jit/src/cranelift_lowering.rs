@@ -22,7 +22,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings;
 use cranelift_codegen::verifier::verify_function;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module, ModuleReloc, ModuleRelocTarget};
 use php_ir::{BlockId, FunctionId, IrConstant, IrSpan, IrUnit, LocalId, RegId};
@@ -42,6 +42,7 @@ mod terminators;
 mod value_lowering;
 
 pub use module_layout::NativeCompilePlan;
+use module_layout::split_oversized_region_blocks;
 use native_linkage::BASELINE_FUNCTION_SPECIALIZATION;
 pub use native_linkage::{
     NativeFunctionKey, NativeFunctionTier, NativeIndirectionCell, NativeIndirectionState,
@@ -59,6 +60,7 @@ struct NativeScalarRegionCompileResult {
     handle: JitFunctionHandle,
     code_bytes: u64,
     clif_blocks: Option<usize>,
+    maximum_pre_regalloc: Option<executable_region::PreRegallocMetrics>,
     fast_path_hits: u64,
     has_control_flow: bool,
     plan: NativeCompilePlan,
@@ -209,10 +211,13 @@ fn native_php_entry_signature(module: &JITModule) -> Signature {
 fn compile_managed_native(
     request: &JitCompileRequest,
     function: FunctionId,
+    function_key: NativeFunctionKey,
     specialization: &str,
     helpers: &[(&str, usize)],
     compile: impl FnOnce(
         &mut JITModule,
+        &mut cranelift_codegen::Context,
+        &mut FunctionBuilderContext,
         &str,
     ) -> Result<(JitFunctionHandle, u64), CraneliftLoweringError>,
 ) -> Result<ManagedJitFunction, CraneliftLoweringError> {
@@ -223,15 +228,16 @@ fn compile_managed_native(
     let identity = crate::cranelift_host_isa_identity().map_err(|error| {
         CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_NATIVE_TARGET", error.to_string())
     })?;
-    let mut config_hash = if request.config_hash == 0 {
+    let config_hash = if request.config_hash == 0 {
         identity.feature_fingerprint ^ u64::from(request.opt_level)
     } else {
         request.config_hash
     };
+    let mut helper_binding_hash = 0xcbf2_9ce4_8422_2325_u64;
     for (symbol, address) in helpers {
         for byte in symbol.as_bytes().iter().chain(address.to_le_bytes().iter()) {
-            config_hash ^= u64::from(*byte);
-            config_hash = config_hash.wrapping_mul(0x0000_0100_0000_01b3);
+            helper_binding_hash ^= u64::from(*byte);
+            helper_binding_hash = helper_binding_hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
     let dependency_identity = request
@@ -247,10 +253,10 @@ fn compile_managed_native(
         } else {
             "optimizing".to_owned()
         },
-        helper_abi_hash: config_hash
-            ^ JIT_RUNTIME_ABI_HASH
+        helper_abi_hash: JIT_RUNTIME_ABI_HASH
             ^ crate::JIT_HELPER_REGISTRY_ABI_HASH
             ^ php_runtime::api::NATIVE_OPERATION_ABI_HASH,
+        helper_binding_hash,
         target_cpu: format!(
             "{}:{}:{}",
             identity.target_triple, identity.isa_name, identity.feature_fingerprint
@@ -265,7 +271,7 @@ fn compile_managed_native(
         CraneliftLoweringError::new("JIT_CRANELIFT_CODE_MANAGER", error.to_string())
     })?;
     manager
-        .compile_once(key, helpers, compile)
+        .compile_once_with_scratch(key, Some(function_key), helpers, compile)
         .map_err(|error| match error {
             ManagedCompileError::Manager(error) => {
                 CraneliftLoweringError::new("JIT_CRANELIFT_CODE_MANAGER", error.to_string())
@@ -400,6 +406,15 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             );
         }
     };
+    let region = split_oversized_region_blocks(region);
+    if let Err(error) = region.verify() {
+        return NativeCompileOutcome::skipped(
+            JitCompileStatus::Rejected {
+                reason: "JIT_CRANELIFT_FRAGMENT_NORMALIZE".to_owned(),
+            },
+            format!("normalized native Region IR failed verification: {error}"),
+        );
+    }
     let plan = NativeCompilePlan::for_region(&region);
     if plan.function != function {
         return NativeCompileOutcome::skipped(
@@ -426,7 +441,7 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             NativeCompileOutcome::compiled(
                 compiled.handle,
                 format!(
-                    "Cranelift baseline Region IR `{}` function={} abi_hash={} code_bytes={} clif_blocks={} fast_path_hits={} control_flow={} plan_ir_instructions={} plan_php_blocks={} plan_estimated_clif_blocks={} plan_virtual_values={} plan_safepoints={} plan_live_sum={} plan_fragments={} plan_max_fragment_blocks={} plan_max_fragment_instructions={} plan_max_fragment_estimated_clif_blocks={}",
+                    "Cranelift baseline Region IR `{}` function={} abi_hash={} code_bytes={} clif_blocks={} max_fragment_clif_blocks={} max_fragment_clif_values={} max_fragment_clif_instructions={} max_fragment_block_parameters={} fast_path_hits={} control_flow={} plan_ir_instructions={} plan_php_blocks={} plan_estimated_clif_blocks={} plan_virtual_values={} plan_safepoints={} plan_live_sum={} plan_fragments={} plan_max_fragment_blocks={} plan_max_fragment_instructions={} plan_max_fragment_estimated_clif_blocks={}",
                     request.compile.region_id,
                     function.raw(),
                     JIT_RUNTIME_ABI_HASH,
@@ -434,6 +449,18 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
                     compiled
                         .clif_blocks
                         .map_or_else(|| "cached".to_owned(), |blocks| blocks.to_string()),
+                    compiled
+                        .maximum_pre_regalloc
+                        .map_or(0, |metrics| metrics.blocks),
+                    compiled
+                        .maximum_pre_regalloc
+                        .map_or(0, |metrics| metrics.values),
+                    compiled
+                        .maximum_pre_regalloc
+                        .map_or(0, |metrics| metrics.instructions),
+                    compiled
+                        .maximum_pre_regalloc
+                        .map_or(0, |metrics| metrics.block_parameters),
                     compiled.fast_path_hits,
                     compiled.has_control_flow,
                     compiled.plan.ir_instructions,
@@ -481,50 +508,10 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
     }
 }
 
-fn runtime_helper_abi_hash(helpers: crate::JitRuntimeHelperAddresses) -> u64 {
-    let mut hash = JIT_RUNTIME_ABI_HASH
+fn runtime_helper_abi_hash(_helpers: crate::JitRuntimeHelperAddresses) -> u64 {
+    JIT_RUNTIME_ABI_HASH
         ^ crate::JIT_HELPER_REGISTRY_ABI_HASH
-        ^ php_runtime::api::NATIVE_OPERATION_ABI_HASH;
-    for address in [
-        helpers.native_call_dispatch,
-        helpers.native_function_resolve,
-        helpers.native_dynamic_code,
-        helpers.native_unary,
-        helpers.native_binary,
-        helpers.native_compare,
-        helpers.native_cast,
-        helpers.native_echo,
-        helpers.native_local_fetch,
-        helpers.native_local_store,
-        helpers.native_value_lifecycle,
-        helpers.native_reference_bind,
-        helpers.native_argument_check,
-        helpers.native_return_check,
-        helpers.native_exception_new,
-        helpers.native_array_new,
-        helpers.native_object_new,
-        helpers.native_property_fetch,
-        helpers.native_property_assign,
-        helpers.native_object_clone,
-        helpers.native_object_clone_with,
-        helpers.native_array_insert,
-        helpers.native_array_fetch,
-        helpers.native_array_unset,
-        helpers.native_array_spread,
-        helpers.native_foreach_init,
-        helpers.native_foreach_next,
-        helpers.native_foreach_cleanup,
-        helpers.native_constant_fetch,
-        helpers.native_truthy,
-        helpers.native_runtime_fatal,
-        helpers.native_execution_poll,
-    ] {
-        for byte in address.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    hash
+        ^ php_runtime::api::NATIVE_OPERATION_ABI_HASH
 }
 
 /// Per-lowering counters.

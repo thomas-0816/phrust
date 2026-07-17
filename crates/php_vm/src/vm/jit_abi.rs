@@ -233,7 +233,13 @@ pub(super) struct NativeExecutionContext<'a> {
     values: Vec<Option<NativeStoredValue>>,
     value_refcounts: Vec<u32>,
     free_value_slots: Vec<u32>,
+    /// Long-lived request roots (globals, statics, callbacks, sessions, and
+    /// suspended state). This index must not be invalidated by every call.
     root_index: RequestRootIndex,
+    /// Roots owned by the active native call stack. Argument frames are
+    /// pushed and popped frequently, so rebuilding this small domain must not
+    /// traverse the complete request graph.
+    call_root_index: RequestRootIndex,
     resources: php_runtime::api::ResourceTable,
     builtin_request_state: php_runtime::api::BuiltinRequestState,
     registered_extensions: NativeRegisteredExtensionRequestState,
@@ -341,6 +347,9 @@ struct NativeFiberExecution {
 impl<'a> NativeExecutionContext<'a> {
     fn mark_roots_dirty(&mut self, reason: RootMutationReason) {
         self.root_index.mark_dirty(reason);
+        if reason == RootMutationReason::RootedContainer {
+            self.call_root_index.mark_dirty(reason);
+        }
     }
 
     fn mark_rooted_container_dirty(&mut self, value: &Value) {
@@ -348,6 +357,23 @@ impl<'a> NativeExecutionContext<'a> {
             self.root_index
                 .mark_dirty(RootMutationReason::RootedContainer);
         }
+        if self.call_root_index.is_dirty() || self.call_root_index.contains_container(value) {
+            self.call_root_index
+                .mark_dirty(RootMutationReason::RootedContainer);
+        }
+    }
+
+    fn push_call_arguments(&mut self, arguments: Vec<Value>) {
+        self.call_arguments.push(arguments);
+        self.call_root_index
+            .mark_dirty(RootMutationReason::CallArguments);
+    }
+
+    fn pop_call_arguments(&mut self) {
+        let popped = self.call_arguments.pop();
+        debug_assert!(popped.is_some(), "native call argument stack underflow");
+        self.call_root_index
+            .mark_dirty(RootMutationReason::CallArguments);
     }
 
     pub(super) const fn process_exit_terminates_process(&self) -> bool {
@@ -470,6 +496,7 @@ impl<'a> NativeExecutionContext<'a> {
             value_refcounts: Vec::new(),
             free_value_slots: Vec::new(),
             root_index: RequestRootIndex::new_dirty(),
+            call_root_index: RequestRootIndex::new_clean(),
             resources,
             builtin_request_state: php_runtime::api::BuiltinRequestState::new(),
             registered_extensions: NativeRegisteredExtensionRequestState::default(),
@@ -762,7 +789,6 @@ impl<'a> NativeExecutionContext<'a> {
                     .iter()
                     .map(|handler| handler.callback.clone()),
             );
-            roots.extend(self.call_arguments.iter().flatten().cloned());
             roots.extend(self.pending_throwable.iter().cloned());
             roots.extend(self.enum_cases.values().cloned().map(Value::Object));
             self.root_index
@@ -772,7 +798,19 @@ impl<'a> NativeExecutionContext<'a> {
         } else {
             self.record_object_release_root_check(true);
         }
-        self.root_index.contains(object_id)
+        if self.root_index.contains(object_id) {
+            return true;
+        }
+        if self.call_root_index.is_dirty() {
+            let reason = self.call_root_index.last_reason().as_str();
+            let membership = collect_root_membership(self.call_arguments.iter().flatten());
+            self.call_root_index.replace(membership);
+            self.record_object_release_root_check(false);
+            self.record_root_rebuild_reason(reason);
+        } else {
+            self.record_object_release_root_check(true);
+        }
+        self.call_root_index.contains(object_id)
     }
 
     fn run_object_destructor(&mut self, object: php_runtime::api::ObjectRef) -> Result<(), String> {
@@ -831,6 +869,7 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn take_include_symbols(&mut self) -> NativeIncludeSymbols {
+        self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
         NativeIncludeSymbols {
             external_functions: std::mem::take(&mut self.external_functions),
             dynamic_units: std::mem::take(&mut self.dynamic_units),
@@ -858,6 +897,7 @@ impl<'a> NativeExecutionContext<'a> {
         self.enum_cases = symbols.enum_cases;
         self.destroyed_objects = symbols.destroyed_objects;
         self.last_error = symbols.last_error;
+        self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
     }
 
     fn external_function(&self, name: &str) -> Option<NativeDynamicFunction> {
@@ -1587,7 +1627,11 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     pub(super) fn take_pending_throwable(&mut self) -> Option<Value> {
-        self.pending_throwable.take()
+        let throwable = self.pending_throwable.take();
+        if throwable.is_some() {
+            self.mark_roots_dirty(RootMutationReason::PendingThrowable);
+        }
+        throwable
     }
 
     pub(super) fn run_shutdown_callbacks(&mut self) -> Result<(), String> {
@@ -1600,13 +1644,15 @@ impl<'a> NativeExecutionContext<'a> {
                 arguments,
                 source,
             } = self.shutdown_callbacks.remove(0);
+            self.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             let result = invoke_native_callable_value(self, callable, &arguments, &source, None);
             if matches!(&result, Err(error) if error == "E_PHP_RETHROW")
-                && let Some(throwable) = self.pending_throwable.take()
+                && let Some(throwable) = self.take_pending_throwable()
             {
                 self.pending_throwable = Some(native_throwable_with_internal_frame(
                     self, throwable, &source,
                 ));
+                self.mark_roots_dirty(RootMutationReason::PendingThrowable);
             }
             result?;
         }
@@ -2405,6 +2451,7 @@ fn encode_native_enum_case(
         object.set_property("value", value);
     }
     context.enum_cases.insert(key, object.clone());
+    context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
     context.encode(Value::Object(object))
 }
 
@@ -2568,6 +2615,7 @@ fn execute_native_static_property(
         context
             .static_properties
             .insert(key, Value::Reference(reference.clone()));
+        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
         if keys.is_empty() {
             return Some(context.encode(Value::Reference(reference)));
         }
@@ -2797,6 +2845,7 @@ fn execute_native_static_property(
         let previous = context
             .static_properties
             .insert(key.clone(), Value::Reference(reference.clone()));
+        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
         if let Some(previous) = previous.map(dereference_native_assignment_value)
             && let Value::Object(previous) = previous
             && let Err(error) = context.run_object_destructor(previous)
@@ -2838,6 +2887,7 @@ fn execute_native_static_property(
         } else {
             context.static_properties.insert(key.clone(), value.clone())
         };
+        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
         if let Some(Value::Object(previous)) = previous
             && let Err(error) = context.run_object_destructor(previous)
         {
@@ -2921,10 +2971,12 @@ fn execute_native_static_property(
                         let mut value = reference.get();
                         unset_native_array_dims(&mut value, &keys);
                         reference.set(value);
+                        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
                     }
                     mut value => {
                         unset_native_array_dims(&mut value, &keys);
                         context.static_properties.insert(key.clone(), value);
+                        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
                     }
                 }
             }
@@ -3544,6 +3596,7 @@ fn invoke_native_method_with_trace_arguments(
                 &function_name,
                 frame_arguments,
             ));
+            context.mark_roots_dirty(RootMutationReason::PendingThrowable);
             Err("E_PHP_RETHROW".to_owned())
         }
         Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })

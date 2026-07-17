@@ -876,6 +876,7 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
             publish_native_globals_array(context, &replacement);
         }
         if let Value::Reference(reference) = current_value {
+            context.mark_rooted_container_dirty(&Value::Reference(reference.clone()));
             reference.set(replacement);
             if function.flags.is_top_level
                 && let Some(name) = name.filter(|name| name != "GLOBALS")
