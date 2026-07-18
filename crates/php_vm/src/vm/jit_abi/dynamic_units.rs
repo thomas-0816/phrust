@@ -87,7 +87,7 @@ pub(super) fn register_native_dynamic_unit(
             .classes
             .iter()
             .any(|entry| entry.name == normalize_class_name(class))
-            || native_external_class(context, class).is_some()
+            || native_external_class_exists(context, class)
         {
             return Err(format!(
                 "Cannot declare class {class}, because the name is already in use"
@@ -97,13 +97,24 @@ pub(super) fn register_native_dynamic_unit(
     let exported_classes = classes
         .iter()
         .map(|class| normalize_class_name(class))
+        .collect::<std::collections::BTreeSet<_>>();
+    let exported_class_indexes = compiled
+        .unit()
+        .classes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, class)| {
+            exported_classes
+                .contains(&class.name)
+                .then(|| (class.name.clone(), index))
+        })
         .collect();
     let unit = context.dynamic_units.len();
     context.dynamic_units.push(NativeDynamicUnit {
         compiled,
         native_entries,
         native_entry_signature_hashes,
-        exported_classes,
+        exported_class_indexes,
     });
     for (name, function) in functions {
         context.external_functions.insert(
@@ -426,10 +437,10 @@ pub(super) fn native_include_uses_implicit_return(unit: &php_ir::IrUnit) -> bool
     })
 }
 
-pub(super) fn native_external_class(
+fn native_external_class_location(
     context: &NativeExecutionContext<'_>,
     name: &str,
-) -> Option<(usize, php_ir::module::ClassEntry)> {
+) -> Option<(usize, usize)> {
     let requested = normalize_class_name(name);
     let normalized = context
         .class_aliases
@@ -444,18 +455,41 @@ pub(super) fn native_external_class(
             if context.current_dynamic_unit == Some(unit) {
                 return None;
             }
-            if !package.exported_classes.contains(normalized) {
-                return None;
-            }
             package
-                .compiled
-                .unit()
-                .classes
-                .iter()
-                .find(|class| class.name == normalized)
-                .cloned()
+                .exported_class_indexes
+                .get(normalized)
+                .copied()
                 .map(|class| (unit, class))
         })
+}
+
+pub(super) fn native_external_class_exists(
+    context: &NativeExecutionContext<'_>,
+    name: &str,
+) -> bool {
+    native_external_class_location(context, name).is_some()
+}
+
+pub(super) fn native_external_class_ref<'context>(
+    context: &'context NativeExecutionContext<'_>,
+    name: &str,
+) -> Option<(usize, &'context php_ir::module::ClassEntry)> {
+    let (unit, class) = native_external_class_location(context, name)?;
+    context
+        .dynamic_units
+        .get(unit)?
+        .compiled
+        .unit()
+        .classes
+        .get(class)
+        .map(|class| (unit, class))
+}
+
+pub(super) fn native_external_class(
+    context: &NativeExecutionContext<'_>,
+    name: &str,
+) -> Option<(usize, php_ir::module::ClassEntry)> {
+    native_external_class_ref(context, name).map(|(unit, class)| (unit, class.clone()))
 }
 
 pub(super) fn native_autoload_class(
@@ -488,7 +522,7 @@ pub(super) fn native_autoload_class(
         return Ok(());
     }
     let result = (|| {
-        if native_external_class(context, name).is_none() {
+        if !native_external_class_exists(context, name) {
             let callbacks = context.autoload_callbacks.clone();
             for callback in callbacks {
                 invoke_native_callable_value(
@@ -500,17 +534,20 @@ pub(super) fn native_autoload_class(
                     source,
                     None,
                 )?;
-                if native_external_class(context, name).is_some() {
+                if native_external_class_exists(context, name) {
                     break;
                 }
             }
         }
-        if let Some((_, class)) = native_external_class(context, name) {
+        if let Some((_, class)) = native_external_class_ref(context, name) {
             let dependencies = class
                 .parent_display_name
-                .or(class.parent)
+                .as_ref()
+                .or(class.parent.as_ref())
+                .cloned()
                 .into_iter()
-                .chain(class.interfaces);
+                .chain(class.interfaces.iter().cloned())
+                .collect::<Vec<_>>();
             for dependency in dependencies {
                 native_autoload_class(context, &dependency, source)?;
             }

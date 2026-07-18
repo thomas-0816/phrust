@@ -24,18 +24,24 @@ mod native_cache;
 pub mod region_ir;
 
 pub use abi::{
-    JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS, JIT_RUNTIME_ABI_HASH,
-    JIT_RUNTIME_ABI_VERSION, JitAbiSlot, JitAbiValue, JitBailout, JitBailoutKind, JitCExit,
-    JitCExitTag, JitCFrameView, JitCValue, JitCValueTag, JitCallResult, JitCallStatus,
-    JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView, JitNativeArgFlags,
-    JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind, JitNativeCallTarget,
-    JitNativeControlRecord, JitNativeDestructorPoint, JitNativeDispatchTrampoline,
-    JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline,
-    JitNativeExceptionHandler, JitNativeFiberState, JitNativeFrameHeader, JitNativeGeneratorState,
-    JitNativeIndirectionEntry, JitNativePcMetadata, JitNativeResumeInputKind, JitNativeRootEntry,
-    JitNativeRootKind, JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy,
-    JitNativeTransitionState, JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult,
-    JitRuntimeCallout, JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
+    JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_VALUE_VIEW_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_NONE, JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
+    JIT_NATIVE_VALUE_VIEW_STRING, JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiSlot,
+    JitAbiValue, JitBailout, JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue,
+    JitCValueTag, JitCallResult, JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle,
+    JitFrameView, JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
+    JitNativeCallTarget, JitNativeControlRecord, JitNativeDestructorPoint,
+    JitNativeDispatchTrampoline, JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest,
+    JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler, JitNativeFiberState,
+    JitNativeFrameHeader, JitNativeGeneratorState, JitNativeIndirectionEntry, JitNativePcMetadata,
+    JitNativeReferenceScalarView, JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind,
+    JitNativeRuntimeView, JitNativeRuntimeViewGuard, JitNativeSuspendKind,
+    JitNativeSuspensionGenerationPolicy, JitNativeTransitionState, JitNativeValueView,
+    JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
+    JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
+    activate_native_runtime_view,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -170,6 +176,10 @@ pub struct JitRuntimeHelperAddresses {
     pub native_constant_fetch: usize,
     /// Typed PHP truthiness operation used by native branches.
     pub native_truthy: usize,
+    /// Stable builtin PHP type-predicate slow path.
+    pub native_type_predicate: usize,
+    /// Typed `strlen`/array `count` slow path for stable value views.
+    pub native_stable_length: usize,
     /// Typed runtime-fatal publication operation.
     pub native_runtime_fatal: usize,
     /// Cooperative execution-deadline poll emitted at native loop headers.
@@ -180,7 +190,30 @@ pub struct JitRuntimeHelperAddresses {
 pub const JIT_VALUE_CONSTANT_TAG: u64 = 0x7ff1_0000_0000_0000;
 /// Stable high-bit namespace for request-owned runtime value handles.
 pub const JIT_VALUE_RUNTIME_TAG: u64 = 0x7ff2_0000_0000_0000;
-const JIT_VALUE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
+/// Stable high-bit namespace for request-owned reference-cell handles.
+pub const JIT_VALUE_RUNTIME_REFERENCE_TAG: u64 = 0x7ff2_0001_0000_0000;
+/// Stable high-bit namespace for request-owned array handles.
+pub const JIT_VALUE_RUNTIME_ARRAY_TAG: u64 = 0x7ff2_0002_0000_0000;
+/// Stable high-bit namespace for request-owned object handles.
+pub const JIT_VALUE_RUNTIME_OBJECT_TAG: u64 = 0x7ff2_0003_0000_0000;
+/// Stable high-bit namespace for request-owned string handles.
+pub const JIT_VALUE_RUNTIME_STRING_TAG: u64 = 0x7ff2_0004_0000_0000;
+/// Stable high-bit namespace for request-owned boxed float values.
+pub const JIT_VALUE_RUNTIME_FLOAT_TAG: u64 = 0x7ff2_0005_0000_0000;
+/// Stable high-bit namespace for request-owned callable handles.
+pub const JIT_VALUE_RUNTIME_CALLABLE_TAG: u64 = 0x7ff2_0006_0000_0000;
+/// Stable high-bit namespace for request-owned resource handles.
+pub const JIT_VALUE_RUNTIME_RESOURCE_TAG: u64 = 0x7ff2_0007_0000_0000;
+/// Stable high-bit namespace for request-owned generator handles.
+pub const JIT_VALUE_RUNTIME_GENERATOR_TAG: u64 = 0x7ff2_0008_0000_0000;
+/// Stable high-bit namespace for request-owned fiber handles.
+pub const JIT_VALUE_RUNTIME_FIBER_TAG: u64 = 0x7ff2_0009_0000_0000;
+/// Stable high-bit namespace for request-owned internal iterator handles.
+pub const JIT_VALUE_RUNTIME_ITERATOR_TAG: u64 = 0x7ff2_000a_0000_0000;
+pub const JIT_VALUE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
+/// Includes the runtime namespace and its stable subtype, while excluding the
+/// low 32-bit request-owned table index.
+pub const JIT_VALUE_RUNTIME_KIND_MASK: u64 = 0xffff_ffff_0000_0000;
 /// Reserved constant handle used for a local that has not been initialized.
 pub const JIT_VALUE_UNINITIALIZED: u32 = u32::MAX - 1;
 /// Reserved immutable handle for PHP `false`.
@@ -210,10 +243,26 @@ pub const fn jit_encode_runtime_value(index: u32) -> i64 {
     (JIT_VALUE_RUNTIME_TAG | index as u64) as i64
 }
 
+/// Encodes one request-owned runtime value index with its stable value class.
+#[must_use]
+pub const fn jit_encode_typed_runtime_value(index: u32, tag: u64) -> i64 {
+    (tag | index as u64) as i64
+}
+
+/// Returns the stable runtime-handle subtype tag, when present.
+#[must_use]
+pub const fn jit_runtime_value_tag(value: i64) -> Option<u64> {
+    if (value as u64) & JIT_VALUE_TAG_MASK == JIT_VALUE_RUNTIME_TAG {
+        Some((value as u64) & JIT_VALUE_RUNTIME_KIND_MASK)
+    } else {
+        None
+    }
+}
+
 /// Decodes one request-owned runtime value index from an i64 native slot.
 #[must_use]
 pub const fn jit_decode_runtime_value(value: i64) -> Option<u32> {
-    if (value as u64) & JIT_VALUE_TAG_MASK == JIT_VALUE_RUNTIME_TAG {
+    if jit_runtime_value_tag(value).is_some() {
         Some(value as u32)
     } else {
         None

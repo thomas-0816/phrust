@@ -41,10 +41,12 @@ printf 'rooted\nafter\n' | cmp -s - "$out_dir/rooted-output.txt" || {
 jq -e '
     .schema_version == 11 and
     .runtime_helper_calls_by_id.value_release > 0 and
-    .runtime_helper_object_release_root_scans > 0
+    .runtime_helper_object_release_fast_paths > 0 and
+    .runtime_helper_object_release_root_scans == 0 and
+    .runtime_helper_object_release_root_scans_by_reason.request_membership_traversal > 0
 ' "$out_dir/rooted-counters.json" >/dev/null || {
-    printf '%s\n' '[fail] rooted object release did not exercise the request-root scan' >&2
+    printf '%s\n' '[fail] rooted object release did not use indexed request-root membership' >&2
     exit 1
 }
 
-printf '%s\n' '[pass] object release preserves output and exercises the clone-free root scan'
+printf '%s\n' '[pass] object release preserves output and uses indexed request-root membership'

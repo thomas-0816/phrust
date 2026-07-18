@@ -17,6 +17,23 @@ The source-integrity wiring check follows this production contract: the VM
 must enter function-scoped compilation and must not require the offline
 whole-unit compile helper to remain in the VM module.
 
+The server's default worker keeps request compilation off the hot path with a
+two-version policy. A cold function first publishes the semantically complete,
+less-specialized optimizing lowering at compiler level 1. Entry counts are
+kept per immutable unit/function/signature key. At the configured threshold a
+named background job requests compiler level 2 through the same bounded cache
+and process compiler limiter. Foreground misses always overtake queued
+background work. The level-2 entry replaces the target in the existing
+generation-checked indirection cell only after compilation and metadata
+validation complete; requests continue using level 1 while the job is queued
+or compiling. Failed jobs and the function/time budgets bound retries and code
+growth.
+
+Startup prewarm is the benchmark/deployment fast path: it publishes level 2
+before native readiness, so measured warm requests neither queue nor wait for
+optimization. CLI and non-server workers retain their explicitly selected
+single-tier behavior.
+
 Validate the policy with:
 
 ```bash

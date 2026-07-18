@@ -31,25 +31,89 @@ fn lower_region_condition(
         _ => {}
     }
     if let Some(helper) = native_operations.truthy {
-        let slot =
-            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
-        let out = builder
-            .ins()
-            .stack_addr(module.target_config().pointer_type(), slot, 0);
-        let context = builder.ins().iconst(types::I64, 0);
-        let call = call_native_helper(module, builder, helper, &[context, value, out]);
-        require_native_operation_ok(
-            builder,
-            builder.inst_results(call)[0],
-            helper.terminal_exit()?,
-        )?;
-        let truthy = builder.ins().stack_load(types::I64, slot, 0);
-        Ok(builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0))
+        lower_guarded_unknown_condition(module, builder, helper, value)
     } else if builder.func.dfg.value_type(value) == types::I64 {
         Ok(builder.ins().icmp_imm(IntCC::NotEqual, value, 0))
     } else {
         Ok(value)
     }
+}
+
+/// Unknown values still have a stable native slot encoding. Handle the exact
+/// null/bool/int lanes directly and enter the typed PHP slow path only for a
+/// runtime handle or a non-reserved constant-pool handle.
+pub(super) fn lower_guarded_unknown_condition(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    helper: NativeHelper,
+    value: ir::Value,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let classify = builder.create_block();
+    let reserved = builder.create_block();
+    let integer = builder.create_block();
+    let slow = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(reserved, types::I8);
+    builder.append_block_param(merge, types::I8);
+
+    let true_value = crate::jit_encode_constant(crate::JIT_VALUE_TRUE);
+    let false_value = crate::jit_encode_constant(crate::JIT_VALUE_FALSE);
+    let null_value = crate::jit_encode_constant(u32::MAX);
+    let uninitialized_value = crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED);
+    let is_true = builder.ins().icmp_imm(IntCC::Equal, value, true_value);
+    let is_false = builder.ins().icmp_imm(IntCC::Equal, value, false_value);
+    let is_null = builder.ins().icmp_imm(IntCC::Equal, value, null_value);
+    let is_uninitialized = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, value, uninitialized_value);
+    let is_false_lane = builder.ins().bor(is_false, is_null);
+    let is_false_lane = builder.ins().bor(is_false_lane, is_uninitialized);
+    let is_reserved = builder.ins().bor(is_true, is_false_lane);
+    builder
+        .ins()
+        .brif(is_reserved, reserved, &[is_true.into()], classify, &[]);
+
+    builder.switch_to_block(reserved);
+    let reserved_truthy = builder.block_params(reserved)[0];
+    builder.ins().jump(merge, &[reserved_truthy.into()]);
+
+    builder.switch_to_block(classify);
+    let tag = builder
+        .ins()
+        .band_imm(value, crate::JIT_VALUE_TAG_MASK as i64);
+    let is_runtime = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, tag, crate::JIT_VALUE_RUNTIME_TAG as i64);
+    let is_constant =
+        builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, crate::JIT_VALUE_CONSTANT_TAG as i64);
+    let needs_slow_path = builder.ins().bor(is_runtime, is_constant);
+    builder.ins().brif(needs_slow_path, slow, &[], integer, &[]);
+
+    builder.switch_to_block(integer);
+    let integer_truthy = builder.ins().icmp_imm(IntCC::NotEqual, value, 0);
+    builder.ins().jump(merge, &[integer_truthy.into()]);
+
+    builder.switch_to_block(slow);
+    let slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    let out = builder
+        .ins()
+        .stack_addr(module.target_config().pointer_type(), slot, 0);
+    let context = builder.ins().iconst(types::I64, 0);
+    let call = call_native_helper(module, builder, helper, &[context, value, out]);
+    require_native_operation_ok(
+        builder,
+        builder.inst_results(call)[0],
+        helper.terminal_exit()?,
+    )?;
+    let truthy = builder.ins().stack_load(types::I64, slot, 0);
+    let truthy = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+    builder.ins().jump(merge, &[truthy.into()]);
+
+    builder.switch_to_block(merge);
+    Ok(builder.block_params(merge)[0])
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -94,7 +94,20 @@ pub(super) fn invoke_native_function_with_metadata_strict(
             target.name
         ));
     }
-    let mut bound = arguments[..leading].to_vec();
+    // The callee frame owns its implicit receiver and captured locals just as
+    // it owns ordinary bound arguments. The trampoline's input operands are
+    // only borrowed, so materialize independent handles before passing the
+    // leading frame slots to native code. Reusing the caller's handle lets
+    // callee frame cleanup release a still-live caller local and the recycled
+    // value-table slot can then decode as an unrelated value.
+    let mut bound = arguments[..leading]
+        .iter()
+        .map(|argument| {
+            context
+                .decode(*argument)
+                .and_then(|value| context.encode(value))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let raw_supplied = &arguments[leading..];
     let mut supplied = Vec::<(Option<String>, i64)>::new();
     if let Some(metadata) = metadata {
@@ -866,7 +879,7 @@ pub(super) fn execute_native_dynamic_constructor(
         if let Some(result) = construct_native_internal_class(context, &class_name, arguments) {
             return result;
         }
-        if native_external_class(context, &class_name).is_some() {
+        if native_external_class_exists(context, &class_name) {
             return create_native_external_object(context, &class_name, arguments, instruction);
         }
 

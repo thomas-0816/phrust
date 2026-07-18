@@ -72,7 +72,10 @@ pub use ssa::{
     ExecutableSsaGraph, SsaCertainty, SsaOwnership, SsaValueClass, SsaValueFact,
     build_executable_ssa,
 };
-pub use value_flow::{ExecutableValueFlow, LocalStorageClass, analyze_executable_value_flow};
+pub use value_flow::{
+    ExecutableValueFlow, LocalStorageClass, analyze_baseline_executable_ownership,
+    analyze_executable_value_flow,
+};
 pub use verify::{RegionVerifyError, verify_region_graph};
 
 /// Def-use side table for compact node storage.

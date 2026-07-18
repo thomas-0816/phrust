@@ -476,7 +476,7 @@ fn server_request_profile_alone_stays_in_summary_mode() {
             .expect("parse profile json");
     // A request profile alone must not pay native hot-counter overhead; it
     // still records phase timings.
-    assert_eq!(profile["schema_version"], serde_json::Value::from(5));
+    assert_eq!(profile["schema_version"], serde_json::Value::from(6));
     assert_eq!(profile["native"], serde_json::json!({}));
     assert!(profile["phases_nanos"].is_object());
 
@@ -567,7 +567,7 @@ fn server_request_profile_vm_counter_mode_collects_native_counters() {
     let profile: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
             .expect("parse profile json");
-    assert_eq!(profile["schema_version"], serde_json::Value::from(5));
+    assert_eq!(profile["schema_version"], serde_json::Value::from(6));
     assert!(
         profile["native"]["execution_entries"]
             .as_u64()
@@ -591,6 +591,14 @@ fn server_request_profile_vm_counter_mode_collects_native_counters() {
         "transition_time_nanos",
         "runtime_helper_object_release_fast_paths",
         "runtime_helper_object_release_root_scans",
+        "value_encodes",
+        "value_decodes",
+        "value_table_allocations",
+        "value_table_reuses",
+        "value_table_high_water",
+        "ssa_promoted_locals",
+        "ssa_promoted_registers",
+        "ownership_moves",
         "versions_published",
     ] {
         assert!(
@@ -603,6 +611,14 @@ fn server_request_profile_vm_counter_mode_collects_native_counters() {
         "runtime_helper_time_nanos_by_id",
         "transition_by_reason",
         "transition_time_nanos_by_reason",
+        "runtime_helper_local_read_by_reason",
+        "runtime_helper_local_store_by_reason",
+        "runtime_helper_truthy_by_value_class",
+        "runtime_helper_retain_by_reason",
+        "runtime_helper_release_by_reason",
+        "runtime_helper_object_release_root_scans_by_reason",
+        "call_dynamic_by_reason",
+        "slow_path_entries_by_reason",
     ] {
         assert!(
             profile["native"][counter].is_object(),

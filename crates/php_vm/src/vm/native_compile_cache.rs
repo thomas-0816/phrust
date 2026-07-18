@@ -23,7 +23,8 @@ const DEFAULT_NATIVE_COMPILE_QUEUE_LIMIT: usize = 64;
 #[derive(Debug, Default)]
 struct CompileLimitState {
     active: usize,
-    queued: usize,
+    foreground_queued: usize,
+    background_queued: usize,
 }
 
 #[derive(Debug)]
@@ -57,23 +58,37 @@ impl ProcessCompileLimiter {
         }
     }
 
-    fn acquire(&self) -> Result<ProcessCompilePermit<'_>, String> {
+    fn acquire(&self, background: bool) -> Result<ProcessCompilePermit<'_>, String> {
         let mut state = lock_unpoisoned(&self.state);
-        if state.active >= self.maximum_parallel {
-            if state.queued >= self.maximum_queue {
+        let must_wait = |state: &CompileLimitState| {
+            state.active >= self.maximum_parallel || (background && state.foreground_queued > 0)
+        };
+        if must_wait(&state) {
+            let queued = state
+                .foreground_queued
+                .saturating_add(state.background_queued);
+            if queued >= self.maximum_queue {
                 return Err(format!(
                     "E_NATIVE_COMPILE_QUEUE_FULL: active={} queued={} limit={}",
-                    state.active, state.queued, self.maximum_queue
+                    state.active, queued, self.maximum_queue
                 ));
             }
-            state.queued = state.queued.saturating_add(1);
-            while state.active >= self.maximum_parallel {
+            if background {
+                state.background_queued = state.background_queued.saturating_add(1);
+            } else {
+                state.foreground_queued = state.foreground_queued.saturating_add(1);
+            }
+            while must_wait(&state) {
                 state = self
                     .ready
                     .wait(state)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
-            state.queued = state.queued.saturating_sub(1);
+            if background {
+                state.background_queued = state.background_queued.saturating_sub(1);
+            } else {
+                state.foreground_queued = state.foreground_queued.saturating_sub(1);
+            }
         }
         state.active = state.active.saturating_add(1);
         Ok(ProcessCompilePermit { limiter: self })
@@ -88,7 +103,7 @@ impl Drop for ProcessCompilePermit<'_> {
     fn drop(&mut self) {
         let mut state = lock_unpoisoned(&self.limiter.state);
         state.active = state.active.saturating_sub(1);
-        self.limiter.ready.notify_one();
+        self.limiter.ready.notify_all();
     }
 }
 
@@ -217,7 +232,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 pub(super) struct NativeCompileCacheKey {
     unit_cache_identity: u64,
     function: u32,
-    optimizing: bool,
+    optimization_level: u8,
     external_signatures_hash: u64,
 }
 
@@ -225,13 +240,13 @@ impl NativeCompileCacheKey {
     pub(super) const fn new(
         unit_cache_identity: u64,
         function: FunctionId,
-        optimizing: bool,
+        optimization_level: u8,
         external_signatures_hash: u64,
     ) -> Self {
         Self {
             unit_cache_identity,
             function: function.raw(),
-            optimizing,
+            optimization_level,
             external_signatures_hash,
         }
     }
@@ -361,6 +376,23 @@ impl NativeCompileCache {
         key: NativeCompileCacheKey,
         compile: impl FnOnce() -> Result<Vec<JitUnitCompileRecord>, String>,
     ) -> Result<(Arc<[JitUnitCompileRecord]>, NativeCompileCacheDisposition), String> {
+        self.get_or_compile_with_priority(key, false, compile)
+    }
+
+    pub(super) fn get_or_compile_background(
+        &self,
+        key: NativeCompileCacheKey,
+        compile: impl FnOnce() -> Result<Vec<JitUnitCompileRecord>, String>,
+    ) -> Result<(Arc<[JitUnitCompileRecord]>, NativeCompileCacheDisposition), String> {
+        self.get_or_compile_with_priority(key, true, compile)
+    }
+
+    fn get_or_compile_with_priority(
+        &self,
+        key: NativeCompileCacheKey,
+        background: bool,
+        compile: impl FnOnce() -> Result<Vec<JitUnitCompileRecord>, String>,
+    ) -> Result<(Arc<[JitUnitCompileRecord]>, NativeCompileCacheDisposition), String> {
         let wait = {
             let mut state = lock_unpoisoned(&self.state);
             if let Some(records) = state.primary_entries.get(&key).cloned() {
@@ -391,7 +423,7 @@ impl NativeCompileCache {
 
         let compile_started = Instant::now();
         let result = process_compile_limiter()
-            .acquire()
+            .acquire(background)
             .and_then(|_permit| compile())
             .and_then(|records| {
                 if records.len() == 1 && records[0].function.raw() == key.function {
@@ -452,6 +484,12 @@ impl NativeCompileCache {
             compile_time_nanos: state.metrics.compile_time_nanos,
         }
     }
+
+    pub(super) fn contains(&self, key: NativeCompileCacheKey) -> bool {
+        lock_unpoisoned(&self.state)
+            .primary_entries
+            .contains_key(&key)
+    }
 }
 
 fn permanent_compile_failure(error: &str) -> bool {
@@ -505,7 +543,7 @@ mod tests {
     use std::time::Duration;
 
     fn key(unit: u64) -> NativeCompileCacheKey {
-        NativeCompileCacheKey::new(unit, FunctionId::new(0), false, 0)
+        NativeCompileCacheKey::new(unit, FunctionId::new(0), 0, 0)
     }
 
     fn record(function: u32) -> JitUnitCompileRecord {
@@ -520,6 +558,51 @@ mod tests {
                 stats: php_jit::JitStats::default(),
             },
         }
+    }
+
+    #[test]
+    fn foreground_compile_overtakes_queued_background_work() {
+        let limiter = Arc::new(ProcessCompileLimiter {
+            maximum_parallel: 1,
+            maximum_queue: 4,
+            state: Mutex::new(CompileLimitState::default()),
+            ready: Condvar::new(),
+        });
+        let active = limiter.acquire(false).expect("initial foreground permit");
+        let (order_tx, order_rx) = std::sync::mpsc::channel();
+
+        let background_limiter = Arc::clone(&limiter);
+        let background_tx = order_tx.clone();
+        let background = thread::spawn(move || {
+            let _permit = background_limiter.acquire(true).expect("background permit");
+            background_tx.send("background").unwrap();
+        });
+        while lock_unpoisoned(&limiter.state).background_queued == 0 {
+            thread::yield_now();
+        }
+
+        let foreground_limiter = Arc::clone(&limiter);
+        let foreground = thread::spawn(move || {
+            let _permit = foreground_limiter
+                .acquire(false)
+                .expect("foreground permit");
+            order_tx.send("foreground").unwrap();
+        });
+        while lock_unpoisoned(&limiter.state).foreground_queued == 0 {
+            thread::yield_now();
+        }
+
+        drop(active);
+        assert_eq!(
+            order_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "foreground"
+        );
+        foreground.join().unwrap();
+        assert_eq!(
+            order_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "background"
+        );
+        background.join().unwrap();
     }
 
     #[test]
@@ -603,7 +686,7 @@ mod tests {
         cache
             .get_or_compile(key(1), || Ok(vec![record(0)]))
             .unwrap();
-        let function_three = NativeCompileCacheKey::new(1, FunctionId::new(3), false, 0);
+        let function_three = NativeCompileCacheKey::new(1, FunctionId::new(3), 0, 0);
         cache
             .get_or_compile(function_three, || Ok(vec![record(3)]))
             .unwrap();

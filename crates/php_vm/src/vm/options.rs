@@ -82,6 +82,9 @@ impl Default for VmOptions {
 pub enum NativeOptimizationPolicy {
     #[default]
     Baseline,
+    /// Semantically complete optimizing lowering with lower compiler effort,
+    /// used while a hotter version is built in the background.
+    TieredBaseline,
     Optimizing,
 }
 
@@ -90,13 +93,23 @@ impl NativeOptimizationPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Baseline => "baseline",
+            Self::TieredBaseline => "tiered-baseline",
             Self::Optimizing => "optimizing",
         }
     }
 
     #[must_use]
     pub const fn is_optimizing(self) -> bool {
-        matches!(self, Self::Optimizing)
+        !matches!(self, Self::Baseline)
+    }
+
+    #[must_use]
+    pub const fn opt_level(self) -> u8 {
+        match self {
+            Self::Baseline => 0,
+            Self::TieredBaseline => 1,
+            Self::Optimizing => 2,
+        }
     }
 }
 

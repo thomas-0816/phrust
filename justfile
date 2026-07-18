@@ -146,6 +146,8 @@ help:
       '  just cache-roundtrip      Run native artifact/cache roundtrip gates' \
       '  just optimizer-diff       Run optimizer differential gate' \
       '  just native-ssa-ratchet   Enforce executable SSA and lifetime lowering' \
+      '  just reference-scalar-view Verify direct scalar reads from PHP references' \
+      '  just reference-dimension-operand Verify fused reference dimension reads' \
       '  just inline-cache-model-tests Test the retained cache data model' \
       '  just native-smoke         Run mandatory native smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
@@ -502,7 +504,7 @@ verify-stdlib:
 # Correctness-focused performance gates. Sub-gates share one engine build
 # through the perf-build dependency (deduplicated within this invocation).
 # Release-profile and report gates live in verify-performance-extended.
-verify-performance: native-linkage-ratchet wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
+verify-performance: native-linkage-ratchet wordpress-benchmark-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet native-hotpath-ratchet reference-scalar-view reference-dimension-operand templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
 # Heavy release-profile and report gates, split out of verify-performance so
@@ -1210,6 +1212,19 @@ perf-pr-guard *args:
 profiler-overhead-gate:
     if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/profiler_overhead_gate.py
+
+# Generated CLIF/metadata checks, plus optional strict WordPress counter gates.
+native-hotpath-ratchet *args:
+    scripts/verify/native_hotpath_ratchet.py {{args}}
+
+reference-scalar-view:
+    scripts/performance/reference_scalar_view.sh
+
+reference-dimension-operand:
+    scripts/performance/reference_dimension_operand.sh
+
+native-hotpath-report *args:
+    scripts/performance/native_hotpath_report.py {{args}}
 
 wordpress-clone-churn-report:
     scripts/performance/clone_churn_report.py

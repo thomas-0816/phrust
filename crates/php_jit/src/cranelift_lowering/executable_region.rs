@@ -606,18 +606,13 @@ pub(super) fn compile_region_graph_native(
     let mut regions = collect_region_graphs(region)?;
     for candidate in regions.values_mut() {
         if candidate.compile_metadata.tier == NativeCompilerTier::Optimizing {
-            if !plan.permits_whole_region_optimization() {
-                // Executable SSA and value-flow promotion currently operate on
-                // a complete RegionGraph. Applying them before fragmentation
-                // lets promoted locals cross fragment ABIs without a frame
-                // slot; a semantically atomic one-block region can also be far
-                // too large for safe whole-region optimization. Keep every
-                // over-budget function on the bounded baseline form until
-                // optimization is planned independently inside each fragment.
-                candidate.compile_metadata.tier = NativeCompilerTier::Baseline;
-            } else {
+            if plan.permits_whole_region_optimization() {
                 let _ = crate::region_ir::opt::optimize_executable_region(candidate);
             }
+            // Fragmented functions retain the optimizing tier, but whole-graph
+            // rewrites are limited to plans that explicitly fit the bounded
+            // whole-region budget. Every generated fragment still crosses the
+            // explicit frame ABI for its live locals and registers.
         }
     }
     if let Some(fragment) = plan
@@ -773,12 +768,7 @@ pub(super) fn compile_region_graph_native(
     let native_dynamic_code_symbol = NATIVE_DYNAMIC_CODE_SYMBOL.to_owned();
     let needs_unary = regions.values().any(|region| {
         region_contains(region, |kind| {
-            matches!(
-                kind,
-                RegionInstructionKind::Unary { .. }
-                    | RegionInstructionKind::EmptyDim { .. }
-                    | RegionInstructionKind::EmptyLocal { .. }
-            )
+            matches!(kind, RegionInstructionKind::Unary { .. })
         })
     });
     let needs_binary = regions.values().any(|region| {
@@ -790,20 +780,13 @@ pub(super) fn compile_region_graph_native(
         region_contains(region, |kind| {
             matches!(
                 kind,
-                RegionInstructionKind::Compare { .. }
-                    | RegionInstructionKind::IssetDim { .. }
-                    | RegionInstructionKind::IssetLocal { .. }
+                RegionInstructionKind::Compare { .. } | RegionInstructionKind::IssetDim { .. }
             )
         })
     });
     let needs_cast = regions.values().any(|region| {
         region_contains(region, |kind| {
-            matches!(
-                kind,
-                RegionInstructionKind::Cast { .. }
-                    | RegionInstructionKind::EmptyDim { .. }
-                    | RegionInstructionKind::EmptyLocal { .. }
-            )
+            matches!(kind, RegionInstructionKind::Cast { .. })
         })
     });
     let needs_echo = regions.values().any(|region| {
@@ -1011,13 +994,38 @@ pub(super) fn compile_region_graph_native(
         })
     });
     let needs_truthy = regions.values().any(|region| {
-        region.blocks.iter().any(|block| {
+        region_contains(region, |kind| {
+            matches!(
+                kind,
+                RegionInstructionKind::Unary {
+                    op: crate::region_ir::RegionUnaryOp::Not,
+                    ..
+                } | RegionInstructionKind::Cast {
+                    op: crate::region_ir::RegionCastOp::Bool,
+                    ..
+                } | RegionInstructionKind::EmptyDim { .. }
+                    | RegionInstructionKind::EmptyLocal { .. }
+            )
+        }) || region.blocks.iter().any(|block| {
             matches!(
                 block.terminator,
                 RegionTerminator::JumpIfFalse { .. }
                     | RegionTerminator::JumpIfTrue { .. }
                     | RegionTerminator::JumpIf { .. }
             )
+        })
+    });
+    let needs_type_predicate = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(kind, RegionInstructionKind::NativeCall(call) if stable_builtin_type_predicate(&call.target).is_some())
+        })
+    });
+    let needs_stable_length = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(
+                kind,
+                RegionInstructionKind::EmptyDim { .. } | RegionInstructionKind::EmptyLocal { .. }
+            ) || matches!(kind, RegionInstructionKind::NativeCall(call) if stable_builtin_length(&call.target).is_some())
         })
     });
     let needs_runtime_fatal = regions.values().any(|region| {
@@ -1222,6 +1230,18 @@ pub(super) fn compile_region_graph_native(
             runtime_helpers.native_truthy,
             test_native_truthy_fallback as *const () as usize,
             "phrust_native_truthy",
+        ),
+        (
+            needs_type_predicate,
+            runtime_helpers.native_type_predicate,
+            test_native_type_predicate_fallback as *const () as usize,
+            "phrust_native_type_predicate",
+        ),
+        (
+            needs_stable_length,
+            runtime_helpers.native_stable_length,
+            test_native_stable_length_fallback as *const () as usize,
+            "phrust_native_stable_length",
         ),
         (
             needs_runtime_fatal,
@@ -1590,6 +1610,22 @@ pub(super) fn compile_region_graph_native(
                     helper_address("phrust_native_truthy"),
                 )?);
             }
+            if needs_type_predicate {
+                native_operations.type_predicate = Some(declare_value_operation(
+                    module,
+                    "phrust_native_type_predicate",
+                    1,
+                    helper_address("phrust_native_type_predicate"),
+                )?);
+            }
+            if needs_stable_length {
+                native_operations.stable_length = Some(declare_value_operation(
+                    module,
+                    "phrust_native_stable_length",
+                    3,
+                    helper_address("phrust_native_stable_length"),
+                )?);
+            }
             if needs_runtime_fatal {
                 let mut signature = module.make_signature();
                 signature.params.push(AbiParam::new(types::I64));
@@ -1665,12 +1701,7 @@ pub(super) fn compile_region_graph_native(
                     functions.insert(synthetic, func_id);
                 }
             }
-            let inline_constants = regions
-                .iter()
-                .filter_map(|(function, region)| {
-                    bounded_inline_constant_return(region).map(|value| (*function, value))
-                })
-                .collect::<BTreeMap<_, _>>();
+            let inline_constants = collect_bounded_inline_values(unit, &regions);
             let tail_forwards = regions
                 .values()
                 .flat_map(|candidate| {
@@ -1940,8 +1971,13 @@ pub(super) fn compile_region_graph_native(
                                         && call.args.iter().all(|argument| {
                                             argument.name.is_none() && !argument.unpack
                                         })
-                                        && !(call.operands.is_empty()
-                                            && inline_constants.contains_key(&target))
+                                        && !inline_constants
+                                            .get(&target)
+                                            .copied()
+                                            .and_then(|value| {
+                                                bounded_inline_call_operand(call, value)
+                                            })
+                                            .is_some()
                                 }))
                             })
                             .count() as u64,
@@ -1975,10 +2011,15 @@ pub(super) fn compile_region_graph_native(
                             .flat_map(|block| &block.instructions)
                             .filter(|instruction| {
                                 matches!(&instruction.kind, RegionInstructionKind::NativeCall(call)
-                                if call.operands.is_empty()
-                                    && call.direct_compiled_target().is_some_and(|target| {
-                                        inline_constants.contains_key(&target)
-                                    }))
+                                if call.direct_compiled_target().is_some_and(|target| {
+                                    inline_constants
+                                        .get(&target)
+                                        .copied()
+                                        .and_then(|value| {
+                                            bounded_inline_call_operand(call, value)
+                                        })
+                                        .is_some()
+                                }))
                             })
                             .count() as u64,
                         inline_bytes_added: candidate
@@ -1987,10 +2028,15 @@ pub(super) fn compile_region_graph_native(
                             .flat_map(|block| &block.instructions)
                             .filter(|instruction| {
                                 matches!(&instruction.kind, RegionInstructionKind::NativeCall(call)
-                                if call.operands.is_empty()
-                                    && call.direct_compiled_target().is_some_and(|target| {
-                                        inline_constants.contains_key(&target)
-                                    }))
+                                if call.direct_compiled_target().is_some_and(|target| {
+                                    inline_constants
+                                        .get(&target)
+                                        .copied()
+                                        .and_then(|value| {
+                                            bounded_inline_call_operand(call, value)
+                                        })
+                                        .is_some()
+                                }))
                             })
                             .count() as u64
                             * 8,
@@ -2196,12 +2242,12 @@ fn region_register_types(region: &RegionGraph) -> BTreeMap<RegId, ir::Type> {
         .collect()
 }
 
-/// Deliberately tiny first inlining tier. It handles only a stable zero-arity
-/// function whose complete body returns one scalar constant. This preserves a
-/// hard code-growth bound and cannot recursively inline a call graph.
-fn bounded_inline_constant_return(region: &RegionGraph) -> Option<RegionOperand> {
-    if !region.params.is_empty()
-        || region.return_type.is_some()
+/// Deliberately tiny first inlining tier. It handles only a scalar constant
+/// return or a simple untyped positional-argument wrapper. The callee body is
+/// never recursively traversed, so code growth remains fixed per callsite.
+fn bounded_inline_return(region: &RegionGraph) -> Option<BoundedInlineValue> {
+    if region.return_type.is_some()
+        || region.returns_by_ref
         || region.flags.is_method
         || region.flags.is_closure
         || region.flags.is_generator
@@ -2218,7 +2264,11 @@ fn bounded_inline_constant_return(region: &RegionGraph) -> Option<RegionOperand>
         return None;
     };
     match block.instructions.as_slice() {
-        [] if matches!(value, RegionOperand::I64(_) | RegionOperand::Constant(_)) => Some(value),
+        [] if region.params.is_empty()
+            && matches!(value, RegionOperand::I64(_) | RegionOperand::Constant(_)) =>
+        {
+            Some(BoundedInlineValue::Constant(value))
+        }
         [
             RegionInstruction {
                 kind: RegionInstructionKind::Move { dst, src },
@@ -2227,10 +2277,61 @@ fn bounded_inline_constant_return(region: &RegionGraph) -> Option<RegionOperand>
         ] if value == RegionOperand::Register(*dst)
             && matches!(src, RegionOperand::I64(_) | RegionOperand::Constant(_)) =>
         {
-            Some(*src)
+            Some(BoundedInlineValue::Constant(*src))
+        }
+        [
+            RegionInstruction {
+                kind:
+                    RegionInstructionKind::LoadLocal {
+                        dst,
+                        local,
+                        quiet: false,
+                    },
+                ..
+            },
+        ] if value == RegionOperand::Register(*dst)
+            && region.params.iter().all(|parameter| {
+                parameter.required
+                    && parameter.default.is_none()
+                    && parameter.type_.is_none()
+                    && !parameter.by_ref
+                    && !parameter.variadic
+            }) =>
+        {
+            region
+                .parameter_locals
+                .iter()
+                .position(|parameter| parameter == local)
+                .map(|index| BoundedInlineValue::Argument {
+                    index,
+                    arity: region.params.len(),
+                })
         }
         _ => None,
     }
+}
+
+fn collect_bounded_inline_values(
+    unit: &IrUnit,
+    roots: &BTreeMap<FunctionId, RegionGraph>,
+) -> BTreeMap<FunctionId, BoundedInlineValue> {
+    if !roots
+        .values()
+        .any(|region| region.compile_metadata.tier == NativeCompilerTier::Optimizing)
+    {
+        return BTreeMap::new();
+    }
+    roots
+        .values()
+        .flat_map(RegionGraph::direct_callees)
+        .filter(|callee| !roots.contains_key(callee))
+        .filter_map(|callee| {
+            crate::region_ir::build_baseline_region(unit, callee)
+                .ok()
+                .and_then(|region| bounded_inline_return(&region))
+                .map(|value| (callee, value))
+        })
+        .collect()
 }
 
 fn bounded_inline_rejection(region: &RegionGraph) -> &'static str {
@@ -2269,7 +2370,10 @@ fn inline_rejection_counts(
         let Some(callee) = regions.get(&target) else {
             continue;
         };
-        if call.operands.is_empty() && bounded_inline_constant_return(callee).is_some() {
+        if bounded_inline_return(callee)
+            .and_then(|value| bounded_inline_call_operand(call, value))
+            .is_some()
+        {
             continue;
         }
         let reason = if call.operands.is_empty() {
@@ -2780,7 +2884,7 @@ fn define_region_graph_function(
     constants: &[IrConstant],
     func_id: FuncId,
     functions: &BTreeMap<FunctionId, FuncId>,
-    inline_constants: &BTreeMap<FunctionId, RegionOperand>,
+    inline_constants: &BTreeMap<FunctionId, BoundedInlineValue>,
     tail_forwards: &BTreeMap<(FunctionId, u32), FunctionId>,
     function_params: &BTreeMap<FunctionId, NativeFunctionMetadata>,
     native_call_helper: Option<NativeHelper>,
@@ -2796,7 +2900,7 @@ fn define_region_graph_function(
         })?;
         flow
     } else {
-        ExecutableValueFlow::default()
+        crate::region_ir::analyze_baseline_executable_ownership(region)
     };
     let pointer_type = module.target_config().pointer_type();
     ctx.func.signature = if fragment.is_some() {
@@ -3317,10 +3421,38 @@ fn define_region_graph_function(
             if loop_headers.contains(&region_block.id)
                 && let Some(helper) = native_operations.execution_poll
             {
+                let count = builder.create_block();
+                let poll = builder.create_block();
+                let continue_loop = builder.create_block();
+                let view_offset = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+                let counter = builder.ins().load(
+                    pointer_type,
+                    MemFlagsData::new(),
+                    deopt_out,
+                    view_offset
+                        + std::mem::offset_of!(crate::JitNativeRuntimeView, poll_counter) as i32,
+                );
+                let has_counter = builder.ins().icmp_imm(IntCC::NotEqual, counter, 0);
+                builder.ins().brif(has_counter, count, &[], poll, &[]);
+
+                builder.switch_to_block(count);
+                let visits = builder
+                    .ins()
+                    .load(types::I32, MemFlagsData::new(), counter, 0);
+                let visits = builder.ins().iadd_imm(visits, 1);
+                builder.ins().store(MemFlagsData::new(), visits, counter, 0);
+                let cadence = builder.ins().band_imm(visits, 63);
+                let due = builder.ins().icmp_imm(IntCC::Equal, cadence, 0);
+                builder.ins().brif(due, poll, &[], continue_loop, &[]);
+
+                builder.switch_to_block(poll);
                 let context = builder.ins().iconst(types::I64, 0);
                 let call = call_native_helper(module, &mut builder, helper, &[context]);
                 let status = builder.inst_results(call)[0];
                 require_native_operation_ok(&mut builder, status, helper.terminal_exit()?)?;
+                builder.ins().jump(continue_loop, &[]);
+
+                builder.switch_to_block(continue_loop);
             }
             let mut terminated = false;
             for instruction in &region_block.instructions {
@@ -3373,6 +3505,7 @@ fn define_region_graph_function(
                     pending_status,
                     pending_value,
                     region.function,
+                    region.flags.is_top_level,
                     region.local_count,
                     native_version,
                     pointer_type,

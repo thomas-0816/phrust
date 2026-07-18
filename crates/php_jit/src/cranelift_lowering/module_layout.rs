@@ -5,7 +5,8 @@
 //! explicit and testable instead of being inferred from a module afterwards.
 
 use crate::region_ir::{
-    RegionBlock, RegionGraph, RegionTerminator, baseline_instruction_lowering, build_executable_ssa,
+    NativeCompilerTier, RegionBlock, RegionGraph, RegionTerminator, baseline_instruction_lowering,
+    build_executable_ssa,
 };
 use php_ir::instruction::TerminatorKind;
 use php_ir::{BlockId, FunctionId, InstrId, LocalId};
@@ -17,20 +18,33 @@ pub const BASELINE_FRAGMENT_MAX_PHP_BLOCKS: usize = 64;
 // resume loaders, and frontend SSA edge splitting. The finished CLIF function
 // is checked again before `define_function` can enter regalloc2.
 pub const BASELINE_FRAGMENT_MAX_IR_INSTRUCTIONS: usize = 400;
+// Optimizing local/reference and ownership guards expand each Region
+// instruction into more CLIF values than baseline lowering. Keep those
+// fragments smaller while leaving the shared baseline-fragment contract
+// unchanged and preserving headroom under the pre-regalloc value ceiling.
+pub const OPTIMIZING_FRAGMENT_MAX_IR_INSTRUCTIONS: usize = 128;
 pub const BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS: usize = 1_500;
 pub const BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS: usize = 600;
 pub const BASELINE_FRAGMENT_MAX_ESTIMATED_LIVE_SET: usize = 768;
 pub const BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM: usize = 8_192;
+pub const OPTIMIZING_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM: usize = 2_048;
 pub const OPTIMIZING_REGION_MAX_PHP_BLOCKS: usize = 256;
 pub const OPTIMIZING_REGION_MAX_IR_INSTRUCTIONS: usize = 1_500;
 pub const OPTIMIZING_REGION_MAX_VIRTUAL_VALUES: usize = 768;
 const MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT: usize = 256;
+const OPTIMIZING_MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT: usize = 64;
 
 pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGraph {
+    let optimizing = region.compile_metadata.tier == NativeCompilerTier::Optimizing;
+    let chunk_instruction_limit = if optimizing {
+        OPTIMIZING_MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
+    } else {
+        MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
+    };
     if region
         .blocks
         .iter()
-        .all(|block| !region_block_requires_split(block))
+        .all(|block| !region_block_requires_split(block, optimizing))
     {
         return region;
     }
@@ -40,12 +54,12 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
         .blocks
         .iter()
         .map(|block| {
-            let chunks = if region_block_requires_split(block) {
+            let chunks = if region_block_requires_split(block, optimizing) {
                 block
                     .instructions
                     .len()
                     .max(1)
-                    .div_ceil(MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT)
+                    .div_ceil(chunk_instruction_limit)
             } else {
                 1
             };
@@ -83,16 +97,16 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
         let old_id = BlockId::new(old_index as u32);
         let ranges = if block.instructions.is_empty() {
             vec![(0, 0)]
-        } else if !region_block_requires_split(block) {
+        } else if !region_block_requires_split(block, optimizing) {
             vec![(0, block.instructions.len())]
         } else {
             (0..block.instructions.len())
-                .step_by(MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT)
+                .step_by(chunk_instruction_limit)
                 .map(|start| {
                     (
                         start,
                         start
-                            .saturating_add(MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT)
+                            .saturating_add(chunk_instruction_limit)
                             .min(block.instructions.len()),
                     )
                 })
@@ -178,8 +192,13 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
     region
 }
 
-fn region_block_requires_split(block: &RegionBlock) -> bool {
-    block.instructions.len() > BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS
+fn region_block_requires_split(block: &RegionBlock, optimizing: bool) -> bool {
+    block.instructions.len()
+        > if optimizing {
+            OPTIMIZING_MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
+        } else {
+            BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS
+        }
         || estimated_region_block_clif_blocks(block) > BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS
 }
 
@@ -449,6 +468,18 @@ impl NativeCompilePlan {
         let mut current_clif_blocks = 1_usize;
         let mut current_maximum_live_set = 0_usize;
         let mut current_safepoint_live_sum = 0_usize;
+        let fragment_instruction_limit =
+            if region.compile_metadata.tier == crate::region_ir::NativeCompilerTier::Optimizing {
+                OPTIMIZING_FRAGMENT_MAX_IR_INSTRUCTIONS
+            } else {
+                BASELINE_FRAGMENT_MAX_IR_INSTRUCTIONS
+            };
+        let fragment_safepoint_live_limit =
+            if region.compile_metadata.tier == crate::region_ir::NativeCompilerTier::Optimizing {
+                OPTIMIZING_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM
+            } else {
+                BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM
+            };
         for block in &region.blocks {
             let block_instructions = block.instructions.len();
             let block_safepoints = block
@@ -504,13 +535,13 @@ impl NativeCompilePlan {
             let exceeds_budget = !current_blocks.is_empty()
                 && (current_blocks.len().saturating_add(1) > BASELINE_FRAGMENT_MAX_PHP_BLOCKS
                     || current_instructions.saturating_add(block_instructions)
-                        > BASELINE_FRAGMENT_MAX_IR_INSTRUCTIONS
+                        > fragment_instruction_limit
                     || current_clif_blocks.saturating_add(block_clif_blocks)
                         > BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS
                     || current_maximum_live_set.max(block_maximum_live_set)
                         > BASELINE_FRAGMENT_MAX_ESTIMATED_LIVE_SET
                     || current_safepoint_live_sum.saturating_add(block_safepoint_live_sum)
-                        > BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM);
+                        > fragment_safepoint_live_limit);
             if exceeds_budget {
                 fragments.push(NativeFragmentPlan {
                     id: u32::try_from(fragments.len()).unwrap_or(u32::MAX),

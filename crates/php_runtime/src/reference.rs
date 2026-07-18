@@ -13,11 +13,46 @@ use crate::{
     },
     object::ObjectRef,
 };
-use std::cell::{BorrowError, BorrowMutError, Ref, RefCell};
+use std::cell::{BorrowError, BorrowMutError, Cell, Ref, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_REFERENCE_CELL_ID: AtomicU64 = AtomicU64::new(1);
+
+/// ABI version for the scalar-only native reference view.
+///
+/// The view deliberately publishes only immediate encoded values. Opaque
+/// handles remain owned by the VM value table and must use the typed reference
+/// slow path so reference replacement cannot delay PHP-visible destruction or
+/// outlive a reused value-table slot.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION: u32 = 1;
+/// The scalar view has no currently published immediate value.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_EMPTY: u32 = 0;
+/// The scalar view contains a valid immediate encoded value.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED: u32 = 1;
+
+/// Stable, versioned view that native code may inspect without depending on
+/// `ReferenceStorage`, `RefCell`, or `Value` layout.
+#[repr(C)]
+#[derive(Debug)]
+pub struct NativeReferenceScalarView {
+    /// Layout/meaning version for this descriptor.
+    pub abi_version: u32,
+    /// One of the `NATIVE_REFERENCE_SCALAR_VIEW_*` states.
+    pub state: Cell<u32>,
+    /// Encoded null, bool, int, or uninitialized value when published.
+    pub encoded: Cell<i64>,
+}
+
+impl Default for NativeReferenceScalarView {
+    fn default() -> Self {
+        Self {
+            abi_version: NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+            state: Cell::new(NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
+            encoded: Cell::new(0),
+        }
+    }
+}
 
 fn next_reference_cell_id() -> u64 {
     NEXT_REFERENCE_CELL_ID.fetch_add(1, Ordering::Relaxed)
@@ -33,6 +68,7 @@ pub struct ReferenceCell {
 struct ReferenceStorage {
     id: u64,
     value: RefCell<Value>,
+    native_scalar: NativeReferenceScalarView,
 }
 
 /// Weak debug handle to reference-cell storage for GC tests.
@@ -71,6 +107,7 @@ impl ReferenceCell {
             inner: Rc::new(ReferenceStorage {
                 id: next_reference_cell_id(),
                 value: RefCell::new(value),
+                native_scalar: NativeReferenceScalarView::default(),
             }),
         }
     }
@@ -116,14 +153,15 @@ impl ReferenceCell {
         &self,
         f: impl FnOnce(&mut Value) -> T,
     ) -> Result<T, BorrowMutError> {
-        self.inner
-            .value
-            .try_borrow_mut()
-            .map(|mut value| f(&mut value))
+        self.inner.value.try_borrow_mut().map(|mut value| {
+            self.invalidate_native_scalar();
+            f(&mut value)
+        })
     }
 
     /// Replaces the contained value.
     pub fn set(&self, value: Value) {
+        self.invalidate_native_scalar();
         *self.inner.value.borrow_mut() = value;
     }
 
@@ -133,8 +171,38 @@ impl ReferenceCell {
     /// It returns `Err` if another caller currently holds a borrow.
     pub fn try_set(&self, value: Value) -> Result<(), BorrowMutError> {
         self.inner.value.try_borrow_mut().map(|mut slot| {
+            self.invalidate_native_scalar();
             *slot = value;
         })
+    }
+
+    /// Returns the address of the stable scalar-only native view.
+    ///
+    /// The reference cell owns this address for its full lifetime. Native code
+    /// reaches it only through a request-owned, versioned VM descriptor that
+    /// also keeps this reference cell alive.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_scalar_view_address(&self) -> usize {
+        std::ptr::from_ref(&self.inner.native_scalar) as usize
+    }
+
+    /// Publishes one immediate encoded value for native reference reads.
+    /// Opaque runtime handles must never be passed here.
+    #[doc(hidden)]
+    pub fn publish_native_scalar(&self, encoded: i64) {
+        self.inner.native_scalar.encoded.set(encoded);
+        self.inner
+            .native_scalar
+            .state
+            .set(NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED);
+    }
+
+    fn invalidate_native_scalar(&self) {
+        self.inner
+            .native_scalar
+            .state
+            .set(NATIVE_REFERENCE_SCALAR_VIEW_EMPTY);
     }
 
     /// Returns true when both cells point at the same shared storage.
@@ -591,7 +659,11 @@ impl From<Value> for TempValue {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lvalue, LvalueKind, ReferenceCell, Slot, TempValue};
+    use super::{
+        Lvalue, LvalueKind, NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+        NATIVE_REFERENCE_SCALAR_VIEW_EMPTY, NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+        NativeReferenceScalarView, ReferenceCell, Slot, TempValue,
+    };
     use crate::{ArrayKey, ClassEntry, ClassFlags, ObjectRef, PhpArray, Value};
 
     fn empty_class(name: &str) -> ClassEntry {
@@ -842,5 +914,32 @@ mod tests {
 
         assert_eq!(cell.gc_debug_id(), alias.gc_debug_id());
         assert_ne!(cell.gc_debug_id(), independent.gc_debug_id());
+    }
+
+    #[test]
+    fn native_scalar_view_is_versioned_stable_and_invalidated_by_mutation() {
+        assert_eq!(std::mem::size_of::<NativeReferenceScalarView>(), 16);
+        assert_eq!(
+            std::mem::offset_of!(NativeReferenceScalarView, abi_version),
+            0
+        );
+        assert_eq!(std::mem::offset_of!(NativeReferenceScalarView, state), 4);
+        assert_eq!(std::mem::offset_of!(NativeReferenceScalarView, encoded), 8);
+
+        let cell = ReferenceCell::new(Value::Int(1));
+        let view = &cell.inner.native_scalar;
+        assert_eq!(view.abi_version, NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION);
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_SCALAR_VIEW_EMPTY);
+
+        cell.publish_native_scalar(41);
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED);
+        assert_eq!(view.encoded.get(), 41);
+
+        cell.set(Value::Int(42));
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_SCALAR_VIEW_EMPTY);
+        cell.publish_native_scalar(42);
+        cell.try_with_value_mut(|value| *value = Value::Int(43))
+            .expect("mutable reference view");
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_SCALAR_VIEW_EMPTY);
     }
 }

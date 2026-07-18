@@ -28,6 +28,17 @@ impl LocalStorageClass {
     pub const fn is_promoted(self) -> bool {
         matches!(self, Self::SsaPlain | Self::SsaMaybeUninitialized)
     }
+
+    /// Whether the encoded local slot is authoritative inside a native
+    /// fragment. Reference-capable and suspension-persistent locals still
+    /// have a frame slot; request globals and superglobals do not.
+    #[must_use]
+    pub const fn is_native_frame_local(self) -> bool {
+        !matches!(
+            self,
+            Self::RequestGlobal | Self::Superglobal | Self::Globals
+        )
+    }
 }
 
 /// Facts that directly alter executable lowering decisions.
@@ -35,8 +46,11 @@ impl LocalStorageClass {
 pub struct ExecutableValueFlow {
     local_storage: BTreeMap<LocalId, LocalStorageClass>,
     local_facts: BTreeMap<LocalId, SsaValueFact>,
+    local_facts_before: BTreeMap<(u32, LocalId), SsaValueFact>,
     register_facts: BTreeMap<RegId, SsaValueFact>,
+    local_load_registers: BTreeSet<RegId>,
     borrowed_local_loads: BTreeSet<u32>,
+    reference_dimension_loads: BTreeMap<u32, RegId>,
     moved_local_stores: BTreeSet<u32>,
     elided_discards: BTreeSet<u32>,
     frame_cleanup_locals: BTreeSet<LocalId>,
@@ -58,6 +72,14 @@ impl ExecutableValueFlow {
             .get(&local)
             .copied()
             .unwrap_or(SsaValueFact::UNKNOWN)
+    }
+
+    #[must_use]
+    pub fn local_fact_at(&self, continuation_id: u32, local: LocalId) -> SsaValueFact {
+        self.local_facts_before
+            .get(&(continuation_id, local))
+            .copied()
+            .unwrap_or_else(|| self.local_fact(local))
     }
 
     #[must_use]
@@ -83,6 +105,11 @@ impl ExecutableValueFlow {
     }
 
     #[must_use]
+    pub fn operand_originates_from_local_load(&self, operand: RegionOperand) -> bool {
+        matches!(operand, RegionOperand::Register(register) if self.local_load_registers.contains(&register))
+    }
+
+    #[must_use]
     pub fn promoted_local_count(&self) -> usize {
         self.local_storage
             .values()
@@ -103,6 +130,19 @@ impl ExecutableValueFlow {
     #[must_use]
     pub fn can_borrow_local_load(&self, continuation_id: u32) -> bool {
         self.borrowed_local_loads.contains(&continuation_id)
+    }
+
+    /// Whether this reference local load can remain encoded until its typed
+    /// consumers dereference it inside their runtime operations.
+    #[must_use]
+    pub fn passes_reference_to_typed_consumer(&self, continuation_id: u32) -> bool {
+        self.reference_dimension_loads
+            .contains_key(&continuation_id)
+    }
+
+    #[must_use]
+    pub fn is_reference_dimension_passthrough(&self, operand: RegionOperand) -> bool {
+        matches!(operand, RegionOperand::Register(register) if self.reference_dimension_loads.values().any(|candidate| *candidate == register))
     }
 
     #[must_use]
@@ -317,7 +357,26 @@ pub fn analyze_executable_value_flow(
         }
     }
 
+    let (local_facts_before, refined_register_facts) = analyze_flow_sensitive_facts(
+        region,
+        constants,
+        &local_storage,
+        initial_local_facts(region, &local_storage),
+        &local_facts,
+        &register_facts,
+    );
+    register_facts.extend(refined_register_facts);
     let borrowed_local_loads = find_borrowed_local_loads(region, &local_storage);
+    let reference_dimension_loads = find_reference_dimension_loads(region, &local_storage);
+    let local_load_registers = region
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction.kind {
+            RegionInstructionKind::LoadLocal { dst, .. } => Some(dst),
+            _ => None,
+        })
+        .collect();
     for block in &region.blocks {
         for instruction in &block.instructions {
             let RegionInstructionKind::LoadLocal { dst, .. } = instruction.kind else {
@@ -338,12 +397,127 @@ pub fn analyze_executable_value_flow(
     ExecutableValueFlow {
         local_storage,
         local_facts,
+        local_facts_before,
         register_facts,
+        local_load_registers,
         borrowed_local_loads,
+        reference_dimension_loads,
         moved_local_stores,
         elided_discards,
         frame_cleanup_locals,
         ssa,
+    }
+}
+
+/// Build the minimal ownership facts required by baseline lowering.
+///
+/// Baseline compilation deliberately avoids value-class propagation, local
+/// promotion, ownership moves, and discard elision. It still must recognize a
+/// same-block local load whose uses only borrow the local's existing owner;
+/// retaining such a load would create an owner that the source IR does not
+/// pair with a `Discard`.
+#[must_use]
+pub fn analyze_baseline_executable_ownership(region: &RegionGraph) -> ExecutableValueFlow {
+    let classified_storage = classify_locals(region);
+    let borrowed_local_loads = find_borrowed_local_loads(region, &classified_storage);
+    let local_load_registers = region
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction.kind {
+            RegionInstructionKind::LoadLocal { dst, .. } => Some(dst),
+            _ => None,
+        })
+        .collect();
+
+    ExecutableValueFlow {
+        local_load_registers,
+        borrowed_local_loads,
+        ..ExecutableValueFlow::default()
+    }
+}
+
+fn analyze_flow_sensitive_facts(
+    region: &RegionGraph,
+    constants: &[IrConstant],
+    storage: &BTreeMap<LocalId, LocalStorageClass>,
+    initial: BTreeMap<LocalId, SsaValueFact>,
+    conservative_locals: &BTreeMap<LocalId, SsaValueFact>,
+    conservative_registers: &BTreeMap<RegId, SsaValueFact>,
+) -> (
+    BTreeMap<(u32, LocalId), SsaValueFact>,
+    BTreeMap<RegId, SsaValueFact>,
+) {
+    // This is deliberately block-local and single-pass. The region-wide facts
+    // are a conservative entry seed for non-entry blocks; facts established by
+    // instructions in a block then refine later instructions in that same
+    // fragment. This keeps compile work linear in the Region IR instruction
+    // count instead of running a CFG fixed point on every native compilation.
+    let mut register_facts = conservative_registers.clone();
+    let mut facts_before = BTreeMap::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        let mut locals = if block_index == 0 {
+            initial.clone()
+        } else {
+            conservative_locals.clone()
+        };
+        for instruction in &block.instructions {
+            if let Some(local) = queried_local_fact(&instruction.kind) {
+                facts_before.insert(
+                    (instruction.continuation_id, local),
+                    locals.get(&local).copied().unwrap_or(SsaValueFact::UNKNOWN),
+                );
+            }
+            if let Some((register, fact)) =
+                instruction_result_fact(&instruction.kind, constants, &locals, &register_facts)
+            {
+                register_facts.insert(register, fact);
+            }
+            match instruction.kind {
+                RegionInstructionKind::StoreLocal { local, src }
+                | RegionInstructionKind::AssignLocalResult {
+                    local, value: src, ..
+                } => {
+                    let fact = if storage.get(&local).is_some_and(|class| class.is_promoted()) {
+                        operand_fact(constants, &locals, &register_facts, src)
+                    } else {
+                        SsaValueFact::UNKNOWN
+                    };
+                    locals.insert(local, fact);
+                }
+                RegionInstructionKind::UnsetLocal { local } => {
+                    locals.insert(
+                        local,
+                        SsaValueFact::exact(
+                            SsaValueClass::Uninitialized,
+                            SsaOwnership::ImmortalConstant,
+                        ),
+                    );
+                }
+                RegionInstructionKind::AssignDim { local, .. }
+                | RegionInstructionKind::AppendDim { local, .. }
+                | RegionInstructionKind::UnsetDim { local, .. }
+                    if storage.get(&local).is_some_and(|class| class.is_promoted()) =>
+                {
+                    locals.insert(
+                        local,
+                        SsaValueFact::known(SsaValueClass::ArrayHandle, SsaOwnership::Owned),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    (facts_before, register_facts)
+}
+
+fn queried_local_fact(kind: &RegionInstructionKind) -> Option<LocalId> {
+    match kind {
+        RegionInstructionKind::LoadLocal { local, .. }
+        | RegionInstructionKind::StoreLocal { local, .. }
+        | RegionInstructionKind::AssignDim { local, .. }
+        | RegionInstructionKind::AppendDim { local, .. } => Some(*local),
+        _ => None,
     }
 }
 
@@ -447,6 +621,7 @@ fn find_moved_local_stores(
                 .get(&local)
                 .is_some_and(|storage| storage.is_promoted())
                 || fact.ownership != SsaOwnership::Owned
+                || fact.certainty == super::SsaCertainty::Unknown
                 || terminator_uses.contains(&register)
             {
                 continue;
@@ -517,6 +692,16 @@ fn find_borrowed_local_loads(
             {
                 continue;
             }
+            if register_uses.iter().any(|&(_, use_index)| {
+                matches!(
+                    block.instructions[use_index].kind,
+                    RegionInstructionKind::NativeCall(_)
+                        | RegionInstructionKind::NativeDynamicCode(_)
+                        | RegionInstructionKind::NativeSuspend(_)
+                )
+            }) {
+                continue;
+            }
             let last_use = register_uses
                 .iter()
                 .map(|&(_, use_index)| use_index)
@@ -532,6 +717,85 @@ fn find_borrowed_local_loads(
         }
     }
     borrowed
+}
+
+fn find_reference_dimension_loads(
+    region: &RegionGraph,
+    storage: &BTreeMap<LocalId, LocalStorageClass>,
+) -> BTreeMap<u32, RegId> {
+    let mut uses = BTreeMap::<RegId, Vec<(usize, usize)>>::new();
+    let mut terminator_uses = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            for register in instruction.register_uses() {
+                uses.entry(register)
+                    .or_default()
+                    .push((block_index, instruction_index));
+            }
+        }
+        terminator_uses.extend(block.terminator.register_uses());
+    }
+
+    let mut passthrough = BTreeMap::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (load_index, instruction) in block.instructions.iter().enumerate() {
+            let RegionInstructionKind::LoadLocal { dst, local, .. } = instruction.kind else {
+                continue;
+            };
+            if storage.get(&local) != Some(&LocalStorageClass::MemoryReference)
+                || terminator_uses.contains(&dst)
+            {
+                continue;
+            }
+            let Some(register_uses) = uses.get(&dst).filter(|uses| !uses.is_empty()) else {
+                continue;
+            };
+            if register_uses
+                .iter()
+                .any(|&(use_block, use_index)| use_block != block_index || use_index <= load_index)
+            {
+                continue;
+            }
+            let is_typed_reference_consumer = |use_index: usize| {
+                let kind = &block.instructions[use_index].kind;
+                matches!(
+                    kind,
+                    RegionInstructionKind::FetchDim {
+                        array: RegionOperand::Register(array),
+                        ..
+                    } if *array == dst
+                )
+            };
+            if !register_uses
+                .iter()
+                .any(|&(_, use_index)| is_typed_reference_consumer(use_index))
+                || register_uses.iter().any(|&(_, use_index)| {
+                    !is_typed_reference_consumer(use_index)
+                        && !matches!(
+                            block.instructions[use_index].kind,
+                            RegionInstructionKind::Discard {
+                                src: RegionOperand::Register(discarded)
+                            } if discarded == dst
+                        )
+                })
+            {
+                continue;
+            }
+            let last_use = register_uses
+                .iter()
+                .map(|&(_, use_index)| use_index)
+                .max()
+                .expect("non-empty reference dimension uses");
+            if block.instructions[(load_index + 1)..last_use]
+                .iter()
+                .any(|instruction| instruction_mutates_local(&instruction.kind, local))
+            {
+                continue;
+            }
+            passthrough.insert(instruction.continuation_id, dst);
+        }
+    }
+    passthrough
 }
 
 fn instruction_mutates_local(kind: &RegionInstructionKind, local: LocalId) -> bool {
@@ -722,6 +986,23 @@ fn initial_fact_for_local(
             .type_
             .as_ref()
             .map_or(SsaValueFact::UNKNOWN, type_fact);
+    }
+    if region.parameter_locals.contains(&local) {
+        // `$this` and closure captures are leading native-frame inputs, but
+        // they are not represented by declared PHP parameters. Treating them
+        // as an uninitialized immortal constant permits handle operations to
+        // skip the retain needed when a receiver is returned or crosses a
+        // call boundary. The receiver has a stable object shape; other
+        // implicit inputs remain conservatively unknown.
+        return if region
+            .locals
+            .get(local.index())
+            .is_some_and(|name| name == "this")
+        {
+            SsaValueFact::known(SsaValueClass::ObjectHandle, SsaOwnership::Borrowed)
+        } else {
+            SsaValueFact::UNKNOWN
+        };
     }
     SsaValueFact::exact(SsaValueClass::Uninitialized, SsaOwnership::ImmortalConstant)
 }
@@ -999,6 +1280,71 @@ mod tests {
     }
 
     #[test]
+    fn tracks_reaching_local_facts_per_instruction() {
+        let mut builder = IrBuilder::new(UnitId::new(4_205));
+        let file = builder.add_file("ssa-reaching-flow.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("flow", FunctionFlags::default(), span);
+        let local = builder.intern_local(function, "value");
+        let block = builder.append_block(function);
+        let one = builder.intern_constant(IrConstant::Int(1));
+        let text = builder.intern_constant(IrConstant::String("next".into()));
+        builder.emit(
+            function,
+            block,
+            InstructionKind::StoreLocal {
+                local,
+                src: Operand::Constant(one),
+            },
+            span,
+        );
+        let first = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadLocal { dst: first, local },
+            span,
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::StoreLocal {
+                local,
+                src: Operand::Constant(text),
+            },
+            span,
+        );
+        let second = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadLocal { dst: second, local },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(second)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_eq!(flow.local_fact(local), SsaValueFact::UNKNOWN);
+        assert_eq!(flow.register_fact(first).class, SsaValueClass::Int);
+        assert_eq!(
+            flow.register_fact(second).class,
+            SsaValueClass::StringHandle
+        );
+        assert_eq!(
+            flow.local_fact_at(region.blocks[0].instructions[1].continuation_id, local)
+                .class,
+            SsaValueClass::Int
+        );
+        assert_eq!(
+            flow.local_fact_at(region.blocks[0].instructions[3].continuation_id, local)
+                .class,
+            SsaValueClass::StringHandle
+        );
+    }
+
+    #[test]
     fn keeps_static_local_contents_unknown_after_visible_store() {
         let mut builder = IrBuilder::new(UnitId::new(4_202));
         let file = builder.add_file("static-flow.php");
@@ -1045,6 +1391,110 @@ mod tests {
         );
         assert_eq!(flow.local_fact(local), SsaValueFact::UNKNOWN);
         assert_eq!(flow.register_fact(loaded), SsaValueFact::UNKNOWN);
+    }
+
+    #[test]
+    fn passes_single_use_reference_load_to_dimension_fetch() {
+        let mut builder = IrBuilder::new(UnitId::new(4_205));
+        let file = builder.add_file("reference-dimension.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("read", FunctionFlags::default(), span);
+        let items = builder.intern_local(function, "items");
+        builder.push_param(
+            function,
+            IrParam {
+                name: "items".to_owned(),
+                local: items,
+                required: true,
+                default: None,
+                type_: None,
+                by_ref: true,
+                variadic: false,
+                attributes: Vec::new(),
+            },
+        );
+        let block = builder.append_block(function);
+        let loaded = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadLocal {
+                dst: loaded,
+                local: items,
+            },
+            span,
+        );
+        let value = builder.alloc_register(function);
+        let key = builder.intern_constant(IrConstant::String("value".into()));
+        builder.emit(
+            function,
+            block,
+            InstructionKind::FetchDim {
+                dst: value,
+                array: Operand::Register(loaded),
+                key: Operand::Constant(key),
+                quiet: false,
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(value)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_eq!(
+            flow.local_storage(items),
+            LocalStorageClass::MemoryReference
+        );
+        assert!(
+            flow.passes_reference_to_typed_consumer(
+                region.blocks[0].instructions[0].continuation_id
+            )
+        );
+    }
+
+    #[test]
+    fn implicit_receiver_is_a_borrowed_object_handle() {
+        let mut builder = IrBuilder::new(UnitId::new(4_203));
+        let file = builder.add_file("ssa-method-receiver.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function(
+            "Widget::identity",
+            FunctionFlags {
+                is_method: true,
+                ..FunctionFlags::default()
+            },
+            span,
+        );
+        let this = builder.intern_local(function, "this");
+        let block = builder.append_block(function);
+        let loaded = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadLocal {
+                dst: loaded,
+                local: this,
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(loaded)), span);
+        let unit = builder.finish();
+        let mut region = build_baseline_region(&unit, function).expect("region");
+        // Instance-method declaration metadata normally supplies this leading
+        // ABI slot; keep this unit test focused on value-flow classification.
+        region.parameter_locals = vec![this];
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_eq!(
+            flow.local_fact(this),
+            SsaValueFact::known(SsaValueClass::ObjectHandle, SsaOwnership::Borrowed)
+        );
+        assert_eq!(
+            flow.register_fact(loaded).class,
+            SsaValueClass::ObjectHandle
+        );
+        assert!(!flow.can_borrow_local_load(region.blocks[0].instructions[0].continuation_id));
     }
 
     #[test]
@@ -1098,6 +1548,7 @@ mod tests {
         let unit = builder.finish();
         let region = build_baseline_region(&unit, function).expect("region");
         let flow = analyze_executable_value_flow(&region, &unit.constants);
+        let baseline_ownership = analyze_baseline_executable_ownership(&region);
 
         assert!(flow.can_borrow_local_load(region.blocks[0].instructions[0].continuation_id));
         assert_eq!(
@@ -1106,6 +1557,15 @@ mod tests {
         );
         flow.verify_ownership(&region)
             .expect("same-block borrow should verify");
+        assert!(
+            baseline_ownership
+                .can_borrow_local_load(region.blocks[0].instructions[0].continuation_id)
+        );
+        assert_eq!(
+            baseline_ownership.register_fact(borrowed),
+            SsaValueFact::UNKNOWN,
+            "baseline ownership must not enable optimizing value facts"
+        );
     }
 
     #[test]

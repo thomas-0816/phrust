@@ -55,6 +55,8 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         | "phrust_native_frame_release" => Some(none(NONE)),
         "phrust_native_unary"
         | "phrust_native_cast"
+        | "phrust_native_type_predicate"
+        | "phrust_native_stable_length"
         | "phrust_native_local_fetch"
         | "phrust_native_return_check"
         | "phrust_native_object_clone"

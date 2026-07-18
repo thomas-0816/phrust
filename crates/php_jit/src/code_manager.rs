@@ -107,6 +107,7 @@ struct CodeManagerMetrics {
     duplicate_compiles_avoided: AtomicU64,
     compile_count: AtomicU64,
     function_body_compile_count: AtomicU64,
+    optimized_function_publications: AtomicU64,
     duplicate_function_publications: AtomicU64,
     bytes_live: AtomicUsize,
     bytes_retired: AtomicUsize,
@@ -125,6 +126,7 @@ impl Default for CodeManagerMetrics {
             duplicate_compiles_avoided: AtomicU64::new(0),
             compile_count: AtomicU64::new(0),
             function_body_compile_count: AtomicU64::new(0),
+            optimized_function_publications: AtomicU64::new(0),
             duplicate_function_publications: AtomicU64::new(0),
             bytes_live: AtomicUsize::new(0),
             bytes_retired: AtomicUsize::new(0),
@@ -145,6 +147,7 @@ pub struct CraneliftCodeManagerStats {
     pub duplicate_compiles_avoided: u64,
     pub compile_count: u64,
     pub function_body_compile_count: u64,
+    pub optimized_function_publications: u64,
     pub duplicate_function_publications: u64,
     pub function_cells: usize,
     pub code_bytes_live: usize,
@@ -869,6 +872,11 @@ impl CraneliftCodeManager {
         self.metrics
             .function_body_compile_count
             .fetch_add(entries.len() as u64, Ordering::Relaxed);
+        if tier == NativeFunctionTier::Optimized {
+            self.metrics
+                .optimized_function_publications
+                .fetch_add(entries.len() as u64, Ordering::Relaxed);
+        }
         for entry in entries {
             let key = crate::native_function_key(
                 code_key.compiled_unit.clone(),
@@ -943,6 +951,10 @@ impl CraneliftCodeManager {
             function_body_compile_count: self
                 .metrics
                 .function_body_compile_count
+                .load(Ordering::Relaxed),
+            optimized_function_publications: self
+                .metrics
+                .optimized_function_publications
                 .load(Ordering::Relaxed),
             duplicate_function_publications: self
                 .metrics

@@ -317,6 +317,13 @@ pub mod experimental {
     pub mod numeric_string {
         pub use crate::numeric_string::*;
     }
+    #[doc(hidden)]
+    pub mod native_reference {
+        pub use crate::reference::{
+            NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
+            NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, NativeReferenceScalarView,
+        };
+    }
 }
 
 pub(crate) use crate::{
