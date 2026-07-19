@@ -1480,11 +1480,58 @@ fn lower_direct_reference_argument(
     source_block: BlockId,
     instruction: &RegionInstruction,
     function: FunctionId,
+    defer_until_signature_published: bool,
     publish_reference_locals: bool,
     result_out: ir::Value,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     if let Some(local) = argument.by_ref_local {
         let value = use_local_variable(builder, locals, local)?;
+        if defer_until_signature_published {
+            let callsite =
+                u64::from(function.raw()) | (u64::from(instruction.continuation_id) << 32);
+            let callsite = builder.ins().iconst(types::I64, callsite as i64);
+            let argument_index = builder.ins().iconst(
+                types::I64,
+                i64::try_from(argument_index).unwrap_or(i64::MAX),
+            );
+            let candidate = lower_native_value_operation(
+                module,
+                builder,
+                helper,
+                6,
+                &[value, callsite, argument_index],
+                result_out,
+            )?;
+            let bind_local = builder.create_block();
+            let keep_local = builder.create_block();
+            let merge = builder.create_block();
+            builder.append_block_param(merge, types::I64);
+            let is_reference =
+                lower_value_has_tag(builder, candidate, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
+            builder
+                .ins()
+                .brif(is_reference, bind_local, &[], keep_local, &[]);
+
+            builder.switch_to_block(bind_local);
+            define_local_variable(builder, locals, local, candidate)?;
+            publish_native_reference_local(
+                module,
+                builder,
+                publish_reference_locals.then_some(helper).flatten(),
+                candidate,
+                function,
+                local,
+                result_out,
+            )?;
+            builder.ins().jump(merge, &[candidate.into()]);
+
+            builder.switch_to_block(keep_local);
+            define_local_variable(builder, locals, local, value)?;
+            builder.ins().jump(merge, &[candidate.into()]);
+
+            builder.switch_to_block(merge);
+            return Ok(builder.block_params(merge)[0]);
+        }
         let reference =
             lower_guarded_reference_binding(module, builder, helper, value, result_out)?;
         define_local_variable(builder, locals, local, reference)?;
@@ -3933,6 +3980,7 @@ fn lower_region_instruction(
                         source_block,
                         instruction,
                         function,
+                        false,
                         function_is_top_level,
                         result_out,
                     )?;
@@ -5715,14 +5763,25 @@ fn lower_native_call_trampoline(
                 .map(|operand| lower_region_operand(builder, locals, registers, operand))
                 .transpose()?;
             let visible_index = index.saturating_sub(call.argument_operand_offset);
-            let requires_reference = known_user_argument_requires_reference(
+            let known_reference_requirement = known_user_argument_requires_reference(
                 call,
                 visible_index,
                 function_params,
                 function,
-            )
-            .unwrap_or_else(|| call.argument_requires_reference_binding(visible_index));
+            );
+            let requires_reference = known_reference_requirement
+                .unwrap_or_else(|| call.argument_requires_reference_binding(visible_index));
+            let defer_until_signature_published = requires_reference
+                && known_reference_requirement.is_none()
+                && matches!(
+                    &call.target,
+                    RegionCallTarget::Function { function: None, .. }
+                )
+                && argument
+                    .and_then(|argument| argument.by_ref_local)
+                    .is_some();
             let speculative_original_local = if requires_reference
+                && !defer_until_signature_published
                 && call
                     .declared_argument_reference_requirement(visible_index)
                     .is_none()
@@ -5785,6 +5844,7 @@ fn lower_native_call_trampoline(
                     source_block,
                     instruction,
                     function,
+                    defer_until_signature_published,
                     true,
                     result_out,
                 )?);

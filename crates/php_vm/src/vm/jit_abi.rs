@@ -2145,6 +2145,44 @@ impl<'a> NativeExecutionContext<'a> {
             .map(std::sync::Arc::as_ptr)
     }
 
+    fn deferred_function_argument_requires_reference(
+        &self,
+        function: u32,
+        continuation: u32,
+        argument: usize,
+    ) -> Option<bool> {
+        let descriptor = self
+            .native_callsites
+            .get(function as usize)
+            .and_then(|callsites| callsites.get(continuation as usize))
+            .and_then(Option::as_deref)?;
+        if !matches!(
+            descriptor.kind,
+            crate::compiled_unit::NativeCallSiteKind::Function
+        ) {
+            return None;
+        }
+        let name = descriptor.target_symbol.as_deref()?;
+        let parameters = if let Some(function) = self.function_id(name) {
+            self.unit
+                .functions
+                .get(function.index())
+                .map(|function| function.params.as_slice())
+        } else if let Some(target) = self.external_function(name) {
+            self.dynamic_units
+                .get(target.unit)
+                .and_then(|unit| unit.compiled.unit().functions.get(target.function.index()))
+                .map(|function| function.params.as_slice())
+        } else {
+            None
+        }?;
+        call_dispatch::native_function_argument_requires_reference_at(
+            descriptor.arguments.as_ref(),
+            parameters,
+            argument,
+        )
+    }
+
     fn native_method_epochs(&self) -> (u64, u64) {
         let dynamic_epoch = self.dynamic_units.len() as u64;
         (

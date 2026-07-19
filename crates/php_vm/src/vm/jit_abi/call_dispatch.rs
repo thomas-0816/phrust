@@ -162,6 +162,78 @@ fn mark_native_function_argument_references(
     }
 }
 
+/// Resolve one call argument against the now-published userland signature.
+/// The caller may have been compiled before an included function was declared,
+/// so this is the last point where an unresolved lvalue can avoid being
+/// needlessly converted into a PHP reference.
+pub(super) fn native_function_argument_requires_reference_at(
+    metadata: &[php_ir::instruction::IrCallArg],
+    parameters: &[php_ir::IrParam],
+    target_argument: usize,
+) -> Option<bool> {
+    let variadic_index = parameters.iter().position(|parameter| parameter.variadic);
+    let fixed_count = variadic_index.unwrap_or(parameters.len());
+    let mut positional = 0usize;
+    let mut inline_assigned = [false; 64];
+    let mut overflow_assigned = (fixed_count > inline_assigned.len())
+        .then(|| vec![false; fixed_count.saturating_sub(inline_assigned.len())]);
+
+    for (index, call_argument) in metadata.iter().enumerate().take(target_argument + 1) {
+        let named_index = call_argument.name.as_deref().and_then(|name| {
+            parameters[..fixed_count]
+                .iter()
+                .position(|parameter| parameter.name.eq_ignore_ascii_case(name))
+        });
+        if let Some(index) = named_index {
+            if index < inline_assigned.len() {
+                inline_assigned[index] = true;
+            } else if let Some(values) = overflow_assigned.as_mut()
+                && let Some(value) = values.get_mut(index - inline_assigned.len())
+            {
+                *value = true;
+            }
+        }
+        let parameter_index = named_index.or_else(|| {
+            while positional < fixed_count
+                && if positional < inline_assigned.len() {
+                    inline_assigned[positional]
+                } else {
+                    overflow_assigned
+                        .as_ref()
+                        .and_then(|values| values.get(positional - inline_assigned.len()))
+                        .copied()
+                        .unwrap_or(false)
+                }
+            {
+                positional += 1;
+            }
+            if positional < fixed_count {
+                let index = positional;
+                if index < inline_assigned.len() {
+                    inline_assigned[index] = true;
+                } else if let Some(values) = overflow_assigned.as_mut()
+                    && let Some(value) = values.get_mut(index - inline_assigned.len())
+                {
+                    *value = true;
+                }
+                positional += 1;
+                Some(index)
+            } else {
+                variadic_index
+            }
+        });
+        if index == target_argument {
+            return Some(
+                !call_argument.unpack
+                    && parameter_index
+                        .and_then(|index| parameters.get(index))
+                        .is_some_and(|parameter| parameter.by_ref),
+            );
+        }
+    }
+    None
+}
+
 /// Typed native call trampoline entry. Target compilation and lookup are
 /// requested explicitly; this boundary has no alternate executor entry.
 // SAFETY: audited native ABI pointer boundary; see the function-local safety notes.

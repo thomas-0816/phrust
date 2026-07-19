@@ -1519,10 +1519,52 @@ pub(in crate::vm) extern "C" fn jit_native_reference_bind_abi(
     } else {
         raw_op
     };
-    if op > 5 {
+    if op > 6 {
         return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
     }
     with_native_context_for("reference_bind", |context| {
+        if op == 6 {
+            let callsite = key as u64;
+            let function = callsite as u32;
+            let continuation = (callsite >> 32) as u32;
+            let Ok(argument) = usize::try_from(reserved) else {
+                return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
+            };
+            if context.deferred_function_argument_requires_reference(
+                function,
+                continuation,
+                argument,
+            ) == Some(false)
+            {
+                return if write_native_value(out, encoded) {
+                    0
+                } else {
+                    php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                };
+            }
+            let Ok(value) = context.decode(encoded) else {
+                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+            };
+            if matches!(value, Value::Reference(_)) {
+                return if write_native_value(out, encoded) {
+                    0
+                } else {
+                    php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                };
+            }
+            let reference = php_runtime::api::ReferenceCell::new(value);
+            context
+                .explicit_reference_ids
+                .insert(reference.gc_debug_id());
+            let Ok(reference) = context.encode(Value::Reference(reference)) else {
+                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+            };
+            return if write_native_value(out, reference) {
+                0
+            } else {
+                php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+            };
+        }
         if op == 5 {
             let function_id = match u32::try_from(key) {
                 Ok(function) => function,
