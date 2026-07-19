@@ -32,6 +32,11 @@ const BORROW_3: &[HelperInputOwnership] = &[
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
 ];
+const CONSUME_BORROW_2: &[HelperInputOwnership] = &[
+    HelperInputOwnership::Consume,
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+];
 
 /// Ownership metadata for every stable native helper family.
 #[must_use]
@@ -72,6 +77,7 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         | "phrust_native_reference_bind"
         | "phrust_native_property_fetch"
         | "phrust_native_array_insert" => Some(owned(BORROW_3, true)),
+        "phrust_native_array_insert_local" => Some(owned(CONSUME_BORROW_2, true)),
         "phrust_native_property_assign" => Some(owned(BORROW_2, true)),
         "phrust_native_argument_check" => Some(owned(BORROW_1, true)),
         "phrust_native_array_new" | "phrust_native_object_new" | "phrust_native_exception_new" => {

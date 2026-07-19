@@ -63,6 +63,7 @@
 {"id":"arrays-indexed","path":"fixtures/runtime/valid/arrays/indexed.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|2|3\n"}}
 {"id":"arrays-string-keys","path":"fixtures/runtime/valid/arrays/string-keys.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|2\n"}}
 {"id":"arrays-append-overwrite","path":"fixtures/runtime/valid/arrays/append-overwrite.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|5|7\n"}}
+{"id":"arrays-local-write-cow","path":"fixtures/runtime/valid/arrays/local-write-cow.php","tags":["runtime","arrays","references","native"],"expect":{"exit":0,"stdout":"1|2|3|4|1|2\n11|2\n20|21\n","stderr":""}}
 {"id":"arrays-nested-fetch","path":"fixtures/runtime/valid/arrays/nested-fetch.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"4|8\n"}}
 {"id":"arrays-missing-key","path":"fixtures/runtime/valid/arrays/missing-key.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"x\n","stderr_contains":"E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING"}}
 {"id":"arrays-isset-empty-unset","path":"fixtures/runtime/valid/arrays/isset-empty-unset.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|111|\n"}}

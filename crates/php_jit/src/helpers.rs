@@ -6,7 +6,7 @@ pub use php_runtime::api::JitHelperId;
 
 /// Stable ABI fingerprint for the helper-symbol registry. Bumped whenever the
 /// registry's symbol set or any helper ABI changes.
-pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_000e;
+pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_000f;
 
 /// Helper argument kind.
 #[repr(u32)]
@@ -441,6 +441,15 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
         has_side_effects: false,
         description: "typed strlen/count fallback for stable value views",
     },
+    JitHelperSymbol {
+        id: JitHelperId(50),
+        name: "phrust_native_array_insert_local",
+        args: NATIVE_OP_3_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: true,
+        has_side_effects: true,
+        description: "PHP array insert consuming and replacing one local owner",
+    },
 ];
 
 /// Looks up a helper by stable id.
@@ -491,6 +500,7 @@ pub fn resolve_helper_address(
         "phrust_native_object_clone" => Some(runtime.native_object_clone),
         "phrust_native_object_clone_with" => Some(runtime.native_object_clone_with),
         "phrust_native_array_insert" => Some(runtime.native_array_insert),
+        "phrust_native_array_insert_local" => Some(runtime.native_array_insert_local),
         "phrust_native_array_fetch" => Some(runtime.native_array_fetch),
         "phrust_native_array_unset" => Some(runtime.native_array_unset),
         "phrust_native_array_spread" => Some(runtime.native_array_spread),
@@ -554,7 +564,7 @@ mod tests {
             JIT_HELPER_SYMBOLS.first().expect("first").id,
             JitHelperId(14)
         );
-        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(49));
+        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(50));
     }
 
     #[test]

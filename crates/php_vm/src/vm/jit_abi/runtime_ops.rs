@@ -2059,7 +2059,52 @@ fn insert_native_array_value(
     }
 }
 
+fn finish_native_local_replacement(
+    context: &mut NativeExecutionContext<'_>,
+    consume_local_root: bool,
+    original: i64,
+    replacement: i64,
+    out: *mut i64,
+) -> i32 {
+    if consume_local_root
+        && replacement != original
+        && let Err(error) = context.release_if_live(original)
+    {
+        record_native_helper_failure(
+            context,
+            format!("local array insert could not consume {original}: {error}"),
+        );
+        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+    }
+    if write_native_value(out, replacement) {
+        0
+    } else {
+        php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+    }
+}
+
 pub(in crate::vm) extern "C" fn jit_native_array_insert_abi(
+    append: u32,
+    array: i64,
+    key: i64,
+    value: i64,
+    out: *mut i64,
+) -> i32 {
+    jit_native_array_insert_impl(false, append, array, key, value, out)
+}
+
+pub(in crate::vm) extern "C" fn jit_native_array_insert_local_abi(
+    append: u32,
+    array: i64,
+    key: i64,
+    value: i64,
+    out: *mut i64,
+) -> i32 {
+    jit_native_array_insert_impl(true, append, array, key, value, out)
+}
+
+fn jit_native_array_insert_impl(
+    consume_local_root: bool,
     append: u32,
     array: i64,
     key: i64,
@@ -2088,9 +2133,15 @@ pub(in crate::vm) extern "C" fn jit_native_array_insert_abi(
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             };
             let key = dereference_native_dimension_value(key);
-            let Ok(target) = context.decode(array) else {
+            let Ok(mut target) = context.decode(array) else {
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             };
+            if consume_local_root && let Value::Reference(reference) = target {
+                target = reference.get();
+            }
+            if consume_local_root && matches!(target, Value::Uninitialized) {
+                target = Value::Null;
+            }
             if emit_native_dimension_conversion_diagnostic(
                 context,
                 &target,
@@ -2137,12 +2188,32 @@ pub(in crate::vm) extern "C" fn jit_native_array_insert_abi(
             }
         }
         if let Some(index) = plain_array_index {
+            if !context.runtime_value_is_uniquely_owned(index) {
+                let Ok(mut target) = context.array_at(index).cloned() else {
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                };
+                insert_native_array_value(&mut target, key, value);
+                return match context.encode(Value::Array(target)) {
+                    Ok(result) => finish_native_local_replacement(
+                        context,
+                        consume_local_root,
+                        array,
+                        result,
+                        out,
+                    ),
+                    Err(error) => {
+                        record_native_helper_failure(context, error);
+                        php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                    }
+                };
+            }
             let result = context.mutate_array_at_with(index, |target| {
                 insert_native_array_value(target, key, value)
             });
             return match result {
-                Ok(()) if write_native_value(out, array) => 0,
-                Ok(()) => php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+                Ok(()) => {
+                    finish_native_local_replacement(context, consume_local_root, array, array, out)
+                }
                 Err(error) => {
                     record_native_helper_failure(context, error);
                     php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
@@ -2177,6 +2248,10 @@ pub(in crate::vm) extern "C" fn jit_native_array_insert_abi(
             }
             Ok(Value::Null | Value::Uninitialized) => {
                 let mut target = php_runtime::api::PhpArray::new();
+                mutate(&mut target);
+                context.encode(Value::Array(target))
+            }
+            Ok(Value::Array(mut target)) if consume_local_root => {
                 mutate(&mut target);
                 context.encode(Value::Array(target))
             }
@@ -2233,8 +2308,9 @@ pub(in crate::vm) extern "C" fn jit_native_array_insert_abi(
             )),
         };
         match result {
-            Ok(result) if write_native_value(out, result) => 0,
-            Ok(_) => php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+            Ok(result) => {
+                finish_native_local_replacement(context, consume_local_root, array, result, out)
+            }
             Err(error) => {
                 record_native_helper_failure(context, error);
                 php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32

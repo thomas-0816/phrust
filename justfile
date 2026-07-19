@@ -149,6 +149,7 @@ help:
       '  just native-ssa-ratchet   Enforce executable SSA and lifetime lowering' \
       '  just reference-scalar-view Verify direct scalar reads from PHP references' \
       '  just reference-dimension-operand Verify fused reference dimension reads' \
+      '  just local-array-write-gate Verify fused COW-correct local array writes' \
       '  just inline-cache-model-tests Test the retained cache data model' \
       '  just native-smoke         Run mandatory native smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
@@ -505,7 +506,7 @@ verify-stdlib:
 # Correctness-focused performance gates. Sub-gates share one engine build
 # through the perf-build dependency (deduplicated within this invocation).
 # Release-profile and report gates live in verify-performance-extended.
-verify-performance: native-fast-baseline-ratchet native-linkage-ratchet wordpress-benchmark-self-test fast-baseline-acceptance-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet native-hotpath-ratchet reference-scalar-view reference-dimension-operand templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
+verify-performance: native-fast-baseline-ratchet native-linkage-ratchet wordpress-benchmark-self-test fast-baseline-acceptance-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet native-hotpath-ratchet reference-scalar-view reference-dimension-operand local-array-write-gate templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
 # Heavy release-profile and report gates, split out of verify-performance so
@@ -1223,6 +1224,9 @@ reference-scalar-view:
 
 reference-dimension-operand:
     scripts/performance/reference_dimension_operand.sh
+
+local-array-write-gate:
+    scripts/performance/local_array_write_gate.sh
 
 native-hotpath-report *args:
     scripts/performance/native_hotpath_report.py {{args}}

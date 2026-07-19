@@ -1559,6 +1559,12 @@ pub(super) fn compile_region_graph_native(
             "phrust_native_array_insert",
         ),
         (
+            needs_array_insert,
+            runtime_helpers.native_array_insert_local,
+            test_native_array_insert_fallback as *const () as usize,
+            "phrust_native_array_insert_local",
+        ),
+        (
             needs_array_fetch,
             runtime_helpers.native_array_fetch,
             test_native_array_fetch_fallback as *const () as usize,
@@ -1921,6 +1927,12 @@ pub(super) fn compile_region_graph_native(
                     "phrust_native_array_insert",
                     3,
                     helper_address("phrust_native_array_insert"),
+                )?);
+                native_operations.array_insert_local = Some(declare_value_operation(
+                    module,
+                    "phrust_native_array_insert_local",
+                    3,
+                    helper_address("phrust_native_array_insert_local"),
                 )?);
             }
             if needs_array_fetch {

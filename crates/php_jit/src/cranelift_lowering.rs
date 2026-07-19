@@ -183,6 +183,7 @@ struct NativeOperationFunctions {
     object_clone: Option<NativeHelper>,
     object_clone_with: Option<NativeHelper>,
     array_insert: Option<NativeHelper>,
+    array_insert_local: Option<NativeHelper>,
     array_fetch: Option<NativeHelper>,
     array_unset: Option<NativeHelper>,
     array_spread: Option<NativeHelper>,
@@ -227,6 +228,7 @@ impl NativeOperationFunctions {
             object_clone,
             object_clone_with,
             array_insert,
+            array_insert_local,
             array_fetch,
             array_unset,
             array_spread,
@@ -4854,7 +4856,9 @@ fn lower_region_instruction(
             let direct_array_local = value_flow.local_storage(*local).is_promoted()
                 && local_fact.certainty != crate::region_ir::SsaCertainty::Unknown
                 && local_fact.class == SsaValueClass::ArrayHandle;
-            let root = if direct_array_local {
+            let local_array_write =
+                ordinary_local_fast_path(function_is_top_level, function_local_names, *local);
+            let root = if direct_array_local || local_array_write {
                 current
             } else {
                 lower_native_local_fetch(
@@ -4897,7 +4901,11 @@ fn lower_region_instruction(
             let mut updated = lower_native_value_operation(
                 module,
                 builder,
-                native_operations.array_insert,
+                if local_array_write && keys.len() == 1 {
+                    native_operations.array_insert_local
+                } else {
+                    native_operations.array_insert
+                },
                 array_insert_operation,
                 &[
                     nested,
@@ -4910,13 +4918,17 @@ fn lower_region_instruction(
                 updated = lower_native_value_operation(
                     module,
                     builder,
-                    native_operations.array_insert,
+                    if local_array_write && index == 0 {
+                        native_operations.array_insert_local
+                    } else {
+                        native_operations.array_insert
+                    },
                     array_insert_operation,
                     &[arrays[index], keys[index], updated],
                     result_out,
                 )?;
             }
-            let stored = if direct_array_local {
+            let stored = if direct_array_local || local_array_write {
                 updated
             } else {
                 let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
@@ -4948,7 +4960,9 @@ fn lower_region_instruction(
             let direct_array_local = value_flow.local_storage(*local).is_promoted()
                 && local_fact.certainty != crate::region_ir::SsaCertainty::Unknown
                 && local_fact.class == SsaValueClass::ArrayHandle;
-            let root = if direct_array_local {
+            let local_array_write =
+                ordinary_local_fast_path(function_is_top_level, function_local_names, *local);
+            let root = if direct_array_local || local_array_write {
                 current
             } else {
                 lower_native_local_fetch(
@@ -4989,7 +5003,11 @@ fn lower_region_instruction(
             let mut updated = lower_native_value_operation(
                 module,
                 builder,
-                native_operations.array_insert,
+                if local_array_write && keys.is_empty() {
+                    native_operations.array_insert_local
+                } else {
+                    native_operations.array_insert
+                },
                 native_dim_operation(1, function, instruction.continuation_id),
                 &[nested, key, value],
                 result_out,
@@ -4998,13 +5016,17 @@ fn lower_region_instruction(
                 updated = lower_native_value_operation(
                     module,
                     builder,
-                    native_operations.array_insert,
+                    if local_array_write && index == 0 {
+                        native_operations.array_insert_local
+                    } else {
+                        native_operations.array_insert
+                    },
                     native_dim_operation(0, function, instruction.continuation_id),
                     &[arrays[index], keys[index], updated],
                     result_out,
                 )?;
             }
-            let stored = if direct_array_local {
+            let stored = if direct_array_local || local_array_write {
                 updated
             } else {
                 let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));

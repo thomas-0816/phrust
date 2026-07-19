@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NATIVE_DYNAMIC_EFFECTS: AtomicUsize = AtomicUsize::new(0);
 static SSA_FORBIDDEN_HELPER_CALLS: AtomicUsize = AtomicUsize::new(0);
+static LOCAL_ARRAY_INSERT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn plain_local_flags_exclude_php_visible_global_slots() {
@@ -256,6 +257,17 @@ extern "C" fn test_array_insert(
     // SAFETY: generated code owns this synchronous stack output slot.
     unsafe { out.write(array) };
     0
+}
+
+extern "C" fn test_local_array_insert(
+    append: u32,
+    array: i64,
+    key: i64,
+    value: i64,
+    out: *mut i64,
+) -> i32 {
+    LOCAL_ARRAY_INSERT_CALLS.fetch_add(1, Ordering::SeqCst);
+    test_array_insert(append, array, key, value, out)
 }
 
 #[test]
@@ -755,6 +767,7 @@ fn optimizing_array_append_keeps_promoted_array_out_of_local_helpers() {
         runtime_helpers: crate::JitRuntimeHelperAddresses {
             native_array_new: test_array_new as *const () as usize,
             native_array_insert: test_array_insert as *const () as usize,
+            native_array_insert_local: test_array_insert as *const () as usize,
             native_local_fetch: forbidden_local_fetch as *const () as usize,
             native_local_store: forbidden_local_store as *const () as usize,
             native_value_lifecycle: frame_cleanup_only_lifecycle as *const () as usize,
@@ -772,6 +785,88 @@ fn optimizing_array_append_keeps_promoted_array_out_of_local_helpers() {
         9
     );
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn baseline_array_append_consumes_plain_local_without_load_or_store_helpers() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    LOCAL_ARRAY_INSERT_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_211));
+    let file = builder.add_file("baseline-local-array-append.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function = builder.start_function(
+        "baseline_local_array_append",
+        FunctionFlags::default(),
+        span,
+    );
+    let local = builder.intern_local(function, "items");
+    let block = builder.append_block(function);
+    let array = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::NewArray { dst: array },
+        span,
+    );
+    builder.emit(
+        function,
+        block,
+        InstructionKind::StoreLocal {
+            local,
+            src: Operand::Register(array),
+        },
+        span,
+    );
+    builder.emit(
+        function,
+        block,
+        InstructionKind::Discard {
+            src: Operand::Register(array),
+        },
+        span,
+    );
+    let nine = builder.intern_constant(IrConstant::Int(9));
+    let result = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::AppendDim {
+            dst: result,
+            local,
+            dims: Vec::new(),
+            value: Operand::Constant(nine),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+    let unit = builder.finish();
+    let mut backend = CraneliftNativeCompiler;
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.baseline.local-array-append"),
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_array_new: test_array_new as *const () as usize,
+            native_array_insert: test_array_insert as *const () as usize,
+            native_array_insert_local: test_local_array_insert as *const () as usize,
+            native_local_fetch: forbidden_local_fetch as *const () as usize,
+            native_local_store: forbidden_local_store as *const () as usize,
+            native_value_lifecycle: passthrough_lifecycle as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    assert_eq!(
+        outcome
+            .handle
+            .expect("baseline local array append handle")
+            .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("baseline local array append execution"),
+        9
+    );
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+    assert_eq!(LOCAL_ARRAY_INSERT_CALLS.load(Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -160,6 +160,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_object_clone_with: usize,
     /// Inserts or appends one PHP array element.
     pub native_array_insert: usize,
+    /// Consumes a local array owner, inserts, and returns its replacement.
+    pub native_array_insert_local: usize,
     /// Fetches one PHP array dimension.
     pub native_array_fetch: usize,
     /// Removes one PHP array dimension.

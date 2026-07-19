@@ -47,8 +47,8 @@ use request_state::{
 use root_index::{RequestRootIndex, RootMutationReason, values_contain_object};
 pub(super) use runtime_ops::{
     jit_native_argument_check_abi, jit_native_array_fetch_abi, jit_native_array_insert_abi,
-    jit_native_array_new_abi, jit_native_array_spread_abi, jit_native_array_unset_abi,
-    jit_native_binary_abi, jit_native_cast_abi, jit_native_compare_abi,
+    jit_native_array_insert_local_abi, jit_native_array_new_abi, jit_native_array_spread_abi,
+    jit_native_array_unset_abi, jit_native_binary_abi, jit_native_cast_abi, jit_native_compare_abi,
     jit_native_constant_fetch_abi, jit_native_echo_abi, jit_native_exception_new_abi,
     jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi,
     jit_native_foreach_next_abi, jit_native_local_fetch_abi, jit_native_local_store_abi,
@@ -1575,6 +1575,10 @@ impl<'a> NativeExecutionContext<'a> {
             Some(NativeStoredValue::Php(Value::Array(_)))
         )
         .then_some(index)
+    }
+
+    fn runtime_value_is_uniquely_owned(&self, index: usize) -> bool {
+        self.value_refcounts.get(index) == Some(&1)
     }
 
     fn array_at(&self, index: usize) -> Result<&php_runtime::api::PhpArray, String> {

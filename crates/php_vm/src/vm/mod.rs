@@ -13,18 +13,18 @@ pub use result::VmResult;
 use crate::compiled_unit::CompiledUnit;
 use jit_abi::{
     NativeExecutionContext, activate_native_context, jit_native_argument_check_abi,
-    jit_native_array_fetch_abi, jit_native_array_insert_abi, jit_native_array_new_abi,
-    jit_native_array_spread_abi, jit_native_array_unset_abi, jit_native_binary_abi,
-    jit_native_call_dispatch_abi, jit_native_cast_abi, jit_native_compare_abi,
-    jit_native_constant_fetch_abi, jit_native_dynamic_code_abi, jit_native_echo_abi,
-    jit_native_exception_new_abi, jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi,
-    jit_native_foreach_init_abi, jit_native_foreach_next_abi, jit_native_frame_alloc_abi,
-    jit_native_frame_release_abi, jit_native_function_resolve_abi, jit_native_local_fetch_abi,
-    jit_native_local_store_abi, jit_native_object_clone_abi, jit_native_object_clone_with_abi,
-    jit_native_object_new_abi, jit_native_property_assign_abi, jit_native_property_fetch_abi,
-    jit_native_reference_bind_abi, jit_native_return_check_abi, jit_native_runtime_fatal_abi,
-    jit_native_stable_length_abi, jit_native_truthy_abi, jit_native_type_predicate_abi,
-    jit_native_unary_abi, jit_native_value_lifecycle_abi,
+    jit_native_array_fetch_abi, jit_native_array_insert_abi, jit_native_array_insert_local_abi,
+    jit_native_array_new_abi, jit_native_array_spread_abi, jit_native_array_unset_abi,
+    jit_native_binary_abi, jit_native_call_dispatch_abi, jit_native_cast_abi,
+    jit_native_compare_abi, jit_native_constant_fetch_abi, jit_native_dynamic_code_abi,
+    jit_native_echo_abi, jit_native_exception_new_abi, jit_native_execution_poll_abi,
+    jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi, jit_native_foreach_next_abi,
+    jit_native_frame_alloc_abi, jit_native_frame_release_abi, jit_native_function_resolve_abi,
+    jit_native_local_fetch_abi, jit_native_local_store_abi, jit_native_object_clone_abi,
+    jit_native_object_clone_with_abi, jit_native_object_new_abi, jit_native_property_assign_abi,
+    jit_native_property_fetch_abi, jit_native_reference_bind_abi, jit_native_return_check_abi,
+    jit_native_runtime_fatal_abi, jit_native_stable_length_abi, jit_native_truthy_abi,
+    jit_native_type_predicate_abi, jit_native_unary_abi, jit_native_value_lifecycle_abi,
 };
 use php_runtime::api::{OutputBuffer, Value};
 use std::collections::{HashMap, HashSet};
@@ -1608,6 +1608,7 @@ fn runtime_helper_addresses() -> php_jit::JitRuntimeHelperAddresses {
         native_object_clone: jit_native_object_clone_abi as *const () as usize,
         native_object_clone_with: jit_native_object_clone_with_abi as *const () as usize,
         native_array_insert: jit_native_array_insert_abi as *const () as usize,
+        native_array_insert_local: jit_native_array_insert_local_abi as *const () as usize,
         native_array_fetch: jit_native_array_fetch_abi as *const () as usize,
         native_array_unset: jit_native_array_unset_abi as *const () as usize,
         native_array_spread: jit_native_array_spread_abi as *const () as usize,
