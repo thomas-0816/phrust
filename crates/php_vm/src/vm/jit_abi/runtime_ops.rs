@@ -3609,21 +3609,7 @@ pub(in crate::vm) extern "C" fn jit_native_foreach_init_abi(
                 decoded = reference.get();
             }
             match decoded {
-                Value::Array(source) => {
-                    let entries = source
-                        .iter()
-                        .map(|(key, value)| {
-                            let key = match key {
-                                php_runtime::api::ArrayKey::Int(key) => Value::Int(key),
-                                php_runtime::api::ArrayKey::String(key) => {
-                                    Value::String(key.clone())
-                                }
-                            };
-                            (key, value.clone())
-                        })
-                        .collect::<Vec<_>>();
-                    context.encode_iterator(entries, None, None, None, None)
-                }
+                Value::Array(source) => context.encode_array_iterator(source),
                 Value::Generator(generator) => context.encode_generator_iterator(generator),
                 Value::Object(object) if native_spl_iterator_entries(&object).is_some() => {
                     let entries = native_spl_iterator_entries(&object).unwrap_or_default();

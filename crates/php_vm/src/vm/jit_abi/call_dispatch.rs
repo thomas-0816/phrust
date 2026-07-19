@@ -267,6 +267,14 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         .counters
                         .native_builtin_direct_executed
                         .saturating_add(1);
+                    if let Some(entry) = descriptor.direct_builtin {
+                        let count = telemetry
+                            .counters
+                            .native_builtin_calls_by_name
+                            .entry(entry.entry.name().to_owned())
+                            .or_default();
+                        *count = count.saturating_add(1);
+                    }
                 } else if direct_external_in_place {
                     telemetry.counters.native_call_direct =
                         telemetry.counters.native_call_direct.saturating_add(1);
@@ -1535,6 +1543,15 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
                     })
                     .unwrap_or(0);
+                if direct_builtin && let Some(entry) = descriptor.direct_builtin {
+                    let mut telemetry = context.runtime_telemetry.borrow_mut();
+                    let elapsed = telemetry
+                        .counters
+                        .native_builtin_time_nanos_by_name
+                        .entry(entry.entry.name().to_owned())
+                        .or_default();
+                    *elapsed = elapsed.saturating_add(inclusive_nanos);
+                }
                 context.record_native_callsite_timing(
                     frame.function_id,
                     frame.source_block_id,
