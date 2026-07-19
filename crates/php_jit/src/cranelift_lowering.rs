@@ -587,6 +587,36 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
                 elapsed.max(1),
             )
         }
+        Err(error)
+            if request.compile.opt_level != 0
+                && error.code == "JIT_CRANELIFT_PRE_REGALLOC_BUDGET" =>
+        {
+            let mut baseline_compile = request.compile.clone();
+            baseline_compile.opt_level = 0;
+            baseline_compile.region_id = format!("{}.baseline", baseline_compile.region_id);
+            let baseline_request = NativeCompileRequest {
+                compile: &baseline_compile,
+                unit: request.unit,
+                function: request.function,
+                runtime_helpers: request.runtime_helpers,
+            };
+            let mut outcome = compile_authoritative_region(&baseline_request);
+            outcome.diagnostics.insert(
+                0,
+                format!(
+                    "optimizing compile exceeded its exact backend budget and used baseline code: {error}"
+                ),
+            );
+            if outcome.handle.is_some() {
+                outcome.compile_time_nanos = start
+                    .elapsed()
+                    .as_nanos()
+                    .try_into()
+                    .unwrap_or(u64::MAX)
+                    .max(1);
+            }
+            outcome
+        }
         Err(error) => NativeCompileOutcome::skipped(
             JitCompileStatus::Rejected {
                 reason: error.code.to_owned(),

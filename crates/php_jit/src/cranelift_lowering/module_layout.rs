@@ -856,11 +856,24 @@ impl NativeCompilePlan {
             .saturating_add(resume_dispatch_points.saturating_mul(2))
             .saturating_add(estimated_helper_branches.saturating_mul(2))
             .saturating_add(4);
-        let fragments = cost_aware_fragment_blocks(region)
-            .into_iter()
-            .enumerate()
-            .map(|(id, blocks)| fragment_plan_for_blocks(region, id, blocks))
-            .collect();
+        let whole_region_optimizing = region.compile_metadata.tier
+            == crate::region_ir::NativeCompilerTier::Optimizing
+            && region.blocks.len() <= OPTIMIZING_REGION_MAX_PHP_BLOCKS
+            && instructions.len() <= OPTIMIZING_REGION_MAX_IR_INSTRUCTIONS
+            && region.register_count as usize <= OPTIMIZING_REGION_MAX_VIRTUAL_VALUES;
+        let fragments = if whole_region_optimizing {
+            vec![fragment_plan_for_blocks(
+                region,
+                0,
+                region.blocks.iter().map(|block| block.id).collect(),
+            )]
+        } else {
+            cost_aware_fragment_blocks(region)
+                .into_iter()
+                .enumerate()
+                .map(|(id, blocks)| fragment_plan_for_blocks(region, id, blocks))
+                .collect()
+        };
 
         Self {
             function: region.function,
@@ -1014,6 +1027,47 @@ mod tests {
                 .iter()
                 .all(NativeFragmentPlan::is_within_budget)
         );
+    }
+
+    #[test]
+    fn optimizing_plan_uses_its_own_whole_region_budget() {
+        let mut builder = IrBuilder::new(UnitId::new(4));
+        let file = builder.add_file("optimizing-plan.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("optimizing_plan", FunctionFlags::default(), span);
+        let block = builder.append_block(function);
+        let mut result = None;
+        for value in 0..480 {
+            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
+            let register = builder.alloc_register(function);
+            builder.emit_load_const(function, block, register, constant, span);
+            result = Some(register);
+        }
+        builder.terminate_return(function, block, result.map(php_ir::Operand::Register), span);
+        let unit = builder.finish();
+        let mut region = BaselineRegionBuilder::build(
+            &unit,
+            function,
+            &CompileMetadata {
+                ir_fingerprint: "optimizing-plan-test".to_owned(),
+                tier: NativeCompilerTier::Baseline,
+                helper_abi_hash: 0,
+                target_cpu: "test".to_owned(),
+                semantic_config_hash: 0,
+                dependency_identity: "test".to_owned(),
+            },
+        )
+        .unwrap();
+        region = split_oversized_region_blocks(region);
+
+        let baseline = NativeCompilePlan::for_region(&region);
+        assert!(baseline.fragments.len() > 1);
+
+        region.compile_metadata.tier = NativeCompilerTier::Optimizing;
+        let optimizing = NativeCompilePlan::for_region(&region);
+        assert_eq!(optimizing.fragments.len(), 1);
+        assert!(optimizing.permits_whole_region_optimization());
+        assert_eq!(optimizing.fragments[0].blocks.len(), region.blocks.len());
     }
 
     #[test]

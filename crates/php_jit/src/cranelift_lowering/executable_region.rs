@@ -961,10 +961,11 @@ pub(super) fn compile_region_graph_native(
             }
         }
     }
-    if let Some(fragment) = plan
-        .fragments
-        .iter()
-        .find(|fragment| !fragment.is_within_budget())
+    if regions[&function].compile_metadata.tier == NativeCompilerTier::Baseline
+        && let Some(fragment) = plan
+            .fragments
+            .iter()
+            .find(|fragment| !fragment.is_within_budget())
     {
         return Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_FRAGMENT_BUDGET",
@@ -3153,9 +3154,13 @@ pub(super) struct DefinedRegionFunction {
 
 const MAX_NATIVE_SPILL_FRAME_BYTES: u32 = 1024 * 1024;
 const MAX_FRAGMENT_CLIF_BLOCKS: usize = 768;
+const MAX_OPTIMIZING_CLIF_BLOCKS: usize = 4_096;
 const MAX_FRAGMENT_CLIF_VALUES: usize = 16_384;
+const MAX_OPTIMIZING_CLIF_VALUES: usize = 65_536;
 const MAX_FRAGMENT_CLIF_INSTRUCTIONS: usize = 32_768;
+const MAX_OPTIMIZING_CLIF_INSTRUCTIONS: usize = 65_536;
 const MAX_FRAGMENT_BLOCK_PARAMETERS: usize = 4_096;
+const MAX_OPTIMIZING_BLOCK_PARAMETERS: usize = 16_384;
 // Exact CLIF must retain 30% headroom below the absolute backend ceiling.
 // This is intentionally stricter than merely avoiding a hard rejection: it
 // keeps the admitted regalloc graph away from the nonlinear edge while the
@@ -3257,15 +3262,31 @@ pub(super) fn validate_pre_regalloc_structure(
             }
         }
     }
-    if blocks > MAX_FRAGMENT_CLIF_BLOCKS
-        || values > MAX_FRAGMENT_CLIF_VALUES
-        || instructions > MAX_FRAGMENT_CLIF_INSTRUCTIONS
-        || block_parameters > MAX_FRAGMENT_BLOCK_PARAMETERS
+    let (maximum_blocks, maximum_values, maximum_instructions, maximum_block_parameters) =
+        if region.compile_metadata.tier == NativeCompilerTier::Optimizing {
+            (
+                MAX_OPTIMIZING_CLIF_BLOCKS,
+                MAX_OPTIMIZING_CLIF_VALUES,
+                MAX_OPTIMIZING_CLIF_INSTRUCTIONS,
+                MAX_OPTIMIZING_BLOCK_PARAMETERS,
+            )
+        } else {
+            (
+                MAX_FRAGMENT_CLIF_BLOCKS,
+                MAX_FRAGMENT_CLIF_VALUES,
+                MAX_FRAGMENT_CLIF_INSTRUCTIONS,
+                MAX_FRAGMENT_BLOCK_PARAMETERS,
+            )
+        };
+    if blocks > maximum_blocks
+        || values > maximum_values
+        || instructions > maximum_instructions
+        || block_parameters > maximum_block_parameters
     {
         return Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_PRE_REGALLOC_BUDGET",
             format!(
-                "function {} fragment={} exceeds the pre-regalloc ceiling: clif_blocks={blocks}/{MAX_FRAGMENT_CLIF_BLOCKS} clif_values={values}/{MAX_FRAGMENT_CLIF_VALUES} clif_instructions={instructions}/{MAX_FRAGMENT_CLIF_INSTRUCTIONS} block_parameters={block_parameters}/{MAX_FRAGMENT_BLOCK_PARAMETERS}",
+                "function {} fragment={} exceeds the pre-regalloc ceiling: clif_blocks={blocks}/{maximum_blocks} clif_values={values}/{maximum_values} clif_instructions={instructions}/{maximum_instructions} block_parameters={block_parameters}/{maximum_block_parameters}",
                 region.function_name,
                 fragment.map_or_else(|| "whole".to_owned(), |id| id.to_string()),
             ),
