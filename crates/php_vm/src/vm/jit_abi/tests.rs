@@ -282,7 +282,7 @@ fn native_value_slots_keep_iterator_state_out_of_line() {
     let value_bytes = std::mem::size_of::<php_runtime::api::Value>();
     let slot_bytes = std::mem::size_of::<super::NativeStoredValue>();
     assert!(
-        slot_bytes <= value_bytes.saturating_mul(2),
+        slot_bytes <= value_bytes.saturating_add(std::mem::size_of::<usize>()),
         "native value arena slot grew to {slot_bytes} bytes for a {value_bytes}-byte PHP value"
     );
 }

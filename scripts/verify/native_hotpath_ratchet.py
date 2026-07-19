@@ -92,7 +92,9 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_vm",
             "--lib",
-            "native_value_slots_keep_iterator_state_out_of_line",
+            "vm::jit_abi::tests::native_value_slots_keep_iterator_state_out_of_line",
+            "--",
+            "--exact",
         ],
         [
             "cargo",

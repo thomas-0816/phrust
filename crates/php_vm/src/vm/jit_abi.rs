@@ -453,12 +453,14 @@ fn stored_value_view(value: &NativeStoredValue) -> php_jit::JitNativeValueView {
 
 enum NativeStoredValue {
     Php(Value),
-    ArrayIterator {
-        source: php_runtime::api::PhpArray,
-        index: usize,
-    },
+    ArrayIterator(Box<NativeArrayIteratorState>),
     Iterator(Box<NativeIteratorState>),
     GeneratorIterator(Box<NativeGeneratorIteratorState>),
+}
+
+struct NativeArrayIteratorState {
+    source: php_runtime::api::PhpArray,
+    index: usize,
 }
 
 struct NativeIteratorState {
@@ -510,7 +512,7 @@ fn stored_value_tag(value: &NativeStoredValue) -> u64 {
         NativeStoredValue::Php(Value::Resource(_)) => php_jit::JIT_VALUE_RUNTIME_RESOURCE_TAG,
         NativeStoredValue::Php(Value::Generator(_)) => php_jit::JIT_VALUE_RUNTIME_GENERATOR_TAG,
         NativeStoredValue::Php(Value::Fiber(_)) => php_jit::JIT_VALUE_RUNTIME_FIBER_TAG,
-        NativeStoredValue::ArrayIterator { .. }
+        NativeStoredValue::ArrayIterator(_)
         | NativeStoredValue::Iterator(_)
         | NativeStoredValue::GeneratorIterator(_) => php_jit::JIT_VALUE_RUNTIME_ITERATOR_TAG,
         NativeStoredValue::Php(
@@ -962,7 +964,7 @@ impl<'a> NativeExecutionContext<'a> {
             return match self.values.get(index as usize).and_then(Option::as_ref) {
                 Some(NativeStoredValue::Php(value)) => Ok(value.clone()),
                 Some(
-                    NativeStoredValue::ArrayIterator { .. }
+                    NativeStoredValue::ArrayIterator(_)
                     | NativeStoredValue::Iterator(_)
                     | NativeStoredValue::GeneratorIterator(_),
                 ) => Err(format!(
@@ -1084,7 +1086,7 @@ impl<'a> NativeExecutionContext<'a> {
             Some(NativeStoredValue::Php(Value::Reference(_))) => Some(true),
             Some(NativeStoredValue::Php(_)) => Some(false),
             Some(
-                NativeStoredValue::ArrayIterator { .. }
+                NativeStoredValue::ArrayIterator(_)
                 | NativeStoredValue::Iterator(_)
                 | NativeStoredValue::GeneratorIterator(_),
             )
@@ -1114,7 +1116,7 @@ impl<'a> NativeExecutionContext<'a> {
         match self.values.get(index).and_then(Option::as_ref) {
             Some(NativeStoredValue::Php(Value::Reference(_)))
             | Some(
-                NativeStoredValue::ArrayIterator { .. }
+                NativeStoredValue::ArrayIterator(_)
                 | NativeStoredValue::Iterator(_)
                 | NativeStoredValue::GeneratorIterator(_),
             )
@@ -1128,7 +1130,7 @@ impl<'a> NativeExecutionContext<'a> {
         match self.values.get(index).and_then(Option::as_ref) {
             Some(NativeStoredValue::Php(value)) => Some(value),
             Some(
-                NativeStoredValue::ArrayIterator { .. }
+                NativeStoredValue::ArrayIterator(_)
                 | NativeStoredValue::Iterator(_)
                 | NativeStoredValue::GeneratorIterator(_),
             )
@@ -1248,8 +1250,8 @@ impl<'a> NativeExecutionContext<'a> {
     fn live_native_values_contain_object(&self, object_id: u64) -> bool {
         self.values.iter().flatten().any(|stored| match stored {
             NativeStoredValue::Php(value) => values_contain_object([value], object_id),
-            NativeStoredValue::ArrayIterator { source, .. } => {
-                values_contain_object(source.iter().map(|(_, value)| value), object_id)
+            NativeStoredValue::ArrayIterator(iterator) => {
+                values_contain_object(iterator.source.iter().map(|(_, value)| value), object_id)
             }
             NativeStoredValue::Iterator(iterator) => {
                 values_contain_object(
@@ -1583,7 +1585,9 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn encode_array_iterator(&mut self, source: php_runtime::api::PhpArray) -> Result<i64, String> {
-        self.encode_stored_value(NativeStoredValue::ArrayIterator { source, index: 0 })
+        self.encode_stored_value(NativeStoredValue::ArrayIterator(Box::new(
+            NativeArrayIteratorState { source, index: 0 },
+        )))
     }
 
     fn encode_generator_iterator(
@@ -1954,22 +1958,26 @@ impl<'a> NativeExecutionContext<'a> {
 
     fn array_iterator_next(&mut self, encoded: i64) -> Option<Option<(Value, Value)>> {
         let index = php_jit::jit_decode_runtime_value(encoded)? as usize;
-        let NativeStoredValue::ArrayIterator { source, index } =
-            self.values.get_mut(index)?.as_mut()?
+        let NativeStoredValue::ArrayIterator(iterator) = self.values.get_mut(index)?.as_mut()?
         else {
             return None;
         };
-        Some(source.next_pair_at_cursor(index).map(|(key, value)| {
-            let key = match key {
-                php_runtime::api::ArrayKey::Int(key) => Value::Int(key),
-                php_runtime::api::ArrayKey::String(key) => Value::String(key),
-            };
-            let value = match value {
-                Value::Reference(reference) => reference.get(),
-                value => value,
-            };
-            (key, value)
-        }))
+        Some(
+            iterator
+                .source
+                .next_pair_at_cursor(&mut iterator.index)
+                .map(|(key, value)| {
+                    let key = match key {
+                        php_runtime::api::ArrayKey::Int(key) => Value::Int(key),
+                        php_runtime::api::ArrayKey::String(key) => Value::String(key),
+                    };
+                    let value = match value {
+                        Value::Reference(reference) => reference.get(),
+                        value => value,
+                    };
+                    (key, value)
+                }),
+        )
     }
 
     fn generator_can_rewind(&self, encoded: i64) -> bool {
@@ -1996,7 +2004,7 @@ impl<'a> NativeExecutionContext<'a> {
             .ok_or_else(|| format!("native foreach iterator {index} is missing"))?;
         match value.take() {
             Some(
-                NativeStoredValue::ArrayIterator { .. }
+                NativeStoredValue::ArrayIterator(_)
                 | NativeStoredValue::Iterator(_)
                 | NativeStoredValue::GeneratorIterator(_),
             ) => {
