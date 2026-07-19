@@ -3294,14 +3294,13 @@ pub(in crate::vm) extern "C" fn jit_native_array_fetch_abi(
             record_native_helper_failure(context, "array fetch could not decode its target".to_owned());
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
-        let reference_target = matches!(array, Value::Reference(_));
         for _ in 0..16 {
             let Value::Reference(reference) = array else {
                 break;
             };
             array = reference.get();
         }
-        if reference_target && array == Value::Uninitialized {
+        if array == Value::Uninitialized {
             if quiet == 0 && let (Some(function), Some(source)) = (source_function, source.as_ref()) {
                 let function = context.unit.functions.get(function as usize);
                 let local = match source.kind {

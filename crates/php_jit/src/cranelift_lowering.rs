@@ -4763,23 +4763,35 @@ fn lower_region_instruction(
             key,
             quiet,
         } => {
-            let release_array = matches!(array, RegionOperand::Local(_));
-            let array = if let RegionOperand::Local(local) = array {
+            // The dimension helper borrows and dereferences its target. Passing
+            // the encoded local directly avoids manufacturing an owned copy
+            // solely to release it again after the helper returns.
+            let (array, release_array) = if let RegionOperand::Local(local) = array {
                 let current = use_local_variable(builder, locals, *local)?;
-                lower_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    current,
-                    *quiet,
-                    ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                )?
+                if ordinary_local_fast_path(function_is_top_level, function_local_names, *local) {
+                    (current, false)
+                } else {
+                    (
+                        lower_native_local_fetch(
+                            module,
+                            builder,
+                            native_operations.local_fetch,
+                            current,
+                            *quiet,
+                            false,
+                            function,
+                            *local,
+                            instruction.span,
+                            result_out,
+                        )?,
+                        true,
+                    )
+                }
             } else {
-                lower_region_operand(builder, locals, registers, *array)?
+                (
+                    lower_region_operand(builder, locals, registers, *array)?,
+                    false,
+                )
             };
             let key = lower_region_operand(builder, locals, registers, *key)?;
             let value = lower_native_value_operation(
@@ -5015,18 +5027,20 @@ fn lower_region_instruction(
         }
         RegionInstructionKind::IssetDim { dst, local, keys } => {
             let mut value = use_local_variable(builder, locals, *local)?;
-            value = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                value,
-                true,
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                function,
-                *local,
-                instruction.span,
-                result_out,
-            )?;
+            if !ordinary_local_fast_path(function_is_top_level, function_local_names, *local) {
+                value = lower_native_local_fetch(
+                    module,
+                    builder,
+                    native_operations.local_fetch,
+                    value,
+                    true,
+                    false,
+                    function,
+                    *local,
+                    instruction.span,
+                    result_out,
+                )?;
+            }
             for key in keys {
                 let key = lower_region_operand(builder, locals, registers, *key)?;
                 value = lower_native_value_operation(
@@ -5053,18 +5067,20 @@ fn lower_region_instruction(
         }
         RegionInstructionKind::EmptyDim { dst, local, keys } => {
             let mut value = use_local_variable(builder, locals, *local)?;
-            value = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                value,
-                true,
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                function,
-                *local,
-                instruction.span,
-                result_out,
-            )?;
+            if !ordinary_local_fast_path(function_is_top_level, function_local_names, *local) {
+                value = lower_native_local_fetch(
+                    module,
+                    builder,
+                    native_operations.local_fetch,
+                    value,
+                    true,
+                    false,
+                    function,
+                    *local,
+                    instruction.span,
+                    result_out,
+                )?;
+            }
             for key in keys {
                 let key = lower_region_operand(builder, locals, registers, *key)?;
                 value = lower_native_value_operation(
