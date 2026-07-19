@@ -63,7 +63,6 @@ use telemetry::NativeRuntimeTelemetry;
 
 thread_local! {
     static ACTIVE_NATIVE_CONTEXT: Cell<*mut ()> = const { Cell::new(std::ptr::null_mut()) };
-    static NATIVE_CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
     static NATIVE_INCLUDE_GLOBALS: RefCell<Option<std::collections::BTreeMap<String, Value>>> =
         const { RefCell::new(None) };
     static NATIVE_INCLUDE_CONSTANTS: RefCell<Option<std::collections::BTreeMap<String, Value>>> =
@@ -93,27 +92,6 @@ static NATIVE_TEMPNAM_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 // guard, but leave enough headroom for those non-recursive call chains.
 const NATIVE_CALL_DEPTH_LIMIT: usize = 256;
 const NATIVE_RUNTIME_ERROR_MARKER: &str = "E_PHP_NATIVE_RUNTIME_ERROR";
-
-struct NativeCallDepthGuard;
-
-impl Drop for NativeCallDepthGuard {
-    fn drop(&mut self) {
-        NATIVE_CALL_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-    }
-}
-
-fn enter_native_call(name: &str) -> Result<NativeCallDepthGuard, String> {
-    NATIVE_CALL_DEPTH.with(|depth| {
-        let current = depth.get();
-        if current >= NATIVE_CALL_DEPTH_LIMIT {
-            return Err(format!(
-                "E_PHP_NATIVE_CALL_DEPTH: maximum native call depth of {NATIVE_CALL_DEPTH_LIMIT} exceeded in {name}()"
-            ));
-        }
-        depth.set(current + 1);
-        Ok(NativeCallDepthGuard)
-    })
-}
 
 #[derive(Default)]
 struct NativeIncludeExports {
@@ -321,6 +299,34 @@ impl std::ops::Deref for NativeInstructionPtr {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct NativeFunctionMetadataPtr(
+    *const crate::compiled_unit::PreparedNativeFunctionMetadata,
+);
+
+impl NativeFunctionMetadataPtr {
+    fn from_compiled(
+        compiled: &crate::compiled_unit::CompiledUnit,
+        function: php_ir::FunctionId,
+    ) -> Option<Self> {
+        compiled
+            .prepared_native_function_metadata_ptr(function)
+            .map(Self)
+    }
+}
+
+// SAFETY: Prepared function metadata is immutable and owned by the active
+// CompiledUnit. NativeExecutionContext retains that unit (including dynamic
+// units) for the lifetime of every synchronous native frame using this view.
+#[allow(unsafe_code)]
+impl std::ops::Deref for NativeFunctionMetadataPtr {
+    type Target = crate::compiled_unit::PreparedNativeFunctionMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0 }
+    }
+}
+
 pub(super) struct NativeExecutionContext<'a> {
     compiled: crate::compiled_unit::CompiledUnit,
     unit: ActiveNativeUnit,
@@ -388,7 +394,7 @@ pub(super) struct NativeExecutionContext<'a> {
     pending_nested_fiber_execution: Option<NativeFiberExecution>,
     completed_nested_fiber_call: Option<(u32, u32, i64)>,
     pending_throwable: Option<Value>,
-    called_classes: Vec<String>,
+    called_classes: Vec<Arc<str>>,
     lexical_scope_classes: Vec<String>,
     call_frames: Vec<NativeBacktraceFrame>,
     dynamic_classes: std::collections::BTreeSet<String>,
@@ -3190,7 +3196,7 @@ fn execute_native_static_property(
             "static" => context
                 .called_classes
                 .last()
-                .cloned()
+                .map(|class| class.to_string())
                 .or_else(|| calling_class.map(|class| class.name.clone()))
                 .unwrap_or_else(|| class_name.clone()),
             _ => class_name.clone(),
@@ -3345,7 +3351,7 @@ fn execute_native_static_property(
         "static" => context
             .called_classes
             .last()
-            .cloned()
+            .map(|class| class.to_string())
             .or_else(|| calling_class.map(|class| class.name.clone()))
             .unwrap_or_else(|| class_name.clone()),
         _ => class_name.clone(),
@@ -3887,12 +3893,12 @@ fn native_backtrace_frame(
     object: Option<php_runtime::api::ObjectRef>,
     arguments: request_state::NativeTraceArguments,
 ) -> NativeBacktraceFrame {
-    let metadata = compiled.prepared_native_function_metadata(function);
+    let metadata = NativeFunctionMetadataPtr::from_compiled(compiled, function);
     native_backtrace_frame_from_metadata(metadata, called_class, object, arguments)
 }
 
 fn native_backtrace_frame_from_metadata(
-    metadata: Option<Arc<crate::compiled_unit::PreparedNativeFunctionMetadata>>,
+    metadata: Option<NativeFunctionMetadataPtr>,
     called_class: Option<Arc<str>>,
     object: Option<php_runtime::api::ObjectRef>,
     arguments: request_state::NativeTraceArguments,
@@ -3948,7 +3954,9 @@ fn invoke_native_external_function_with_metadata(
     context.with_active_dynamic_unit(target.unit, |context| {
         let pushed_called_class = called_class.is_some();
         if let Some(called_class) = &called_class {
-            context.called_classes.push(called_class.clone());
+            context
+                .called_classes
+                .push(Arc::from(called_class.as_str()));
         }
         let result = invoke_native_function_with_metadata_strict(
             context,
@@ -4026,7 +4034,7 @@ fn invoke_native_method_with_trace_arguments(
     arguments: &[i64],
     trace_arguments: Option<request_state::NativeTraceArguments>,
 ) -> Result<i64, String> {
-    let metadata = context.compiled.prepared_native_function_metadata(function);
+    let metadata = NativeFunctionMetadataPtr::from_compiled(&context.compiled, function);
     invoke_native_method_with_prepared_trace_arguments(
         context,
         function,
@@ -4041,13 +4049,16 @@ fn invoke_native_method_with_prepared_trace_arguments(
     function: php_ir::FunctionId,
     arguments: &[i64],
     trace_arguments: Option<request_state::NativeTraceArguments>,
-    metadata: Option<Arc<crate::compiled_unit::PreparedNativeFunctionMetadata>>,
+    metadata: Option<NativeFunctionMetadataPtr>,
 ) -> Result<i64, String> {
-    let function_name = metadata.as_ref().map_or_else(
-        || Arc::<str>::from("<unknown>"),
-        |metadata| metadata.name.clone(),
-    );
-    let _depth_guard = enter_native_call(&function_name)?;
+    let function_name = metadata
+        .as_ref()
+        .map_or("<unknown>", |metadata| metadata.name.as_ref());
+    if context.call_frames.len() >= NATIVE_CALL_DEPTH_LIMIT {
+        return Err(format!(
+            "E_PHP_NATIVE_CALL_DEPTH: maximum native call depth of {NATIVE_CALL_DEPTH_LIMIT} exceeded in {function_name}()"
+        ));
+    }
     let handle = ensure_native_entry(context, function)?;
     let instance_method = metadata
         .as_ref()
@@ -4063,15 +4074,10 @@ fn invoke_native_method_with_prepared_trace_arguments(
     let called_class = object
         .as_ref()
         .map(php_runtime::api::ObjectRef::class_name_handle)
-        .or_else(|| {
-            context
-                .called_classes
-                .last()
-                .map(|class| Arc::<str>::from(class.as_str()))
-        });
+        .or_else(|| context.called_classes.last().cloned());
     let pushed_called_class = called_class.is_some();
     if let Some(class) = called_class.as_ref() {
-        context.called_classes.push(class.to_string());
+        context.called_classes.push(Arc::clone(class));
     }
     let leading = metadata.as_ref().map_or(0, |metadata| {
         metadata.capture_count
@@ -4814,9 +4820,14 @@ fn execute_native_class_constant(
         "self" => {
             native_effective_calling_class(context, caller_function).map(|class| class.name.clone())
         }
-        "static" => context.called_classes.last().cloned().or_else(|| {
-            native_effective_calling_class(context, caller_function).map(|class| class.name.clone())
-        }),
+        "static" => context
+            .called_classes
+            .last()
+            .map(|class| class.to_string())
+            .or_else(|| {
+                native_effective_calling_class(context, caller_function)
+                    .map(|class| class.name.clone())
+            }),
         "parent" => native_effective_calling_class(context, caller_function)
             .and_then(|class| class.parent.clone()),
         _ => Some(normalize_class_name(class_name)),
@@ -5293,7 +5304,7 @@ fn native_resolve_scoped_class_name(
         "static" => context
             .called_classes
             .last()
-            .cloned()
+            .map(|class| class.to_string())
             .or_else(|| {
                 native_effective_calling_class(context, caller_function)
                     .map(|class| class.display_name.clone())

@@ -71,18 +71,15 @@ pub(super) fn invoke_native_function_with_metadata_strict(
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
     strict: bool,
 ) -> Result<i64, String> {
-    let target_metadata = context
-        .compiled
-        .prepared_native_function_metadata(function)
+    let target_metadata = NativeFunctionMetadataPtr::from_compiled(&context.compiled, function)
         .ok_or_else(|| {
             format!(
                 "native function {} has no prepared metadata",
                 function.raw()
             )
         })?;
-    let target_name = Arc::clone(&target_metadata.name);
-    let target_params = Arc::clone(&target_metadata.params);
-    let _depth_guard = enter_native_call(&target_name)?;
+    let target_name = target_metadata.name.as_ref();
+    let target_params = target_metadata.params.as_ref();
     let leading = target_metadata.capture_count
         + usize::from(target_metadata.instance_method)
         + usize::from(target_metadata.implicit_closure_this);
@@ -646,7 +643,7 @@ pub(super) fn invoke_native_bound_method(
         }
         let pushed_called_class = entry.flags.is_static;
         if pushed_called_class {
-            context.called_classes.push(class_name.clone());
+            context.called_classes.push(Arc::from(class_name.as_str()));
         }
         let result = invoke_native_function_with_metadata_strict(
             context,
@@ -794,7 +791,7 @@ pub(super) fn execute_native_dynamic_callable(
                     }
                     let pushed_called_class = closure.context.called_class.is_some();
                     if let Some(called_class) = &closure.context.called_class {
-                        context.called_classes.push(called_class.to_string());
+                        context.called_classes.push(Arc::clone(called_class));
                     }
                     let result = invoke_native_function_with_metadata_strict(
                         context,

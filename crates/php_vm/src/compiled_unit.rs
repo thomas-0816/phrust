@@ -873,10 +873,10 @@ impl CompiledUnit {
         &self.prepared_external_function_call_index().whole_unit
     }
 
-    pub(crate) fn prepared_native_function_metadata(
+    pub(crate) fn prepared_native_function_metadata_ptr(
         &self,
         function: FunctionId,
-    ) -> Option<Arc<PreparedNativeFunctionMetadata>> {
+    ) -> Option<*const PreparedNativeFunctionMetadata> {
         self.inner
             .prepared
             .native_function_metadata
@@ -947,7 +947,7 @@ impl CompiledUnit {
                     .into_boxed_slice()
             })
             .get(function.index())
-            .cloned()
+            .map(Arc::as_ptr)
     }
 
     pub(crate) fn prepared_ir_fingerprint(&self) -> &str {

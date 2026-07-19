@@ -726,7 +726,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
                 let called_class = context
                     .called_classes
                     .last()
-                    .map(|class| std::sync::Arc::<str>::from(class.as_str()))
+                    .cloned()
                     .or_else(|| scope_class.clone());
                 let closure_context = php_runtime::api::ClosureContext {
                     owner_unit: context.current_dynamic_unit,

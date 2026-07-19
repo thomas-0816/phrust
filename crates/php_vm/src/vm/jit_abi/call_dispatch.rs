@@ -689,7 +689,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                             emit_native_deprecated_call(context, function, instruction);
                             let call_arguments = if is_static { &encoded[1..] } else { &encoded };
                             if is_static {
-                                context.called_classes.push(class_name.clone());
+                                context.called_classes.push(Arc::from(class_name.as_str()));
                             }
                             let result = invoke_native_function_with_metadata_strict(
                                 context,
@@ -785,7 +785,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         context.record_native_method_pic(false);
                     }
                     if is_static_method {
-                        context.called_classes.push(class_name.clone());
+                        context.called_classes.push(Arc::from(class_name.as_str()));
                     }
                     let result = invoke_native_function_with_metadata_strict(
                         context,
@@ -912,7 +912,11 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                 let resolved_class = match class_name.to_ascii_lowercase().as_str() {
                     "self" => native_calling_class(context, frame.function_id)
                         .map(|class| class.name.clone()),
-                    "static" => context.called_classes.last().cloned().or_else(|| {
+                    "static" => context
+                        .called_classes
+                        .last()
+                        .map(|class| class.to_string())
+                        .or_else(|| {
                         native_calling_class(context, frame.function_id)
                             .map(|class| class.name.clone())
                     }),
@@ -941,7 +945,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         context
                             .called_classes
                             .last()
-                            .cloned()
+                            .map(|class| class.to_string())
                             .or_else(|| resolved_class.clone())
                     } else {
                         resolved_class.clone()
@@ -954,7 +958,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                             emit_native_deprecated_call(context, function, instruction);
                             let pushed_called_class = called_class.is_some();
                             if let Some(called_class) = called_class {
-                                context.called_classes.push(called_class);
+                                context.called_classes.push(Arc::from(called_class));
                             }
                             let result = invoke_native_function_with_metadata_strict(
                                 context,
@@ -1040,14 +1044,14 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         context
                             .called_classes
                             .last()
-                            .cloned()
+                            .map(|class| class.to_string())
                             .or_else(|| resolved_class.clone())
                     } else {
                         resolved_class.clone()
                     };
                     let pushed_called_class = called_class.is_some();
                     if let Some(called_class) = called_class {
-                        context.called_classes.push(called_class);
+                        context.called_classes.push(Arc::from(called_class));
                     }
                     let result = if is_instance_method {
                         let mut call_arguments =
@@ -1152,7 +1156,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                     if let Some(function) =
                         native_method_in_hierarchy(context, &class, "__callStatic")
                     {
-                        context.called_classes.push(class.clone());
+                        context.called_classes.push(Arc::from(class.as_str()));
                         let result = invoke_native_function(
                             context,
                             function,

@@ -1830,9 +1830,8 @@ pub(in crate::vm) extern "C" fn jit_native_argument_check_abi(
         let target_function = php_ir::FunctionId::new(target_function);
         let requested_index = (parameter_flags as u64 & u64::from(u32::MAX)) as usize;
         let strict = parameter_flags as u64 & (1_u64 << 32) != 0;
-        let Some(target) = context
-            .compiled
-            .prepared_native_function_metadata(target_function)
+        let Some(target) =
+            NativeFunctionMetadataPtr::from_compiled(&context.compiled, target_function)
         else {
             return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
         };

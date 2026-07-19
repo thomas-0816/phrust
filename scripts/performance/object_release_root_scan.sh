@@ -71,4 +71,27 @@ rg -q 'map\(std::sync::Arc::as_ptr\)' crates/php_vm/src/vm/jit_abi.rs || {
     exit 1
 }
 
+rg -q 'Option<(super::)?NativeFunctionMetadataPtr>' crates/php_vm/src/vm/jit_abi/request_state.rs || {
+    printf '%s\n' '[fail] native frames again clone immutable function metadata per warm call' >&2
+    exit 1
+}
+
+if rg -q 'let target_(name|params) = Arc::clone' \
+    crates/php_vm/src/vm/jit_abi/call_support.rs; then
+    printf '%s\n' '[fail] call binding again bumps immutable metadata refcounts per warm call' >&2
+    exit 1
+fi
+
+rg -q 'called_classes: Vec<Arc<str>>' crates/php_vm/src/vm/jit_abi.rs || {
+    printf '%s\n' '[fail] native method dispatch again allocates called-class strings per warm frame' >&2
+    exit 1
+}
+
+if rg -q 'enter_native_call|NATIVE_CALL_DEPTH.with' \
+    crates/php_vm/src/vm/jit_abi.rs \
+    crates/php_vm/src/vm/jit_abi/call_support.rs; then
+    printf '%s\n' '[fail] warm userland calls again perform duplicate TLS depth accounting' >&2
+    exit 1
+fi
+
 printf '%s\n' '[pass] object release preserves output without per-call root or metadata clones'

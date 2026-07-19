@@ -9,7 +9,7 @@ pub(super) struct NativeBacktraceFrame {
     /// One shared metadata record replaces separate function/file/class
     /// refcount bumps on every userland call. Introspection materializes the
     /// individual fields only when PHP actually requests a backtrace.
-    pub(super) metadata: Option<Arc<crate::compiled_unit::PreparedNativeFunctionMetadata>>,
+    pub(super) metadata: Option<super::NativeFunctionMetadataPtr>,
     pub(super) class: Option<Arc<str>>,
     pub(super) object: Option<php_runtime::api::ObjectRef>,
     /// Arguments are present on every native PHP call for `func_get_arg()` and
