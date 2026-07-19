@@ -92,6 +92,15 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_vm",
             "--lib",
+            "native_value_slots_keep_iterator_state_out_of_line",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
             "same_unit_call_resolves_on_demand_then_calls_native",
         ],
         [

@@ -19,6 +19,7 @@ http-body-util = "0.1"
 httpdate = "1"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
+mimalloc = "0.1.52"
 php_executor = { path = "../php_executor", version = "0.0.0", default-features = false }
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = false, features = ["full-runtime"] }

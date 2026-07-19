@@ -457,24 +457,28 @@ enum NativeStoredValue {
         source: php_runtime::api::PhpArray,
         index: usize,
     },
-    Iterator {
-        entries: Vec<(Value, Value)>,
-        index: usize,
-        live_source: Option<i64>,
-        live_global: Option<String>,
-        live_object: Option<php_runtime::api::ObjectRef>,
-        user_iterator: Option<php_runtime::api::ObjectRef>,
-        user_iterator_started: bool,
-    },
-    GeneratorIterator {
-        generator: php_runtime::api::GeneratorRef,
-        handle: Box<php_jit::JitFunctionHandle>,
-        arguments: Vec<i64>,
-        state: Box<Option<php_jit::JitDeoptState>>,
-        delegation: Option<NativeGeneratorDelegation>,
-        yields_seen: u64,
-        finished: bool,
-    },
+    Iterator(Box<NativeIteratorState>),
+    GeneratorIterator(Box<NativeGeneratorIteratorState>),
+}
+
+struct NativeIteratorState {
+    entries: Vec<(Value, Value)>,
+    index: usize,
+    live_source: Option<i64>,
+    live_global: Option<String>,
+    live_object: Option<php_runtime::api::ObjectRef>,
+    user_iterator: Option<php_runtime::api::ObjectRef>,
+    user_iterator_started: bool,
+}
+
+struct NativeGeneratorIteratorState {
+    generator: php_runtime::api::GeneratorRef,
+    handle: Box<php_jit::JitFunctionHandle>,
+    arguments: Vec<i64>,
+    state: Box<Option<php_jit::JitDeoptState>>,
+    delegation: Option<NativeGeneratorDelegation>,
+    yields_seen: u64,
+    finished: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -507,8 +511,8 @@ fn stored_value_tag(value: &NativeStoredValue) -> u64 {
         NativeStoredValue::Php(Value::Generator(_)) => php_jit::JIT_VALUE_RUNTIME_GENERATOR_TAG,
         NativeStoredValue::Php(Value::Fiber(_)) => php_jit::JIT_VALUE_RUNTIME_FIBER_TAG,
         NativeStoredValue::ArrayIterator { .. }
-        | NativeStoredValue::Iterator { .. }
-        | NativeStoredValue::GeneratorIterator { .. } => php_jit::JIT_VALUE_RUNTIME_ITERATOR_TAG,
+        | NativeStoredValue::Iterator(_)
+        | NativeStoredValue::GeneratorIterator(_) => php_jit::JIT_VALUE_RUNTIME_ITERATOR_TAG,
         NativeStoredValue::Php(
             Value::Null | Value::Bool(_) | Value::Int(_) | Value::Uninitialized,
         ) => php_jit::JIT_VALUE_RUNTIME_TAG,
@@ -959,8 +963,8 @@ impl<'a> NativeExecutionContext<'a> {
                 Some(NativeStoredValue::Php(value)) => Ok(value.clone()),
                 Some(
                     NativeStoredValue::ArrayIterator { .. }
-                    | NativeStoredValue::Iterator { .. }
-                    | NativeStoredValue::GeneratorIterator { .. },
+                    | NativeStoredValue::Iterator(_)
+                    | NativeStoredValue::GeneratorIterator(_),
                 ) => Err(format!(
                     "native runtime value {index} is a foreach iterator"
                 )),
@@ -1081,8 +1085,8 @@ impl<'a> NativeExecutionContext<'a> {
             Some(NativeStoredValue::Php(_)) => Some(false),
             Some(
                 NativeStoredValue::ArrayIterator { .. }
-                | NativeStoredValue::Iterator { .. }
-                | NativeStoredValue::GeneratorIterator { .. },
+                | NativeStoredValue::Iterator(_)
+                | NativeStoredValue::GeneratorIterator(_),
             )
             | None => None,
         }
@@ -1111,8 +1115,8 @@ impl<'a> NativeExecutionContext<'a> {
             Some(NativeStoredValue::Php(Value::Reference(_)))
             | Some(
                 NativeStoredValue::ArrayIterator { .. }
-                | NativeStoredValue::Iterator { .. }
-                | NativeStoredValue::GeneratorIterator { .. },
+                | NativeStoredValue::Iterator(_)
+                | NativeStoredValue::GeneratorIterator(_),
             )
             | None => None,
             Some(NativeStoredValue::Php(_)) => Some(Some(index)),
@@ -1125,8 +1129,8 @@ impl<'a> NativeExecutionContext<'a> {
             Some(NativeStoredValue::Php(value)) => Some(value),
             Some(
                 NativeStoredValue::ArrayIterator { .. }
-                | NativeStoredValue::Iterator { .. }
-                | NativeStoredValue::GeneratorIterator { .. },
+                | NativeStoredValue::Iterator(_)
+                | NativeStoredValue::GeneratorIterator(_),
             )
             | None => None,
         }
@@ -1247,23 +1251,24 @@ impl<'a> NativeExecutionContext<'a> {
             NativeStoredValue::ArrayIterator { source, .. } => {
                 values_contain_object(source.iter().map(|(_, value)| value), object_id)
             }
-            NativeStoredValue::Iterator {
-                entries,
-                live_object,
-                user_iterator,
-                ..
-            } => {
+            NativeStoredValue::Iterator(iterator) => {
                 values_contain_object(
-                    entries.iter().flat_map(|(key, value)| [key, value]),
+                    iterator
+                        .entries
+                        .iter()
+                        .flat_map(|(key, value)| [key, value]),
                     object_id,
-                ) || live_object
+                ) || iterator
+                    .live_object
                     .as_ref()
                     .is_some_and(|object| object.id() == object_id)
-                    || user_iterator
+                    || iterator
+                        .user_iterator
                         .as_ref()
                         .is_some_and(|object| object.id() == object_id)
             }
-            NativeStoredValue::GeneratorIterator { delegation, .. } => delegation
+            NativeStoredValue::GeneratorIterator(iterator) => iterator
+                .delegation
                 .as_ref()
                 .is_some_and(|delegation| match delegation {
                     NativeGeneratorDelegation::Array { entries, .. } => values_contain_object(
@@ -1566,7 +1571,7 @@ impl<'a> NativeExecutionContext<'a> {
         live_object: Option<php_runtime::api::ObjectRef>,
         user_iterator: Option<php_runtime::api::ObjectRef>,
     ) -> Result<i64, String> {
-        self.encode_stored_value(NativeStoredValue::Iterator {
+        self.encode_stored_value(NativeStoredValue::Iterator(Box::new(NativeIteratorState {
             entries,
             index: 0,
             live_source,
@@ -1574,7 +1579,7 @@ impl<'a> NativeExecutionContext<'a> {
             live_object,
             user_iterator,
             user_iterator_started: false,
-        })
+        })))
     }
 
     fn encode_array_iterator(&mut self, source: php_runtime::api::PhpArray) -> Result<i64, String> {
@@ -1592,15 +1597,17 @@ impl<'a> NativeExecutionContext<'a> {
             .into_iter()
             .map(|value| self.encode(value))
             .collect::<Result<Vec<_>, _>>()?;
-        self.encode_stored_value(NativeStoredValue::GeneratorIterator {
-            generator,
-            handle: Box::new(handle),
-            arguments,
-            state: Box::new(None),
-            delegation: None,
-            yields_seen: 0,
-            finished: false,
-        })
+        self.encode_stored_value(NativeStoredValue::GeneratorIterator(Box::new(
+            NativeGeneratorIteratorState {
+                generator,
+                handle: Box::new(handle),
+                arguments,
+                state: Box::new(None),
+                delegation: None,
+                yields_seen: 0,
+                finished: false,
+            },
+        )))
     }
 
     fn generator_iterator(
@@ -1625,11 +1632,10 @@ impl<'a> NativeExecutionContext<'a> {
         let index = php_jit::jit_decode_runtime_value(encoded)
             .ok_or_else(|| "native value is not a foreach iterator handle".to_owned())?;
         let user_iterator = match self.values.get(index as usize).and_then(Option::as_ref) {
-            Some(NativeStoredValue::Iterator {
-                user_iterator: Some(object),
-                user_iterator_started,
-                ..
-            }) => Some((object.clone(), *user_iterator_started)),
+            Some(NativeStoredValue::Iterator(iterator)) => iterator
+                .user_iterator
+                .as_ref()
+                .map(|object| (object.clone(), iterator.user_iterator_started)),
             _ => None,
         };
         if let Some((object, started)) = user_iterator {
@@ -1652,24 +1658,22 @@ impl<'a> NativeExecutionContext<'a> {
                 .ok_or_else(|| "Iterator::key() is missing".to_owned())?;
             let current = invoke_native_method(self, current, &[receiver])?;
             let key = invoke_native_method(self, key, &[receiver])?;
-            if let Some(NativeStoredValue::Iterator {
-                user_iterator_started,
-                ..
-            }) = self.values.get_mut(index as usize).and_then(Option::as_mut)
+            if let Some(NativeStoredValue::Iterator(iterator)) =
+                self.values.get_mut(index as usize).and_then(Option::as_mut)
             {
-                *user_iterator_started = true;
+                iterator.user_iterator_started = true;
             }
             return Ok(Some((self.decode(key)?, self.decode(current)?)));
         }
         let object_entry = match self.values.get(index as usize).and_then(Option::as_ref) {
-            Some(NativeStoredValue::Iterator {
-                entries,
-                index,
-                live_object: Some(object),
-                ..
-            }) => entries
-                .get(*index)
-                .map(|(key, _)| (object.clone(), key.clone(), *index)),
+            Some(NativeStoredValue::Iterator(iterator)) => {
+                iterator.live_object.as_ref().and_then(|object| {
+                    iterator
+                        .entries
+                        .get(iterator.index)
+                        .map(|(key, _)| (object.clone(), key.clone(), iterator.index))
+                })
+            }
             _ => None,
         };
         if let Some((object, key, cursor)) = object_entry {
@@ -1683,20 +1687,17 @@ impl<'a> NativeExecutionContext<'a> {
                 Value::Reference(reference) => reference.get(),
                 value => value,
             };
-            if let Some(NativeStoredValue::Iterator { index, .. }) =
+            if let Some(NativeStoredValue::Iterator(iterator)) =
                 self.values.get_mut(index as usize).and_then(Option::as_mut)
             {
-                *index = cursor.saturating_add(1);
+                iterator.index = cursor.saturating_add(1);
             }
             return Ok(Some((key, value)));
         }
         let live = match self.values.get(index as usize).and_then(Option::as_ref) {
-            Some(NativeStoredValue::Iterator {
-                index,
-                live_source: Some(source),
-                live_global,
-                ..
-            }) => Some((*source, *index, live_global.clone())),
+            Some(NativeStoredValue::Iterator(iterator)) => iterator
+                .live_source
+                .map(|source| (source, iterator.index, iterator.live_global.clone())),
             _ => None,
         };
         if let Some((source, cursor, live_global)) = live {
@@ -1745,46 +1746,39 @@ impl<'a> NativeExecutionContext<'a> {
             let Some(entry) = entry else {
                 return Ok(None);
             };
-            if let Some(NativeStoredValue::Iterator { index: cursor, .. }) =
+            if let Some(NativeStoredValue::Iterator(iterator)) =
                 self.values.get_mut(index as usize).and_then(Option::as_mut)
             {
-                *cursor = cursor.saturating_add(1);
+                iterator.index = iterator.index.saturating_add(1);
             }
             return Ok(Some(entry));
         }
-        if let Some(NativeStoredValue::Iterator {
-            entries,
-            index: cursor,
-            ..
-        }) = self.values.get_mut(index as usize).and_then(Option::as_mut)
+        if let Some(NativeStoredValue::Iterator(iterator)) =
+            self.values.get_mut(index as usize).and_then(Option::as_mut)
         {
-            let entry = entries.get(*cursor).cloned().map(|(key, value)| {
-                let value = match value {
-                    Value::Reference(reference) => reference.get(),
-                    value => value,
-                };
-                (key, value)
-            });
-            *cursor = cursor.saturating_add(usize::from(entry.is_some()));
+            let entry = iterator
+                .entries
+                .get(iterator.index)
+                .cloned()
+                .map(|(key, value)| {
+                    let value = match value {
+                        Value::Reference(reference) => reference.get(),
+                        value => value,
+                    };
+                    (key, value)
+                });
+            iterator.index = iterator.index.saturating_add(usize::from(entry.is_some()));
             return Ok(entry);
         }
         let (generator, handle, arguments, state, delegation, finished) =
             match self.values.get(index as usize).and_then(Option::as_ref) {
-                Some(NativeStoredValue::GeneratorIterator {
-                    generator,
-                    handle,
-                    arguments,
-                    state,
-                    delegation,
-                    finished,
-                    ..
-                }) => (
-                    generator.clone(),
-                    handle.clone(),
-                    arguments.clone(),
-                    state.clone(),
-                    delegation.clone(),
-                    *finished,
+                Some(NativeStoredValue::GeneratorIterator(iterator)) => (
+                    iterator.generator.clone(),
+                    iterator.handle.clone(),
+                    iterator.arguments.clone(),
+                    iterator.state.clone(),
+                    iterator.delegation.clone(),
+                    iterator.finished,
                 ),
                 _ => return Err(format!("native foreach iterator {index} is missing")),
             };
@@ -1800,25 +1794,27 @@ impl<'a> NativeExecutionContext<'a> {
                     index: cursor,
                 } => {
                     if let Some((key, value)) = entries.get(cursor).cloned() {
-                        if let Some(NativeStoredValue::GeneratorIterator {
-                            delegation: Some(NativeGeneratorDelegation::Array { index: cursor, .. }),
-                            ..
-                        }) = self.values.get_mut(index as usize).and_then(Option::as_mut)
+                        if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
+                            self.values.get_mut(index as usize).and_then(Option::as_mut)
+                            && let Some(NativeGeneratorDelegation::Array {
+                                index: saved_cursor,
+                                ..
+                            }) = iterator.delegation.as_mut()
                         {
-                            *cursor = cursor.saturating_add(1);
+                            *saved_cursor = saved_cursor.saturating_add(1);
                         }
                         generator.suspend_forwarded(Some(key.clone()), value.clone());
-                        if let Some(NativeStoredValue::GeneratorIterator { yields_seen, .. }) =
+                        if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
                             self.values.get_mut(index as usize).and_then(Option::as_mut)
                         {
-                            *yields_seen = yields_seen.saturating_add(1);
+                            iterator.yields_seen = iterator.yields_seen.saturating_add(1);
                         }
                         return Ok(Some((key, value)));
                     }
-                    if let Some(NativeStoredValue::GeneratorIterator { delegation, .. }) =
+                    if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
                         self.values.get_mut(index as usize).and_then(Option::as_mut)
                     {
-                        *delegation = None;
+                        iterator.delegation = None;
                     }
                     effective_resume_kind = php_jit::JitNativeResumeInputKind::VALUE;
                     effective_resume_value = php_jit::jit_encode_constant(u32::MAX);
@@ -1829,20 +1825,20 @@ impl<'a> NativeExecutionContext<'a> {
                 } => {
                     if let Some((key, value)) = self.iterator_next(iterator)? {
                         generator.suspend_forwarded(Some(key.clone()), value.clone());
-                        if let Some(NativeStoredValue::GeneratorIterator { yields_seen, .. }) =
+                        if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
                             self.values.get_mut(index as usize).and_then(Option::as_mut)
                         {
-                            *yields_seen = yields_seen.saturating_add(1);
+                            iterator.yields_seen = iterator.yields_seen.saturating_add(1);
                         }
                         return Ok(Some((key, value)));
                     }
                     effective_resume_kind = php_jit::JitNativeResumeInputKind::VALUE;
                     effective_resume_value =
                         self.encode(delegated.return_value().unwrap_or(Value::Null))?;
-                    if let Some(NativeStoredValue::GeneratorIterator { delegation, .. }) =
+                    if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
                         self.values.get_mut(index as usize).and_then(Option::as_mut)
                     {
-                        *delegation = None;
+                        iterator.delegation = None;
                     }
                 }
             }
@@ -1895,14 +1891,11 @@ impl<'a> NativeExecutionContext<'a> {
                             ));
                         }
                     };
-                    if let Some(NativeStoredValue::GeneratorIterator {
-                        state: saved_state,
-                        delegation: saved_delegation,
-                        ..
-                    }) = self.values.get_mut(index as usize).and_then(Option::as_mut)
+                    if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
+                        self.values.get_mut(index as usize).and_then(Option::as_mut)
                     {
-                        **saved_state = Some(state);
-                        *saved_delegation = Some(delegation);
+                        *iterator.state = Some(state);
+                        iterator.delegation = Some(delegation);
                     }
                     return self.iterator_next(encoded);
                 }
@@ -1913,16 +1906,15 @@ impl<'a> NativeExecutionContext<'a> {
                 };
                 let value = self.decode(value)?;
                 generator.suspend(key, value.clone());
-                if let Some(NativeStoredValue::GeneratorIterator {
-                    state: saved_state, ..
-                }) = self.values.get_mut(index as usize).and_then(Option::as_mut)
-                {
-                    **saved_state = Some(state);
-                }
-                if let Some(NativeStoredValue::GeneratorIterator { yields_seen, .. }) =
+                if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
                     self.values.get_mut(index as usize).and_then(Option::as_mut)
                 {
-                    *yields_seen = yields_seen.saturating_add(1);
+                    *iterator.state = Some(state);
+                }
+                if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
+                    self.values.get_mut(index as usize).and_then(Option::as_mut)
+                {
+                    iterator.yields_seen = iterator.yields_seen.saturating_add(1);
                 }
                 let (key, value) = generator
                     .current()
@@ -1936,10 +1928,10 @@ impl<'a> NativeExecutionContext<'a> {
                 ..
             } => {
                 generator.close(Some(self.decode(value)?));
-                if let Some(NativeStoredValue::GeneratorIterator { finished, .. }) =
+                if let Some(NativeStoredValue::GeneratorIterator(iterator)) =
                     self.values.get_mut(index as usize).and_then(Option::as_mut)
                 {
-                    *finished = true;
+                    iterator.finished = true;
                 }
                 Ok(None)
             }
@@ -1984,14 +1976,15 @@ impl<'a> NativeExecutionContext<'a> {
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return false;
         };
-        matches!(
-            self.values.get(index as usize).and_then(Option::as_ref),
-            Some(NativeStoredValue::GeneratorIterator {
-                yields_seen: 0 | 1,
-                finished: false,
-                ..
+        self.values
+            .get(index as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|value| match value {
+                NativeStoredValue::GeneratorIterator(iterator) => {
+                    matches!(iterator.yields_seen, 0 | 1) && !iterator.finished
+                }
+                _ => false,
             })
-        )
     }
 
     fn close_iterator(&mut self, encoded: i64) -> Result<(), String> {
@@ -2004,8 +1997,8 @@ impl<'a> NativeExecutionContext<'a> {
         match value.take() {
             Some(
                 NativeStoredValue::ArrayIterator { .. }
-                | NativeStoredValue::Iterator { .. }
-                | NativeStoredValue::GeneratorIterator { .. },
+                | NativeStoredValue::Iterator(_)
+                | NativeStoredValue::GeneratorIterator(_),
             ) => {
                 if let Some(refcount) = self.value_refcounts.get_mut(index as usize) {
                     *refcount = 0;
