@@ -27,6 +27,31 @@ jq -e '
   ((.native_compile_successes + .native_cache_hits) > 0)
 ' "$counters" >/dev/null
 
+# Cross-unit calls share one request value arena. Warm calls retain existing
+# immutable/object handles and transfer the owned return handle instead of
+# cloning both sides through decode/encode. The loop turns one extra transfer
+# slot per invocation into a deterministic high-water regression.
+transfer_counters="$OUT_DIR/native-cross-unit-transfer-counters.json"
+transfer_output="$OUT_DIR/native-cross-unit-transfer.out"
+"$VM" run --counters-json "$transfer_counters" \
+    tests/fixtures/performance/native_tier/cross_unit_handle_transfer.php \
+    >"$transfer_output"
+cmp -s \
+    tests/fixtures/performance/native_tier/cross_unit_handle_transfer.php.out \
+    "$transfer_output" || {
+    printf '%s\n' '[fail] native cross-unit transfer output differs from PHP' >&2
+    exit 1
+}
+jq -e '
+  .native_cross_unit_direct_executed > 0 and
+  .native_value_table_allocations < 4200 and
+  .native_value_table_high_water < 4200 and
+  .native_value_table_reuses < 100
+' "$transfer_counters" >/dev/null || {
+    printf '%s\n' '[fail] native cross-unit handle transfer exceeded its arena budget' >&2
+    exit 1
+}
+
 python3 - <<'PY'
 import json
 from pathlib import Path

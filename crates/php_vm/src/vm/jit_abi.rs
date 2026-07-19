@@ -1048,6 +1048,92 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(php_jit::jit_encode_typed_runtime_value(index, tag))
     }
 
+    /// Give a native callee an independently owned argument without routing
+    /// every value through `Value::clone` and a second arena lookup.
+    ///
+    /// Runtime handles are request-wide, not unit-local. Objects, references,
+    /// strings, callables, resources, generators, fibers, and stored scalars
+    /// can therefore share the existing slot by incrementing its arena
+    /// refcount. Arrays need a distinct `PhpArray` facade so a write in the
+    /// callee triggers the runtime's copy-on-write separation instead of
+    /// mutating the caller's facade in place. Unit-local constant operands are
+    /// materialized before an external-unit switch because their indexes are
+    /// interpreted against the active unit.
+    fn duplicate_native_call_argument(&mut self, encoded: i64) -> Result<i64, String> {
+        if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
+            let index = index as usize;
+            let array = match self.values.get(index).and_then(Option::as_ref) {
+                Some(NativeStoredValue::Php(Value::Array(array))) => Some(array.clone()),
+                Some(NativeStoredValue::Php(_)) => None,
+                Some(
+                    NativeStoredValue::ArrayIterator(_)
+                    | NativeStoredValue::Iterator(_)
+                    | NativeStoredValue::GeneratorIterator(_),
+                ) => {
+                    return Err(format!(
+                        "native runtime value {index} is a foreach iterator"
+                    ));
+                }
+                None => return Err(format!("native runtime value {index} is missing")),
+            };
+            if let Some(array) = array {
+                return self.encode(Value::Array(array));
+            }
+            self.retain_runtime_value_index(index)?;
+            return Ok(encoded);
+        }
+        if let Some(constant) = php_jit::jit_decode_constant(encoded)
+            && !matches!(
+                constant,
+                u32::MAX
+                    | php_jit::JIT_VALUE_UNINITIALIZED
+                    | php_jit::JIT_VALUE_FALSE
+                    | php_jit::JIT_VALUE_TRUE
+            )
+        {
+            return self.decode(encoded).and_then(|value| self.encode(value));
+        }
+        Ok(encoded)
+    }
+
+    /// Move an owned result from the active external unit back to its caller.
+    /// Runtime handles already belong to the request-wide arena and need no
+    /// clone or replacement slot. Only unit-indexed constants and an unowned
+    /// closure require translation.
+    fn transfer_external_return(&mut self, encoded: i64, owner_unit: usize) -> Result<i64, String> {
+        if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
+            let needs_closure_owner = matches!(
+                self.values.get(index as usize).and_then(Option::as_ref),
+                Some(NativeStoredValue::Php(Value::Callable(callable)))
+                    if matches!(
+                        callable.as_ref(),
+                        php_runtime::api::CallableValue::Closure(closure)
+                            if closure.context.owner_unit.is_none()
+                    )
+            );
+            if !needs_closure_owner {
+                return Ok(encoded);
+            }
+            let value = self.decode(encoded)?;
+            let transferred = self.encode(native_external_return_value(value, owner_unit))?;
+            self.release(encoded)?;
+            return Ok(transferred);
+        }
+        if let Some(constant) = php_jit::jit_decode_constant(encoded)
+            && !matches!(
+                constant,
+                u32::MAX
+                    | php_jit::JIT_VALUE_UNINITIALIZED
+                    | php_jit::JIT_VALUE_FALSE
+                    | php_jit::JIT_VALUE_TRUE
+            )
+        {
+            let value = self.decode(encoded)?;
+            return self.encode(native_external_return_value(value, owner_unit));
+        }
+        Ok(encoded)
+    }
+
     fn retain(&mut self, encoded: i64) -> Result<(), String> {
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Ok(());
@@ -3986,15 +4072,11 @@ fn invoke_native_external_function_with_metadata(
     called_class: Option<String>,
     strict: bool,
 ) -> Result<i64, String> {
-    ensure_dynamic_native_entry(context, target.unit, target.function)?;
+    prepare_dynamic_native_entry(context, target.unit, target.function)?;
     let transferred_arguments = arguments
         .iter()
-        .map(|argument| {
-            context
-                .decode(*argument)
-                .and_then(|value| context.encode(value))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|argument| context.duplicate_native_call_argument(*argument))
+        .collect::<Result<smallvec::SmallVec<[i64; 8]>, _>>()?;
     context.with_active_dynamic_unit(target.unit, |context| {
         let pushed_called_class = called_class.is_some();
         if let Some(called_class) = &called_class {
@@ -4013,18 +4095,13 @@ fn invoke_native_external_function_with_metadata(
             context.called_classes.pop();
         }
         match result {
-            Ok(encoded) => context
-                .decode(encoded)
-                .map(|value| native_external_return_value(value, target.unit))
-                .and_then(|value| context.encode(value)),
+            Ok(encoded) => context.transfer_external_return(encoded, target.unit),
             Err(error) if error.starts_with("E_PHP_EXIT:") => {
                 let encoded = error
                     .trim_start_matches("E_PHP_EXIT:")
                     .parse::<i64>()
                     .map_err(|_| "external native exit value is invalid".to_owned())?;
-                let encoded = context
-                    .decode(encoded)
-                    .and_then(|value| context.encode(value))?;
+                let encoded = context.transfer_external_return(encoded, target.unit)?;
                 Err(format!("E_PHP_EXIT:{encoded}"))
             }
             Err(error) => Err(error),

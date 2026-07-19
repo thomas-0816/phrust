@@ -261,30 +261,53 @@ pub(super) fn ensure_dynamic_native_entry(
     unit: usize,
     function: php_ir::FunctionId,
 ) -> Result<php_jit::JitFunctionHandle, String> {
+    prepare_dynamic_native_entry(context, unit, function)?;
+    context
+        .dynamic_units
+        .get(unit)
+        .and_then(|package| package.native_entries.get(&function))
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "dynamic native function entry {} was not published",
+                function.raw()
+            )
+        })
+}
+
+/// Ensure that a dynamic-unit entry is current without cloning its owning
+/// code handle. Cross-unit dispatch immediately swaps the unit's publication
+/// map into the active context, where the actual invocation acquires its one
+/// required handle. Returning a clone here as well made every warm external
+/// call perform two generation-owner reference-count operations.
+pub(super) fn prepare_dynamic_native_entry(
+    context: &mut NativeExecutionContext<'_>,
+    unit: usize,
+    function: php_ir::FunctionId,
+) -> Result<(), String> {
     let signature_epoch = context.external_signature_epoch;
     let package = context
         .dynamic_units
         .get(unit)
         .ok_or_else(|| "dynamic native unit is missing".to_owned())?;
     if package.native_entry_signature_epochs.get(&function) == Some(&signature_epoch)
-        && let Some(handle) = package.native_entries.get(&function)
+        && package.native_entries.contains_key(&function)
     {
-        return Ok(handle.clone());
+        return Ok(());
     }
     let compiled = package.compiled.clone();
     let external_signatures = visible_external_function_signatures(context, &compiled, function);
     let signature_hash = super::super::external_function_signatures_hash(&external_signatures);
-    if package.native_entry_signature_hashes.get(&function) == Some(&signature_hash) {
-        let existing = package.native_entries.get(&function).cloned();
-        if let Some(handle) = existing {
-            context
-                .dynamic_units
-                .get_mut(unit)
-                .expect("dynamic native unit was already validated")
-                .native_entry_signature_epochs
-                .insert(function, signature_epoch);
-            return Ok(handle);
-        }
+    if package.native_entry_signature_hashes.get(&function) == Some(&signature_hash)
+        && package.native_entries.contains_key(&function)
+    {
+        context
+            .dynamic_units
+            .get_mut(unit)
+            .expect("dynamic native unit was already validated")
+            .native_entry_signature_epochs
+            .insert(function, signature_epoch);
+        return Ok(());
     }
     let handle = context.worker_state.resolve_native_function(
         &compiled,
@@ -303,16 +326,7 @@ pub(super) fn ensure_dynamic_native_entry(
         .native_entry_signature_epochs
         .insert(function, signature_epoch);
     std::sync::Arc::make_mut(&mut package.native_entries).insert(function, handle);
-    package
-        .native_entries
-        .get(&function)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "dynamic native function entry {} was not published",
-                function.raw()
-            )
-        })
+    Ok(())
 }
 
 pub(super) fn visible_external_function_signatures(

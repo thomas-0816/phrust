@@ -91,18 +91,13 @@ pub(super) fn invoke_native_function_with_metadata_strict(
     }
     // The callee frame owns its implicit receiver and captured locals just as
     // it owns ordinary bound arguments. The trampoline's input operands are
-    // only borrowed, so materialize independent handles before passing the
-    // leading frame slots to native code. Reusing the caller's handle lets
-    // callee frame cleanup release a still-live caller local and the recycled
-    // value-table slot can then decode as an unrelated value.
+    // only borrowed, so give the leading frame slots independent ownership.
+    // The request arena can retain most handles directly; arrays get a
+    // separate COW facade and unit-local constants are materialized.
     let mut bound = arguments[..leading]
         .iter()
-        .map(|argument| {
-            context
-                .decode(*argument)
-                .and_then(|value| context.encode(value))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|argument| context.duplicate_native_call_argument(*argument))
+        .collect::<Result<smallvec::SmallVec<[i64; 8]>, _>>()?;
     let raw_supplied = &arguments[leading..];
     let variadic_index = target_params
         .iter()
