@@ -420,6 +420,9 @@ pub(super) fn emit_native_php_diagnostic(
     if context.error_reporting & errno == 0 {
         return Ok(());
     }
+    if !context.display_errors {
+        return Ok(());
+    }
     let label = match errno {
         php_runtime::api::PHP_E_NOTICE | php_runtime::api::PHP_E_USER_NOTICE => "Notice",
         php_runtime::api::PHP_E_DEPRECATED | php_runtime::api::PHP_E_USER_DEPRECATED => {
@@ -490,6 +493,16 @@ pub(super) fn emit_native_dimension_conversion_diagnostic(
             Value::Reference(reference) => key = reference.get(),
             _ => break,
         }
+    }
+    if matches!(target, Value::Null | Value::Uninitialized)
+        && matches!(operation, NativeDimensionOperation::Fetch { quiet: false })
+    {
+        emit_native_php_warning(
+            context,
+            php_runtime::api::PHP_E_WARNING,
+            "Trying to access array offset on null",
+            source,
+        )?;
     }
     match key {
         Value::Null | Value::Uninitialized => {
@@ -1825,6 +1838,7 @@ pub(super) fn execute_native_builtin(
                 return context.encode(Value::Bool(false));
             }
             context.dynamic_constants.insert(name, value);
+            context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
             context.encode(Value::Bool(true))
         }
         "defined" => {
@@ -2287,6 +2301,9 @@ pub(super) fn execute_native_builtin(
                 context.include_path =
                     std::env::split_paths(std::ffi::OsStr::new(&value)).collect();
             }
+            if name.eq_ignore_ascii_case("display_errors") && previous.is_some() {
+                context.display_errors = context.ini_registry.get("display_errors") == Some("1");
+            }
             context.encode(previous.map_or(Value::Bool(false), |previous| {
                 Value::String(PhpString::from_bytes(previous.into_bytes()))
             }))
@@ -2604,6 +2621,7 @@ pub(super) fn execute_native_builtin(
             };
             let callback = context.decode(*callback)?;
             context.autoload_callbacks.push(callback);
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(Value::Bool(true))
         }
         "spl_autoload_unregister" => {
@@ -2615,6 +2633,9 @@ pub(super) fn execute_native_builtin(
             context
                 .autoload_callbacks
                 .retain(|candidate| candidate != &callback);
+            if context.autoload_callbacks.len() != previous {
+                context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            }
             context.encode(Value::Bool(context.autoload_callbacks.len() != previous))
         }
         "spl_autoload_functions" => context.encode(Value::Array(
@@ -2634,6 +2655,7 @@ pub(super) fn execute_native_builtin(
                 arguments,
                 source: source.clone(),
             });
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(Value::Null)
         }
         "class_alias" => {
@@ -2651,7 +2673,7 @@ pub(super) fn execute_native_builtin(
                 .classes
                 .iter()
                 .any(|class| class.name == normalized_original)
-                || native_external_class(context, &normalized_original).is_some();
+                || native_external_class_exists(context, &normalized_original);
             if !exists {
                 return context.encode(Value::Bool(false));
             }
@@ -2856,7 +2878,7 @@ pub(super) fn execute_native_builtin(
                             || context.dynamic_classes.contains(&class.name))
                 })
                 .is_some_and(matches_kind)
-                || native_external_class(context, &normalized_name)
+                || native_external_class_ref(context, &normalized_name)
                     .is_some_and(|(_, class)| matches_kind(&class))
                 || php_std::ExtensionRegistry::standard_library()
                     .enabled_class(&normalized_name)
@@ -3296,10 +3318,13 @@ pub(super) fn execute_native_builtin(
             context
                 .error_handlers
                 .push(NativeErrorHandler { callback, levels });
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(previous)
         }
         "restore_error_handler" => {
-            let _ = context.error_handlers.pop();
+            if context.error_handlers.pop().is_some() {
+                context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            }
             context.encode(Value::Bool(true))
         }
         "set_exception_handler" => {
@@ -3322,10 +3347,13 @@ pub(super) fn execute_native_builtin(
                 .cloned()
                 .unwrap_or(Value::Null);
             context.exception_handlers.push(callback);
+            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
             context.encode(previous)
         }
         "restore_exception_handler" => {
-            let _ = context.exception_handlers.pop();
+            if context.exception_handlers.pop().is_some() {
+                context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            }
             context.encode(Value::Bool(true))
         }
         "get_exception_handler" => context.encode(
@@ -3590,9 +3618,15 @@ pub(super) fn execute_native_builtin(
                 context.registered_extensions.bind(&mut builtin);
                 let result = (entry.function())(&mut builtin, values, span);
                 builtin.sync_session_state_from_global();
-                let diagnostics = builtin.take_diagnostics();
-                (result, diagnostics)
+                let php_diagnostics = builtin.take_php_diagnostics();
+                // Structured-only diagnostics remain available to builtin
+                // consumers but must never be rendered as PHP warnings.
+                let _ = builtin.take_diagnostics();
+                (result, php_diagnostics)
             };
+            if normalized.starts_with("session_") {
+                context.mark_roots_dirty(RootMutationReason::Session);
+            }
             for diagnostic in diagnostics {
                 let errno = match diagnostic.severity() {
                     php_runtime::api::RuntimeSeverity::Notice => php_runtime::api::PHP_E_NOTICE,

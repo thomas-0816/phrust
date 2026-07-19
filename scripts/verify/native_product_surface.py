@@ -91,6 +91,14 @@ LINKAGE_FOOTPRINT_COUNTERS = frozenset(
         "native_worker_stack_virtual_bytes",
     }
 )
+HOTPATH_DIAGNOSTIC_COUNTERS = frozenset(
+    {
+        "native_builtin_calls_by_name",
+        "native_builtin_time_nanos_by_name",
+        "native_value_decodes",
+        "native_value_encodes",
+    }
+)
 
 
 def run_help(binary: Path) -> tuple[int, str]:
@@ -125,6 +133,7 @@ def verify_counters(failures: list[str]) -> None:
         for field in fields
         if not field.startswith(TELEMETRY_FAMILIES)
         and field not in LINKAGE_FOOTPRINT_COUNTERS
+        and field not in HOTPATH_DIAGNOSTIC_COUNTERS
     )
     if unexpected:
         failures.append("non-canonical VmCounters fields: " + ", ".join(unexpected))

@@ -420,7 +420,10 @@ fn preserves_method_declaration_and_strict_types_metadata() {
         span,
     );
     builder.set_return_type(function, Some(IrReturnType::Int));
+    let this = builder.intern_local(function, "this");
+    let entry = builder.append_block(function);
     let block = builder.append_block(function);
+    builder.terminate_jump(function, entry, block, span);
     let constant = builder.intern_constant(IrConstant::Int(7));
     let value = builder.alloc_register(function);
     builder.emit(
@@ -465,6 +468,9 @@ fn preserves_method_declaration_and_strict_types_metadata() {
 
     assert!(region.flags.is_method);
     assert!(region.strict_types);
+    assert_eq!(region.parameter_locals, vec![this]);
+    assert_eq!(region.blocks[0].entry_live_locals, vec![this]);
+    assert_eq!(region.blocks[1].entry_live_locals, vec![this]);
     let method = region.declarations.method.expect("method identity");
     assert_eq!(method.class_display_name, "Widget");
     assert_eq!(method.method.function, function);
@@ -855,6 +861,78 @@ fn static_closure_this_storage_is_not_a_native_argument() {
     assert!(region.flags.is_static);
     assert!(region.parameter_locals.is_empty());
     assert_eq!(region.arity(), 0);
+}
+
+#[test]
+fn global_binding_state_reaches_later_native_blocks() {
+    let mut builder = IrBuilder::new(UnitId::new(101));
+    let file = builder.add_file("global-live-state.php");
+    let span = IrSpan::new(file, 0, 20);
+    let function = builder.start_function("global_live_state", FunctionFlags::default(), span);
+    let global = builder.intern_local(function, "wpdb");
+    let entry = builder.append_block(function);
+    let after = builder.append_block(function);
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::BindGlobal {
+            local: global,
+            name: "wpdb".to_owned(),
+        },
+        span,
+    );
+    builder.terminate_jump(function, entry, after, span);
+    builder.terminate_return(function, after, Some(Operand::Local(global)), span);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, function).expect("global binding region");
+
+    assert_eq!(region.blocks[1].entry_live_locals, vec![global]);
+    assert_eq!(region.blocks[1].terminator_live_locals, vec![global]);
+}
+
+#[test]
+fn fragment_state_keeps_path_dependent_local_separate_from_snapshot_liveness() {
+    let mut builder = IrBuilder::new(UnitId::new(102));
+    let file = builder.add_file("conditional-fragment-state.php");
+    let span = IrSpan::new(file, 0, 20);
+    let function =
+        builder.start_function("conditional_fragment_state", FunctionFlags::default(), span);
+    let local = builder.intern_local(function, "cache_key");
+    let entry = builder.append_block(function);
+    let initialized = builder.append_block(function);
+    let uninitialized = builder.append_block(function);
+    let join = builder.append_block(function);
+    let condition = builder.intern_constant(IrConstant::Bool(true));
+    let value = builder.intern_constant(IrConstant::String("cache-key".to_owned()));
+    builder.terminate_jump_if(
+        function,
+        entry,
+        Operand::Constant(condition),
+        initialized,
+        uninitialized,
+        span,
+    );
+    let register = builder.alloc_register(function);
+    builder.emit_load_const(function, initialized, register, value, span);
+    builder.emit(
+        function,
+        initialized,
+        InstructionKind::StoreLocal {
+            local,
+            src: Operand::Register(register),
+        },
+        span,
+    );
+    builder.terminate_jump(function, initialized, join, span);
+    builder.terminate_jump(function, uninitialized, join, span);
+    builder.terminate_return(function, join, Some(Operand::Local(local)), span);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, function).expect("conditional state region");
+
+    assert!(region.blocks[3].entry_live_locals.is_empty());
+    assert_eq!(region.blocks[3].entry_state_locals, vec![local]);
 }
 
 #[test]

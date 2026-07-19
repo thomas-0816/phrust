@@ -84,7 +84,7 @@ fn execute_native_include(
             .iter()
             .flatten()
         {
-            if native_external_class(context, declaration).is_some() {
+            if native_external_class_exists(context, declaration) {
                 continue;
             }
             let normalized = normalize_class_name(declaration);
@@ -105,7 +105,7 @@ fn execute_native_include(
                     context.autoload_in_progress.remove(&normalized);
                     return Err(error);
                 }
-                if native_external_class(context, declaration).is_some() {
+                if native_external_class_exists(context, declaration) {
                     break;
                 }
             }

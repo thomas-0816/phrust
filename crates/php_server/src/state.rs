@@ -150,7 +150,8 @@ impl ServerEngineState {
         } else {
             base_options.optimization_level
         };
-        let worker_state = VmWorkerState::new(base_options.vm_options.tiering.clone());
+        let worker_state =
+            VmWorkerState::new_with_background_tiering(base_options.vm_options.tiering.clone());
         Self {
             engine_profile,
             native_cache,

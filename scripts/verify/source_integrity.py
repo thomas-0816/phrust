@@ -74,7 +74,6 @@ VM_MOD_REQUIRED_SNIPPETS = [
     "pub struct Vm",
     "impl Vm",
     "pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult",
-    "compile_unit_with_runtime_helpers",
 ]
 
 VM_RESULT_REQUIRED_SNIPPETS = [

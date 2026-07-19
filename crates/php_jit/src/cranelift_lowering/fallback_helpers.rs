@@ -406,6 +406,37 @@ pub(super) extern "C" fn test_native_truthy_fallback(
     0
 }
 
+// SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
+#[allow(unsafe_code)]
+pub(super) extern "C" fn test_native_type_predicate_fallback(
+    _context: u64,
+    _op: u32,
+    _src: i64,
+    out: *mut i64,
+) -> i32 {
+    if out.is_null() {
+        return crate::JitCallStatus::RUNTIME_ERROR.0 as i32;
+    }
+    // SAFETY: Cranelift owns this synchronous stack output slot.
+    unsafe {
+        out.write(crate::jit_encode_constant(crate::JIT_VALUE_FALSE));
+    }
+    0
+}
+
+// SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
+#[allow(unsafe_code)]
+pub(super) extern "C" fn test_native_stable_length_fallback(
+    _context: u64,
+    _op: u32,
+    _value: i64,
+    _function: i64,
+    _continuation: i64,
+    _out: *mut i64,
+) -> i32 {
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
+}
+
 pub(super) extern "C" fn test_native_runtime_fatal_fallback(
     _context: u64,
     _function: u32,

@@ -18,6 +18,12 @@ error. There is no managed fallback.
 `Vm::prewarm_cranelift` performs the same bounded compilation and publication
 work without entering application code.
 
+Server-owned workers additionally support threshold publication. They run a
+correct level-1 optimizing entry until its function-entry threshold is met,
+then compile level 2 on a lower-priority background job. Both versions share
+one atomic indirection cell; no request observes a partially published target,
+and no interpreter or function restart participates in the transition.
+
 ## Native frames and control
 
 Generated functions use the versioned native frame, call-result, continuation,

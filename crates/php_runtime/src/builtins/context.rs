@@ -51,6 +51,7 @@ pub(in crate::builtins) struct BuiltinIoContext<'a> {
     php_input: Arc<[u8]>,
     diagnostic_display: PhpDiagnosticDisplayOptions,
     diagnostics: Vec<RuntimeDiagnostic>,
+    php_diagnostics: Vec<RuntimeDiagnostic>,
 }
 
 impl<'a> BuiltinIoContext<'a> {
@@ -60,6 +61,7 @@ impl<'a> BuiltinIoContext<'a> {
             php_input: Arc::from([]),
             diagnostic_display: PhpDiagnosticDisplayOptions::default(),
             diagnostics: Vec::new(),
+            php_diagnostics: Vec::new(),
         }
     }
 
@@ -84,6 +86,7 @@ impl<'a> BuiltinIoContext<'a> {
             PHP_E_WARNING,
             self.diagnostic_display,
         );
+        self.php_diagnostics.push(diagnostic.clone());
         self.diagnostics.push(diagnostic);
     }
 }
@@ -449,6 +452,7 @@ impl<'a> BuiltinContext<'a> {
             PHP_E_NOTICE,
             self.io.diagnostic_display,
         );
+        self.io.php_diagnostics.push(diagnostic.clone());
         self.io.diagnostics.push(diagnostic);
     }
 
@@ -476,6 +480,7 @@ impl<'a> BuiltinContext<'a> {
             PHP_E_DEPRECATED,
             self.io.diagnostic_display,
         );
+        self.io.php_diagnostics.push(diagnostic.clone());
         self.io.diagnostics.push(diagnostic);
     }
 
@@ -487,6 +492,13 @@ impl<'a> BuiltinContext<'a> {
     /// Drains structured diagnostics emitted by builtins.
     pub fn take_diagnostics(&mut self) -> Vec<RuntimeDiagnostic> {
         std::mem::take(&mut self.io.diagnostics)
+    }
+
+    /// Drains diagnostics produced through PHP-visible warning, notice, and
+    /// deprecation APIs. Structured-only diagnostics recorded through
+    /// `record_diagnostic` are intentionally excluded.
+    pub fn take_php_diagnostics(&mut self) -> Vec<RuntimeDiagnostic> {
+        std::mem::take(&mut self.io.php_diagnostics)
     }
 
     /// Current working directory for path and filesystem builtins.
@@ -1291,6 +1303,9 @@ mod tests {
             },
         );
 
+        let php_diagnostics = context.take_php_diagnostics();
+        assert_eq!(php_diagnostics.len(), 1);
+        assert_eq!(php_diagnostics[0].id(), "E_PHP_RUNTIME_TEST_WARNING");
         let diagnostics = context.take_diagnostics();
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].id(), "E_PHP_RUNTIME_TEST_WARNING");
@@ -1300,6 +1315,25 @@ mod tests {
         let rendered = std::str::from_utf8(output.as_bytes()).expect("warning output is utf-8");
         assert!(rendered.contains("Warning: fixture warning"));
         assert!(rendered.contains("fixture.php"));
+    }
+
+    #[test]
+    fn structured_diagnostic_is_not_php_visible() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        context.record_diagnostic(crate::api::RuntimeDiagnostic::new(
+            "E_PHP_RUNTIME_TEST_INTERNAL",
+            crate::api::RuntimeSeverity::Warning,
+            "internal only",
+            RuntimeSourceSpan::default(),
+            Vec::new(),
+            Some(crate::api::PhpReferenceClassification::Warning),
+        ));
+
+        assert!(context.take_php_diagnostics().is_empty());
+        assert_eq!(context.take_diagnostics().len(), 1);
+        drop(context);
+        assert!(output.as_bytes().is_empty());
     }
 
     #[test]

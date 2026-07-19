@@ -123,9 +123,10 @@ def main() -> int:
     )
     require(
         failures,
-        "same_unit_call_uses_function_on_demand_dispatch" in vm_tests
-        and "counters.native_same_unit_direct_executed, 0" in vm_tests,
-        "same-unit baseline calls can bypass function-on-demand dispatch",
+        "same_unit_call_resolves_on_demand_then_calls_native" in vm_tests
+        and "counters.native_same_unit_direct_executed, 1" in vm_tests
+        and "assert_eq!(compile_stats.misses, 2)" in vm_tests,
+        "same-unit baseline calls are not ratcheted through function-on-demand publication",
     )
     require(
         failures,
@@ -209,8 +210,8 @@ def main() -> int:
             )
             require(
                 failures,
-                counter(document, "native_same_unit_direct_executed") == 0,
-                "baseline linkage smoke bypassed the function Cell",
+                counter(document, "native_same_unit_direct_executed") > 0,
+                "baseline linkage smoke executed no published same-unit native call",
             )
             require(
                 failures,

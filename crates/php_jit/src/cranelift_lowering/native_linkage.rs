@@ -53,17 +53,23 @@ pub enum NativeFunctionTier {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum NativeIndirectionState {
-    Unpublished = 0,
-    Published = 1,
-    Retired = 2,
+    Declared = 0,
+    Queued = 1,
+    Compiling = 2,
+    Published = 3,
+    Failed = 4,
+    Retired = 5,
 }
 
 impl NativeIndirectionState {
     fn from_raw(raw: u8) -> Self {
         match raw {
-            1 => Self::Published,
-            2 => Self::Retired,
-            _ => Self::Unpublished,
+            1 => Self::Queued,
+            2 => Self::Compiling,
+            3 => Self::Published,
+            4 => Self::Failed,
+            5 => Self::Retired,
+            _ => Self::Declared,
         }
     }
 }
@@ -89,7 +95,7 @@ impl NativeIndirectionCell {
             key,
             baseline_target: AtomicUsize::new(0),
             optimized_target: AtomicUsize::new(0),
-            state: AtomicU8::new(NativeIndirectionState::Unpublished as u8),
+            state: AtomicU8::new(NativeIndirectionState::Declared as u8),
         }
     }
 
@@ -108,6 +114,28 @@ impl NativeIndirectionCell {
         self.generation.store(generation, Ordering::Release);
         self.state
             .store(NativeIndirectionState::Published as u8, Ordering::Release);
+    }
+
+    pub(crate) fn mark_queued(&self) {
+        self.state
+            .store(NativeIndirectionState::Queued as u8, Ordering::Release);
+    }
+
+    pub(crate) fn mark_compiling(&self) {
+        self.state
+            .store(NativeIndirectionState::Compiling as u8, Ordering::Release);
+    }
+
+    pub(crate) fn mark_failed(&self) {
+        self.state
+            .store(NativeIndirectionState::Failed as u8, Ordering::Release);
+        self.optimized_target.store(0, Ordering::Release);
+        self.baseline_target.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn reset_declared(&self) {
+        self.state
+            .store(NativeIndirectionState::Declared as u8, Ordering::Release);
     }
 
     /// Resolves the best target only for an exact ABI and deployment generation.
@@ -158,12 +186,27 @@ mod tests {
     #[test]
     fn cell_validates_signature_and_generation_and_retires() {
         let cell = NativeIndirectionCell::new(key());
+        assert_eq!(cell.state(), NativeIndirectionState::Declared);
         assert_eq!(cell.resolve(11, 3), None);
+        cell.mark_queued();
+        assert_eq!(cell.state(), NativeIndirectionState::Queued);
+        cell.mark_compiling();
+        assert_eq!(cell.state(), NativeIndirectionState::Compiling);
         cell.publish(NativeFunctionTier::Baseline, 3, 0x1234);
         assert_eq!(cell.resolve(11, 3), Some(0x1234));
         assert_eq!(cell.resolve(12, 3), None);
         assert_eq!(cell.resolve(11, 4), None);
         cell.retire();
+        assert_eq!(cell.resolve(11, 3), None);
+    }
+
+    #[test]
+    fn failed_cell_never_exposes_a_partial_target() {
+        let cell = NativeIndirectionCell::new(key());
+        cell.mark_queued();
+        cell.mark_compiling();
+        cell.mark_failed();
+        assert_eq!(cell.state(), NativeIndirectionState::Failed);
         assert_eq!(cell.resolve(11, 3), None);
     }
 

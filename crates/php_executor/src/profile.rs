@@ -92,6 +92,9 @@ impl EngineProfile {
             }
             EngineProfileName::Default => {
                 vm_options.inline_caches = InlineCacheMode::On;
+                // Optimizing lowering is bounded by the native fragment plan;
+                // large PHP functions never enter whole-function Cranelift
+                // optimization or register allocation.
                 vm_options.native_optimization = NativeOptimizationPolicy::Optimizing;
                 vm_options.native_blacklist = NativeBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
@@ -146,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profiles_select_only_native_optimization_policy() {
+    fn production_default_uses_bounded_native_optimization() {
         let baseline = PhpExecutorOptions::baseline_oracle();
         let optimized = PhpExecutorOptions::default_native_runtime();
         assert_eq!(

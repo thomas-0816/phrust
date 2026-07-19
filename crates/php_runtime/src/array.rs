@@ -1459,6 +1459,12 @@ impl WeakArrayHandle {
     pub fn is_alive(&self) -> bool {
         self.storage.strong_count() > 0
     }
+
+    /// Upgrades this weak handle while the exact array storage is still live.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<PhpArray> {
+        self.storage.upgrade().map(|storage| PhpArray { storage })
+    }
 }
 
 impl PhpArray {

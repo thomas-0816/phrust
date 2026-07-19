@@ -47,3 +47,8 @@ frame-arena high-water use, and bounded inlining/tail-call outcomes. These
 fields retain the names used by the linkage and footprint reports instead of
 creating product execution-mode families; additions require updating the
 native product-surface and default-profile audits' exact allowlists.
+
+The hot-path diagnostic set similarly keeps exact builtin call/time maps and
+native value encode/decode totals. These four counters are diagnostic-only,
+are absent from clean timing runs, and are covered by the same exact-allowlist
+audits so an accidental product counter cannot bypass the family contract.

@@ -1,5 +1,70 @@
 use super::native_builtins::format_native_php_diagnostic;
-use super::{jit_native_call_dispatch_abi, jit_native_dynamic_code_abi, native_backtrace_frame};
+use super::{
+    NativeStoredValue, dereference_native_callable_value, jit_native_call_dispatch_abi,
+    jit_native_dynamic_code_abi, native_backtrace_frame, stored_value_view,
+};
+
+#[test]
+fn stable_value_views_publish_only_versioned_abi_descriptors() {
+    let string = stored_value_view(&NativeStoredValue::Php(php_runtime::api::Value::String(
+        php_runtime::api::PhpString::from_bytes(b"phrust".to_vec()),
+    )));
+    assert_eq!(string.kind, php_jit::JIT_NATIVE_VALUE_VIEW_STRING);
+    assert_eq!(string.length, 6);
+
+    let array = stored_value_view(&NativeStoredValue::Php(
+        php_runtime::api::Value::packed_array(vec![
+            php_runtime::api::Value::Int(1),
+            php_runtime::api::Value::Int(2),
+        ]),
+    ));
+    assert_eq!(array.kind, php_jit::JIT_NATIVE_VALUE_VIEW_ARRAY);
+    assert_eq!(array.length, 2);
+
+    let scalar = stored_value_view(&NativeStoredValue::Php(php_runtime::api::Value::Int(1)));
+    assert_eq!(scalar.kind, php_jit::JIT_NATIVE_VALUE_VIEW_NONE);
+    assert_eq!(scalar.length, 0);
+
+    let reference = php_runtime::api::ReferenceCell::new(php_runtime::api::Value::Int(1));
+    let reference_view = stored_value_view(&NativeStoredValue::Php(
+        php_runtime::api::Value::Reference(reference.clone()),
+    ));
+    assert_eq!(
+        reference_view.kind,
+        php_jit::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR
+    );
+    assert_eq!(
+        reference_view.flags,
+        php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+    );
+    assert_eq!(
+        reference_view.length,
+        reference.native_scalar_view_address() as u64
+    );
+    assert_eq!(
+        std::mem::size_of::<php_runtime::experimental::native_reference::NativeReferenceScalarView>(
+        ),
+        std::mem::size_of::<php_jit::JitNativeReferenceScalarView>()
+    );
+    assert_eq!(
+        php_runtime::experimental::native_reference::NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+        php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+    );
+}
+
+#[test]
+fn callable_resolution_dereferences_nested_php_references() {
+    let inner = php_runtime::api::ReferenceCell::new(php_runtime::api::Value::String(
+        php_runtime::api::PhpString::from_bytes(b"Fixture::run".to_vec()),
+    ));
+    let outer = php_runtime::api::ReferenceCell::new(php_runtime::api::Value::Reference(inner));
+    let value = dereference_native_callable_value(php_runtime::api::Value::Reference(outer));
+
+    assert!(matches!(
+        value,
+        php_runtime::api::Value::String(name) if name.as_bytes() == b"Fixture::run"
+    ));
+}
 
 #[test]
 fn native_php_diagnostics_match_cli_and_http_rendering() {

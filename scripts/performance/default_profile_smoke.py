@@ -100,6 +100,14 @@ LINKAGE_FOOTPRINT_FIELDS = frozenset(
         "native_worker_stack_virtual_bytes",
     }
 )
+HOTPATH_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "native_builtin_calls_by_name",
+        "native_builtin_time_nanos_by_name",
+        "native_value_decodes",
+        "native_value_encodes",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -251,6 +259,7 @@ def default_counter_sanity(counters: dict[str, Any]) -> list[str]:
         if key != "schema_version"
         and not key.startswith(NATIVE_FAMILIES)
         and key not in LINKAGE_FOOTPRINT_FIELDS
+        and key not in HOTPATH_DIAGNOSTIC_FIELDS
     ]
 
 
@@ -363,6 +372,16 @@ def run_self_test() -> int:
         raise SystemExit("default-profile-smoke self-test failed")
     if default_counter_sanity({"schema_version": 11, "native_execution_entries": 1}) != []:
         raise SystemExit("default-profile-smoke rejected canonical native telemetry")
+    if default_counter_sanity(
+        {
+            "schema_version": 11,
+            "native_builtin_calls_by_name": {"strlen": 1},
+            "native_builtin_time_nanos_by_name": {"strlen": 10},
+            "native_value_decodes": 1,
+            "native_value_encodes": 1,
+        }
+    ) != []:
+        raise SystemExit("default-profile-smoke rejected hot-path diagnostic telemetry")
     if default_counter_sanity({"schema_version": 11, "quick" + "ening_attempts": 1}) == []:
         raise SystemExit("default-profile-smoke accepted retired telemetry")
     print("[pass] default_profile_smoke self-test")

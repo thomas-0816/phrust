@@ -68,6 +68,49 @@ pub(super) fn stable_builtin_helper_id(target: &RegionCallTarget) -> Option<u32>
         .filter(|helper_id| *helper_id != 0)
 }
 
+pub(super) fn stable_builtin_type_predicate(target: &RegionCallTarget) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\').to_ascii_lowercase();
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.as_str() {
+        "is_null" => Some(0),
+        "is_bool" => Some(1),
+        "is_float" | "is_double" | "is_real" => Some(3),
+        "is_string" => Some(4),
+        "is_array" => Some(5),
+        "is_object" => Some(6),
+        "is_resource" => Some(7),
+        _ => None,
+    }
+}
+
+pub(super) fn stable_builtin_length(target: &RegionCallTarget) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\').to_ascii_lowercase();
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.as_str() {
+        "strlen" => Some(0),
+        "count" => Some(1),
+        _ => None,
+    }
+}
+
 pub(super) fn native_argument_flags(argument: &php_ir::instruction::IrCallArg) -> u32 {
     let mut flags = crate::JitNativeArgFlags::default();
     if argument.name.is_some() {

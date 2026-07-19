@@ -745,11 +745,19 @@ impl RegionTerminator {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionBlock {
     pub id: BlockId,
+    /// Original PHP IR block used by callsite and diagnostic metadata. Native
+    /// fragmentation may assign a different internal CFG `id`.
+    pub source_block: BlockId,
     pub entry_live_locals: Vec<LocalId>,
+    /// Locals with a materialized value on at least one incoming path.
+    /// Unlike safepoint liveness this includes path-dependent values and is
+    /// used only by bounded native-fragment frame transitions.
+    pub entry_state_locals: Vec<LocalId>,
     pub instructions: Vec<RegionInstruction>,
     pub terminator_span: IrSpan,
     pub terminator_continuation_id: u32,
     pub terminator_live_locals: Vec<LocalId>,
+    pub terminator_state_locals: Vec<LocalId>,
     /// Authoritative terminator retained for effect and exception semantics.
     pub source_terminator: TerminatorKind,
     pub terminator: RegionTerminator,
@@ -961,6 +969,54 @@ fn closure_requires_implicit_this(unit: &IrUnit, closure_function: FunctionId) -
             .any(|capture| capture.local == LocalId::new(0))
 }
 
+fn native_method_class(unit: &IrUnit, function: FunctionId) -> Option<(u32, bool)> {
+    unit.classes.iter().enumerate().find_map(|(class, entry)| {
+        let is_static = entry
+            .methods
+            .iter()
+            .find(|method| method.function == function)
+            .map(|method| method.flags.is_static)
+            .or_else(|| {
+                entry
+                    .properties
+                    .iter()
+                    .any(|property| {
+                        property.hooks.get == Some(function) || property.hooks.set == Some(function)
+                    })
+                    .then_some(false)
+            })?;
+        u32::try_from(class).ok().map(|class| (class, is_static))
+    })
+}
+
+/// Returns the exact packed native-entry locals for a PHP function.
+///
+/// Declared PHP parameters are only one part of the native ABI: instance
+/// methods and bound closures prepend an implicit `$this`, while closures
+/// prepend their captured locals. Function-on-demand metadata must use this
+/// same list before the callee RegionGraph exists, otherwise the caller and
+/// the eventually compiled entry disagree about the packed frame shape.
+pub(crate) fn native_function_parameter_locals(
+    unit: &IrUnit,
+    function: FunctionId,
+) -> Option<Vec<LocalId>> {
+    let ir_function = unit.functions.get(function.index())?;
+    let method_class = native_method_class(unit, function);
+    let has_implicit_receiver = if ir_function.flags.is_method {
+        method_class.is_some_and(|(_, is_static)| !is_static)
+    } else {
+        closure_requires_implicit_this(unit, function)
+    };
+    Some(
+        has_implicit_receiver
+            .then_some(LocalId::new(0))
+            .into_iter()
+            .chain(ir_function.captures.iter().map(|capture| capture.local))
+            .chain(ir_function.params.iter().map(|parameter| parameter.local))
+            .collect(),
+    )
+}
+
 fn omitted_defaults_require_runtime_binding(
     target: &php_ir::IrFunction,
     supplied_arguments: usize,
@@ -1033,24 +1089,7 @@ impl BaselineRegionBuilder {
         let mut region_locals = ir_function.locals.clone();
         let mut region_register_count = ir_function.register_count;
         let exception_regions = collect_exception_regions(ir_function);
-        let method_class = unit.classes.iter().enumerate().find_map(|(class, entry)| {
-            let method = entry
-                .methods
-                .iter()
-                .find(|method| method.function == function)
-                .map(|method| method.flags.is_static)
-                .or_else(|| {
-                    entry
-                        .properties
-                        .iter()
-                        .any(|property| {
-                            property.hooks.get == Some(function)
-                                || property.hooks.set == Some(function)
-                        })
-                        .then_some(false)
-                })?;
-            u32::try_from(class).ok().map(|class| (class, method))
-        });
+        let method_class = native_method_class(unit, function);
         for (block_index, block) in ir_function.blocks.iter().enumerate() {
             let mut instructions = Vec::with_capacity(block.instructions.len());
             let mut known_register_strings = BTreeMap::<RegId, String>::new();
@@ -3373,24 +3412,27 @@ impl BaselineRegionBuilder {
             let terminator_span = source_terminator.span;
             blocks.push(RegionBlock {
                 id: block.id,
+                source_block: block.id,
                 entry_live_locals: Vec::new(),
+                entry_state_locals: Vec::new(),
                 instructions,
                 terminator_span,
                 terminator_continuation_id: next_continuation,
                 terminator_live_locals: Vec::new(),
+                terminator_state_locals: Vec::new(),
                 source_terminator: source_terminator.kind.clone(),
                 terminator,
             });
             next_continuation = next_continuation.saturating_add(1);
         }
-        populate_live_locals(
-            &mut blocks,
-            &ir_function
-                .params
-                .iter()
-                .map(|param| param.local)
-                .collect::<Vec<_>>(),
-        );
+        let parameter_locals = native_function_parameter_locals(unit, function)
+            .expect("RegionGraph function must belong to its source unit");
+        // Native entry state includes more than declared PHP parameters:
+        // instance methods prepend `$this`, and closures can prepend a bound
+        // receiver and captures. These locals are initialized at entry and
+        // must remain part of semantic state across safepoints and fragment
+        // boundaries just like explicit parameters.
+        populate_live_locals(&mut blocks, &parameter_locals);
         annotate_native_finally_control(&mut blocks, &exception_regions);
         quiet_known_reference_argument_loads(&mut blocks);
         let region = RegionGraph {
@@ -3408,32 +3450,7 @@ impl BaselineRegionBuilder {
             declarations: declaration_metadata(unit, function),
             exception_regions,
             compile_metadata: runtime_metadata.clone(),
-            parameter_locals: ir_function
-                .flags
-                .is_method
-                .then_some(true)
-                .or_else(|| {
-                    (ir_function.flags.is_closure
-                        && !ir_function.flags.is_static
-                        && ir_function
-                            .locals
-                            .first()
-                            .is_some_and(|name| name == "this")
-                        && !ir_function
-                            .captures
-                            .iter()
-                            .any(|capture| capture.local == LocalId::new(0)))
-                    .then_some(false)
-                })
-                .map(|_| LocalId::new(0))
-                .into_iter()
-                .filter(|_| {
-                    !ir_function.flags.is_method
-                        || method_class.is_some_and(|(_, is_static)| !is_static)
-                })
-                .chain(ir_function.captures.iter().map(|capture| capture.local))
-                .chain(ir_function.params.iter().map(|param| param.local))
-                .collect(),
+            parameter_locals,
             local_count: region_local_count,
             register_count: region_register_count,
             blocks,
@@ -3730,7 +3747,7 @@ fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
     for block in blocks.iter() {
         let mut defs = BTreeSet::new();
         for instruction in &block.instructions {
-            if let RegionInstructionKind::StoreLocal { local, .. } = instruction.kind {
+            if let Some(local) = native_local_state_definition(&instruction.kind) {
                 defs.insert(local);
                 candidates.insert(local);
             }
@@ -3746,7 +3763,7 @@ fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
     let entry = params.iter().copied().collect::<BTreeSet<_>>();
     let mut initialized_in = vec![candidates.clone(); blocks.len()];
     if let Some(first) = initialized_in.first_mut() {
-        *first = entry;
+        *first = entry.clone();
     }
     loop {
         let initialized_out = initialized_in
@@ -3776,16 +3793,72 @@ fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
         }
     }
 
-    for (block, incoming) in blocks.iter_mut().zip(initialized_in) {
+    let mut materialized_in = vec![BTreeSet::<LocalId>::new(); blocks.len()];
+    if let Some(first) = materialized_in.first_mut() {
+        *first = entry.clone();
+    }
+    loop {
+        let materialized_out = materialized_in
+            .iter()
+            .zip(&definitions)
+            .map(|(incoming, defs)| incoming.union(defs).copied().collect::<BTreeSet<_>>())
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for block_index in 1..blocks.len() {
+            let incoming = predecessors[block_index]
+                .iter()
+                .flat_map(|predecessor| materialized_out[*predecessor].iter().copied())
+                .collect::<BTreeSet<_>>();
+            if materialized_in[block_index] != incoming {
+                materialized_in[block_index] = incoming;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for ((block, incoming), state_incoming) in
+        blocks.iter_mut().zip(initialized_in).zip(materialized_in)
+    {
         let mut initialized = incoming;
+        let mut materialized = state_incoming;
         block.entry_live_locals = initialized.iter().copied().collect();
+        block.entry_state_locals = materialized.iter().copied().collect();
         for instruction in &mut block.instructions {
             instruction.live_locals = initialized.iter().copied().collect();
-            if let RegionInstructionKind::StoreLocal { local, .. } = instruction.kind {
+            if let Some(local) = native_local_state_definition(&instruction.kind) {
                 initialized.insert(local);
+                materialized.insert(local);
             }
         }
         block.terminator_live_locals = initialized.into_iter().collect();
+        block.terminator_state_locals = materialized.into_iter().collect();
+    }
+}
+
+const fn native_local_state_definition(kind: &RegionInstructionKind) -> Option<LocalId> {
+    match kind {
+        RegionInstructionKind::StoreLocal { local, .. }
+        | RegionInstructionKind::AssignLocalResult { local, .. }
+        | RegionInstructionKind::UnsetLocal { local }
+        | RegionInstructionKind::AssignDim { local, .. }
+        | RegionInstructionKind::AppendDim { local, .. }
+        | RegionInstructionKind::UnsetDim { local, .. }
+        | RegionInstructionKind::InitStaticLocal { local, .. } => Some(*local),
+        RegionInstructionKind::BindReference { target, .. }
+        | RegionInstructionKind::BindReferenceDim { target, .. }
+        | RegionInstructionKind::BindReferenceFromProperty { target, .. }
+        | RegionInstructionKind::BindReferenceFromPropertyDim { target, .. } => Some(*target),
+        RegionInstructionKind::BindReferenceIntoDim { array, .. }
+        | RegionInstructionKind::BindReferenceDimFromProperty { array, .. } => Some(*array),
+        RegionInstructionKind::ForeachNextRef { value_local, .. } => Some(*value_local),
+        RegionInstructionKind::NativeCall(RegionNativeCall {
+            result: RegionCallResult::ReferenceLocal(local),
+            ..
+        }) => Some(*local),
+        _ => None,
     }
 }
 

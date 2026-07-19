@@ -4,19 +4,100 @@
 //! Rust references, frame internals, GC cells, refcount state, or COW storage to
 //! future native code.
 
+use std::cell::Cell;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use php_ir::{FunctionId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 20;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 24;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a820_0000_002a;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a824_0000_002f;
+
+/// No stable length is published for this runtime value slot.
+pub const JIT_NATIVE_VALUE_VIEW_NONE: u32 = 0;
+/// Stable byte-length descriptor for one request-owned PHP string.
+pub const JIT_NATIVE_VALUE_VIEW_STRING: u32 = 1;
+/// Stable element-count descriptor for one request-owned PHP array.
+pub const JIT_NATIVE_VALUE_VIEW_ARRAY: u32 = 2;
+/// Stable scalar-only descriptor for one request-owned PHP reference cell.
+pub const JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR: u32 = 3;
+/// Layout/meaning version for [`JitNativeReferenceScalarView`].
+pub const JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION: u32 = 1;
+/// The reference view has no cached immediate value.
+pub const JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY: u32 = 0;
+/// The reference view contains a cached immediate value.
+pub const JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED: u32 = 1;
+
+/// Versioned descriptor generated code may inspect without depending on the
+/// layout of `Value`, `PhpString`, `PhpArray`, or their Rust containers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeValueView {
+    pub kind: u32,
+    pub flags: u32,
+    pub length: u64,
+}
+
+/// Layout contract for the scalar-only reference view owned by `php_runtime`.
+/// Generated code reaches this record through [`JitNativeValueView::length`]
+/// only after validating both ABI versions and the reference descriptor kind.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeReferenceScalarView {
+    pub abi_version: u32,
+    pub state: u32,
+    pub encoded: i64,
+}
+
+/// Versioned request-owned view used by generated code for checked native
+/// value-table refcount updates. The pointed-to `u32` cells are an ABI array,
+/// not a Rust container layout, and remain stable for the activation lifetime.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeRuntimeView {
+    pub abi_version: u32,
+    pub refcount_capacity: u32,
+    pub refcounts: u64,
+    pub value_view_capacity: u32,
+    pub value_view_reserved: u32,
+    pub value_views: u64,
+    /// Request-local loop-header counter. Generated code performs a deadline
+    /// poll on the first header visit and at a fixed bounded cadence.
+    pub poll_counter: u64,
+}
+
+thread_local! {
+    static ACTIVE_NATIVE_RUNTIME_VIEW: Cell<JitNativeRuntimeView> =
+        const { Cell::new(JitNativeRuntimeView { abi_version: 0, refcount_capacity: 0, refcounts: 0, value_view_capacity: 0, value_view_reserved: 0, value_views: 0, poll_counter: 0 }) };
+}
+
+/// Restores the preceding request view when native execution leaves the
+/// current synchronous activation.
+pub struct JitNativeRuntimeViewGuard {
+    previous: JitNativeRuntimeView,
+}
+
+impl Drop for JitNativeRuntimeViewGuard {
+    fn drop(&mut self) {
+        ACTIVE_NATIVE_RUNTIME_VIEW.with(|active| active.set(self.previous));
+    }
+}
+
+#[must_use]
+pub fn activate_native_runtime_view(view: JitNativeRuntimeView) -> JitNativeRuntimeViewGuard {
+    let previous = ACTIVE_NATIVE_RUNTIME_VIEW.with(|active| active.replace(view));
+    JitNativeRuntimeViewGuard { previous }
+}
+
+pub(crate) fn current_native_runtime_view() -> JitNativeRuntimeView {
+    ACTIVE_NATIVE_RUNTIME_VIEW.with(Cell::get)
+}
 
 /// Maximum number of scalar VM locals materialized by one native side exit.
 pub const JIT_DEOPT_MAX_SLOTS: usize = 256;
@@ -51,8 +132,15 @@ pub struct JitDeoptState {
     pub suspend_flags: u32,
     pub yielded_key: i64,
     pub delegation_handle: u64,
+    /// Dense initialization mask for sparse register snapshot slots.
     pub initialized_register_mask: u64,
+    /// Sparse register values in the semantic order published by transition
+    /// or suspension metadata, not indexed by global `RegId`.
     pub registers: [i64; JIT_DEOPT_MAX_REGISTERS],
+    /// Stable request view copied at native entry. Direct callees receive the
+    /// same state pointer, so refcount cells remain available across calls and
+    /// fragment transitions without exposing Rust container offsets.
+    pub runtime_view: JitNativeRuntimeView,
 }
 
 impl Default for JitDeoptState {
@@ -74,6 +162,7 @@ impl Default for JitDeoptState {
             delegation_handle: 0,
             initialized_register_mask: 0,
             registers: [0; JIT_DEOPT_MAX_REGISTERS],
+            runtime_view: current_native_runtime_view(),
         }
     }
 }
@@ -1377,7 +1466,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 20);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 24);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);

@@ -239,7 +239,49 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             let direct_external =
                 frame.flags & php_jit::JitNativeCallFrame::FLAG_DIRECT_EXTERNAL != 0;
             let semantic_operation = semantic_operation_from_frame(frame)?;
-            context.mark_roots_dirty(RootMutationReason::CallbackOrHandler);
+            if semantic_operation == Some(php_jit::region_ir::RegionSemanticOperationId::BindGlobal)
+            {
+                let helper_id = "semantic_bind_global";
+                let started_at = context
+                    .options
+                    .collect_counters
+                    .then(std::time::Instant::now);
+                if context.options.collect_counters {
+                    let mut telemetry = context.runtime_telemetry.borrow_mut();
+                    telemetry.counters.native_callsite_total =
+                        telemetry.counters.native_callsite_total.saturating_add(1);
+                    telemetry.counters.native_call_frame_bytes = telemetry
+                        .counters
+                        .native_call_frame_bytes
+                        .saturating_add(std::mem::size_of::<php_jit::JitNativeCallFrame>() as u64);
+                    drop(telemetry);
+                    context.enter_runtime_helper(helper_id);
+                }
+                let outcome = execute_native_bind_global(context, instruction).unwrap_or_else(|| {
+                    Err(format!(
+                        "JIT_NATIVE_SEMANTIC_SOURCE_MISMATCH: operation={} function={} instruction={}",
+                        php_jit::region_ir::RegionSemanticOperationId::BindGlobal.raw(),
+                        frame.function_id,
+                        instruction.id.raw()
+                    ))
+                });
+                if context.options.collect_counters {
+                    let inclusive_nanos = started_at
+                        .map(|started_at| {
+                            started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+                        })
+                        .unwrap_or(0);
+                    context.record_native_callsite_timing(
+                        frame.function_id,
+                        frame.source_block_id,
+                        frame.source_instruction_id,
+                        inclusive_nanos,
+                        context.active_helper_child_time_nanos(),
+                    );
+                    context.exit_runtime_helper(helper_id);
+                }
+                return outcome;
+            }
             let direct_external_in_place = matches!(
                 descriptor.kind,
                 crate::compiled_unit::NativeCallSiteKind::Function
@@ -313,7 +355,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         .counters
                         .native_cross_unit_direct_eligible
                         .saturating_add(1);
-                } else {
+                } else if semantic_operation.is_none() {
                     telemetry.counters.native_call_dynamic =
                         telemetry.counters.native_call_dynamic.saturating_add(1);
                 }
@@ -329,7 +371,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                             + std::mem::size_of_val(arguments)) as u64,
                     );
                 drop(telemetry);
-                if !direct_builtin && !direct_external_in_place {
+                if !direct_builtin && !direct_external_in_place && semantic_operation.is_none() {
                     let dynamic_reason =
                         native_dynamic_call_reason(context, frame, &descriptor, arguments);
                     let mut telemetry = context.runtime_telemetry.borrow_mut();
@@ -337,6 +379,45 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                         .counters
                         .native_call_dynamic_by_reason
                         .entry(dynamic_reason.to_owned())
+                        .or_default();
+                    *count = count.saturating_add(1);
+                    let target = descriptor.target_symbol.as_ref().map_or_else(
+                        || match (descriptor.kind, semantic_operation) {
+                            (
+                                crate::compiled_unit::NativeCallSiteKind::Semantic,
+                                Some(operation),
+                            ) => {
+                                format!("<semantic:{operation:?}>")
+                            }
+                            (crate::compiled_unit::NativeCallSiteKind::Closure, _) => {
+                                "<closure>".to_owned()
+                            }
+                            (crate::compiled_unit::NativeCallSiteKind::Callable, _) => {
+                                "<callable>".to_owned()
+                            }
+                            (crate::compiled_unit::NativeCallSiteKind::Pipe, _) => {
+                                "<pipe>".to_owned()
+                            }
+                            (crate::compiled_unit::NativeCallSiteKind::DynamicConstructor, _) => {
+                                "<dynamic-constructor>".to_owned()
+                            }
+                            (crate::compiled_unit::NativeCallSiteKind::Semantic, _) => {
+                                "<semantic:unknown>".to_owned()
+                            }
+                            (crate::compiled_unit::NativeCallSiteKind::Function, _)
+                            | (crate::compiled_unit::NativeCallSiteKind::Method, _)
+                            | (crate::compiled_unit::NativeCallSiteKind::StaticMethod, _)
+                            | (crate::compiled_unit::NativeCallSiteKind::Constructor, _) => {
+                                "<unknown>".to_owned()
+                            }
+                        },
+                        |target| target.to_string(),
+                    );
+                    let target = target.to_ascii_lowercase();
+                    let count = telemetry
+                        .counters
+                        .native_call_dynamic_by_target
+                        .entry(target)
                         .or_default();
                     *count = count.saturating_add(1);
                 }
@@ -356,6 +437,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                 .options
                 .collect_counters
                 .then(std::time::Instant::now);
+            let mut observed_builtin_name = None;
             let outcome = (|| {
             let completed_nested_fiber_matches = context
                 .completed_nested_fiber_call
@@ -561,8 +643,8 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                             .find(|candidate| candidate.name == name)
                             .and_then(|candidate| candidate.parent.clone())
                             .or_else(|| {
-                                native_external_class(context, &name)
-                                    .and_then(|(_, candidate)| candidate.parent)
+                                native_external_class_ref(context, &name)
+                                    .and_then(|(_, candidate)| candidate.parent.clone())
                             });
                     }
                     if throwable_parent {
@@ -595,7 +677,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                     );
                     return context.encode(Value::Object(object));
                 }
-                if native_external_class(context, &display_class_name).is_none()
+                if !native_external_class_exists(context, &display_class_name)
                     && context.autoload_in_progress.insert(normalized.clone())
                 {
                     let callbacks = context.autoload_callbacks.clone();
@@ -609,18 +691,24 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                             instruction,
                             None,
                         )?;
-                        if native_external_class(context, &display_class_name).is_some() {
+                        if native_external_class_exists(context, &display_class_name) {
                             break;
                         }
                     }
                     context.autoload_in_progress.remove(&normalized);
                 }
-                if native_external_class(context, &display_class_name).is_some() {
-                    if let Some(parent) = native_external_class(context, &display_class_name)
-                        .and_then(|(_, class)| class.parent_display_name.or(class.parent))
-                    {
+                if let Some(parent) = native_external_class_ref(context, &display_class_name)
+                    .and_then(|(_, class)| {
+                        class
+                            .parent_display_name
+                            .as_ref()
+                            .or(class.parent.as_ref())
+                            .cloned()
+                    })
+                {
                         native_autoload_class(context, &parent, instruction)?;
-                    }
+                }
+                if native_external_class_exists(context, &display_class_name) {
                     return create_native_external_object(
                         context,
                         &display_class_name,
@@ -1530,6 +1618,9 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             } else {
                 name.rsplit('\\').next().unwrap_or(name.as_ref())
             };
+            if direct_builtin {
+                observed_builtin_name = Some(builtin_name.to_owned());
+            }
             let expanded =
                 bind_native_builtin_arguments(context, builtin_name, &encoded, metadata)?;
             execute_native_builtin(
@@ -1560,6 +1651,21 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
                     inclusive_nanos,
                     context.active_helper_child_time_nanos(),
                 );
+                if let Some(name) = observed_builtin_name.as_deref() {
+                    let mut telemetry = context.runtime_telemetry.borrow_mut();
+                    let calls = telemetry
+                        .counters
+                        .native_builtin_calls_by_name
+                        .entry(name.to_owned())
+                        .or_default();
+                    *calls = calls.saturating_add(1);
+                    let nanos = telemetry
+                        .counters
+                        .native_builtin_time_nanos_by_name
+                        .entry(name.to_owned())
+                        .or_default();
+                    *nanos = nanos.saturating_add(inclusive_nanos);
+                }
                 context.exit_runtime_helper(helper_id);
             }
             encoded.clear();
@@ -1580,7 +1686,7 @@ pub(in crate::vm) extern "C" fn jit_native_call_dispatch_abi(
             Some(Err(message)) if message == "E_PHP_RETHROW" => {
                 let source_span = callsite_descriptor.as_ref().map(|source| source.span);
                 let value = with_native_context(|context| {
-                    let mut throwable = context.pending_throwable.take()?;
+                    let mut throwable = context.take_pending_throwable()?;
                     if let Some(source_span) = source_span {
                         throwable =
                             native_throwable_with_call_source(context, throwable, source_span);

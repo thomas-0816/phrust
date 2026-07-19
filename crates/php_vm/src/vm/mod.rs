@@ -23,10 +23,12 @@ use jit_abi::{
     jit_native_local_store_abi, jit_native_object_clone_abi, jit_native_object_clone_with_abi,
     jit_native_object_new_abi, jit_native_property_assign_abi, jit_native_property_fetch_abi,
     jit_native_reference_bind_abi, jit_native_return_check_abi, jit_native_runtime_fatal_abi,
-    jit_native_truthy_abi, jit_native_unary_abi, jit_native_value_lifecycle_abi,
+    jit_native_stable_length_abi, jit_native_truthy_abi, jit_native_type_predicate_abi,
+    jit_native_unary_abi, jit_native_value_lifecycle_abi,
 };
 use php_runtime::api::{OutputBuffer, Value};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 fn validate_native_class_table(unit: &php_ir::IrUnit) -> Result<(), String> {
@@ -130,6 +132,23 @@ fn validate_native_class_table(unit: &php_ir::IrUnit) -> Result<(), String> {
 pub struct VmWorkerState {
     native_compiles: Arc<native_compile_cache::NativeCompileCache>,
     loaded_native_units: Arc<native_compile_cache::LoadedNativeUnitRegistry>,
+    background_tiering: bool,
+    tiering_options: crate::tiering::TieringOptions,
+    tiering_state: Arc<Mutex<BackgroundTieringState>>,
+}
+
+#[derive(Debug, Default)]
+struct BackgroundTieringState {
+    entries: HashMap<native_compile_cache::NativeCompileCacheKey, u64>,
+    scheduled: HashSet<native_compile_cache::NativeCompileCacheKey>,
+    failed: HashSet<native_compile_cache::NativeCompileCacheKey>,
+    stats: crate::tiering::TieringStats,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BackgroundTieringDecision {
+    key: native_compile_cache::NativeCompileCacheKey,
+    entries: u64,
 }
 
 static PROCESS_LOADED_NATIVE_UNITS: std::sync::OnceLock<
@@ -138,19 +157,36 @@ static PROCESS_LOADED_NATIVE_UNITS: std::sync::OnceLock<
 
 impl Default for VmWorkerState {
     fn default() -> Self {
+        let tiering_options = crate::tiering::TieringOptions::default();
         Self {
             native_compiles: Arc::new(native_compile_cache::NativeCompileCache::default()),
             loaded_native_units: Arc::clone(PROCESS_LOADED_NATIVE_UNITS.get_or_init(|| {
                 Arc::new(native_compile_cache::LoadedNativeUnitRegistry::default())
             })),
+            background_tiering: false,
+            tiering_options,
+            tiering_state: Arc::new(Mutex::new(BackgroundTieringState::default())),
         }
     }
 }
 
 impl VmWorkerState {
     #[must_use]
-    pub fn new(_tiering: crate::tiering::TieringOptions) -> Self {
-        Self::default()
+    pub fn new(tiering: crate::tiering::TieringOptions) -> Self {
+        Self {
+            tiering_options: tiering,
+            ..Self::default()
+        }
+    }
+
+    /// Creates a server worker that may publish optimizing code after a hot
+    /// baseline threshold without making a request wait for that compilation.
+    #[must_use]
+    pub fn new_with_background_tiering(tiering: crate::tiering::TieringOptions) -> Self {
+        Self {
+            background_tiering: true,
+            ..Self::new(tiering)
+        }
     }
 
     #[cfg(test)]
@@ -158,6 +194,9 @@ impl VmWorkerState {
         Self {
             native_compiles: Arc::new(native_compile_cache::NativeCompileCache::default()),
             loaded_native_units: Arc::new(native_compile_cache::LoadedNativeUnitRegistry::default()),
+            background_tiering: false,
+            tiering_options: crate::tiering::TieringOptions::default(),
+            tiering_state: Arc::new(Mutex::new(BackgroundTieringState::default())),
         }
     }
 
@@ -165,6 +204,12 @@ impl VmWorkerState {
     #[must_use]
     pub fn native_compile_cache_stats(&self) -> NativeCompileCacheStats {
         self.native_compiles.stats()
+    }
+
+    /// Returns process-worker threshold and background publication counters.
+    #[must_use]
+    pub fn tiering_stats(&self) -> crate::tiering::TieringStats {
+        lock_unpoisoned(&self.tiering_state).stats.clone()
     }
 
     fn get_or_load_native_unit(
@@ -193,6 +238,23 @@ impl VmWorkerState {
         ),
         String,
     > {
+        self.compile_native_with_priority(unit, function, options, external_signatures, false)
+    }
+
+    fn compile_native_with_priority(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+        background: bool,
+    ) -> Result<
+        (
+            Arc<[php_jit::JitUnitCompileRecord]>,
+            native_compile_cache::NativeCompileCacheDisposition,
+        ),
+        String,
+    > {
         let function_metadata = unit
             .unit()
             .functions
@@ -210,11 +272,12 @@ impl VmWorkerState {
         let key = native_compile_cache::NativeCompileCacheKey::new(
             unit.cache_identity(),
             function,
-            options.native_optimization.is_optimizing(),
+            options.native_optimization.opt_level(),
             external_signatures_hash,
         );
-        self.native_compiles.get_or_compile(key, || {
-            if let Ok(manager) = php_jit::global_code_manager()
+        let compile = || {
+            if options.native_optimization != NativeOptimizationPolicy::Optimizing
+                && let Ok(manager) = php_jit::global_code_manager()
                 && let Some((cell, handle)) = manager.published_function(&function_key)
                 && cell
                     .resolve(
@@ -247,8 +310,119 @@ impl VmWorkerState {
                 ),
                 external_signatures,
             )
-        })
+        };
+        if background {
+            self.native_compiles.get_or_compile_background(key, compile)
+        } else {
+            self.native_compiles.get_or_compile(key, compile)
+        }
     }
+
+    fn background_tiering_decision(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Option<BackgroundTieringDecision> {
+        if !self.background_tiering
+            || !self.tiering_options.enabled
+            || self.tiering_options.native_eager
+            || options.native_optimization != NativeOptimizationPolicy::Optimizing
+        {
+            return None;
+        }
+        let key = native_compile_cache::NativeCompileCacheKey::new(
+            unit.cache_identity(),
+            function,
+            NativeOptimizationPolicy::Optimizing.opt_level(),
+            external_function_signatures_hash(external_signatures),
+        );
+        let mut state = lock_unpoisoned(&self.tiering_state);
+        state.stats.function_entry_count = state.stats.function_entry_count.saturating_add(1);
+        if self.native_compiles.contains(key) {
+            return None;
+        }
+        let entries = state.entries.entry(key).or_default();
+        *entries = entries.saturating_add(1);
+        let entries = *entries;
+        state.stats.baseline_entries = state.stats.baseline_entries.saturating_add(1);
+        Some(BackgroundTieringDecision { key, entries })
+    }
+
+    fn schedule_background_optimization(
+        &self,
+        decision: BackgroundTieringDecision,
+        unit: CompiledUnit,
+        function: php_ir::FunctionId,
+        external_signatures: Vec<php_jit::JitExternalFunctionSignature>,
+    ) {
+        if decision.entries < self.tiering_options.function_entry_threshold.max(1) {
+            return;
+        }
+        {
+            let mut state = lock_unpoisoned(&self.tiering_state);
+            if state.scheduled.contains(&decision.key) || state.failed.contains(&decision.key) {
+                return;
+            }
+            if state.stats.native_compiled_functions >= self.tiering_options.native_max_functions
+                || state.stats.native_compile_budget_used_us
+                    >= self.tiering_options.native_max_compile_us
+            {
+                state.stats.native_compile_budget_rejections = state
+                    .stats
+                    .native_compile_budget_rejections
+                    .saturating_add(1);
+                return;
+            }
+            state.scheduled.insert(decision.key);
+            state.stats.optimized_candidates = state.stats.optimized_candidates.saturating_add(1);
+        }
+
+        let worker = self.clone();
+        let spawn = std::thread::Builder::new()
+            .name("phrust-optimize".to_owned())
+            .spawn(move || {
+                let started = Instant::now();
+                let mut options = VmOptions::default();
+                options.native_optimization = NativeOptimizationPolicy::Optimizing;
+                options.tiering.enabled = false;
+                let result = worker.compile_native_with_priority(
+                    &unit,
+                    function,
+                    &options,
+                    &external_signatures,
+                    true,
+                );
+                let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                let mut state = lock_unpoisoned(&worker.tiering_state);
+                state.scheduled.remove(&decision.key);
+                state.stats.native_compile_budget_used_us = state
+                    .stats
+                    .native_compile_budget_used_us
+                    .saturating_add(elapsed_us);
+                if result.is_ok() {
+                    state.stats.native_compiled_functions =
+                        state.stats.native_compiled_functions.saturating_add(1);
+                } else {
+                    state.failed.insert(decision.key);
+                }
+            });
+        if spawn.is_err() {
+            let mut state = lock_unpoisoned(&self.tiering_state);
+            state.scheduled.remove(&decision.key);
+            state.stats.native_compile_budget_rejections = state
+                .stats
+                .native_compile_budget_rejections
+                .saturating_add(1);
+        }
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn external_function_signatures_hash(signatures: &[php_jit::JitExternalFunctionSignature]) -> u64 {
@@ -369,11 +543,7 @@ impl Vm {
             function.raw()
         ))
         .with_function_name(function_name.clone())
-        .with_opt_level(if self.options.native_optimization.is_optimizing() {
-            2
-        } else {
-            0
-        });
+        .with_opt_level(self.options.native_optimization.opt_level());
         let result = compiler
             .compile_function_with_runtime_helpers(
                 unit.unit(),
@@ -418,6 +588,32 @@ impl Vm {
         }
         if let Err(error) = validate_native_class_table(unit.unit()) {
             return VmResult::compile_error(output, error);
+        }
+
+        if let Some(decision) = self.worker_state.background_tiering_decision(
+            &unit,
+            entry,
+            &self.options,
+            external_signatures,
+        ) {
+            let mut baseline_options = self.options.clone();
+            baseline_options.native_optimization = NativeOptimizationPolicy::TieredBaseline;
+            baseline_options.tiering.enabled = false;
+            let mut result =
+                Vm::with_options_and_worker_state(baseline_options, self.worker_state.clone())
+                    .execute_with_external_function_signatures(unit.clone(), external_signatures);
+            if result.status.is_success() {
+                self.worker_state.schedule_background_optimization(
+                    decision,
+                    unit,
+                    entry,
+                    external_signatures.to_vec(),
+                );
+            }
+            if self.options.tiering.collect_stats {
+                result.tiering_stats = Some(Box::new(self.worker_state.tiering_stats()));
+            }
+            return result;
         }
 
         let worker_cache_before = self.worker_state.native_compile_cache_stats();
@@ -747,16 +943,32 @@ impl Vm {
                     let throwable = context.decode_result(value).ok();
                     native_uncaught_throwable_result(context.output, throwable)
                 }
-                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. })
                     if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
                 {
-                    let message = context
+                    let mut message = context
                         .diagnostic
                         .as_ref()
-                        .map_or("native runtime operation failed", |diagnostic| {
-                            diagnostic.message()
-                        })
-                        .to_owned();
+                        .map(|diagnostic| diagnostic.message().to_owned())
+                        .unwrap_or_else(|| {
+                            context.last_runtime_helper.map_or_else(
+                                || "native runtime operation failed".to_owned(),
+                                |helper| format!("native runtime operation failed in {helper}"),
+                            )
+                        });
+                    let continuation = context
+                        .instruction_for_continuation(state.function_id, state.continuation_id)
+                        .map_or_else(
+                            || format!("{}:{}", state.function_id, state.continuation_id),
+                            |instruction| {
+                                format!(
+                                    "{}:{} {:?}",
+                                    state.function_id, state.continuation_id, instruction.kind
+                                )
+                            },
+                        );
+                    message.push_str(" at native continuation ");
+                    message.push_str(&continuation);
                     if context.diagnostic.as_ref().is_some_and(|diagnostic| {
                         diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
                     }) && context
@@ -927,8 +1139,8 @@ impl Vm {
                 counters.native_execution_entries.max(u64::from(executed));
             counters.native_region_entries =
                 counters.native_region_entries.max(u64::from(executed));
-            counters.native_version_published = worker_cache.insertions;
             let code_stats = php_jit::cranelift_code_manager_stats();
+            counters.native_version_published = code_stats.optimized_function_publications;
             counters.native_function_body_compile_count = code_stats.function_body_compile_count;
             counters.native_duplicate_function_body_count =
                 code_stats.duplicate_function_publications;
@@ -949,6 +1161,9 @@ impl Vm {
                 counters.native_cache_bytes_written = stats.bytes_written;
             }
             result.counters = Some(Box::new(counters));
+        }
+        if self.options.tiering.collect_stats {
+            result.tiering_stats = Some(Box::new(self.worker_state.tiering_stats()));
         }
         result
     }
@@ -978,11 +1193,7 @@ pub(super) fn compile_native_function_graph(
                 .with_ir_fingerprint(ir_fingerprint)
                 .with_dependency_identity(dependency_identity)
                 .with_external_function_signatures(external_signatures.to_vec())
-                .with_opt_level(if options.native_optimization.is_optimizing() {
-                    2
-                } else {
-                    0
-                }),
+                .with_opt_level(options.native_optimization.opt_level()),
             runtime_helper_addresses(),
         )
         .map_err(|error| error.to_string())?;
@@ -1209,7 +1420,7 @@ fn native_cache_identity(
         pointer_width: usize::BITS as u8,
         cpu_feature_fingerprint: isa.feature_fingerprint,
         optimization_tier,
-        optimization_config_hash: u64::from(options.native_optimization.is_optimizing()),
+        optimization_config_hash: u64::from(options.native_optimization.opt_level()),
         php_semantic_config_hash: 0x0008_0005_0007,
     })
 }
@@ -1256,6 +1467,8 @@ fn runtime_helper_addresses() -> php_jit::JitRuntimeHelperAddresses {
         native_foreach_cleanup: jit_native_foreach_cleanup_abi as *const () as usize,
         native_constant_fetch: jit_native_constant_fetch_abi as *const () as usize,
         native_truthy: jit_native_truthy_abi as *const () as usize,
+        native_type_predicate: jit_native_type_predicate_abi as *const () as usize,
+        native_stable_length: jit_native_stable_length_abi as *const () as usize,
         native_runtime_fatal: jit_native_runtime_fatal_abi as *const () as usize,
         native_execution_poll: jit_native_execution_poll_abi as *const () as usize,
     }
@@ -1299,6 +1512,80 @@ mod tests {
         builder.terminate_return(function, block, Some(Operand::Register(register)), span);
         builder.set_entry(function);
         CompiledUnit::new(builder.finish())
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn server_worker_publishes_optimized_entry_after_hot_baseline_threshold() {
+        let mut tiering = crate::tiering::TieringOptions::default();
+        tiering.collect_stats = true;
+        tiering.function_entry_threshold = 2;
+        tiering.native_max_functions = 1;
+        let worker = VmWorkerState::new_with_background_tiering(tiering.clone());
+        let options = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            tiering,
+            collect_counters: true,
+            ..VmOptions::default()
+        };
+        let unit = returning_unit(7_301);
+
+        let first = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        assert_eq!(first.return_value, Some(Value::Int(7_301)), "{first:#?}");
+        let function = unit.unit().entry;
+        let metadata = &unit.unit().functions[function.index()];
+        let function_key = php_jit::native_function_key(
+            unit.prepared_ir_fingerprint().to_owned(),
+            function.raw(),
+            metadata.params.len(),
+            metadata.local_count,
+            true,
+            0,
+        );
+        let (baseline_cell, _) = php_jit::global_code_manager()
+            .unwrap()
+            .published_function(&function_key)
+            .expect("tiered baseline publication");
+        let baseline_address = baseline_cell
+            .resolve(function_key.signature_hash, 0)
+            .expect("tiered baseline address");
+
+        let second = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        assert_eq!(second.return_value, Some(Value::Int(7_301)), "{second:#?}");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while worker.tiering_stats().native_compiled_functions == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let published = worker.tiering_stats();
+        assert_eq!(published.baseline_entries, 2);
+        assert_eq!(published.optimized_candidates, 1);
+        assert_eq!(published.native_compiled_functions, 1);
+        let (optimized_cell, _) = php_jit::global_code_manager()
+            .unwrap()
+            .published_function(&function_key)
+            .expect("optimized publication");
+        assert!(Arc::ptr_eq(&baseline_cell, &optimized_cell));
+        assert_ne!(
+            optimized_cell.resolve(function_key.signature_hash, 0),
+            Some(baseline_address),
+            "optimized code must atomically replace the less-specialized target"
+        );
+
+        let result = Vm::with_options_and_worker_state(options, worker.clone()).execute(unit);
+        assert_eq!(result.return_value, Some(Value::Int(7_301)), "{result:#?}");
+        assert_eq!(
+            result
+                .counters
+                .as_ref()
+                .map(|counters| counters.native_compile_attempts),
+            Some(0),
+            "published optimizing entry must not compile in the request"
+        );
+        assert_eq!(worker.tiering_stats().function_entry_count, 3);
+        assert_eq!(worker.native_compile_cache_stats().entries, 2);
     }
 
     fn declaration_heavy_unit() -> CompiledUnit {
@@ -1374,6 +1661,92 @@ mod tests {
             InstructionKind::CallFunction {
                 dst: result,
                 name: "callee".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        CompiledUnit::new(builder.finish())
+    }
+
+    fn direct_method_on_demand_unit() -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(9_931));
+        let file = builder.add_file("native-direct-method.php");
+        let span = IrSpan::new(file, 0, 32);
+        let constant = builder.intern_constant(IrConstant::Int(42));
+        let method = builder.start_function(
+            "Widget::value",
+            FunctionFlags {
+                is_method: true,
+                ..FunctionFlags::default()
+            },
+            span,
+        );
+        builder.intern_local(method, "this");
+        builder.set_return_type(method, Some(IrReturnType::Int));
+        let method_block = builder.append_block(method);
+        let value = builder.alloc_register(method);
+        builder.emit(
+            method,
+            method_block,
+            InstructionKind::LoadConst {
+                dst: value,
+                constant,
+            },
+            span,
+        );
+        builder.terminate_return(method, method_block, Some(Operand::Register(value)), span);
+        builder.push_class(ClassEntry {
+            id: ClassId::new(0),
+            name: "widget".to_owned(),
+            display_name: "Widget".to_owned(),
+            parent: None,
+            parent_display_name: None,
+            interfaces: Vec::new(),
+            methods: vec![ClassMethodEntry {
+                name: "value".to_owned(),
+                origin_class: "widget".to_owned(),
+                function: method,
+                flags: ClassMethodFlags {
+                    has_body: true,
+                    ..ClassMethodFlags::default()
+                },
+                attributes: Vec::new(),
+            }],
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor: None,
+            flags: ClassFlags::default(),
+            span,
+        });
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(entry, Some(IrReturnType::Int));
+        let entry_block = builder.append_block(entry);
+        let object = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::NewObject {
+                dst: object,
+                display_class_name: "Widget".to_owned(),
+                class_name: "widget".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallMethod {
+                dst: result,
+                object: Operand::Register(object),
+                method: "value".to_owned(),
                 args: Vec::new(),
             },
             span,
@@ -1786,6 +2159,31 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "x86_64")]
+    fn instance_method_resolver_uses_exact_packed_entry_arity() {
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let result = Vm::with_options_and_worker_state(
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+            worker.clone(),
+        )
+        .execute(direct_method_on_demand_unit());
+
+        assert_eq!(result.return_value, Some(Value::Int(42)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_call_direct, 1);
+        assert_eq!(counters.native_same_unit_direct_executed, 1);
+        assert_eq!(counters.native_call_dynamic, 0);
+        assert_eq!(counters.native_transition_count, 0);
+        let compile_stats = worker.native_compile_cache_stats();
+        assert_eq!(compile_stats.entries, 2);
+        assert_eq!(compile_stats.misses, 2);
+        assert_eq!(compile_stats.insertions, 2);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
     fn typed_function_on_demand_call_preserves_coercion() {
         let result = Vm::with_options(VmOptions {
             collect_counters: true,
@@ -1850,7 +2248,7 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn stable_builtin_uses_helper_id_without_generic_dynamic_count() {
+    fn stable_builtin_length_bypasses_call_dispatch() {
         let result = Vm::with_options(VmOptions {
             collect_counters: true,
             ..VmOptions::default()
@@ -1859,12 +2257,12 @@ mod tests {
 
         assert_eq!(result.return_value, Some(Value::Int(6)), "{result:#?}");
         let counters = result.counters.expect("diagnostic counters");
-        assert_eq!(counters.native_call_direct, 1);
-        assert_eq!(counters.native_builtin_direct_eligible, 1);
-        assert_eq!(counters.native_builtin_direct_executed, 1);
+        assert_eq!(counters.native_call_direct, 0);
+        assert_eq!(counters.native_builtin_direct_eligible, 0);
+        assert_eq!(counters.native_builtin_direct_executed, 0);
         assert_eq!(counters.native_call_dynamic, 0);
         assert_eq!(counters.native_call_argument_allocation_bytes, 0);
-        assert!(counters.native_frame_arena_high_water_bytes > 0);
+        assert_eq!(counters.native_frame_arena_high_water_bytes, 0);
     }
 
     #[test]
@@ -2067,7 +2465,10 @@ mod tests {
             let cell = manager.function_cell(&key).expect("declared function cell");
             match cell.state() {
                 php_jit::NativeIndirectionState::Published => published += 1,
-                php_jit::NativeIndirectionState::Unpublished => unpublished += 1,
+                php_jit::NativeIndirectionState::Declared
+                | php_jit::NativeIndirectionState::Queued
+                | php_jit::NativeIndirectionState::Compiling
+                | php_jit::NativeIndirectionState::Failed => unpublished += 1,
                 php_jit::NativeIndirectionState::Retired => panic!("fresh cell was retired"),
             }
         }

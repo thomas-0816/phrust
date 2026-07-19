@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SCHEMA_VERSION: u64 = 5;
+const SCHEMA_VERSION: u64 = 6;
 
 #[derive(Debug)]
 pub(crate) struct RequestProfileWriter {
@@ -151,6 +151,78 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
             Value::from(counters.native_call_dynamic),
         );
         native.insert(
+            "callsite_total".to_owned(),
+            Value::from(counters.native_callsite_total),
+        );
+        native.insert(
+            "same_unit_direct_eligible".to_owned(),
+            Value::from(counters.native_same_unit_direct_eligible),
+        );
+        native.insert(
+            "same_unit_direct_executed".to_owned(),
+            Value::from(counters.native_same_unit_direct_executed),
+        );
+        native.insert(
+            "cross_unit_direct_eligible".to_owned(),
+            Value::from(counters.native_cross_unit_direct_eligible),
+        );
+        native.insert(
+            "cross_unit_direct_executed".to_owned(),
+            Value::from(counters.native_cross_unit_direct_executed),
+        );
+        native.insert(
+            "method_monomorphic_eligible".to_owned(),
+            Value::from(counters.native_method_monomorphic_eligible),
+        );
+        native.insert(
+            "method_monomorphic_executed".to_owned(),
+            Value::from(counters.native_method_monomorphic_executed),
+        );
+        native.insert(
+            "builtin_direct_eligible".to_owned(),
+            Value::from(counters.native_builtin_direct_eligible),
+        );
+        native.insert(
+            "builtin_direct_executed".to_owned(),
+            Value::from(counters.native_builtin_direct_executed),
+        );
+        native.insert(
+            "builtin_calls_by_name".to_owned(),
+            counter_map_json(&counters.native_builtin_calls_by_name),
+        );
+        native.insert(
+            "builtin_time_nanos_by_name".to_owned(),
+            counter_map_json(&counters.native_builtin_time_nanos_by_name),
+        );
+        native.insert(
+            "call_dynamic_by_reason".to_owned(),
+            counter_map_json(&counters.native_call_dynamic_by_reason),
+        );
+        native.insert(
+            "call_dynamic_by_target".to_owned(),
+            counter_map_json(&counters.native_call_dynamic_by_target),
+        );
+        native.insert(
+            "callsite_calls_by_id".to_owned(),
+            counter_map_json(&counters.native_callsite_calls_by_id),
+        );
+        native.insert(
+            "callsite_inclusive_time_nanos_by_id".to_owned(),
+            counter_map_json(&counters.native_callsite_inclusive_time_nanos_by_id),
+        );
+        native.insert(
+            "callsite_exclusive_time_nanos_by_id".to_owned(),
+            counter_map_json(&counters.native_callsite_exclusive_time_nanos_by_id),
+        );
+        native.insert(
+            "call_argument_allocation_bytes".to_owned(),
+            Value::from(counters.native_call_argument_allocation_bytes),
+        );
+        native.insert(
+            "call_frame_bytes".to_owned(),
+            Value::from(counters.native_call_frame_bytes),
+        );
+        native.insert(
             "transition_count".to_owned(),
             Value::from(counters.native_transition_count),
         );
@@ -173,6 +245,138 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
         native.insert(
             "runtime_helper_object_release_root_scans".to_owned(),
             Value::from(counters.runtime_helper_object_release_root_scans),
+        );
+        native.insert(
+            "runtime_helper_calls_by_ir_operation".to_owned(),
+            counter_map_json(&counters.runtime_helper_calls_by_ir_operation),
+        );
+        native.insert(
+            "runtime_helper_time_nanos_by_ir_operation".to_owned(),
+            counter_map_json(&counters.runtime_helper_time_nanos_by_ir_operation),
+        );
+        native.insert(
+            "runtime_helper_calls_by_function".to_owned(),
+            counter_map_json(&counters.runtime_helper_calls_by_function),
+        );
+        native.insert(
+            "runtime_helper_time_nanos_by_function".to_owned(),
+            counter_map_json(&counters.runtime_helper_time_nanos_by_function),
+        );
+        native.insert(
+            "runtime_helper_local_read_by_reason".to_owned(),
+            counter_map_json(&counters.runtime_helper_local_read_by_reason),
+        );
+        native.insert(
+            "runtime_helper_local_store_by_reason".to_owned(),
+            counter_map_json(&counters.runtime_helper_local_store_by_reason),
+        );
+        native.insert(
+            "runtime_helper_reference_read_by_value_class".to_owned(),
+            counter_map_json(&counters.runtime_helper_reference_read_by_value_class),
+        );
+        native.insert(
+            "runtime_helper_truthy_by_value_class".to_owned(),
+            counter_map_json(&counters.runtime_helper_truthy_by_value_class),
+        );
+        native.insert(
+            "runtime_helper_retain_by_reason".to_owned(),
+            counter_map_json(&counters.runtime_helper_retain_by_reason),
+        );
+        native.insert(
+            "runtime_helper_release_by_reason".to_owned(),
+            counter_map_json(&counters.runtime_helper_release_by_reason),
+        );
+        native.insert(
+            "runtime_helper_release_to_zero".to_owned(),
+            Value::from(counters.runtime_helper_release_to_zero),
+        );
+        native.insert(
+            "runtime_helper_object_release_root_scans_by_reason".to_owned(),
+            counter_map_json(&counters.runtime_helper_object_release_root_scans_by_reason),
+        );
+        native.insert(
+            "value_encodes".to_owned(),
+            Value::from(counters.native_value_encodes),
+        );
+        native.insert(
+            "value_decodes".to_owned(),
+            Value::from(counters.native_value_decodes),
+        );
+        native.insert(
+            "value_table_allocations".to_owned(),
+            Value::from(counters.native_value_table_allocations),
+        );
+        native.insert(
+            "value_table_reuses".to_owned(),
+            Value::from(counters.native_value_table_reuses),
+        );
+        native.insert(
+            "value_table_high_water".to_owned(),
+            Value::from(counters.native_value_table_high_water),
+        );
+        native.insert(
+            "ssa_promoted_locals".to_owned(),
+            Value::from(counters.native_ssa_promoted_locals),
+        );
+        native.insert(
+            "ssa_promoted_registers".to_owned(),
+            Value::from(counters.native_ssa_promoted_registers),
+        );
+        native.insert(
+            "ownership_moves".to_owned(),
+            Value::from(counters.native_ownership_moves),
+        );
+        native.insert(
+            "ownership_clones".to_owned(),
+            Value::from(counters.native_ownership_clones),
+        );
+        native.insert(
+            "ownership_escapes".to_owned(),
+            Value::from(counters.native_ownership_escapes),
+        );
+        native.insert(
+            "slow_path_entries_by_reason".to_owned(),
+            counter_map_json(&counters.native_slow_path_entries_by_reason),
+        );
+        native.insert(
+            "code_bytes_by_function".to_owned(),
+            counter_map_json(&counters.native_code_bytes_by_function),
+        );
+        native.insert(
+            "code_bytes_by_unit".to_owned(),
+            counter_map_json(&counters.native_code_bytes_by_unit),
+        );
+        native.insert(
+            "mapped_executable_bytes".to_owned(),
+            Value::from(counters.native_mapped_executable_bytes),
+        );
+        native.insert(
+            "frame_arena_capacity_bytes".to_owned(),
+            Value::from(counters.native_frame_arena_capacity_bytes),
+        );
+        native.insert(
+            "frame_arena_high_water_bytes".to_owned(),
+            Value::from(counters.native_frame_arena_high_water_bytes),
+        );
+        native.insert(
+            "inlined_calls".to_owned(),
+            Value::from(counters.native_inlined_calls),
+        );
+        native.insert(
+            "inline_bytes_added".to_owned(),
+            Value::from(counters.native_inline_bytes_added),
+        );
+        native.insert(
+            "inline_calls_removed".to_owned(),
+            Value::from(counters.native_inline_calls_removed),
+        );
+        native.insert(
+            "tail_calls".to_owned(),
+            Value::from(counters.native_tail_calls),
+        );
+        native.insert(
+            "inline_rejected_by_reason".to_owned(),
+            counter_map_json(&counters.native_inline_rejected_by_reason),
         );
         native.insert(
             "versions_published".to_owned(),
