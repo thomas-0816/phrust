@@ -2172,6 +2172,37 @@ fn lower_guarded_value_lifecycle(
             result_out,
         );
     }
+    if operation & 1 == 0 {
+        let is_runtime = lower_is_runtime_handle(builder, value);
+        let view_offset = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+        let pointer_type = module.target_config().pointer_type();
+        let refcounts = builder.ins().load(
+            pointer_type,
+            MemFlagsData::new(),
+            deopt_out,
+            view_offset + std::mem::offset_of!(crate::JitNativeRuntimeView, refcounts) as i32,
+        );
+        let pointer_ok = builder.ins().icmp_imm(IntCC::NotEqual, refcounts, 0);
+        let direct = builder.ins().band(is_runtime, pointer_ok);
+
+        // Native execution publishes a stable request-local refcount table and
+        // only forms live, in-range handles. Retain therefore needs neither a
+        // capacity/version guard nor a helper fallback. Keep a valid scratch
+        // address for constants and standalone invocations without a runtime
+        // view so the emitted update remains one branchless basic block.
+        let safe_base = builder.ins().select(direct, refcounts, result_out);
+        let index = builder.ins().ireduce(types::I32, value);
+        let zero_index = builder.ins().iconst(types::I32, 0);
+        let safe_index = builder.ins().select(direct, index, zero_index);
+        let safe_index = builder.ins().uextend(pointer_type, safe_index);
+        let byte_offset = builder.ins().ishl_imm(safe_index, 2);
+        let cell = builder.ins().iadd(safe_base, byte_offset);
+        let count = builder.ins().load(types::I32, MemFlagsData::new(), cell, 0);
+        let incremented = builder.ins().iadd_imm(count, 1);
+        let stored = builder.ins().select(direct, incremented, count);
+        builder.ins().store(MemFlagsData::new(), stored, cell, 0);
+        return Ok(value);
+    }
     let slow = builder.create_block();
     let done = builder.create_block();
     let is_runtime = lower_is_runtime_handle(builder, value);
@@ -2217,21 +2248,9 @@ fn lower_guarded_value_lifecycle(
     let byte_offset = builder.ins().ishl_imm(safe_index, 2);
     let cell = builder.ins().iadd(safe_base, byte_offset);
     let count = builder.ins().load(types::I32, MemFlagsData::new(), cell, 0);
-    let count_ok = if operation & 1 == 0 {
-        let live = builder.ins().icmp_imm(IntCC::NotEqual, count, 0);
-        let not_max = builder
-            .ins()
-            .icmp_imm(IntCC::NotEqual, count, u32::MAX as i64);
-        builder.ins().band(live, not_max)
-    } else {
-        builder.ins().icmp_imm(IntCC::UnsignedGreaterThan, count, 1)
-    };
+    let count_ok = builder.ins().icmp_imm(IntCC::UnsignedGreaterThan, count, 1);
     let fast = builder.ins().band(direct_ok, count_ok);
-    let updated = if operation & 1 == 0 {
-        builder.ins().iadd_imm(count, 1)
-    } else {
-        builder.ins().iadd_imm(count, -1)
-    };
+    let updated = builder.ins().iadd_imm(count, -1);
     let stored = builder.ins().select(fast, updated, count);
     builder.ins().store(MemFlagsData::new(), stored, cell, 0);
     let not_fast = builder.ins().icmp_imm(IntCC::Equal, fast, 0);
