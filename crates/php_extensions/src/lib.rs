@@ -210,7 +210,7 @@ mod tests {
 
     fn noop(
         _context: &mut BuiltinContext<'_>,
-        _args: Vec<Value>,
+        _args: php_runtime::api::BuiltinArgs,
         _span: RuntimeSourceSpan,
     ) -> BuiltinResult {
         Ok(Value::Null)

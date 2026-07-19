@@ -136,7 +136,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_fprintf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -152,7 +152,7 @@ pub(in crate::builtins::modules) fn builtin_fprintf(
 }
 pub(in crate::builtins::modules) fn builtin_vfprintf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -180,7 +180,7 @@ pub(in crate::builtins::modules) fn builtin_vfprintf(
 }
 pub(in crate::builtins::modules) fn builtin_fopen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fopen", &args, 2)?;
@@ -209,7 +209,7 @@ pub(in crate::builtins::modules) fn builtin_fopen(
 }
 pub(in crate::builtins::modules) fn builtin_fclose(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fclose", &args, 1)?;
@@ -228,7 +228,7 @@ pub(in crate::builtins::modules) fn builtin_fclose(
 }
 pub(in crate::builtins::modules) fn builtin_fread(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fread", &args, 2)?;
@@ -242,7 +242,7 @@ pub(in crate::builtins::modules) fn builtin_fread(
 }
 pub(in crate::builtins::modules) fn builtin_fwrite(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -277,7 +277,7 @@ fn write_stream_bytes(
 }
 pub(in crate::builtins::modules) fn builtin_fgets(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -298,7 +298,7 @@ pub(in crate::builtins::modules) fn builtin_fgets(
 }
 pub(in crate::builtins::modules) fn builtin_fgetc(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fgetc", &args, 1)?;
@@ -314,7 +314,7 @@ pub(in crate::builtins::modules) fn builtin_fgetc(
 }
 pub(in crate::builtins::modules) fn builtin_feof(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("feof", &args, 1)?;
@@ -326,7 +326,7 @@ pub(in crate::builtins::modules) fn builtin_feof(
 }
 pub(in crate::builtins::modules) fn builtin_fflush(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fflush", &args, 1)?;
@@ -338,7 +338,7 @@ pub(in crate::builtins::modules) fn builtin_fflush(
 }
 pub(in crate::builtins::modules) fn builtin_fseek(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -369,7 +369,7 @@ pub(in crate::builtins::modules) fn builtin_fseek(
 }
 pub(in crate::builtins::modules) fn builtin_ftell(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("ftell", &args, 1)?;
@@ -386,7 +386,7 @@ pub(in crate::builtins::modules) fn builtin_ftell(
 }
 pub(in crate::builtins::modules) fn builtin_ftruncate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("ftruncate", &args, 2)?;
@@ -404,7 +404,7 @@ pub(in crate::builtins::modules) fn builtin_ftruncate(
 }
 pub(in crate::builtins::modules) fn builtin_rewind(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("rewind", &args, 1)?;
@@ -416,7 +416,7 @@ pub(in crate::builtins::modules) fn builtin_rewind(
 }
 pub(in crate::builtins::modules) fn builtin_opendir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("opendir", &args, 1)?;
@@ -439,18 +439,18 @@ pub(in crate::builtins::modules) fn builtin_opendir(
 
 pub(in crate::builtins::modules) fn builtin_dir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
         return Err(arity_error("dir", "one or two argument(s)"));
     }
-    builtin_opendir(context, vec![args[0].clone()], span)
+    builtin_opendir(context, vec![args[0].clone()].into(), span)
 }
 
 pub(in crate::builtins::modules) fn builtin_readdir(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -467,7 +467,7 @@ pub(in crate::builtins::modules) fn builtin_readdir(
 }
 pub(in crate::builtins::modules) fn builtin_rewinddir(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -480,7 +480,7 @@ pub(in crate::builtins::modules) fn builtin_rewinddir(
 }
 pub(in crate::builtins::modules) fn builtin_closedir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("closedir", &args, 1)?;
@@ -495,7 +495,7 @@ pub(in crate::builtins::modules) fn builtin_closedir(
 }
 pub(in crate::builtins::modules) fn builtin_stream_get_wrappers(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_get_wrappers", &args, 0)?;
@@ -507,7 +507,7 @@ pub(in crate::builtins::modules) fn builtin_stream_get_wrappers(
 
 pub(in crate::builtins::modules) fn builtin_stream_wrapper_register(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -521,7 +521,7 @@ pub(in crate::builtins::modules) fn builtin_stream_wrapper_register(
 
 pub(in crate::builtins::modules) fn builtin_stream_get_meta_data(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_get_meta_data", &args, 1)?;
@@ -552,7 +552,7 @@ pub(in crate::builtins::modules) fn builtin_stream_get_meta_data(
 }
 pub(in crate::builtins::modules) fn builtin_stream_get_contents(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -590,7 +590,7 @@ pub(in crate::builtins::modules) fn builtin_stream_get_contents(
 }
 pub(in crate::builtins::modules) fn builtin_stream_copy_to_stream(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -638,7 +638,7 @@ pub(in crate::builtins::modules) fn builtin_stream_copy_to_stream(
 
 pub(in crate::builtins::modules) fn builtin_stream_filter_append(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     stream_filter_attach(context, args, span, false, "stream_filter_append")
@@ -646,7 +646,7 @@ pub(in crate::builtins::modules) fn builtin_stream_filter_append(
 
 pub(in crate::builtins::modules) fn builtin_stream_filter_prepend(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     stream_filter_attach(context, args, span, true, "stream_filter_prepend")
@@ -654,7 +654,7 @@ pub(in crate::builtins::modules) fn builtin_stream_filter_prepend(
 
 fn stream_filter_attach(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
     prepend: bool,
     function_name: &str,
@@ -708,7 +708,7 @@ fn stream_filter_attach(
 
 pub(in crate::builtins::modules) fn builtin_stream_filter_register(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_filter_register", &args, 2)?;
@@ -724,7 +724,7 @@ pub(in crate::builtins::modules) fn builtin_stream_filter_register(
 
 pub(in crate::builtins::modules) fn builtin_stream_filter_remove(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_filter_remove", &args, 1)?;
@@ -736,7 +736,7 @@ pub(in crate::builtins::modules) fn builtin_stream_filter_remove(
 
 pub(in crate::builtins::modules) fn builtin_stream_context_create(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -758,7 +758,7 @@ pub(in crate::builtins::modules) fn builtin_stream_context_create(
 
 pub(in crate::builtins::modules) fn builtin_stream_context_get_default(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -783,7 +783,7 @@ pub(in crate::builtins::modules) fn builtin_stream_context_get_default(
 
 pub(in crate::builtins::modules) fn builtin_stream_context_get_options(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_context_get_options", &args, 1)?;
@@ -797,7 +797,7 @@ pub(in crate::builtins::modules) fn builtin_stream_context_get_options(
 
 pub(in crate::builtins::modules) fn builtin_stream_context_set_default(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_context_set_default", &args, 1)?;
@@ -817,7 +817,7 @@ pub(in crate::builtins::modules) fn builtin_stream_context_set_default(
 
 pub(in crate::builtins::modules) fn builtin_stream_context_set_option(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 && args.len() != 4 {
@@ -846,7 +846,7 @@ pub(in crate::builtins::modules) fn builtin_stream_context_set_option(
 
 pub(in crate::builtins::modules) fn builtin_stream_context_set_options(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_context_set_options", &args, 2)?;
@@ -885,7 +885,7 @@ fn set_context_options(resource: &ResourceRef, options: &crate::PhpArray) -> boo
 }
 pub(in crate::builtins::modules) fn builtin_stream_resolve_include_path(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_resolve_include_path", &args, 1)?;
@@ -915,7 +915,7 @@ pub(in crate::builtins::modules) fn builtin_stream_resolve_include_path(
 }
 pub(in crate::builtins::modules) fn builtin_stream_is_local(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_is_local", &args, 1)?;
@@ -945,7 +945,7 @@ pub(in crate::builtins::modules) fn builtin_stream_is_local(
 }
 pub(in crate::builtins::modules) fn builtin_stream_isatty(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stream_isatty", &args, 1)?;
@@ -954,7 +954,7 @@ pub(in crate::builtins::modules) fn builtin_stream_isatty(
 
 pub(in crate::builtins::modules) fn builtin_stream_set_timeout(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -982,7 +982,7 @@ pub(in crate::builtins::modules) fn builtin_stream_set_timeout(
 
 fn builtin_stream_socket_server(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -1046,7 +1046,7 @@ fn builtin_stream_socket_server(
 
 pub(in crate::builtins::modules) fn builtin_scandir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {

@@ -112,7 +112,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_pcntl_alarm(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_alarm", &args, 1)?;
@@ -124,7 +124,7 @@ fn builtin_pcntl_alarm(
 
 fn builtin_pcntl_async_signals(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_async_signals", &args, 0, 1)?;
@@ -140,7 +140,7 @@ fn builtin_pcntl_async_signals(
 
 fn builtin_pcntl_errno(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_get_last_error", &args, 0)?;
@@ -149,7 +149,7 @@ fn builtin_pcntl_errno(
 
 fn builtin_pcntl_exec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_exec", &args, 1, 3)?;
@@ -178,7 +178,7 @@ fn builtin_pcntl_exec(
 
 fn builtin_pcntl_fork(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_fork", &args, 0)?;
@@ -218,7 +218,7 @@ fn flush_root_output_before_fork(output: &mut crate::OutputBuffer) {
 
 fn builtin_pcntl_getpriority(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_getpriority", &args, 0, 2)?;
@@ -252,7 +252,7 @@ fn builtin_pcntl_getpriority(
 
 fn builtin_pcntl_setpriority(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_setpriority", &args, 1, 3)?;
@@ -298,7 +298,7 @@ fn builtin_pcntl_setpriority(
 
 fn builtin_pcntl_signal(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_signal", &args, 2, 3)?;
@@ -317,7 +317,7 @@ fn builtin_pcntl_signal(
 
 fn builtin_pcntl_signal_dispatch(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_signal_dispatch", &args, 0)?;
@@ -327,7 +327,7 @@ fn builtin_pcntl_signal_dispatch(
 
 fn builtin_pcntl_signal_get_handler(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_signal_get_handler", &args, 1)?;
@@ -344,7 +344,7 @@ fn builtin_pcntl_signal_get_handler(
 
 fn builtin_pcntl_strerror(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_strerror", &args, 1)?;
@@ -362,7 +362,7 @@ fn builtin_pcntl_strerror(
 
 fn builtin_pcntl_wait(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_wait", &args, 1, 3)?;
@@ -371,7 +371,7 @@ fn builtin_pcntl_wait(
 
 fn builtin_pcntl_waitpid(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_waitpid", &args, 2, 4)?;
@@ -415,7 +415,7 @@ fn waitpid_impl(
 
 fn builtin_pcntl_wexitstatus(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wexitstatus", &args, 1)?;
@@ -429,7 +429,7 @@ fn builtin_pcntl_wexitstatus(
 
 fn builtin_pcntl_wifcontinued(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wifcontinued", &args, 1)?;
@@ -447,7 +447,7 @@ fn builtin_pcntl_wifcontinued(
 
 fn builtin_pcntl_wifexited(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wifexited", &args, 1)?;
@@ -457,7 +457,7 @@ fn builtin_pcntl_wifexited(
 
 fn builtin_pcntl_wifsignaled(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wifsignaled", &args, 1)?;
@@ -467,7 +467,7 @@ fn builtin_pcntl_wifsignaled(
 
 fn builtin_pcntl_wifstopped(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wifstopped", &args, 1)?;
@@ -477,7 +477,7 @@ fn builtin_pcntl_wifstopped(
 
 fn builtin_pcntl_wstopsig(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wstopsig", &args, 1)?;
@@ -491,7 +491,7 @@ fn builtin_pcntl_wstopsig(
 
 fn builtin_pcntl_wtermsig(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_wtermsig", &args, 1)?;
@@ -832,7 +832,7 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    fn call_with_context(context: &mut BuiltinContext<'_>, name: &str, args: Vec<Value>) -> Value {
+    fn call_with_context(context: &mut BuiltinContext<'_>, name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

@@ -159,7 +159,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_ssh2_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -201,7 +201,7 @@ fn builtin_ssh2_connect(
 
 fn builtin_ssh2_disconnect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_session_arg("ssh2_disconnect", &args)?;
@@ -210,7 +210,7 @@ fn builtin_ssh2_disconnect(
 
 fn builtin_ssh2_auth_password(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -235,7 +235,7 @@ fn builtin_ssh2_auth_password(
 
 fn builtin_ssh2_auth_pubkey_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(4..=5).contains(&args.len()) {
@@ -281,7 +281,7 @@ fn builtin_ssh2_auth_pubkey_file(
 
 fn builtin_ssh2_auth_hostbased_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(5..=6).contains(&args.len()) {
@@ -300,7 +300,7 @@ fn builtin_ssh2_auth_hostbased_file(
 
 fn builtin_ssh2_auth_none(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -317,7 +317,7 @@ fn builtin_ssh2_auth_none(
 
 fn builtin_ssh2_exec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=6).contains(&args.len()) {
@@ -340,7 +340,7 @@ fn builtin_ssh2_exec(
 
 fn builtin_ssh2_shell(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=6).contains(&args.len()) {
@@ -354,7 +354,7 @@ fn builtin_ssh2_shell(
 
 fn builtin_ssh2_tunnel(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -369,7 +369,7 @@ fn builtin_ssh2_tunnel(
 
 fn builtin_ssh2_sftp(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_session_arg("ssh2_sftp", &args)?;
@@ -381,7 +381,7 @@ fn builtin_ssh2_sftp(
 
 fn builtin_ssh2_sftp_realpath(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -397,7 +397,7 @@ fn builtin_ssh2_sftp_realpath(
 
 fn builtin_ssh2_sftp_stat(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -413,7 +413,7 @@ fn builtin_ssh2_sftp_stat(
 
 fn builtin_ssh2_sftp_false(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -429,7 +429,7 @@ fn builtin_ssh2_sftp_false(
 
 fn builtin_ssh2_sftp_string_false(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_ssh2_sftp_false(context, args, RuntimeSourceSpan::default())
@@ -437,7 +437,7 @@ fn builtin_ssh2_sftp_string_false(
 
 fn builtin_ssh2_scp_recv(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -463,7 +463,7 @@ fn builtin_ssh2_scp_recv(
 
 fn builtin_ssh2_scp_send(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=5).contains(&args.len()) {
@@ -499,7 +499,7 @@ fn builtin_ssh2_scp_send(
 
 fn builtin_ssh2_fingerprint(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -526,7 +526,7 @@ fn builtin_ssh2_fingerprint(
 
 fn builtin_ssh2_methods_negotiated(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_session_arg("ssh2_methods_negotiated", &args)?;
@@ -555,7 +555,7 @@ fn builtin_ssh2_methods_negotiated(
 
 fn builtin_ssh2_publickey_init(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_session_arg("ssh2_publickey_init", &args)?;
@@ -565,7 +565,7 @@ fn builtin_ssh2_publickey_init(
 
 fn builtin_ssh2_publickey_add(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 3 {
@@ -579,7 +579,7 @@ fn builtin_ssh2_publickey_add(
 
 fn builtin_ssh2_publickey_remove(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -593,7 +593,7 @@ fn builtin_ssh2_publickey_remove(
 
 fn builtin_ssh2_publickey_list(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -604,7 +604,7 @@ fn builtin_ssh2_publickey_list(
 
 fn builtin_ssh2_forward_listen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -627,7 +627,7 @@ fn builtin_ssh2_forward_listen(
 
 fn builtin_ssh2_forward_accept(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {

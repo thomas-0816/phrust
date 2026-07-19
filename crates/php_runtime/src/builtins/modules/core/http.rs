@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::builtins::modules) fn builtin_header(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=3).contains(&args.len()) {
@@ -47,7 +47,7 @@ pub(in crate::builtins::modules) fn builtin_header(
 
 pub(in crate::builtins::modules) fn builtin_headers_list(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("headers_list", &args, 0)?;
@@ -63,7 +63,7 @@ pub(in crate::builtins::modules) fn builtin_headers_list(
 
 pub(in crate::builtins::modules) fn builtin_header_remove(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -85,7 +85,7 @@ pub(in crate::builtins::modules) fn builtin_header_remove(
 
 pub(in crate::builtins::modules) fn builtin_headers_sent(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -96,7 +96,7 @@ pub(in crate::builtins::modules) fn builtin_headers_sent(
 
 pub(in crate::builtins::modules) fn builtin_memory_get_usage(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -108,7 +108,7 @@ pub(in crate::builtins::modules) fn builtin_memory_get_usage(
 
 pub(in crate::builtins::modules) fn builtin_memory_get_peak_usage(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_memory_get_usage(context, args, span)
@@ -116,7 +116,7 @@ pub(in crate::builtins::modules) fn builtin_memory_get_peak_usage(
 
 pub(in crate::builtins::modules) fn builtin_setcookie(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_cookie(context, args, span, false)
@@ -124,7 +124,7 @@ pub(in crate::builtins::modules) fn builtin_setcookie(
 
 pub(in crate::builtins::modules) fn builtin_setrawcookie(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_cookie(context, args, span, true)
@@ -132,7 +132,7 @@ pub(in crate::builtins::modules) fn builtin_setrawcookie(
 
 fn builtin_cookie(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
     raw: bool,
 ) -> BuiltinResult {
@@ -336,7 +336,7 @@ fn encode_cookie_value(value: &str) -> String {
 
 pub(in crate::builtins::modules) fn builtin_http_response_code(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {

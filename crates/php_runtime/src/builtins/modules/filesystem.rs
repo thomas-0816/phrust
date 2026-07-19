@@ -112,7 +112,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_basename(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -136,7 +136,7 @@ pub(in crate::builtins::modules) fn builtin_basename(
 
 pub(in crate::builtins::modules) fn builtin_dirname(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -157,7 +157,7 @@ pub(in crate::builtins::modules) fn builtin_dirname(
 
 pub(in crate::builtins::modules) fn builtin_pathinfo(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -208,7 +208,7 @@ pub(in crate::builtins::modules) fn builtin_pathinfo(
 
 pub(in crate::builtins::modules) fn builtin_realpath(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("realpath", &args, 1)?;
@@ -226,7 +226,7 @@ pub(in crate::builtins::modules) fn builtin_realpath(
 
 pub(in crate::builtins::modules) fn builtin_file_exists(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("file_exists", &args, 1)?;
@@ -243,7 +243,7 @@ pub(in crate::builtins::modules) fn builtin_file_exists(
 
 pub(in crate::builtins::modules) fn builtin_is_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_file", &args, 1)?;
@@ -261,7 +261,7 @@ pub(in crate::builtins::modules) fn builtin_is_file(
 
 pub(in crate::builtins::modules) fn builtin_is_dir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_dir", &args, 1)?;
@@ -273,7 +273,7 @@ pub(in crate::builtins::modules) fn builtin_is_dir(
 
 pub(in crate::builtins::modules) fn builtin_is_link(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_link", &args, 1)?;
@@ -285,7 +285,7 @@ pub(in crate::builtins::modules) fn builtin_is_link(
 
 pub(in crate::builtins::modules) fn builtin_is_readable(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_readable", &args, 1)?;
@@ -296,7 +296,7 @@ pub(in crate::builtins::modules) fn builtin_is_readable(
 
 pub(in crate::builtins::modules) fn builtin_is_writable(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_writable", &args, 1)?;
@@ -308,7 +308,7 @@ pub(in crate::builtins::modules) fn builtin_is_writable(
 
 pub(in crate::builtins::modules) fn builtin_is_uploaded_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_uploaded_file", &args, 1)?;
@@ -322,7 +322,7 @@ pub(in crate::builtins::modules) fn builtin_is_uploaded_file(
 
 pub(in crate::builtins::modules) fn builtin_filesize(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("filesize", &args, 1)?;
@@ -334,7 +334,7 @@ pub(in crate::builtins::modules) fn builtin_filesize(
 
 pub(in crate::builtins::modules) fn builtin_filemtime(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("filemtime", &args, 1)?;
@@ -346,7 +346,7 @@ pub(in crate::builtins::modules) fn builtin_filemtime(
 
 pub(in crate::builtins::modules) fn builtin_fileperms(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fileperms", &args, 1)?;
@@ -358,7 +358,7 @@ pub(in crate::builtins::modules) fn builtin_fileperms(
 
 pub(in crate::builtins::modules) fn builtin_fileowner(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fileowner", &args, 1)?;
@@ -370,7 +370,7 @@ pub(in crate::builtins::modules) fn builtin_fileowner(
 
 pub(in crate::builtins::modules) fn builtin_filegroup(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("filegroup", &args, 1)?;
@@ -382,7 +382,7 @@ pub(in crate::builtins::modules) fn builtin_filegroup(
 
 pub(in crate::builtins::modules) fn builtin_filetype(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("filetype", &args, 1)?;
@@ -394,7 +394,7 @@ pub(in crate::builtins::modules) fn builtin_filetype(
 
 pub(in crate::builtins::modules) fn builtin_chmod(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("chmod", &args, 2)?;
@@ -410,7 +410,7 @@ pub(in crate::builtins::modules) fn builtin_chmod(
 
 pub(in crate::builtins::modules) fn builtin_chown(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     change_owner_or_group(context, args, span, "chown", OwnershipTarget::User)
@@ -418,7 +418,7 @@ pub(in crate::builtins::modules) fn builtin_chown(
 
 pub(in crate::builtins::modules) fn builtin_chgrp(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     change_owner_or_group(context, args, span, "chgrp", OwnershipTarget::Group)
@@ -432,7 +432,7 @@ enum OwnershipTarget {
 
 fn change_owner_or_group(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
     function: &str,
     target: OwnershipTarget,
@@ -539,7 +539,7 @@ fn errno_message(errno: nix::errno::Errno) -> String {
 
 pub(in crate::builtins::modules) fn builtin_umask(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -555,7 +555,7 @@ pub(in crate::builtins::modules) fn builtin_umask(
 
 pub(in crate::builtins::modules) fn builtin_sys_get_temp_dir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("sys_get_temp_dir", &args, 0)?;
@@ -569,7 +569,7 @@ pub(in crate::builtins::modules) fn builtin_sys_get_temp_dir(
 
 pub(in crate::builtins::modules) fn builtin_disk_free_space(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("disk_free_space", &args, 1)?;
@@ -578,7 +578,7 @@ pub(in crate::builtins::modules) fn builtin_disk_free_space(
 
 pub(in crate::builtins::modules) fn builtin_disk_total_space(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("disk_total_space", &args, 1)?;
@@ -587,7 +587,7 @@ pub(in crate::builtins::modules) fn builtin_disk_total_space(
 
 pub(in crate::builtins::modules) fn builtin_stat(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stat", &args, 1)?;
@@ -596,7 +596,7 @@ pub(in crate::builtins::modules) fn builtin_stat(
 
 pub(in crate::builtins::modules) fn builtin_lstat(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("lstat", &args, 1)?;
@@ -605,7 +605,7 @@ pub(in crate::builtins::modules) fn builtin_lstat(
 
 pub(in crate::builtins::modules) fn builtin_clearstatcache(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -619,7 +619,7 @@ pub(in crate::builtins::modules) fn builtin_clearstatcache(
 
 pub(in crate::builtins::modules) fn builtin_file_get_contents(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 5 {
@@ -655,7 +655,7 @@ pub(in crate::builtins::modules) fn builtin_file_get_contents(
 
 pub(in crate::builtins::modules) fn builtin_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -713,7 +713,7 @@ fn file_get_contents_slice(bytes: &[u8], offset: i64, length: Option<i64>) -> Ve
 
 pub(in crate::builtins::modules) fn builtin_ftok(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("ftok", &args, 2)?;
@@ -792,7 +792,7 @@ fn ftok_key(
 
 pub(in crate::builtins::modules) fn builtin_file_put_contents(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -829,7 +829,7 @@ pub(in crate::builtins::modules) fn builtin_file_put_contents(
 
 pub(in crate::builtins::modules) fn builtin_readfile(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("readfile", &args, 1)?;
@@ -844,7 +844,7 @@ pub(in crate::builtins::modules) fn builtin_readfile(
 
 pub(in crate::builtins::modules) fn builtin_copy(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("copy", &args, 2)?;
@@ -887,7 +887,7 @@ pub(in crate::builtins::modules) fn builtin_copy(
 
 pub(in crate::builtins::modules) fn builtin_rename(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("rename", &args, 2)?;
@@ -903,7 +903,7 @@ pub(in crate::builtins::modules) fn builtin_rename(
 
 pub(in crate::builtins::modules) fn builtin_move_uploaded_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("move_uploaded_file", &args, 2)?;
@@ -968,7 +968,7 @@ fn move_upload_temp_file(from: &Path, to: &Path) -> std::io::Result<()> {
 
 pub(in crate::builtins::modules) fn builtin_unlink(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("unlink", &args, 1)?;
@@ -981,7 +981,7 @@ pub(in crate::builtins::modules) fn builtin_unlink(
 
 pub(in crate::builtins::modules) fn builtin_symlink(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("symlink", &args, 2)?;
@@ -1019,7 +1019,7 @@ fn create_symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
 
 pub(in crate::builtins::modules) fn builtin_mkdir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 4 {
@@ -1050,7 +1050,7 @@ pub(in crate::builtins::modules) fn builtin_mkdir(
 
 pub(in crate::builtins::modules) fn builtin_rmdir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("rmdir", &args, 1)?;
@@ -1063,7 +1063,7 @@ pub(in crate::builtins::modules) fn builtin_rmdir(
 
 pub(in crate::builtins::modules) fn builtin_touch(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -1084,7 +1084,7 @@ pub(in crate::builtins::modules) fn builtin_touch(
 
 pub(in crate::builtins::modules) fn builtin_tempnam(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("tempnam", &args, 2)?;
@@ -1117,7 +1117,7 @@ pub(in crate::builtins::modules) fn builtin_tempnam(
 
 pub(in crate::builtins::modules) fn builtin_tmpfile(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("tmpfile", &args, 0)?;
@@ -1145,7 +1145,7 @@ pub(in crate::builtins::modules) fn builtin_tmpfile(
 
 pub(in crate::builtins::modules) fn builtin_glob(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -1174,7 +1174,7 @@ pub(in crate::builtins::modules) fn builtin_glob(
 
 pub(in crate::builtins::modules) fn builtin_getcwd(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("getcwd", &args, 0)?;
@@ -1185,7 +1185,7 @@ pub(in crate::builtins::modules) fn builtin_getcwd(
 
 pub(in crate::builtins::modules) fn builtin_chdir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("chdir", &args, 1)?;
@@ -1586,7 +1586,7 @@ mod tests {
 
     fn call_upload_builtin(
         function: fn(&mut BuiltinContext<'_>, Vec<Value>, RuntimeSourceSpan) -> BuiltinResult,
-        args: Vec<Value>,
+        args: crate::builtins::BuiltinArgs,
         cwd: PathBuf,
         filesystem: FilesystemCapabilities,
         registry: &mut UploadRegistry,

@@ -41,6 +41,7 @@ rmp = { version = "0.8", optional = true }
 rusqlite = { version = "0.32", optional = true }
 rustyline = { version = "18.0.1", default-features = false, optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
+smallvec = "1"
 socket2 = { version = "0.6", optional = true }
 sha1 = { version = "0.10", optional = true }
 sha2 = { version = "0.10", optional = true }

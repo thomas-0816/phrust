@@ -58,7 +58,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_opcache_compile_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -87,7 +87,7 @@ fn builtin_opcache_compile_file(
 
 fn builtin_opcache_get_configuration(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -119,7 +119,7 @@ fn builtin_opcache_get_configuration(
 
 fn builtin_opcache_get_status(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -150,7 +150,7 @@ fn builtin_opcache_get_status(
 
 fn builtin_opcache_invalidate(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -166,7 +166,7 @@ fn builtin_opcache_invalidate(
 
 fn builtin_opcache_is_script_cached(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -183,7 +183,7 @@ fn builtin_opcache_is_script_cached(
 
 fn builtin_opcache_is_script_cached_in_file_cache(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -198,7 +198,7 @@ fn builtin_opcache_is_script_cached_in_file_cache(
 
 fn builtin_opcache_jit_blacklist(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -209,7 +209,7 @@ fn builtin_opcache_jit_blacklist(
 
 fn builtin_opcache_reset(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {

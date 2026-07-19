@@ -210,7 +210,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_cal_days_in_month(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -244,7 +244,7 @@ fn builtin_cal_days_in_month(
 
 fn builtin_cal_to_jd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -259,7 +259,7 @@ fn builtin_cal_to_jd(
 
 fn builtin_cal_from_jd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -315,7 +315,7 @@ fn builtin_cal_from_jd(
 
 fn builtin_cal_info(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -335,7 +335,7 @@ fn builtin_cal_info(
 
 fn builtin_gregoriantojd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -349,7 +349,7 @@ fn builtin_gregoriantojd(
 
 fn builtin_jdtogregorian(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -362,7 +362,7 @@ fn builtin_jdtogregorian(
 
 fn builtin_juliantojd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -376,7 +376,7 @@ fn builtin_juliantojd(
 
 fn builtin_jdtojulian(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -389,7 +389,7 @@ fn builtin_jdtojulian(
 
 fn builtin_jddayofweek(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -411,7 +411,7 @@ fn builtin_jddayofweek(
 
 fn builtin_jdmonthname(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -436,7 +436,7 @@ fn builtin_jdmonthname(
 
 fn builtin_jdtounix(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -454,7 +454,7 @@ fn builtin_jdtounix(
 
 fn builtin_unixtojd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -477,7 +477,7 @@ fn builtin_unixtojd(
 
 fn builtin_easter_days(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -499,7 +499,7 @@ fn builtin_easter_days(
 
 fn builtin_easter_date(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -528,7 +528,7 @@ fn builtin_easter_date(
 
 fn builtin_jewishtojd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -542,7 +542,7 @@ fn builtin_jewishtojd(
 
 fn builtin_jdtojewish(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -584,7 +584,7 @@ fn builtin_jdtojewish(
 
 fn builtin_frenchtojd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -598,7 +598,7 @@ fn builtin_frenchtojd(
 
 fn builtin_jdtofrench(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -1304,11 +1304,11 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    fn call(name: &str, args: Vec<Value>) -> Value {
+    fn call(name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         call_result(name, args).unwrap()
     }
 
-    fn call_result(name: &str, args: Vec<Value>) -> BuiltinResult {
+    fn call_result(name: &str, args: crate::builtins::BuiltinArgs) -> BuiltinResult {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES

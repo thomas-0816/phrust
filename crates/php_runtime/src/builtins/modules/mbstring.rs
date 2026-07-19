@@ -101,7 +101,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_mb_detect_encoding(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -133,7 +133,7 @@ fn builtin_mb_detect_encoding(
 
 fn builtin_mb_check_encoding(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -159,7 +159,7 @@ fn builtin_mb_check_encoding(
 
 fn builtin_mb_convert_encoding(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -196,7 +196,7 @@ fn builtin_mb_convert_encoding(
 
 fn builtin_mb_internal_encoding(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -219,7 +219,7 @@ fn builtin_mb_internal_encoding(
 
 fn builtin_mb_list_encodings(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -236,7 +236,7 @@ fn builtin_mb_list_encodings(
 
 fn builtin_mb_encoding_aliases(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -262,7 +262,7 @@ fn builtin_mb_encoding_aliases(
 
 fn builtin_mb_substitute_character(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -283,7 +283,7 @@ fn builtin_mb_substitute_character(
 
 fn builtin_mb_strlen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -314,7 +314,7 @@ fn builtin_mb_strlen(
 
 fn builtin_mb_strtolower(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     convert_case_builtin(context, "mb_strtolower", args, false)
@@ -322,7 +322,7 @@ fn builtin_mb_strtolower(
 
 fn builtin_mb_strtoupper(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     convert_case_builtin(context, "mb_strtoupper", args, true)
@@ -330,7 +330,7 @@ fn builtin_mb_strtoupper(
 
 fn builtin_mb_substr(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -387,7 +387,7 @@ fn builtin_mb_substr(
 
 fn builtin_mb_strcut(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -446,7 +446,7 @@ fn builtin_mb_strcut(
 
 fn builtin_mb_strwidth(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -471,7 +471,7 @@ fn builtin_mb_strwidth(
 
 fn builtin_mb_strimwidth(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=5).contains(&args.len()) {
@@ -516,7 +516,7 @@ fn builtin_mb_strimwidth(
 
 fn builtin_mb_strpos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position_builtin(context, "mb_strpos", args, false)
@@ -524,7 +524,7 @@ fn builtin_mb_strpos(
 
 fn builtin_mb_stripos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position_builtin(context, "mb_stripos", args, true)
@@ -532,7 +532,7 @@ fn builtin_mb_stripos(
 
 fn builtin_mb_strrpos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     reverse_string_position_builtin(context, "mb_strrpos", args, false)
@@ -540,7 +540,7 @@ fn builtin_mb_strrpos(
 
 fn builtin_mb_strripos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     reverse_string_position_builtin(context, "mb_strripos", args, true)
@@ -548,7 +548,7 @@ fn builtin_mb_strripos(
 
 fn builtin_mb_substr_count(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -598,7 +598,7 @@ const MB_CASE_FOLD_SIMPLE: i64 = 7;
 
 fn builtin_mb_convert_case(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -645,7 +645,7 @@ fn builtin_mb_convert_case(
 
 fn builtin_mb_ucfirst(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     first_char_case_builtin(context, "mb_ucfirst", args, true)
@@ -653,7 +653,7 @@ fn builtin_mb_ucfirst(
 
 fn builtin_mb_lcfirst(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     first_char_case_builtin(context, "mb_lcfirst", args, false)
@@ -661,7 +661,7 @@ fn builtin_mb_lcfirst(
 
 fn builtin_mb_ord(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -688,7 +688,7 @@ fn builtin_mb_ord(
 
 fn builtin_mb_chr(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -723,7 +723,7 @@ fn builtin_mb_chr(
 
 fn builtin_mb_parse_str(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     super::strings::builtin_parse_str(context, args, span).map(|_| Value::Bool(true))
@@ -732,7 +732,7 @@ fn builtin_mb_parse_str(
 fn string_position_builtin(
     context: &mut BuiltinContext<'_>,
     name: &'static str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     case_insensitive: bool,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -787,7 +787,7 @@ fn string_position_builtin(
 fn reverse_string_position_builtin(
     context: &mut BuiltinContext<'_>,
     name: &'static str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     case_insensitive: bool,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -864,7 +864,7 @@ fn lowercase(value: &str) -> String {
 fn convert_case_builtin(
     context: &mut BuiltinContext<'_>,
     name: &str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     uppercase: bool,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -901,7 +901,7 @@ fn convert_case_builtin(
 fn first_char_case_builtin(
     context: &mut BuiltinContext<'_>,
     name: &str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     uppercase: bool,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {

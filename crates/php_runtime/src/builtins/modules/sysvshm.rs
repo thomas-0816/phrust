@@ -37,7 +37,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_shm_attach(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("shm_attach", &args, 1, 3)?;
@@ -75,7 +75,7 @@ fn builtin_shm_attach(
 
 fn builtin_shm_detach(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_detach", &args, 1)?;
@@ -86,7 +86,7 @@ fn builtin_shm_detach(
 
 fn builtin_shm_has_var(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_has_var", &args, 2)?;
@@ -102,7 +102,7 @@ fn builtin_shm_has_var(
 
 fn builtin_shm_put_var(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_put_var", &args, 3)?;
@@ -126,7 +126,7 @@ fn builtin_shm_put_var(
 
 fn builtin_shm_get_var(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_get_var", &args, 2)?;
@@ -152,7 +152,7 @@ fn builtin_shm_get_var(
 
 fn builtin_shm_remove_var(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_remove_var", &args, 2)?;
@@ -175,7 +175,7 @@ fn builtin_shm_remove_var(
 
 fn builtin_shm_remove(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_remove", &args, 1)?;

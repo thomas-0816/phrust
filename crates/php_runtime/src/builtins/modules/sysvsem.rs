@@ -31,7 +31,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_sem_get(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("sem_get", &args, 1, 4)?;
@@ -56,7 +56,7 @@ fn builtin_sem_get(
 
 fn builtin_sem_acquire(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("sem_acquire", &args, 1, 2)?;
@@ -74,7 +74,7 @@ fn builtin_sem_acquire(
 
 fn builtin_sem_release(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("sem_release", &args, 1)?;
@@ -93,7 +93,7 @@ fn builtin_sem_release(
 
 fn builtin_sem_remove(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("sem_remove", &args, 1)?;

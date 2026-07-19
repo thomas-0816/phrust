@@ -131,7 +131,7 @@ fn assign_reference_arg(argument: Option<&Value>, value: Value) {
 
 fn builtin_apcu_enabled(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -142,7 +142,7 @@ fn builtin_apcu_enabled(
 
 fn builtin_apcu_store(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -160,7 +160,7 @@ fn builtin_apcu_store(
 
 fn builtin_apcu_add(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -181,7 +181,7 @@ fn builtin_apcu_add(
 
 fn builtin_apcu_entry(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -199,7 +199,7 @@ fn builtin_apcu_entry(
 
 fn builtin_apcu_fetch(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -213,7 +213,7 @@ fn builtin_apcu_fetch(
 
 fn builtin_apcu_exists(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -225,7 +225,7 @@ fn builtin_apcu_exists(
 
 fn builtin_apcu_delete(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -237,7 +237,7 @@ fn builtin_apcu_delete(
 
 fn builtin_apcu_clear_cache(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -249,7 +249,7 @@ fn builtin_apcu_clear_cache(
 
 fn builtin_apcu_inc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     apcu_counter(context, "apcu_inc", args, CounterDirection::Increment)
@@ -257,7 +257,7 @@ fn builtin_apcu_inc(
 
 fn builtin_apcu_dec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     apcu_counter(context, "apcu_dec", args, CounterDirection::Decrement)
@@ -265,7 +265,7 @@ fn builtin_apcu_dec(
 
 fn builtin_apcu_cache_info(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -291,7 +291,7 @@ fn builtin_apcu_cache_info(
 
 fn builtin_apcu_sma_info(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -317,7 +317,7 @@ enum CounterDirection {
 fn apcu_counter(
     context: &mut BuiltinContext<'_>,
     function: &'static str,
-    args: Vec<Value>,
+    args: php_runtime::api::BuiltinArgs,
     direction: CounterDirection,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 4 {
@@ -360,7 +360,7 @@ mod tests {
     use super::*;
     use php_runtime::api::{ExtensionStateLayoutBuilder, OutputBuffer};
 
-    fn call_with_context(name: &str, args: Vec<Value>, context: &mut BuiltinContext<'_>) -> Value {
+    fn call_with_context(name: &str, args: php_runtime::api::BuiltinArgs, context: &mut BuiltinContext<'_>) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

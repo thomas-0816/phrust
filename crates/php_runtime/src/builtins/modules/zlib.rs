@@ -107,7 +107,7 @@ const ZLIB_PREFIX_DETECT_MAX_BYTES: usize = 4096;
 
 fn builtin_deflate_init(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -125,7 +125,7 @@ fn builtin_deflate_init(
 
 fn builtin_deflate_add(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -154,7 +154,7 @@ fn builtin_deflate_add(
 
 fn builtin_inflate_init(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -173,7 +173,7 @@ fn builtin_inflate_init(
 
 fn builtin_inflate_add(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -244,7 +244,7 @@ fn builtin_inflate_add(
 
 fn builtin_inflate_get_status(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("inflate_get_status", args.len(), 1, 1)?;
@@ -256,7 +256,7 @@ fn builtin_inflate_get_status(
 
 fn builtin_inflate_get_read_len(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("inflate_get_read_len", args.len(), 1, 1)?;
@@ -268,7 +268,7 @@ fn builtin_inflate_get_read_len(
 
 fn builtin_gzopen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -322,7 +322,7 @@ fn builtin_gzopen(
 
 fn builtin_gzread(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gzread", args.len(), 2, 2)?;
@@ -335,7 +335,7 @@ fn builtin_gzread(
 
 fn builtin_gzgetc(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gzgetc", args.len(), 1, 1)?;
@@ -350,7 +350,7 @@ fn builtin_gzgetc(
 
 fn builtin_gzgets(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -372,7 +372,7 @@ fn builtin_gzgets(
 
 fn builtin_gzwrite(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -390,7 +390,7 @@ fn builtin_gzwrite(
 
 fn builtin_gzpassthru(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gzpassthru", args.len(), 1, 1)?;
@@ -402,7 +402,7 @@ fn builtin_gzpassthru(
 
 fn builtin_gzrewind(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gzrewind", args.len(), 1, 1)?;
@@ -412,7 +412,7 @@ fn builtin_gzrewind(
 
 fn builtin_gzseek(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -439,7 +439,7 @@ fn builtin_gzseek(
 
 fn builtin_gztell(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gztell", args.len(), 1, 1)?;
@@ -451,7 +451,7 @@ fn builtin_gztell(
 
 fn builtin_gzeof(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gzeof", args.len(), 1, 1)?;
@@ -461,7 +461,7 @@ fn builtin_gzeof(
 
 fn builtin_gzclose(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("gzclose", args.len(), 1, 1)?;
@@ -470,7 +470,7 @@ fn builtin_gzclose(
 
 fn builtin_gzfile(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -485,7 +485,7 @@ fn builtin_gzfile(
 
 fn builtin_readgzfile(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -501,7 +501,7 @@ fn builtin_readgzfile(
 
 fn builtin_gzencode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -518,7 +518,7 @@ fn builtin_gzencode(
 
 fn builtin_gzcompress(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -535,7 +535,7 @@ fn builtin_gzcompress(
 
 fn builtin_gzdeflate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -552,7 +552,7 @@ fn builtin_gzdeflate(
 
 fn builtin_gzdecode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -567,7 +567,7 @@ fn builtin_gzdecode(
 
 fn builtin_gzuncompress(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -582,7 +582,7 @@ fn builtin_gzuncompress(
 
 fn builtin_gzinflate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -597,7 +597,7 @@ fn builtin_gzinflate(
 
 fn builtin_zlib_decode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -619,7 +619,7 @@ fn builtin_zlib_decode(
 
 fn builtin_zlib_encode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -656,7 +656,7 @@ fn builtin_zlib_encode(
 
 fn builtin_zlib_get_coding_type(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_zlib_arity("zlib_get_coding_type", args.len(), 0, 0)?;

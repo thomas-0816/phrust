@@ -52,7 +52,7 @@ pub(in crate::builtins) trait PcreCallbackServiceAccess:
     fn invoke_builtin(
         &mut self,
         callback: BuiltinEntry,
-        args: Vec<Value>,
+        args: crate::builtins::BuiltinArgs,
         span: RuntimeSourceSpan,
     ) -> BuiltinResult;
 }
@@ -156,7 +156,7 @@ impl PcreCallbackServiceAccess for PcreCallbackServices<'_, '_> {
     fn invoke_builtin(
         &mut self,
         callback: BuiltinEntry,
-        args: Vec<Value>,
+        args: crate::builtins::BuiltinArgs,
         span: RuntimeSourceSpan,
     ) -> BuiltinResult {
         (callback.function())(self.context, args, span)

@@ -167,7 +167,7 @@ const OPENSSL_KEYTYPE_RSA: i64 = 0;
 
 pub(in crate::builtins::modules) fn builtin_openssl_random_pseudo_bytes(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -196,7 +196,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_random_pseudo_bytes(
 
 pub(in crate::builtins::modules) fn builtin_openssl_digest(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -225,7 +225,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_digest(
 
 pub(in crate::builtins::modules) fn builtin_openssl_get_cipher_methods(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -239,7 +239,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_get_cipher_methods(
 
 pub(in crate::builtins::modules) fn builtin_openssl_cipher_iv_length(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_cipher_iv_length", &args, 1)?;
@@ -254,7 +254,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_cipher_iv_length(
 
 pub(in crate::builtins::modules) fn builtin_openssl_get_md_methods(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_get_md_methods", &args, 0)?;
@@ -270,7 +270,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_get_md_methods(
 
 pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=8).contains(&args.len()) {
@@ -364,7 +364,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
 
 pub(in crate::builtins::modules) fn builtin_openssl_decrypt(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=7).contains(&args.len()) {
@@ -515,7 +515,7 @@ fn cipher_for_method(method: &str) -> Option<CipherInfo> {
 
 pub(in crate::builtins::modules) fn builtin_openssl_cipher_key_length(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_cipher_key_length", &args, 1)?;
@@ -618,7 +618,7 @@ fn normalized_cipher_input(input: &[u8], length: usize) -> Vec<u8> {
 
 pub(in crate::builtins::modules) fn builtin_openssl_verify(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=5).contains(&args.len()) {
@@ -672,7 +672,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_verify(
 
 pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_public(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_pkey_get_public", &args, 1)?;
@@ -691,7 +691,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_public(
 
 pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_private(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -725,7 +725,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_private(
 
 pub(in crate::builtins::modules) fn builtin_openssl_pkey_new(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -786,7 +786,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_pkey_new(
 
 pub(in crate::builtins::modules) fn builtin_openssl_pkey_export(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -833,7 +833,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_pkey_export(
 
 pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_details(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_pkey_get_details", &args, 1)?;
@@ -876,7 +876,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_details(
 
 pub(in crate::builtins::modules) fn builtin_openssl_sign(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -922,7 +922,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_sign(
 
 pub(in crate::builtins::modules) fn builtin_openssl_x509_read(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_x509_read", &args, 1)?;
@@ -947,7 +947,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_x509_read(
 
 pub(in crate::builtins::modules) fn builtin_openssl_x509_parse(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -992,7 +992,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_x509_parse(
 
 pub(in crate::builtins::modules) fn builtin_openssl_x509_check_private_key(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_x509_check_private_key", &args, 2)?;
@@ -1032,7 +1032,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_x509_check_private_key(
 
 pub(in crate::builtins::modules) fn builtin_openssl_x509_verify(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_x509_verify", &args, 2)?;
@@ -1059,7 +1059,7 @@ pub(in crate::builtins::modules) fn builtin_openssl_x509_verify(
 
 pub(in crate::builtins::modules) fn builtin_openssl_error_string(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("openssl_error_string", &args, 0)?;

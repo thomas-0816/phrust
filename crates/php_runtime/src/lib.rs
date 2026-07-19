@@ -126,7 +126,7 @@ pub mod api {
     pub use crate::autoload::AutoloadRegistry;
     #[cfg(feature = "full-runtime")]
     pub use crate::builtins::{
-        ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
+        ApcuState, BuiltinArgs, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
         BuiltinErrorContext, BuiltinHandlerKind, BuiltinOutcome, BuiltinRegistry,
         BuiltinRequestState, BuiltinResult, CurlState, FilesystemRuntimeState, FtpOptionValue,
         FtpState, GettextState, IconvEncodingState, ImapConnectionConfig, ImapMailboxSnapshot,

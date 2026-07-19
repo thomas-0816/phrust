@@ -216,7 +216,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_posix_getpid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getpid", &args)?;
@@ -225,7 +225,7 @@ fn builtin_posix_getpid(
 
 fn builtin_posix_getppid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getppid", &args)?;
@@ -234,7 +234,7 @@ fn builtin_posix_getppid(
 
 fn builtin_posix_getuid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getuid", &args)?;
@@ -243,7 +243,7 @@ fn builtin_posix_getuid(
 
 fn builtin_posix_geteuid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_geteuid", &args)?;
@@ -252,7 +252,7 @@ fn builtin_posix_geteuid(
 
 fn builtin_posix_getgid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getgid", &args)?;
@@ -261,7 +261,7 @@ fn builtin_posix_getgid(
 
 fn builtin_posix_getegid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getegid", &args)?;
@@ -270,7 +270,7 @@ fn builtin_posix_getegid(
 
 fn builtin_posix_getpgrp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getpgrp", &args)?;
@@ -279,7 +279,7 @@ fn builtin_posix_getpgrp(
 
 fn builtin_posix_getpgid(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -292,7 +292,7 @@ fn builtin_posix_getpgid(
 
 fn builtin_posix_getsid(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -312,7 +312,7 @@ fn builtin_posix_getsid(
 
 fn builtin_posix_setsid(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_setsid", &args)?;
@@ -322,7 +322,7 @@ fn builtin_posix_setsid(
 
 fn builtin_posix_getcwd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getcwd", &args)?;
@@ -334,7 +334,7 @@ fn builtin_posix_getcwd(
 
 fn builtin_posix_uname(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_uname", &args)?;
@@ -370,7 +370,7 @@ fn builtin_posix_uname(
 
 fn builtin_posix_kill(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -401,7 +401,7 @@ fn builtin_posix_kill(
 
 fn builtin_posix_access(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     posix_access_impl(context, "posix_access", args, false)
@@ -409,7 +409,7 @@ fn builtin_posix_access(
 
 fn builtin_posix_eaccess(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     posix_access_impl(context, "posix_eaccess", args, true)
@@ -418,7 +418,7 @@ fn builtin_posix_eaccess(
 fn posix_access_impl(
     context: &mut BuiltinContext<'_>,
     name: &'static str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     reject_invalid_filename: bool,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -464,7 +464,7 @@ fn posix_path_max() -> usize {
 
 fn builtin_posix_mkfifo(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -488,7 +488,7 @@ fn builtin_posix_mkfifo(
 
 fn builtin_posix_isatty(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -510,7 +510,7 @@ fn builtin_posix_isatty(
 
 fn builtin_posix_ttyname(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -531,7 +531,7 @@ fn builtin_posix_ttyname(
 
 fn builtin_posix_pathconf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -567,7 +567,7 @@ fn builtin_posix_pathconf(
 
 fn builtin_posix_sysconf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -595,7 +595,7 @@ fn builtin_posix_sysconf(
 
 fn builtin_posix_times(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_times", &args)?;
@@ -646,7 +646,7 @@ fn clock_t_to_i64(value: libc::clock_t) -> i64 {
 
 fn builtin_posix_get_last_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_get_last_error", &args)?;
@@ -655,7 +655,7 @@ fn builtin_posix_get_last_error(
 
 fn builtin_posix_strerror(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -668,7 +668,7 @@ fn builtin_posix_strerror(
 
 fn builtin_posix_ctermid(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_ctermid", &args)?;
@@ -677,7 +677,7 @@ fn builtin_posix_ctermid(
 
 fn builtin_posix_getgroups(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getgroups", &args)?;
@@ -702,7 +702,7 @@ fn builtin_posix_getgroups(
 
 fn builtin_posix_getlogin(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     no_args("posix_getlogin", &args)?;
@@ -717,7 +717,7 @@ fn builtin_posix_getlogin(
 
 fn builtin_posix_getgrgid(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -747,7 +747,7 @@ fn builtin_posix_getgrgid(
 
 fn builtin_posix_getgrnam(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -769,7 +769,7 @@ fn builtin_posix_getgrnam(
 
 fn builtin_posix_getpwuid(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -791,7 +791,7 @@ fn builtin_posix_getpwuid(
 
 fn builtin_posix_getpwnam(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -813,7 +813,7 @@ fn builtin_posix_getpwnam(
 
 fn builtin_posix_getrlimit(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -843,7 +843,7 @@ fn builtin_posix_getrlimit(
 
 fn builtin_posix_false_gap(
     context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
+    _args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     context.set_posix_last_error(libc::ENOSYS);
@@ -852,7 +852,7 @@ fn builtin_posix_false_gap(
 
 fn builtin_posix_permission_gap(
     context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
+    _args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     context.set_posix_last_error(libc::EPERM);
@@ -1029,7 +1029,7 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    fn call_with_context(context: &mut BuiltinContext<'_>, name: &str, args: Vec<Value>) -> Value {
+    fn call_with_context(context: &mut BuiltinContext<'_>, name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)
@@ -1041,7 +1041,7 @@ mod tests {
     fn call_error_with_context(
         context: &mut BuiltinContext<'_>,
         name: &str,
-        args: Vec<Value>,
+        args: crate::builtins::BuiltinArgs,
     ) -> String {
         ENTRIES
             .iter()

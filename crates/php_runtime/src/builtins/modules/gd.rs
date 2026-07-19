@@ -115,7 +115,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_gd_info(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -135,7 +135,7 @@ fn builtin_gd_info(
 
 fn builtin_imagetypes(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -146,7 +146,7 @@ fn builtin_imagetypes(
 
 fn builtin_imagecreatefromstring(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -158,7 +158,7 @@ fn builtin_imagecreatefromstring(
 
 fn builtin_imagecreatefromjpeg(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     imagecreatefrom_file(
@@ -172,7 +172,7 @@ fn builtin_imagecreatefromjpeg(
 
 fn builtin_imagecreatefrompng(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     imagecreatefrom_file(context, args, span, "imagecreatefrompng", ImageFormat::Png)
@@ -180,7 +180,7 @@ fn builtin_imagecreatefrompng(
 
 fn builtin_imagecreatetruecolor(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -201,7 +201,7 @@ fn builtin_imagecreatetruecolor(
 
 fn builtin_imagecolorallocate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -218,7 +218,7 @@ fn builtin_imagecolorallocate(
 
 fn builtin_imagecolorallocatealpha(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 5 {
@@ -235,7 +235,7 @@ fn builtin_imagecolorallocatealpha(
 
 fn builtin_imagecolortransparent(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -255,7 +255,7 @@ fn builtin_imagecolortransparent(
 
 fn builtin_imagesx(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -266,7 +266,7 @@ fn builtin_imagesx(
 
 fn builtin_imagesy(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -277,7 +277,7 @@ fn builtin_imagesy(
 
 fn builtin_imagecopyresampled(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     copy_resized(args, "imagecopyresampled", FilterType::Triangle)
@@ -285,7 +285,7 @@ fn builtin_imagecopyresampled(
 
 fn builtin_imagecopyresized(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     copy_resized(args, "imagecopyresized", FilterType::Nearest)
@@ -293,7 +293,7 @@ fn builtin_imagecopyresized(
 
 fn builtin_imagecopy(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 8 {
@@ -304,7 +304,7 @@ fn builtin_imagecopy(
 
 fn builtin_imagecopymerge(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 9 {
@@ -316,7 +316,7 @@ fn builtin_imagecopymerge(
 
 fn builtin_imagefill(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -337,7 +337,7 @@ fn builtin_imagefill(
 
 fn builtin_imagefilledrectangle(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 6 {
@@ -358,7 +358,7 @@ fn builtin_imagefilledrectangle(
 
 fn builtin_imagerectangle(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 6 {
@@ -378,7 +378,7 @@ fn builtin_imagerectangle(
 
 fn builtin_imageline(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 6 {
@@ -398,7 +398,7 @@ fn builtin_imageline(
 
 fn builtin_imagescale(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -455,7 +455,7 @@ fn builtin_imagescale(
 
 fn builtin_imagerotate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -476,7 +476,7 @@ fn builtin_imagerotate(
 
 fn builtin_imageflip(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -497,7 +497,7 @@ fn builtin_imageflip(
 
 fn builtin_imagealphablending(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     gd_bool_property("imagealphablending", "__gd_alpha_blending", args)
@@ -505,13 +505,13 @@ fn builtin_imagealphablending(
 
 fn builtin_imagesavealpha(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     gd_bool_property("imagesavealpha", "__gd_save_alpha", args)
 }
 
-fn copy_resized(args: Vec<Value>, name: &str, filter: FilterType) -> BuiltinResult {
+fn copy_resized(args: crate::builtins::BuiltinArgs, name: &str, filter: FilterType) -> BuiltinResult {
     if args.len() != 10 {
         return Err(arity_error(name, "ten arguments"));
     }
@@ -542,7 +542,7 @@ fn copy_resized(args: Vec<Value>, name: &str, filter: FilterType) -> BuiltinResu
     Ok(Value::Bool(true))
 }
 
-fn copy_region(args: Vec<Value>, name: &str, pct: u8) -> BuiltinResult {
+fn copy_region(args: crate::builtins::BuiltinArgs, name: &str, pct: u8) -> BuiltinResult {
     let (_, _, dst) = gd_object_arg(name, &args[0])?;
     let (_, _, src) = gd_object_arg(name, &args[1])?;
     let dst_x = int_arg(name, &args[2])?;
@@ -587,7 +587,7 @@ fn copy_region(args: Vec<Value>, name: &str, pct: u8) -> BuiltinResult {
     Ok(Value::Bool(true))
 }
 
-fn gd_bool_property(name: &str, property: &str, args: Vec<Value>) -> BuiltinResult {
+fn gd_bool_property(name: &str, property: &str, args: crate::builtins::BuiltinArgs) -> BuiltinResult {
     if args.len() != 2 {
         return Err(arity_error(name, "two arguments"));
     }
@@ -708,7 +708,7 @@ fn flood_fill(image: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
 
 fn builtin_imagejpeg(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -731,7 +731,7 @@ fn builtin_imagejpeg(
 
 fn builtin_imagepng(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 4 {
@@ -744,7 +744,7 @@ fn builtin_imagepng(
 
 fn builtin_imagedestroy(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -757,7 +757,7 @@ fn builtin_imagedestroy(
 
 fn imagecreatefrom_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
     name: &str,
     format: ImageFormat,

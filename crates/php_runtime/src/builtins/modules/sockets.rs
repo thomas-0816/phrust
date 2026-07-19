@@ -126,7 +126,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_socket_create(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -168,7 +168,7 @@ fn builtin_socket_create(
 
 fn builtin_socket_bind(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -195,7 +195,7 @@ fn builtin_socket_bind(
 
 fn builtin_socket_listen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -219,7 +219,7 @@ fn builtin_socket_listen(
 
 fn builtin_socket_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -246,7 +246,7 @@ fn builtin_socket_connect(
 
 fn builtin_socket_accept(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -264,7 +264,7 @@ fn builtin_socket_accept(
 
 fn builtin_socket_write(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -295,7 +295,7 @@ fn builtin_socket_write(
 
 fn builtin_socket_read(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -322,7 +322,7 @@ fn builtin_socket_read(
 
 fn builtin_socket_send(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -351,7 +351,7 @@ fn builtin_socket_send(
 
 fn builtin_socket_sendmsg(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -392,7 +392,7 @@ fn builtin_socket_sendmsg(
 
 fn builtin_socket_set_nonblock(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -410,7 +410,7 @@ fn builtin_socket_set_nonblock(
 
 fn builtin_socket_select(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(4..=5).contains(&args.len()) {
@@ -460,7 +460,7 @@ fn builtin_socket_select(
 
 fn builtin_socket_recv(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -490,7 +490,7 @@ fn builtin_socket_recv(
 
 fn builtin_socket_getsockname(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -514,7 +514,7 @@ fn builtin_socket_getsockname(
 
 fn builtin_socket_getpeername(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -538,7 +538,7 @@ fn builtin_socket_getpeername(
 
 fn builtin_socket_set_option(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -591,7 +591,7 @@ fn builtin_socket_set_option(
 
 fn builtin_socket_get_option(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -611,7 +611,7 @@ fn builtin_socket_get_option(
 
 fn builtin_socket_shutdown(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 || args.is_empty() {
@@ -634,7 +634,7 @@ fn builtin_socket_shutdown(
 
 fn builtin_socket_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -649,7 +649,7 @@ fn builtin_socket_close(
 
 fn builtin_socket_last_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -663,7 +663,7 @@ fn builtin_socket_last_error(
 
 fn builtin_socket_clear_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -680,7 +680,7 @@ fn builtin_socket_clear_error(
 
 fn builtin_socket_strerror(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -703,7 +703,7 @@ fn builtin_socket_strerror(
 
 fn builtin_ip2long(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -721,7 +721,7 @@ fn builtin_ip2long(
 
 fn builtin_long2ip(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -749,7 +749,7 @@ fn parse_php_ipv4(address: &str) -> Option<[u8; 4]> {
 
 fn builtin_inet_pton(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -770,7 +770,7 @@ fn builtin_inet_pton(
 
 fn builtin_inet_ntop(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {

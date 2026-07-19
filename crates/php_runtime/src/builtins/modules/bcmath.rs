@@ -31,7 +31,7 @@ struct Decimal {
 
 fn builtin_bcadd(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_decimal(
@@ -52,7 +52,7 @@ fn builtin_bcadd(
 
 fn builtin_bcsub(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_decimal(
@@ -73,7 +73,7 @@ fn builtin_bcsub(
 
 fn builtin_bcmul(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_decimal(
@@ -93,7 +93,7 @@ fn builtin_bcmul(
 
 fn builtin_bcdiv(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_decimal(
@@ -127,7 +127,7 @@ fn builtin_bcdiv(
 
 fn builtin_bcmod(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -156,7 +156,7 @@ fn builtin_bcmod(
 
 fn builtin_bcpow(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -181,7 +181,7 @@ fn builtin_bcpow(
 
 fn builtin_bcpowmod(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -229,7 +229,7 @@ fn builtin_bcpowmod(
 
 fn builtin_bcsqrt(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -252,7 +252,7 @@ fn builtin_bcsqrt(
 
 fn builtin_bccomp(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -270,7 +270,7 @@ fn builtin_bccomp(
 
 fn builtin_bcscale(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -293,7 +293,7 @@ fn builtin_bcscale(
 fn binary_decimal(
     name: &'static str,
     default_scale: usize,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     operation: impl FnOnce(Decimal, Decimal, usize) -> Result<Vec<u8>, BuiltinError>,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -473,7 +473,7 @@ mod tests {
     use super::*;
     use crate::{OutputBuffer, PhpString};
 
-    fn call(context: &mut BuiltinContext<'_>, name: &str, args: Vec<Value>) -> Value {
+    fn call(context: &mut BuiltinContext<'_>, name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

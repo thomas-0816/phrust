@@ -142,7 +142,7 @@ macro_rules! curl_builtin_adapter {
     ($entry:ident => $implementation:ident) => {
         pub(in crate::builtins::modules) fn $entry(
             context: &mut BuiltinContext<'_>,
-            args: Vec<Value>,
+            args: crate::builtins::BuiltinArgs,
             span: RuntimeSourceSpan,
         ) -> BuiltinResult {
             let mut services = context.curl_services();
@@ -317,7 +317,7 @@ struct CurlHandleRuntimeView {
 
 pub(in crate::builtins::modules) fn builtin_curl_version(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_version", &args, 0)?;
@@ -437,7 +437,7 @@ fn curl_version_feature_bits(version: &Version) -> i64 {
 
 pub(in crate::builtins::modules) fn builtin_curl_escape(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_escape", &args, 2)?;
@@ -450,7 +450,7 @@ pub(in crate::builtins::modules) fn builtin_curl_escape(
 
 pub(in crate::builtins::modules) fn builtin_curl_unescape(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_unescape", &args, 2)?;
@@ -463,7 +463,7 @@ pub(in crate::builtins::modules) fn builtin_curl_unescape(
 
 pub(in crate::builtins::modules) fn builtin_curl_multi_strerror(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_strerror", &args, 1)?;
@@ -478,7 +478,7 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_strerror(
 
 pub(in crate::builtins::modules) fn builtin_curl_strerror(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_strerror", &args, 1)?;
@@ -504,7 +504,7 @@ pub(in crate::builtins::modules) fn builtin_curl_strerror(
 
 fn curl_multi_init(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_init", &args, 0)?;
@@ -517,7 +517,7 @@ fn curl_multi_init(
 
 fn curl_multi_add_handle(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_add_handle", &args, 2)?;
@@ -540,7 +540,7 @@ fn curl_multi_add_handle(
 
 fn curl_multi_exec(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_exec", &args, 2)?;
@@ -653,7 +653,7 @@ fn curl_multi_exec(
 
 fn curl_multi_select(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -684,7 +684,7 @@ fn curl_multi_select(
 
 fn curl_multi_info_read(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -722,7 +722,7 @@ fn curl_multi_info_read(
 
 fn curl_multi_remove_handle(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_remove_handle", &args, 2)?;
@@ -739,7 +739,7 @@ fn curl_multi_remove_handle(
 
 fn curl_multi_close(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_close", &args, 1)?;
@@ -751,7 +751,7 @@ fn curl_multi_close(
 
 fn curl_share_init(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_init", &args, 0)?;
@@ -764,7 +764,7 @@ fn curl_share_init(
 
 fn curl_share_setopt(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_setopt", &args, 3)?;
@@ -796,7 +796,7 @@ fn curl_share_setopt(
 
 pub(in crate::builtins::modules) fn builtin_curl_share_errno(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_errno", &args, 1)?;
@@ -806,7 +806,7 @@ pub(in crate::builtins::modules) fn builtin_curl_share_errno(
 
 pub(in crate::builtins::modules) fn builtin_curl_share_strerror(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_strerror", &args, 1)?;
@@ -825,7 +825,7 @@ pub(in crate::builtins::modules) fn builtin_curl_share_strerror(
 
 fn curl_share_close(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_share_close", &args, 1)?;
@@ -840,7 +840,7 @@ fn curl_share_close(
 
 fn curl_init(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -863,7 +863,7 @@ fn curl_init(
 
 fn curl_setopt(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_setopt", &args, 3)?;
@@ -960,7 +960,7 @@ fn curl_setopt(
 
 fn curl_setopt_array(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_setopt_array", &args, 2)?;
@@ -1001,7 +1001,7 @@ fn curl_setopt_array(
 
 fn curl_exec(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_exec", &args, 1)?;
@@ -1196,7 +1196,7 @@ fn curl_network_requests_enabled(context: &CurlBuiltinServices<'_, '_>) -> bool 
 
 pub(in crate::builtins::modules) fn builtin_curl_getinfo(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1275,7 +1275,7 @@ pub(in crate::builtins::modules) fn builtin_curl_getinfo(
 
 pub(in crate::builtins::modules) fn builtin_curl_errno(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_errno", &args, 1)?;
@@ -1285,7 +1285,7 @@ pub(in crate::builtins::modules) fn builtin_curl_errno(
 
 pub(in crate::builtins::modules) fn builtin_curl_error(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_error", &args, 1)?;
@@ -1295,7 +1295,7 @@ pub(in crate::builtins::modules) fn builtin_curl_error(
 
 fn curl_close(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_close", &args, 1)?;
@@ -1307,7 +1307,7 @@ fn curl_close(
 
 fn curl_reset(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_reset", &args, 1)?;
@@ -1319,7 +1319,7 @@ fn curl_reset(
 
 fn curl_copy_handle(
     context: &mut CurlBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_copy_handle", &args, 1)?;

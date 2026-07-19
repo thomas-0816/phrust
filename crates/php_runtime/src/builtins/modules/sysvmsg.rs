@@ -51,7 +51,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_msg_get_queue(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("msg_get_queue", &args, 1, 2)?;
@@ -65,7 +65,7 @@ fn builtin_msg_get_queue(
 
 fn builtin_msg_send(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("msg_send", &args, 3, 6)?;
@@ -118,7 +118,7 @@ fn builtin_msg_send(
 
 fn builtin_msg_receive(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("msg_receive", &args, 5, 8)?;
@@ -162,7 +162,7 @@ fn builtin_msg_receive(
 
 fn receive_message(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     message: SysvMessage,
     unserialize: bool,
     span: RuntimeSourceSpan,
@@ -195,7 +195,7 @@ fn receive_message(
 
 fn builtin_msg_remove_queue(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_remove_queue", &args, 1)?;
@@ -205,7 +205,7 @@ fn builtin_msg_remove_queue(
 
 fn builtin_msg_stat_queue(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_stat_queue", &args, 1)?;
@@ -232,7 +232,7 @@ fn builtin_msg_stat_queue(
 
 fn builtin_msg_set_queue(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_set_queue", &args, 2)?;
@@ -274,7 +274,7 @@ fn builtin_msg_set_queue(
 
 fn builtin_msg_queue_exists(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_queue_exists", &args, 1)?;

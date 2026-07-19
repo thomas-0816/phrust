@@ -110,7 +110,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_pg_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     pg_connect_impl(context, "pg_connect", args)
@@ -118,7 +118,7 @@ fn builtin_pg_connect(
 
 fn builtin_pg_pconnect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     pg_connect_impl(context, "pg_pconnect", args)
@@ -127,7 +127,7 @@ fn builtin_pg_pconnect(
 fn pg_connect_impl(
     context: &mut BuiltinContext<'_>,
     name: &str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
 ) -> BuiltinResult {
     expect_pgsql_arity(name, args.len(), 1, 2)?;
     let dsn = string_arg(name, &args[0])?.to_string_lossy();
@@ -146,7 +146,7 @@ fn pg_connect_impl(
 
 fn builtin_pg_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_close", args.len(), 0, 1)?;
@@ -163,7 +163,7 @@ fn builtin_pg_close(
 
 fn builtin_pg_query(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_query", args.len(), 1, 2)?;
@@ -185,7 +185,7 @@ fn builtin_pg_query(
 
 fn builtin_pg_query_params(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_query_params", args.len(), 2, 3)?;
@@ -212,7 +212,7 @@ fn builtin_pg_query_params(
 
 fn builtin_pg_prepare(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pg_prepare", &args, 3)?;
@@ -232,7 +232,7 @@ fn builtin_pg_prepare(
 
 fn builtin_pg_execute(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_execute", args.len(), 2, 3)?;
@@ -259,7 +259,7 @@ fn builtin_pg_execute(
 
 fn builtin_pg_fetch_array(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_fetch_array", args.len(), 1, 3)?;
@@ -274,7 +274,7 @@ fn builtin_pg_fetch_array(
 
 fn builtin_pg_fetch_assoc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_fetch_assoc", args.len(), 1, 2)?;
@@ -284,7 +284,7 @@ fn builtin_pg_fetch_assoc(
 
 fn builtin_pg_fetch_row(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_fetch_row", args.len(), 1, 2)?;
@@ -294,7 +294,7 @@ fn builtin_pg_fetch_row(
 
 fn builtin_pg_fetch_object(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_fetch_object", args.len(), 1, 4)?;
@@ -322,7 +322,7 @@ fn builtin_pg_fetch_object(
 
 fn builtin_pg_fetch_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_fetch_result", args.len(), 2, 3)?;
@@ -350,7 +350,7 @@ fn builtin_pg_fetch_result(
 
 fn builtin_pg_num_rows(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pg_num_rows", &args, 1)?;
@@ -364,7 +364,7 @@ fn builtin_pg_num_rows(
 
 fn builtin_pg_num_fields(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pg_num_fields", &args, 1)?;
@@ -378,7 +378,7 @@ fn builtin_pg_num_fields(
 
 fn builtin_pg_affected_rows(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pg_affected_rows", &args, 1)?;
@@ -392,7 +392,7 @@ fn builtin_pg_affected_rows(
 
 fn builtin_pg_free_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pg_free_result", &args, 1)?;
@@ -406,7 +406,7 @@ fn builtin_pg_free_result(
 
 fn builtin_pg_last_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_pgsql_arity("pg_last_error", args.len(), 0, 1)?;
@@ -423,7 +423,7 @@ fn builtin_pg_last_error(
 
 fn builtin_pg_result_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pg_result_error", &args, 1)?;
@@ -436,7 +436,7 @@ fn builtin_pg_result_error(
 
 fn builtin_pg_escape_string(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let value = escape_input_arg("pg_escape_string", &args)?;
@@ -445,7 +445,7 @@ fn builtin_pg_escape_string(
 
 fn builtin_pg_escape_literal(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let value = escape_input_arg("pg_escape_literal", &args)?;
@@ -457,7 +457,7 @@ fn builtin_pg_escape_literal(
 
 fn builtin_pg_escape_identifier(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let value = escape_input_arg("pg_escape_identifier", &args)?;
@@ -466,7 +466,7 @@ fn builtin_pg_escape_identifier(
 
 fn builtin_pg_escape_bytea(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let value = escape_input_arg("pg_escape_bytea", &args)?;

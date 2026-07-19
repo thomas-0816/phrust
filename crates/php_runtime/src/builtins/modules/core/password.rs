@@ -3,7 +3,7 @@ use bcrypt::{DEFAULT_COST, hash as bcrypt_hash, verify as bcrypt_verify};
 
 pub(in crate::builtins::modules) fn builtin_password_hash(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -23,7 +23,7 @@ pub(in crate::builtins::modules) fn builtin_password_hash(
 
 pub(in crate::builtins::modules) fn builtin_password_verify(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("password_verify", &args, 2)?;
@@ -36,7 +36,7 @@ pub(in crate::builtins::modules) fn builtin_password_verify(
 
 pub(in crate::builtins::modules) fn builtin_password_needs_rehash(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {

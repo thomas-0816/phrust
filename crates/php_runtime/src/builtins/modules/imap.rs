@@ -171,7 +171,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_imap_open(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=6).contains(&args.len()) {
@@ -216,7 +216,7 @@ fn builtin_imap_open(
 
 fn builtin_imap_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -231,7 +231,7 @@ fn builtin_imap_close(
 
 fn builtin_imap_ping(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_ping", &args)?;
@@ -240,7 +240,7 @@ fn builtin_imap_ping(
 
 fn builtin_imap_reopen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -267,7 +267,7 @@ fn builtin_imap_reopen(
 
 fn builtin_imap_headers(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_headers", &args)?;
@@ -290,7 +290,7 @@ fn builtin_imap_headers(
 
 fn builtin_imap_fetch_overview(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -307,7 +307,7 @@ fn builtin_imap_fetch_overview(
 
 fn builtin_imap_fetchbody(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -332,7 +332,7 @@ fn builtin_imap_fetchbody(
 
 fn builtin_imap_fetchheader(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -356,7 +356,7 @@ fn builtin_imap_fetchheader(
 
 fn builtin_imap_fetchstructure(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -373,7 +373,7 @@ fn builtin_imap_fetchstructure(
 
 fn builtin_imap_headerinfo(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=5).contains(&args.len()) {
@@ -397,7 +397,7 @@ fn builtin_imap_headerinfo(
 
 fn builtin_imap_search(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -429,7 +429,7 @@ fn builtin_imap_search(
 
 fn builtin_imap_list(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -446,7 +446,7 @@ fn builtin_imap_list(
 
 fn builtin_imap_status(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -470,7 +470,7 @@ fn builtin_imap_status(
 
 fn builtin_imap_check(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_check", &args)?;
@@ -493,7 +493,7 @@ fn builtin_imap_check(
 
 fn builtin_imap_mailboxmsginfo(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_mailboxmsginfo", &args)?;
@@ -519,7 +519,7 @@ fn builtin_imap_mailboxmsginfo(
 
 fn builtin_imap_num_msg(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_num_msg", &args)?;
@@ -534,7 +534,7 @@ fn builtin_imap_num_msg(
 
 fn builtin_imap_num_recent(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_num_recent", &args)?;
@@ -549,7 +549,7 @@ fn builtin_imap_num_recent(
 
 fn builtin_imap_delete(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -563,7 +563,7 @@ fn builtin_imap_delete(
 
 fn builtin_imap_undelete(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -577,7 +577,7 @@ fn builtin_imap_undelete(
 
 fn builtin_imap_expunge(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let id = single_connection_arg("imap_expunge", &args)?;
@@ -586,7 +586,7 @@ fn builtin_imap_expunge(
 
 fn builtin_imap_append(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=6).contains(&args.len()) {
@@ -614,7 +614,7 @@ fn builtin_imap_append(
 
 fn builtin_imap_mail_copy(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -633,7 +633,7 @@ fn builtin_imap_mail_copy(
 
 fn builtin_imap_gc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -646,7 +646,7 @@ fn builtin_imap_gc(
 
 fn builtin_imap_errors(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -665,7 +665,7 @@ fn builtin_imap_errors(
 
 fn builtin_imap_last_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -680,7 +680,7 @@ fn builtin_imap_last_error(
 
 fn builtin_imap_alerts(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -699,7 +699,7 @@ fn builtin_imap_alerts(
 
 fn builtin_imap_identity(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {

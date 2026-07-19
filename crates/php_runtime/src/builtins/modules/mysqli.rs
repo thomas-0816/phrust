@@ -329,7 +329,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_mysqli_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_connect", args.len(), 0, 6)?;
@@ -338,7 +338,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_connect(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_init(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_init", &args, 0)?;
@@ -347,7 +347,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_init(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_get_client_info(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_get_client_info", args.len(), 0, 1)?;
@@ -356,7 +356,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_client_info(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_get_client_version(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_get_client_version", &args, 0)?;
@@ -365,7 +365,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_client_version(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_get_client_stats(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_get_client_stats", &args, 0)?;
@@ -374,7 +374,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_client_stats(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_get_connection_stats(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_get_connection_stats", &args, 1)?;
@@ -387,7 +387,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_connection_stats(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_real_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_real_connect", args.len(), 1, 8)?;
@@ -415,7 +415,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_real_connect(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_query(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_query", &args, 2)?;
@@ -485,7 +485,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_query(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_fetch_assoc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_fetch_assoc", &args, 1)?;
@@ -494,7 +494,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_fetch_assoc(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_fetch_row(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_fetch_row", &args, 1)?;
@@ -503,7 +503,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_fetch_row(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_fetch_array(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_fetch_array", args.len(), 1, 2)?;
@@ -517,7 +517,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_fetch_array(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_fetch_object(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_fetch_object", args.len(), 1, 3)?;
@@ -541,7 +541,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_fetch_object(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_data_seek(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_data_seek", &args, 2)?;
@@ -559,7 +559,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_data_seek(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_num_rows(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_num_rows", &args, 1)?;
@@ -574,7 +574,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_num_rows(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_num_fields(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_num_fields", &args, 1)?;
@@ -591,7 +591,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_num_fields(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_field_count(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_field_count", &args, 1)?;
@@ -608,7 +608,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_field_count(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_fetch_fields(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_fetch_fields", &args, 1)?;
@@ -630,7 +630,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_fetch_fields(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_free_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_free_result", &args, 1)?;
@@ -648,7 +648,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_free_result(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_close", &args, 1)?;
@@ -664,7 +664,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_close(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_errno(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_errno", &args, 1)?;
@@ -677,7 +677,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_errno(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_error", &args, 1)?;
@@ -696,7 +696,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_error(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_get_server_info(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_get_server_info", &args, 1)?;
@@ -712,7 +712,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_server_info(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_character_set_name(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_character_set_name", &args, 1)?;
@@ -722,7 +722,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_character_set_name(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_get_host_info(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_get_host_info", &args, 1)?;
@@ -732,7 +732,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_get_host_info(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_affected_rows(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_affected_rows", &args, 1)?;
@@ -749,7 +749,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_affected_rows(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_insert_id(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_insert_id", &args, 1)?;
@@ -766,7 +766,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_insert_id(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_more_results(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_more_results", &args, 1)?;
@@ -783,7 +783,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_more_results(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_connect_errno(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_connect_errno", &args, 0)?;
@@ -796,7 +796,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_connect_errno(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_connect_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_connect_error", &args, 0)?;
@@ -813,7 +813,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_connect_error(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_real_escape_string(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_real_escape_string", &args, 2)?;
@@ -824,7 +824,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_real_escape_string(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_report(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_report", &args, 1)?;
@@ -837,7 +837,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_report(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_options(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_options", &args, 3)?;
@@ -849,7 +849,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_options(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_ping(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_ping", &args, 1)?;
@@ -865,7 +865,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_ping(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_autocommit(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_autocommit", &args, 2)?;
@@ -882,7 +882,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_autocommit(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_begin_transaction(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_begin_transaction", args.len(), 1, 3)?;
@@ -898,7 +898,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_begin_transaction(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_commit(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_commit", args.len(), 1, 3)?;
@@ -914,7 +914,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_commit(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_rollback(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_rollback", args.len(), 1, 3)?;
@@ -930,7 +930,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_rollback(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_multi_query(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_multi_query", &args, 2)?;
@@ -947,7 +947,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_multi_query(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_next_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_next_result", &args, 1)?;
@@ -964,7 +964,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_next_result(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_store_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_store_result", args.len(), 1, 2)?;
@@ -981,7 +981,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_store_result(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_use_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_use_result", &args, 1)?;
@@ -990,7 +990,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_use_result(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_select_db(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_select_db", &args, 2)?;
@@ -1038,7 +1038,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_select_db(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_set_charset(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_set_charset", &args, 2)?;
@@ -1086,7 +1086,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_set_charset(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_prepare(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_prepare", &args, 2)?;
@@ -1135,7 +1135,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_prepare(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_init(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_init", &args, 1)?;
@@ -1154,7 +1154,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_init(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_prepare(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_prepare", &args, 2)?;
@@ -1206,7 +1206,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_prepare(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_bind_param(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_stmt_bind_param", args.len(), 3, usize::MAX)?;
@@ -1242,7 +1242,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_bind_param(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_execute(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_stmt_execute", args.len(), 1, 2)?;
@@ -1301,7 +1301,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_execute(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_get_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_get_result", &args, 1)?;
@@ -1322,7 +1322,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_get_result(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_result_metadata(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_result_metadata", &args, 1)?;
@@ -1343,7 +1343,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_result_metadata(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_bind_result(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_stmt_bind_result", args.len(), 2, usize::MAX)?;
@@ -1355,7 +1355,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_bind_result(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_fetch(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_fetch", &args, 1)?;
@@ -1378,7 +1378,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_fetch(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_num_rows(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_num_rows", &args, 1)?;
@@ -1392,7 +1392,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_num_rows(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_affected_rows(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_affected_rows", &args, 1)?;
@@ -1406,7 +1406,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_affected_rows(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_insert_id(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_insert_id", &args, 1)?;
@@ -1420,7 +1420,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_insert_id(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_errno(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_errno", &args, 1)?;
@@ -1431,7 +1431,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_errno(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_error", &args, 1)?;
@@ -1442,7 +1442,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_error(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_sqlstate(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_sqlstate", &args, 1)?;
@@ -1456,7 +1456,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_sqlstate(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_close", &args, 1)?;
@@ -1474,7 +1474,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_stmt_close(
 
 pub(in crate::builtins::modules) fn builtin_mysqli_stmt_free_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mysqli_stmt_free_result", &args, 1)?;

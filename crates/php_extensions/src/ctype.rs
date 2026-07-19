@@ -103,7 +103,7 @@ macro_rules! ctype_builtin {
     ($name:ident, $php_name:literal, $predicate:expr, $allow_digits:literal, $allow_minus:literal) => {
         fn $name(
             context: &mut BuiltinContext<'_>,
-            args: Vec<Value>,
+            args: php_runtime::api::BuiltinArgs,
             span: RuntimeSourceSpan,
         ) -> BuiltinResult {
             if args.len() != 1 {

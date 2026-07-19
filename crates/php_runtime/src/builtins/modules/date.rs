@@ -70,7 +70,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_checkdate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("checkdate", &args, 3)?;
@@ -82,7 +82,7 @@ pub(in crate::builtins::modules) fn builtin_checkdate(
 
 pub(in crate::builtins::modules) fn builtin_date_default_timezone_get(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("date_default_timezone_get", &args, 0)?;
@@ -111,7 +111,7 @@ fn is_leap_year(year: i64) -> bool {
 }
 pub(in crate::builtins::modules) fn builtin_date(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -131,7 +131,7 @@ pub(in crate::builtins::modules) fn builtin_date(
 }
 pub(in crate::builtins::modules) fn builtin_gmdate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -150,7 +150,7 @@ pub(in crate::builtins::modules) fn builtin_gmdate(
 
 fn builtin_strftime(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_strftime_in_timezone(context, args, span, None, "strftime")
@@ -158,7 +158,7 @@ fn builtin_strftime(
 
 fn builtin_gmstrftime(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_strftime_in_timezone(context, args, span, Some("GMT"), "gmstrftime")
@@ -166,7 +166,7 @@ fn builtin_gmstrftime(
 
 fn builtin_strftime_in_timezone(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
     timezone: Option<&str>,
     function: &str,
@@ -194,7 +194,7 @@ fn builtin_strftime_in_timezone(
 }
 pub(in crate::builtins::modules) fn builtin_date_create(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -220,7 +220,7 @@ pub(in crate::builtins::modules) fn builtin_date_create(
 
 pub(in crate::builtins::modules) fn builtin_date_create_immutable_from_format(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -244,7 +244,7 @@ pub(in crate::builtins::modules) fn builtin_date_create_immutable_from_format(
 }
 pub(in crate::builtins::modules) fn builtin_time(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("time", &args, 0)?;
@@ -253,7 +253,7 @@ pub(in crate::builtins::modules) fn builtin_time(
 
 fn builtin_mktime(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     mktime_in_timezone(context, "mktime", args, None)
@@ -261,7 +261,7 @@ fn builtin_mktime(
 
 fn builtin_gmmktime(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     mktime_in_timezone(context, "gmmktime", args, Some("GMT"))
@@ -270,7 +270,7 @@ fn builtin_gmmktime(
 fn mktime_in_timezone(
     context: &mut BuiltinContext<'_>,
     function: &str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     timezone: Option<&str>,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 6 {
@@ -302,7 +302,7 @@ fn mktime_in_timezone(
 }
 pub(in crate::builtins::modules) fn builtin_microtime(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -328,7 +328,7 @@ pub(in crate::builtins::modules) fn builtin_microtime(
 }
 pub(in crate::builtins::modules) fn builtin_hrtime(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -360,7 +360,7 @@ pub(in crate::builtins::modules) fn builtin_hrtime(
 }
 pub(in crate::builtins::modules) fn builtin_strtotime(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -416,7 +416,7 @@ fn parse_datetime_from_format(format: &str, text: &str, timezone: &str) -> Optio
 }
 pub(in crate::builtins::modules) fn builtin_date_format(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("date_format", &args, 2)?;
@@ -433,7 +433,7 @@ pub(in crate::builtins::modules) fn builtin_date_format(
 }
 pub(in crate::builtins::modules) fn builtin_date_diff(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("date_diff", &args, 2)?;
@@ -459,7 +459,7 @@ pub(in crate::builtins::modules) fn builtin_date_diff(
 }
 pub(in crate::builtins::modules) fn builtin_timezone_open(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("timezone_open", &args, 1)?;
@@ -468,7 +468,7 @@ pub(in crate::builtins::modules) fn builtin_timezone_open(
 }
 pub(in crate::builtins::modules) fn builtin_timezone_name_get(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("timezone_name_get", &args, 1)?;
@@ -479,7 +479,7 @@ pub(in crate::builtins::modules) fn builtin_timezone_name_get(
 }
 pub(in crate::builtins::modules) fn builtin_date_interval_format(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("date_interval_format", &args, 2)?;
@@ -500,7 +500,7 @@ pub(in crate::builtins::modules) fn builtin_date_interval_format(
 }
 pub(in crate::builtins::modules) fn builtin_date_default_timezone_set(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("date_default_timezone_set", &args, 1)?;
@@ -513,7 +513,7 @@ pub(in crate::builtins::modules) fn builtin_date_default_timezone_set(
 }
 pub(in crate::builtins::modules) fn builtin_timezone_identifiers_list(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {

@@ -1,6 +1,5 @@
 //! Reflection builtin registry slice.
 
-use crate::Value;
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
@@ -171,7 +170,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_symbol_introspection_requires_vm(
     _context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
+    _args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     Err(BuiltinError::new(

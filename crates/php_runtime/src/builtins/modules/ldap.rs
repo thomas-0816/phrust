@@ -286,7 +286,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_ldap_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -307,7 +307,7 @@ fn builtin_ldap_connect(
 
 fn builtin_ldap_unbind(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -319,7 +319,7 @@ fn builtin_ldap_unbind(
 
 fn builtin_ldap_bind(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 8 {
@@ -342,7 +342,7 @@ fn builtin_ldap_bind(
 
 fn builtin_ldap_bind_ext(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let result = builtin_ldap_bind(context, args, span)?;
@@ -355,7 +355,7 @@ fn builtin_ldap_bind_ext(
 
 fn builtin_ldap_list(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_ldap_query(context, args, LdapSearchScope::OneLevel, "ldap_list")
@@ -363,7 +363,7 @@ fn builtin_ldap_list(
 
 fn builtin_ldap_read(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_ldap_query(context, args, LdapSearchScope::Base, "ldap_read")
@@ -371,7 +371,7 @@ fn builtin_ldap_read(
 
 fn builtin_ldap_search(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     builtin_ldap_query(context, args, LdapSearchScope::Subtree, "ldap_search")
@@ -379,7 +379,7 @@ fn builtin_ldap_search(
 
 fn builtin_ldap_query(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     scope: LdapSearchScope,
     function: &'static str,
 ) -> BuiltinResult {
@@ -404,7 +404,7 @@ fn builtin_ldap_query(
 
 fn builtin_ldap_free_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -416,7 +416,7 @@ fn builtin_ldap_free_result(
 
 fn builtin_ldap_count_entries(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -430,7 +430,7 @@ fn builtin_ldap_count_entries(
 
 fn builtin_ldap_count_references(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -443,7 +443,7 @@ fn builtin_ldap_count_references(
 
 fn builtin_ldap_first_entry(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -461,7 +461,7 @@ fn builtin_ldap_first_entry(
 
 fn builtin_ldap_next_entry(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -479,7 +479,7 @@ fn builtin_ldap_next_entry(
 
 fn builtin_ldap_first_reference(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -492,7 +492,7 @@ fn builtin_ldap_first_reference(
 
 fn builtin_ldap_next_reference(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -505,7 +505,7 @@ fn builtin_ldap_next_reference(
 
 fn builtin_ldap_get_entries(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -521,7 +521,7 @@ fn builtin_ldap_get_entries(
 
 fn builtin_ldap_get_dn(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -537,7 +537,7 @@ fn builtin_ldap_get_dn(
 
 fn builtin_ldap_get_attributes(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -555,7 +555,7 @@ fn builtin_ldap_get_attributes(
 
 fn builtin_ldap_get_values(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -569,7 +569,7 @@ fn builtin_ldap_get_values(
 
 fn builtin_ldap_first_attribute(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -582,7 +582,7 @@ fn builtin_ldap_first_attribute(
 
 fn builtin_ldap_next_attribute(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -595,7 +595,7 @@ fn builtin_ldap_next_attribute(
 
 fn builtin_ldap_mutation_bool(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -609,7 +609,7 @@ fn builtin_ldap_mutation_bool(
 
 fn builtin_ldap_mutation_result(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let _ = builtin_ldap_mutation_bool(context, args, span)?;
@@ -618,7 +618,7 @@ fn builtin_ldap_mutation_result(
 
 fn builtin_ldap_compare(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 4 || args.len() > 5 {
@@ -635,7 +635,7 @@ fn builtin_ldap_compare(
 
 fn builtin_ldap_set_option(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -652,7 +652,7 @@ fn builtin_ldap_set_option(
 
 fn builtin_ldap_get_option(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -669,7 +669,7 @@ fn builtin_ldap_get_option(
 
 fn builtin_ldap_errno(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -681,7 +681,7 @@ fn builtin_ldap_errno(
 
 fn builtin_ldap_error(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -693,7 +693,7 @@ fn builtin_ldap_error(
 
 fn builtin_ldap_err2str(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -707,7 +707,7 @@ fn builtin_ldap_err2str(
 
 fn builtin_ldap_start_tls(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -725,7 +725,7 @@ fn builtin_ldap_start_tls(
 
 fn builtin_ldap_escape(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -747,7 +747,7 @@ fn builtin_ldap_escape(
 
 fn builtin_ldap_explode_dn(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -774,7 +774,7 @@ fn builtin_ldap_explode_dn(
 
 fn builtin_ldap_dn2ufn(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -792,7 +792,7 @@ fn builtin_ldap_dn2ufn(
 
 fn builtin_ldap_identity(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -806,7 +806,7 @@ fn builtin_ldap_identity(
 
 fn builtin_ldap_set_rebind_proc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -819,7 +819,7 @@ fn builtin_ldap_set_rebind_proc(
 
 fn builtin_ldap_parse_result(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 3 || args.len() > 6 {
@@ -836,7 +836,7 @@ fn builtin_ldap_parse_result(
 
 fn builtin_ldap_parse_reference(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -850,7 +850,7 @@ fn builtin_ldap_parse_reference(
 
 fn builtin_ldap_parse_exop(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -865,7 +865,7 @@ fn builtin_ldap_parse_exop(
 
 fn builtin_ldap_exop(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 6 {
@@ -882,7 +882,7 @@ fn builtin_ldap_exop(
 
 fn builtin_ldap_exop_passwd(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 5 {
@@ -896,7 +896,7 @@ fn builtin_ldap_exop_passwd(
 
 fn builtin_ldap_exop_whoami(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -910,7 +910,7 @@ fn builtin_ldap_exop_whoami(
 
 fn builtin_ldap_exop_refresh(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -1149,7 +1149,7 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    fn call(context: &mut BuiltinContext<'_>, name: &str, args: Vec<Value>) -> Value {
+    fn call(context: &mut BuiltinContext<'_>, name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

@@ -64,7 +64,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_grapheme_strlen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("grapheme_strlen", &args, 1)?;
@@ -74,7 +74,7 @@ fn builtin_grapheme_strlen(
 
 fn builtin_intl_get_error_message(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("intl_get_error_message", &args, 0)?;
@@ -102,7 +102,7 @@ pub fn primary_language(locale: &str) -> String {
 
 fn builtin_locale_get_primary_language(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("locale_get_primary_language", &args, 1)?;
@@ -112,7 +112,7 @@ fn builtin_locale_get_primary_language(
 
 fn builtin_intl_get_error_code(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("intl_get_error_code", &args, 0)?;
@@ -121,7 +121,7 @@ fn builtin_intl_get_error_code(
 
 fn builtin_normalizer_normalize(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -143,7 +143,7 @@ fn builtin_normalizer_normalize(
 
 fn builtin_normalizer_is_normalized(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -165,7 +165,7 @@ fn builtin_normalizer_is_normalized(
 
 fn builtin_grapheme_substr(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -196,7 +196,7 @@ fn builtin_grapheme_substr(
 
 fn builtin_grapheme_strpos(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     grapheme_strpos_impl("grapheme_strpos", args, false)
@@ -204,7 +204,7 @@ fn builtin_grapheme_strpos(
 
 fn builtin_grapheme_stripos(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     grapheme_strpos_impl("grapheme_stripos", args, true)
@@ -212,7 +212,7 @@ fn builtin_grapheme_stripos(
 
 fn builtin_transliterator_transliterate(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("transliterator_transliterate", &args, 2)?;
@@ -263,7 +263,7 @@ fn graphemes(input: &str) -> Vec<&str> {
 
 fn grapheme_strpos_impl(
     function: &'static str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     case_insensitive: bool,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {

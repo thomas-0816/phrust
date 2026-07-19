@@ -124,7 +124,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_gmp_init(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -136,7 +136,7 @@ fn builtin_gmp_init(
 
 fn builtin_gmp_import(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -158,7 +158,7 @@ fn builtin_gmp_import(
 
 fn builtin_gmp_export(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -182,7 +182,7 @@ fn builtin_gmp_export(
 
 fn builtin_gmp_strval(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -204,7 +204,7 @@ fn builtin_gmp_strval(
 
 fn builtin_gmp_intval(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -221,7 +221,7 @@ macro_rules! gmp_binary {
     ($name:ident, $php_name:literal, $operation:expr) => {
         fn $name(
             _context: &mut BuiltinContext<'_>,
-            args: Vec<Value>,
+            args: crate::builtins::BuiltinArgs,
             _span: RuntimeSourceSpan,
         ) -> BuiltinResult {
             if args.len() != 2 {
@@ -266,7 +266,7 @@ gmp_binary!(
 
 fn builtin_gmp_div_q(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -278,7 +278,7 @@ fn builtin_gmp_div_q(
 
 fn builtin_gmp_div_r(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -290,7 +290,7 @@ fn builtin_gmp_div_r(
 
 fn builtin_gmp_div_qr(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -305,7 +305,7 @@ fn builtin_gmp_div_qr(
 
 fn builtin_gmp_mod(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -329,7 +329,7 @@ fn builtin_gmp_mod(
 
 fn builtin_gmp_abs(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -340,7 +340,7 @@ fn builtin_gmp_abs(
 
 fn builtin_gmp_neg(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -351,7 +351,7 @@ fn builtin_gmp_neg(
 
 fn builtin_gmp_com(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -362,7 +362,7 @@ fn builtin_gmp_com(
 
 fn builtin_gmp_pow(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -382,7 +382,7 @@ fn builtin_gmp_pow(
 
 fn builtin_gmp_powm(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -403,7 +403,7 @@ fn builtin_gmp_powm(
 
 fn builtin_gmp_cmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -420,7 +420,7 @@ fn builtin_gmp_cmp(
 
 fn builtin_gmp_sign(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -437,7 +437,7 @@ fn builtin_gmp_sign(
 
 fn builtin_gmp_gcd(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -451,7 +451,7 @@ fn builtin_gmp_gcd(
 
 fn builtin_gmp_gcdext(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -470,7 +470,7 @@ fn builtin_gmp_gcdext(
 
 fn builtin_gmp_lcm(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -487,7 +487,7 @@ fn builtin_gmp_lcm(
 
 fn builtin_gmp_jacobi(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_symbol("gmp_jacobi", args)
@@ -495,7 +495,7 @@ fn builtin_gmp_jacobi(
 
 fn builtin_gmp_legendre(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_symbol("gmp_legendre", args)
@@ -503,7 +503,7 @@ fn builtin_gmp_legendre(
 
 fn builtin_gmp_kronecker(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     binary_symbol("gmp_kronecker", args)
@@ -511,7 +511,7 @@ fn builtin_gmp_kronecker(
 
 fn builtin_gmp_invert(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -536,7 +536,7 @@ fn builtin_gmp_invert(
 
 fn builtin_gmp_sqrt(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -551,7 +551,7 @@ fn builtin_gmp_sqrt(
 
 fn builtin_gmp_sqrtrem(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -568,7 +568,7 @@ fn builtin_gmp_sqrtrem(
 
 fn builtin_gmp_root(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -584,7 +584,7 @@ fn builtin_gmp_root(
 
 fn builtin_gmp_rootrem(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -602,7 +602,7 @@ fn builtin_gmp_rootrem(
 
 fn builtin_gmp_perfect_square(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -618,7 +618,7 @@ fn builtin_gmp_perfect_square(
 
 fn builtin_gmp_perfect_power(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -639,7 +639,7 @@ fn builtin_gmp_perfect_power(
 
 fn builtin_gmp_prob_prime(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -651,7 +651,7 @@ fn builtin_gmp_prob_prime(
 
 fn builtin_gmp_nextprime(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -666,7 +666,7 @@ fn builtin_gmp_nextprime(
 
 fn builtin_gmp_fact(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -685,7 +685,7 @@ fn builtin_gmp_fact(
 
 fn builtin_gmp_binomial(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -710,7 +710,7 @@ fn builtin_gmp_binomial(
 
 fn builtin_gmp_testbit(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -725,7 +725,7 @@ fn builtin_gmp_testbit(
 
 fn builtin_gmp_popcount(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -740,7 +740,7 @@ fn builtin_gmp_popcount(
 
 fn builtin_gmp_hamdist(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -756,7 +756,7 @@ fn builtin_gmp_hamdist(
 
 fn builtin_gmp_scan1(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     scan_bit("gmp_scan1", args, true)
@@ -764,7 +764,7 @@ fn builtin_gmp_scan1(
 
 fn builtin_gmp_scan0(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     scan_bit("gmp_scan0", args, false)
@@ -772,7 +772,7 @@ fn builtin_gmp_scan0(
 
 fn builtin_gmp_random_bits(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -791,7 +791,7 @@ fn builtin_gmp_random_bits(
 
 fn builtin_gmp_random_range(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -811,7 +811,7 @@ fn builtin_gmp_random_range(
 
 fn builtin_gmp_random_seed(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -821,7 +821,7 @@ fn builtin_gmp_random_seed(
     Ok(Value::Null)
 }
 
-fn binary_symbol(name: &'static str, args: Vec<Value>) -> BuiltinResult {
+fn binary_symbol(name: &'static str, args: crate::builtins::BuiltinArgs) -> BuiltinResult {
     if args.len() != 2 {
         return Err(arity_error(name, "two arguments"));
     }
@@ -1056,7 +1056,7 @@ fn count_ones(mut value: BigInt) -> i64 {
     count
 }
 
-fn scan_bit(name: &str, args: Vec<Value>, find_one: bool) -> BuiltinResult {
+fn scan_bit(name: &str, args: crate::builtins::BuiltinArgs, find_one: bool) -> BuiltinResult {
     if args.len() != 2 {
         return Err(arity_error(name, "two arguments"));
     }

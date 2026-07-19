@@ -47,7 +47,7 @@ macro_rules! json_builtin_adapter {
     ($entry:ident => $implementation:ident) => {
         pub(in crate::builtins::modules) fn $entry(
             context: &mut BuiltinContext<'_>,
-            args: Vec<Value>,
+            args: crate::builtins::BuiltinArgs,
             span: RuntimeSourceSpan,
         ) -> BuiltinResult {
             let mut services = context.json_services();
@@ -64,7 +64,7 @@ json_builtin_adapter!(builtin_json_last_error_msg => json_last_error_msg);
 
 fn json_encode(
     context: &mut JsonBuiltinServices<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -114,7 +114,7 @@ fn json_encode(
 }
 fn json_decode(
     context: &mut JsonBuiltinServices<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 4 {
@@ -388,7 +388,7 @@ fn parse_json_hex4(bytes: &[u8]) -> Option<u16> {
 
 fn json_validate(
     context: &mut JsonBuiltinServices<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -460,7 +460,7 @@ fn json_validate(
 #[inline(always)]
 fn json_last_error(
     context: &mut JsonBuiltinServices<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("json_last_error", &args, 0)?;
@@ -469,7 +469,7 @@ fn json_last_error(
 #[inline(always)]
 fn json_last_error_msg(
     context: &mut JsonBuiltinServices<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("json_last_error_msg", &args, 0)?;
@@ -481,7 +481,7 @@ mod tests {
     use super::*;
     use crate::{OutputBuffer, builtins::BuiltinContext};
 
-    fn call(name: &str, args: Vec<Value>) -> Value {
+    fn call(name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES

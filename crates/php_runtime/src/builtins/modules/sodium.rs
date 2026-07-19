@@ -239,7 +239,7 @@ const SODIUM_BASE64_VARIANT_URLSAFE_NO_PADDING: i64 = 7;
 
 fn builtin_sodium_crypto_generichash(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -286,7 +286,7 @@ fn builtin_sodium_crypto_generichash(
 
 fn builtin_sodium_crypto_generichash_keygen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -304,7 +304,7 @@ fn builtin_sodium_crypto_generichash_keygen(
 
 fn builtin_sodium_crypto_secretbox_keygen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     sodium_no_arg_keygen(
@@ -317,7 +317,7 @@ fn builtin_sodium_crypto_secretbox_keygen(
 
 fn builtin_sodium_crypto_secretbox(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -357,7 +357,7 @@ fn builtin_sodium_crypto_secretbox(
 
 fn builtin_sodium_crypto_secretbox_open(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -404,7 +404,7 @@ fn builtin_sodium_crypto_secretbox_open(
 
 fn builtin_sodium_crypto_auth_keygen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     sodium_no_arg_keygen(
@@ -417,7 +417,7 @@ fn builtin_sodium_crypto_auth_keygen(
 
 fn builtin_sodium_crypto_shorthash_keygen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     sodium_no_arg_keygen(
@@ -430,7 +430,7 @@ fn builtin_sodium_crypto_shorthash_keygen(
 
 fn builtin_sodium_crypto_box_keypair(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -449,7 +449,7 @@ fn builtin_sodium_crypto_box_keypair(
 
 fn builtin_sodium_crypto_box_seed_keypair(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -483,7 +483,7 @@ fn builtin_sodium_crypto_box_seed_keypair(
 
 fn builtin_sodium_crypto_box_keypair_from_secretkey_and_publickey(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -520,7 +520,7 @@ fn builtin_sodium_crypto_box_keypair_from_secretkey_and_publickey(
 
 fn builtin_sodium_crypto_box_secretkey(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -533,7 +533,7 @@ fn builtin_sodium_crypto_box_secretkey(
 
 fn builtin_sodium_crypto_box_publickey(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -546,7 +546,7 @@ fn builtin_sodium_crypto_box_publickey(
 
 fn builtin_sodium_crypto_box_publickey_from_secretkey(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -575,7 +575,7 @@ fn builtin_sodium_crypto_box_publickey_from_secretkey(
 
 fn builtin_sodium_crypto_box(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -611,7 +611,7 @@ fn builtin_sodium_crypto_box(
 
 fn builtin_sodium_crypto_box_open(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -651,7 +651,7 @@ fn builtin_sodium_crypto_box_open(
 
 fn builtin_sodium_crypto_box_seal(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -683,7 +683,7 @@ fn builtin_sodium_crypto_box_seal(
 
 fn builtin_sodium_crypto_box_seal_open(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -714,7 +714,7 @@ fn builtin_sodium_crypto_box_seal_open(
 
 fn builtin_sodium_crypto_kdf_keygen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     sodium_no_arg_keygen(
@@ -727,7 +727,7 @@ fn builtin_sodium_crypto_kdf_keygen(
 
 fn builtin_sodium_crypto_kdf_derive_from_key(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -783,7 +783,7 @@ fn builtin_sodium_crypto_kdf_derive_from_key(
 
 fn builtin_sodium_crypto_aead_xchacha20poly1305_ietf_keygen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     sodium_no_arg_keygen(
@@ -796,7 +796,7 @@ fn builtin_sodium_crypto_aead_xchacha20poly1305_ietf_keygen(
 
 fn builtin_sodium_crypto_aead_xchacha20poly1305_ietf_encrypt(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -859,7 +859,7 @@ fn builtin_sodium_crypto_aead_xchacha20poly1305_ietf_encrypt(
 
 fn builtin_sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 4 {
@@ -925,7 +925,7 @@ fn builtin_sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(
 
 fn builtin_sodium_crypto_pwhash(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 5 || args.len() > 6 {
@@ -979,7 +979,7 @@ fn builtin_sodium_crypto_pwhash(
 
 fn builtin_sodium_crypto_pwhash_str(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -1012,7 +1012,7 @@ fn builtin_sodium_crypto_pwhash_str(
 
 fn builtin_sodium_crypto_pwhash_str_verify(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1039,7 +1039,7 @@ fn builtin_sodium_crypto_pwhash_str_verify(
 
 fn builtin_sodium_crypto_pwhash_str_needs_rehash(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -1068,7 +1068,7 @@ fn builtin_sodium_crypto_pwhash_str_needs_rehash(
 
 fn builtin_sodium_crypto_pwhash_scryptsalsa208sha256(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 5 {
@@ -1118,7 +1118,7 @@ fn builtin_sodium_crypto_pwhash_scryptsalsa208sha256(
 
 fn builtin_sodium_crypto_pwhash_scryptsalsa208sha256_str(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -1158,7 +1158,7 @@ fn builtin_sodium_crypto_pwhash_scryptsalsa208sha256_str(
 
 fn builtin_sodium_crypto_pwhash_scryptsalsa208sha256_str_verify(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1191,7 +1191,7 @@ fn builtin_sodium_crypto_pwhash_scryptsalsa208sha256_str_verify(
 
 fn builtin_sodium_crypto_sign_verify_detached(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -1222,7 +1222,7 @@ fn builtin_sodium_crypto_sign_verify_detached(
 
 fn builtin_sodium_crypto_sign_detached(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1245,7 +1245,7 @@ fn builtin_sodium_crypto_sign_detached(
 
 fn builtin_sodium_bin2hex(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -1257,7 +1257,7 @@ fn builtin_sodium_bin2hex(
 
 fn builtin_sodium_hex2bin(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -1291,7 +1291,7 @@ fn builtin_sodium_hex2bin(
 
 fn builtin_sodium_bin2base64(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1306,7 +1306,7 @@ fn builtin_sodium_bin2base64(
 
 fn builtin_sodium_base642bin(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -1336,7 +1336,7 @@ fn builtin_sodium_base642bin(
 
 fn builtin_sodium_memzero(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -1355,7 +1355,7 @@ fn builtin_sodium_memzero(
 
 fn builtin_sodium_memcmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1375,7 +1375,7 @@ fn builtin_sodium_memcmp(
 
 fn builtin_sodium_compare(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1393,7 +1393,7 @@ fn builtin_sodium_compare(
 
 fn builtin_sodium_increment(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -1412,7 +1412,7 @@ fn builtin_sodium_increment(
 
 fn builtin_sodium_add(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1435,7 +1435,7 @@ fn builtin_sodium_add(
 
 fn builtin_sodium_pad(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1465,7 +1465,7 @@ fn builtin_sodium_pad(
 
 fn builtin_sodium_unpad(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -1503,7 +1503,7 @@ fn sodium_no_arg_keygen(
     name: &str,
     length: usize,
     keygen: impl FnOnce(*mut u8),
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
 ) -> BuiltinResult {
     if !args.is_empty() {
         return Err(arity_error(name, "zero arguments"));
@@ -1666,7 +1666,7 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    fn call(name: &str, args: Vec<Value>, context: &mut BuiltinContext<'_>) -> BuiltinResult {
+    fn call(name: &str, args: crate::builtins::BuiltinArgs, context: &mut BuiltinContext<'_>) -> BuiltinResult {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

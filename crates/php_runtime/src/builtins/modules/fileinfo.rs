@@ -173,7 +173,7 @@ pub(in crate::builtins::modules) const IMAGETYPE_SVG: i64 = 21;
 
 fn builtin_finfo_open(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -199,7 +199,7 @@ fn builtin_finfo_open(
 
 fn builtin_finfo_close(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -210,7 +210,7 @@ fn builtin_finfo_close(
 
 fn builtin_finfo_buffer(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -237,7 +237,7 @@ fn builtin_finfo_buffer(
 
 fn builtin_finfo_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -264,7 +264,7 @@ fn builtin_finfo_file(
 
 fn builtin_finfo_set_flags(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -287,7 +287,7 @@ fn builtin_finfo_set_flags(
 
 fn builtin_mime_content_type(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -312,7 +312,7 @@ fn builtin_mime_content_type(
 
 fn builtin_image_type_to_mime_type(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -326,7 +326,7 @@ fn builtin_image_type_to_mime_type(
 
 fn builtin_image_type_to_extension(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {

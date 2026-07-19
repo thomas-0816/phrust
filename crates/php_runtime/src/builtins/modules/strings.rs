@@ -226,7 +226,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_strlen(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strlen", &args, 1)?;
@@ -236,7 +236,7 @@ pub(in crate::builtins::modules) fn builtin_strlen(
 
 pub(in crate::builtins::modules) fn builtin_highlight_string(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -400,7 +400,7 @@ fn push_highlight_escaped(output: &mut String, text: &str) {
 
 pub(in crate::builtins::modules) fn builtin_strtoupper(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strtoupper", &args, 1)?;
@@ -411,7 +411,7 @@ pub(in crate::builtins::modules) fn builtin_strtoupper(
 
 pub(in crate::builtins::modules) fn builtin_trim(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     trim_builtin(context, "trim", args, true, true, span)
@@ -419,7 +419,7 @@ pub(in crate::builtins::modules) fn builtin_trim(
 
 pub(in crate::builtins::modules) fn builtin_ltrim(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     trim_builtin(context, "ltrim", args, true, false, span)
@@ -427,7 +427,7 @@ pub(in crate::builtins::modules) fn builtin_ltrim(
 
 pub(in crate::builtins::modules) fn builtin_rtrim(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     trim_builtin(context, "rtrim", args, false, true, span)
@@ -435,7 +435,7 @@ pub(in crate::builtins::modules) fn builtin_rtrim(
 
 pub(in crate::builtins::modules) fn builtin_explode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -486,7 +486,7 @@ pub(in crate::builtins::modules) fn builtin_explode(
 
 pub(in crate::builtins::modules) fn builtin_implode(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -525,7 +525,7 @@ pub(in crate::builtins::modules) fn builtin_implode(
 
 pub(in crate::builtins::modules) fn builtin_str_replace(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -553,7 +553,7 @@ pub(in crate::builtins::modules) fn builtin_str_replace(
 
 pub(in crate::builtins::modules) fn builtin_strtr(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() == 2 {
@@ -610,7 +610,7 @@ pub(in crate::builtins::modules) fn builtin_strtr(
 
 pub(in crate::builtins::modules) fn builtin_strip_tags(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -626,7 +626,7 @@ pub(in crate::builtins::modules) fn builtin_strip_tags(
 
 pub(in crate::builtins::modules) fn builtin_strtok(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -662,7 +662,7 @@ pub(in crate::builtins::modules) fn builtin_strtok(
 
 pub(in crate::builtins::modules) fn builtin_strtolower(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strtolower", &args, 1)?;
@@ -673,7 +673,7 @@ pub(in crate::builtins::modules) fn builtin_strtolower(
 
 pub(in crate::builtins::modules) fn builtin_ucfirst(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("ucfirst", &args, 1)?;
@@ -685,7 +685,7 @@ pub(in crate::builtins::modules) fn builtin_ucfirst(
 
 pub(in crate::builtins::modules) fn builtin_lcfirst(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("lcfirst", &args, 1)?;
@@ -697,7 +697,7 @@ pub(in crate::builtins::modules) fn builtin_lcfirst(
 
 pub(in crate::builtins::modules) fn builtin_ucwords(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -728,7 +728,7 @@ pub(in crate::builtins::modules) fn builtin_ucwords(
 
 pub(in crate::builtins::modules) fn builtin_str_repeat(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("str_repeat", &args, 2)?;
@@ -745,7 +745,7 @@ pub(in crate::builtins::modules) fn builtin_str_repeat(
 
 pub(in crate::builtins::modules) fn builtin_str_split(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -775,7 +775,7 @@ pub(in crate::builtins::modules) fn builtin_str_split(
 
 pub(in crate::builtins::modules) fn builtin_str_pad(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -823,7 +823,7 @@ pub(in crate::builtins::modules) fn builtin_str_pad(
 
 pub(in crate::builtins::modules) fn builtin_strrev(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strrev", &args, 1)?;
@@ -834,7 +834,7 @@ pub(in crate::builtins::modules) fn builtin_strrev(
 
 pub(in crate::builtins::modules) fn builtin_quotemeta(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("quotemeta", &args, 1)?;
@@ -854,7 +854,7 @@ pub(in crate::builtins::modules) fn builtin_quotemeta(
 
 pub(in crate::builtins::modules) fn builtin_bin2hex(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("bin2hex", &args, 1)?;
@@ -865,7 +865,7 @@ pub(in crate::builtins::modules) fn builtin_bin2hex(
 
 pub(in crate::builtins::modules) fn builtin_hex2bin(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hex2bin", &args, 1)?;
@@ -895,7 +895,7 @@ pub(in crate::builtins::modules) fn builtin_hex2bin(
 
 pub(in crate::builtins::modules) fn builtin_quoted_printable_decode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("quoted_printable_decode", &args, 1)?;
@@ -930,7 +930,7 @@ pub(in crate::builtins::modules) fn builtin_quoted_printable_decode(
 
 pub(in crate::builtins::modules) fn builtin_ord(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("ord", &args, 1)?;
@@ -945,7 +945,7 @@ pub(in crate::builtins::modules) fn builtin_ord(
 
 pub(in crate::builtins::modules) fn builtin_chr(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("chr", &args, 1)?;
@@ -955,7 +955,7 @@ pub(in crate::builtins::modules) fn builtin_chr(
 
 pub(in crate::builtins::modules) fn builtin_pack(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -1016,7 +1016,7 @@ pub(in crate::builtins::modules) fn builtin_pack(
 
 pub(in crate::builtins::modules) fn builtin_unpack(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -1195,7 +1195,7 @@ fn unpack_hex_result_key(spec: &PackFormatSpec, next_numeric_key: &mut i64) -> A
 
 pub(in crate::builtins::modules) fn builtin_md5(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1221,7 +1221,7 @@ pub(in crate::builtins::modules) fn builtin_md5(
 
 pub(in crate::builtins::modules) fn builtin_sha1(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1247,7 +1247,7 @@ pub(in crate::builtins::modules) fn builtin_sha1(
 
 pub(in crate::builtins::modules) fn builtin_crc32(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("crc32", &args, 1)?;
@@ -1257,7 +1257,7 @@ pub(in crate::builtins::modules) fn builtin_crc32(
 
 pub(in crate::builtins::modules) fn builtin_hash(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -1282,7 +1282,7 @@ pub(in crate::builtins::modules) fn builtin_hash(
 
 pub(in crate::builtins::modules) fn builtin_hash_hmac(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -1307,7 +1307,7 @@ pub(in crate::builtins::modules) fn builtin_hash_hmac(
 
 pub(in crate::builtins::modules) fn builtin_base64_encode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("base64_encode", &args, 1)?;
@@ -1320,7 +1320,7 @@ pub(in crate::builtins::modules) fn builtin_base64_encode(
 
 pub(in crate::builtins::modules) fn builtin_base64_decode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1354,7 +1354,7 @@ pub(in crate::builtins::modules) fn builtin_base64_decode(
 
 pub(in crate::builtins::modules) fn builtin_htmlspecialchars(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -1387,7 +1387,7 @@ pub(in crate::builtins::modules) fn builtin_htmlspecialchars(
 
 pub(in crate::builtins::modules) fn builtin_htmlentities(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -1415,7 +1415,7 @@ pub(in crate::builtins::modules) fn builtin_htmlentities(
 
 pub(in crate::builtins::modules) fn builtin_html_entity_decode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=3).contains(&args.len()) {
@@ -1435,7 +1435,7 @@ pub(in crate::builtins::modules) fn builtin_html_entity_decode(
 
 pub(in crate::builtins::modules) fn builtin_get_html_translation_table(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 3 {
@@ -1463,7 +1463,7 @@ pub(in crate::builtins::modules) fn builtin_get_html_translation_table(
 
 pub(in crate::builtins::modules) fn builtin_htmlspecialchars_decode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1483,7 +1483,7 @@ pub(in crate::builtins::modules) fn builtin_htmlspecialchars_decode(
 
 pub(in crate::builtins::modules) fn builtin_urlencode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("urlencode", &args, 1)?;
@@ -1495,7 +1495,7 @@ pub(in crate::builtins::modules) fn builtin_urlencode(
 
 pub(in crate::builtins::modules) fn builtin_rawurlencode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("rawurlencode", &args, 1)?;
@@ -1507,7 +1507,7 @@ pub(in crate::builtins::modules) fn builtin_rawurlencode(
 
 pub(in crate::builtins::modules) fn builtin_urldecode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("urldecode", &args, 1)?;
@@ -1519,7 +1519,7 @@ pub(in crate::builtins::modules) fn builtin_urldecode(
 
 pub(in crate::builtins::modules) fn builtin_rawurldecode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("rawurldecode", &args, 1)?;
@@ -1531,7 +1531,7 @@ pub(in crate::builtins::modules) fn builtin_rawurldecode(
 
 pub(in crate::builtins::modules) fn builtin_parse_url(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1568,7 +1568,7 @@ pub(in crate::builtins::modules) fn builtin_parse_url(
 
 pub(in crate::builtins::modules) fn builtin_parse_str(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("parse_str", &args, 2)?;
@@ -1610,7 +1610,7 @@ fn input_ini_options(context: &BuiltinContext<'_>) -> RuntimeIniOptions {
 
 pub(in crate::builtins::modules) fn builtin_http_build_query(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -1652,7 +1652,7 @@ pub(in crate::builtins::modules) fn builtin_http_build_query(
 
 pub(in crate::builtins::modules) fn builtin_substr(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -1674,7 +1674,7 @@ pub(in crate::builtins::modules) fn builtin_substr(
 
 pub(in crate::builtins::modules) fn builtin_strpos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position(context, "strpos", args, false, false, span)
@@ -1682,7 +1682,7 @@ pub(in crate::builtins::modules) fn builtin_strpos(
 
 pub(in crate::builtins::modules) fn builtin_stripos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position(context, "stripos", args, true, false, span)
@@ -1690,7 +1690,7 @@ pub(in crate::builtins::modules) fn builtin_stripos(
 
 pub(in crate::builtins::modules) fn builtin_strrpos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position(context, "strrpos", args, false, true, span)
@@ -1698,7 +1698,7 @@ pub(in crate::builtins::modules) fn builtin_strrpos(
 
 pub(in crate::builtins::modules) fn builtin_strripos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position(context, "strripos", args, true, true, span)
@@ -1706,7 +1706,7 @@ pub(in crate::builtins::modules) fn builtin_strripos(
 
 pub(in crate::builtins::modules) fn builtin_strrchr(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -1734,7 +1734,7 @@ pub(in crate::builtins::modules) fn builtin_strrchr(
 
 pub(in crate::builtins::modules) fn builtin_strstr(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_search_slice(context, "strstr", args, false, span)
@@ -1742,7 +1742,7 @@ pub(in crate::builtins::modules) fn builtin_strstr(
 
 pub(in crate::builtins::modules) fn builtin_stristr(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_search_slice(context, "stristr", args, true, span)
@@ -1750,7 +1750,7 @@ pub(in crate::builtins::modules) fn builtin_stristr(
 
 pub(in crate::builtins::modules) fn builtin_strpbrk(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strpbrk", &args, 2)?;
@@ -1773,7 +1773,7 @@ pub(in crate::builtins::modules) fn builtin_strpbrk(
 
 pub(in crate::builtins::modules) fn builtin_strspn(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_span("strspn", args, true)
@@ -1781,7 +1781,7 @@ pub(in crate::builtins::modules) fn builtin_strspn(
 
 pub(in crate::builtins::modules) fn builtin_strcspn(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_span("strcspn", args, false)
@@ -1789,7 +1789,7 @@ pub(in crate::builtins::modules) fn builtin_strcspn(
 
 pub(in crate::builtins::modules) fn builtin_substr_count(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -1853,7 +1853,7 @@ pub(in crate::builtins::modules) fn substr_count_length(
 
 pub(in crate::builtins::modules) fn builtin_substr_compare(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=5).contains(&args.len()) {
@@ -1914,7 +1914,7 @@ pub(in crate::builtins::modules) fn substr_compare_offset(
 
 pub(in crate::builtins::modules) fn builtin_str_contains(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("str_contains", &args, 2)?;
@@ -1927,7 +1927,7 @@ pub(in crate::builtins::modules) fn builtin_str_contains(
 
 pub(in crate::builtins::modules) fn builtin_str_starts_with(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("str_starts_with", &args, 2)?;
@@ -1940,7 +1940,7 @@ pub(in crate::builtins::modules) fn builtin_str_starts_with(
 
 pub(in crate::builtins::modules) fn builtin_str_ends_with(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("str_ends_with", &args, 2)?;
@@ -1953,7 +1953,7 @@ pub(in crate::builtins::modules) fn builtin_str_ends_with(
 
 pub(in crate::builtins::modules) fn builtin_strcmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strcmp", &args, 2)?;
@@ -1962,7 +1962,7 @@ pub(in crate::builtins::modules) fn builtin_strcmp(
 
 pub(in crate::builtins::modules) fn builtin_strncmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strncmp", &args, 3)?;
@@ -1979,7 +1979,7 @@ pub(in crate::builtins::modules) fn builtin_strncmp(
 
 pub(in crate::builtins::modules) fn builtin_strcasecmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strcasecmp", &args, 2)?;
@@ -1988,7 +1988,7 @@ pub(in crate::builtins::modules) fn builtin_strcasecmp(
 
 pub(in crate::builtins::modules) fn builtin_strncasecmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strncasecmp", &args, 3)?;
@@ -2005,7 +2005,7 @@ pub(in crate::builtins::modules) fn builtin_strncasecmp(
 
 pub(in crate::builtins::modules) fn builtin_version_compare(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -2026,7 +2026,7 @@ pub(in crate::builtins::modules) fn builtin_version_compare(
 
 pub(in crate::builtins::modules) fn builtin_addslashes(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("addslashes", &args, 1)?;
@@ -2047,7 +2047,7 @@ pub(in crate::builtins::modules) fn builtin_addslashes(
 
 pub(in crate::builtins::modules) fn builtin_addcslashes(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("addcslashes", &args, 2)?;
@@ -2148,7 +2148,7 @@ fn push_addcslashes_escape(output: &mut Vec<u8>, byte: u8) {
 
 pub(in crate::builtins::modules) fn builtin_stripslashes(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stripslashes", &args, 1)?;
@@ -2158,7 +2158,7 @@ pub(in crate::builtins::modules) fn builtin_stripslashes(
 
 pub(in crate::builtins::modules) fn builtin_stripcslashes(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("stripcslashes", &args, 1)?;
@@ -2168,7 +2168,7 @@ pub(in crate::builtins::modules) fn builtin_stripcslashes(
 
 pub(in crate::builtins::modules) fn builtin_strnatcmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strnatcmp", &args, 2)?;
@@ -2177,7 +2177,7 @@ pub(in crate::builtins::modules) fn builtin_strnatcmp(
 
 pub(in crate::builtins::modules) fn builtin_strnatcasecmp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strnatcasecmp", &args, 2)?;
@@ -2186,7 +2186,7 @@ pub(in crate::builtins::modules) fn builtin_strnatcasecmp(
 
 pub(in crate::builtins::modules) fn builtin_wordwrap(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -2253,7 +2253,7 @@ pub(in crate::builtins::modules) fn builtin_wordwrap(
 
 pub(in crate::builtins::modules) fn builtin_substr_replace(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -2305,7 +2305,7 @@ pub(in crate::builtins::modules) fn builtin_substr_replace(
 
 pub(in crate::builtins::modules) fn builtin_convert_uuencode(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("convert_uuencode", &args, 1)?;
@@ -2315,7 +2315,7 @@ pub(in crate::builtins::modules) fn builtin_convert_uuencode(
 
 pub(in crate::builtins::modules) fn builtin_convert_uudecode(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("convert_uudecode", &args, 1)?;
@@ -2458,7 +2458,7 @@ pub(in crate::builtins::modules) fn version_operator_matches(
 
 pub(in crate::builtins::modules) fn builtin_printf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -2473,7 +2473,7 @@ pub(in crate::builtins::modules) fn builtin_printf(
 
 pub(in crate::builtins::modules) fn builtin_sprintf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -2491,7 +2491,7 @@ pub(in crate::builtins::modules) fn builtin_sprintf(
 
 pub(in crate::builtins::modules) fn builtin_vprintf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("vprintf", &args, 2)?;
@@ -2505,7 +2505,7 @@ pub(in crate::builtins::modules) fn builtin_vprintf(
 
 pub(in crate::builtins::modules) fn builtin_vsprintf(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("vsprintf", &args, 2)?;
@@ -2522,7 +2522,7 @@ pub(in crate::builtins::modules) fn builtin_vsprintf(
 
 pub(in crate::builtins::modules) fn builtin_strval(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("strval", &args, 1)?;

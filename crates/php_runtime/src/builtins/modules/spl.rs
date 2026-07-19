@@ -62,7 +62,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_spl_autoload_requires_vm(
     _context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
+    _args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     Err(BuiltinError::new(
@@ -72,7 +72,7 @@ pub(in crate::builtins::modules) fn builtin_spl_autoload_requires_vm(
 }
 pub(in crate::builtins::modules) fn builtin_spl_object_id(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("spl_object_id", &args, 1)?;
@@ -88,7 +88,7 @@ pub(in crate::builtins::modules) fn builtin_spl_object_id(
 }
 pub(in crate::builtins::modules) fn builtin_spl_object_hash(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("spl_object_hash", &args, 1)?;

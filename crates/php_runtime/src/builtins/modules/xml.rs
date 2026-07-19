@@ -167,7 +167,7 @@ const XML_PARSER_CURRENT_COLUMN: &str = "__phrust_xml_current_column";
 
 fn builtin_xmlwriter_open_memory(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -180,7 +180,7 @@ fn builtin_xmlwriter_open_memory(
 
 fn builtin_xmlwriter_open_uri(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -197,7 +197,7 @@ fn builtin_xmlwriter_open_uri(
 
 fn builtin_xmlwriter_start_document(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -212,7 +212,7 @@ fn builtin_xmlwriter_start_document(
 
 fn builtin_xmlwriter_start_element(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -228,7 +228,7 @@ fn builtin_xmlwriter_start_element(
 
 fn builtin_xmlwriter_write_attribute(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -246,7 +246,7 @@ fn builtin_xmlwriter_write_attribute(
 
 fn builtin_xmlwriter_text(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -259,7 +259,7 @@ fn builtin_xmlwriter_text(
 
 fn builtin_xmlwriter_write_comment(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -275,7 +275,7 @@ fn builtin_xmlwriter_write_comment(
 
 fn builtin_xmlwriter_write_cdata(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -291,7 +291,7 @@ fn builtin_xmlwriter_write_cdata(
 
 fn builtin_xmlwriter_write_element(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -315,7 +315,7 @@ fn builtin_xmlwriter_write_element(
 
 fn builtin_xmlwriter_end_element(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -327,7 +327,7 @@ fn builtin_xmlwriter_end_element(
 
 fn builtin_xmlwriter_end_document(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -339,7 +339,7 @@ fn builtin_xmlwriter_end_document(
 
 fn builtin_xmlwriter_output_memory(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -355,7 +355,7 @@ fn builtin_xmlwriter_output_memory(
 
 fn builtin_xmlwriter_flush(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -426,7 +426,7 @@ fn write_xmlwriter_uri(context: &BuiltinContext<'_>, uri: &str, bytes: &[u8]) ->
 
 fn builtin_xml_parser_create(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -437,7 +437,7 @@ fn builtin_xml_parser_create(
 
 fn builtin_xml_parser_create_ns(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -462,7 +462,7 @@ fn new_xml_parser() -> Value {
 
 fn builtin_xml_parse(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -504,7 +504,7 @@ fn builtin_xml_parse(
 
 fn builtin_xml_parse_into_struct(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -559,7 +559,7 @@ fn builtin_xml_parse_into_struct(
 
 fn builtin_xml_set_element_handler(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -593,7 +593,7 @@ fn reference_arg(
 
 fn builtin_xml_set_character_data_handler(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -610,7 +610,7 @@ fn builtin_xml_set_character_data_handler(
 
 fn builtin_xml_set_default_handler(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -657,7 +657,7 @@ fn set_current_position(parser: &crate::ObjectRef, input: &str) {
 
 fn builtin_xml_get_error_code(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -684,7 +684,7 @@ fn builtin_xml_get_error_code(
 
 fn builtin_xml_error_string(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -701,7 +701,7 @@ fn builtin_xml_error_string(
 
 fn builtin_xml_get_current_byte_index(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     xml_current_position("xml_get_current_byte_index", args, XML_PARSER_CURRENT_BYTE)
@@ -709,7 +709,7 @@ fn builtin_xml_get_current_byte_index(
 
 fn builtin_xml_get_current_line_number(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     xml_current_position("xml_get_current_line_number", args, XML_PARSER_CURRENT_LINE)
@@ -717,7 +717,7 @@ fn builtin_xml_get_current_line_number(
 
 fn builtin_xml_get_current_column_number(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     xml_current_position(
@@ -727,7 +727,7 @@ fn builtin_xml_get_current_column_number(
     )
 }
 
-fn xml_current_position(name: &str, args: Vec<Value>, property: &str) -> BuiltinResult {
+fn xml_current_position(name: &str, args: crate::builtins::BuiltinArgs, property: &str) -> BuiltinResult {
     if args.len() != 1 {
         return Err(arity_error(name, "one argument"));
     }
@@ -737,7 +737,7 @@ fn xml_current_position(name: &str, args: Vec<Value>, property: &str) -> Builtin
 
 fn builtin_xml_parser_get_option(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -767,7 +767,7 @@ fn builtin_xml_parser_get_option(
 
 fn builtin_xml_parser_set_option(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -809,7 +809,7 @@ fn builtin_xml_parser_set_option(
 
 fn builtin_xml_parser_free(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {

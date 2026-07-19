@@ -155,7 +155,7 @@ impl Default for FilterOptions {
 
 fn builtin_filter_var(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -525,7 +525,7 @@ fn normalize_filter_float_decimal(
 
 fn builtin_filter_input(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=5).contains(&args.len()) {
@@ -562,7 +562,7 @@ fn filter_input_missing_value(options: &FilterOptions) -> Value {
 
 fn builtin_filter_has_var(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -578,7 +578,7 @@ fn builtin_filter_has_var(
 
 fn builtin_filter_input_array(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -615,7 +615,7 @@ fn builtin_filter_input_array(
 
 fn builtin_filter_var_array(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -647,7 +647,7 @@ fn builtin_filter_var_array(
 
 fn builtin_filter_list(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !args.is_empty() {
@@ -663,7 +663,7 @@ fn builtin_filter_list(
 
 fn builtin_filter_id(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -899,7 +899,7 @@ fn apply_callback_filter(
     let Some(callback) = BuiltinRegistry::new().get(callback_name) else {
         return Err(invalid_callback_error(name));
     };
-    callback.function()(context, vec![value.clone()], span)
+    callback.function()(context, vec![value.clone()].into(), span)
 }
 
 fn invalid_callback_error(name: &str) -> BuiltinError {
@@ -1723,7 +1723,7 @@ mod tests {
     use super::*;
     use crate::{ClassEntry, ClassFlags, ObjectRef, OutputBuffer};
 
-    fn call(name: &str, args: Vec<Value>) -> Value {
+    fn call(name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES
@@ -1734,7 +1734,7 @@ mod tests {
         .expect("filter succeeds")
     }
 
-    fn call_error(name: &str, args: Vec<Value>) -> BuiltinError {
+    fn call_error(name: &str, args: crate::builtins::BuiltinArgs) -> BuiltinError {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES

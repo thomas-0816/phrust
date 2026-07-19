@@ -92,7 +92,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_readline(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -144,7 +144,7 @@ fn read_line_with_rustyline(prompt: &str, history: &[String]) -> Option<String> 
 
 fn builtin_readline_info(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 2 {
@@ -181,7 +181,7 @@ fn builtin_readline_info(
 
 fn builtin_readline_add_history(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_add_history", &args, 1)?;
@@ -192,7 +192,7 @@ fn builtin_readline_add_history(
 
 fn builtin_readline_clear_history(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_clear_history", &args, 0)?;
@@ -202,7 +202,7 @@ fn builtin_readline_clear_history(
 
 fn builtin_readline_list_history(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_list_history", &args, 0)?;
@@ -218,7 +218,7 @@ fn builtin_readline_list_history(
 
 fn builtin_readline_read_history(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -242,7 +242,7 @@ fn builtin_readline_read_history(
 
 fn builtin_readline_write_history(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -268,7 +268,7 @@ fn builtin_readline_write_history(
 
 fn builtin_readline_completion_function(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_completion_function", &args, 1)?;
@@ -279,7 +279,7 @@ fn builtin_readline_completion_function(
 
 fn builtin_readline_callback_handler_install(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_callback_handler_install", &args, 2)?;
@@ -298,7 +298,7 @@ fn builtin_readline_callback_handler_install(
 
 fn builtin_readline_callback_read_char(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_callback_read_char", &args, 0)?;
@@ -307,7 +307,7 @@ fn builtin_readline_callback_read_char(
 
 fn builtin_readline_callback_handler_remove(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_callback_handler_remove", &args, 0)?;
@@ -318,7 +318,7 @@ fn builtin_readline_callback_handler_remove(
 
 fn builtin_readline_redisplay(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_redisplay", &args, 0)?;
@@ -327,7 +327,7 @@ fn builtin_readline_redisplay(
 
 fn builtin_readline_on_new_line(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("readline_on_new_line", &args, 0)?;
@@ -501,7 +501,7 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    fn call(context: &mut BuiltinContext<'_>, name: &str, args: Vec<Value>) -> Value {
+    fn call(context: &mut BuiltinContext<'_>, name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

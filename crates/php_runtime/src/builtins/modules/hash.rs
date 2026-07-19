@@ -430,7 +430,7 @@ const MHASH_ALGOS: &[MhashAlgorithm] = &[
 
 fn builtin_hash_init(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
@@ -498,7 +498,7 @@ fn builtin_hash_init(
 
 fn builtin_hash_update(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hash_update", &args, 2)?;
@@ -510,7 +510,7 @@ fn builtin_hash_update(
 
 fn builtin_hash_update_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -527,7 +527,7 @@ fn builtin_hash_update_file(
 
 fn builtin_hash_update_stream(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -560,7 +560,7 @@ fn builtin_hash_update_stream(
 
 fn builtin_hash_final(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -589,7 +589,7 @@ fn builtin_hash_final(
 
 fn builtin_hash_copy(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hash_copy", &args, 1)?;
@@ -606,7 +606,7 @@ fn builtin_hash_copy(
 
 fn builtin_hash_algos(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hash_algos", &args, 0)?;
@@ -617,7 +617,7 @@ fn builtin_hash_algos(
 
 fn builtin_hash_hmac_algos(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hash_hmac_algos", &args, 0)?;
@@ -628,7 +628,7 @@ fn builtin_hash_hmac_algos(
 
 fn builtin_hash_equals(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hash_equals", &args, 2)?;
@@ -659,7 +659,7 @@ fn hash_equals_string_arg(argument: &str, value: &Value) -> Result<crate::PhpStr
 
 fn builtin_mhash(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -685,7 +685,7 @@ fn builtin_mhash(
 
 fn builtin_mhash_get_hash_name(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mhash_get_hash_name", &args, 1)?;
@@ -702,7 +702,7 @@ fn builtin_mhash_get_hash_name(
 
 fn builtin_mhash_count(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mhash_count", &args, 0)?;
@@ -712,7 +712,7 @@ fn builtin_mhash_count(
 
 fn builtin_mhash_get_block_size(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mhash_get_block_size", &args, 1)?;
@@ -729,7 +729,7 @@ fn builtin_mhash_get_block_size(
 
 fn builtin_mhash_keygen_s2k(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("mhash_keygen_s2k", &args, 4)?;
@@ -792,7 +792,7 @@ fn mhash_algorithm_from_value(value: i64) -> Option<MhashAlgorithm> {
 
 fn builtin_hash_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -819,7 +819,7 @@ fn builtin_hash_file(
 
 fn builtin_hash_hmac_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(3..=4).contains(&args.len()) {
@@ -866,7 +866,7 @@ fn reject_null_byte_filename(
 
 fn builtin_hash_pbkdf2(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(4..=6).contains(&args.len()) {
@@ -930,7 +930,7 @@ fn builtin_hash_pbkdf2(
 
 fn builtin_hash_hkdf(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=5).contains(&args.len()) {
@@ -1206,13 +1206,13 @@ mod tests {
         builtins::BuiltinContext,
     };
 
-    fn call(name: &str, args: Vec<Value>) -> Value {
+    fn call(name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         call_with_context(name, args, &mut context)
     }
 
-    fn call_result(name: &str, args: Vec<Value>) -> Result<Value, crate::builtins::BuiltinError> {
+    fn call_result(name: &str, args: crate::builtins::BuiltinArgs) -> Result<Value, crate::builtins::BuiltinError> {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES
@@ -1222,13 +1222,13 @@ mod tests {
             .function()(&mut context, args, RuntimeSourceSpan::default())
     }
 
-    fn call_with_context(name: &str, args: Vec<Value>, context: &mut BuiltinContext<'_>) -> Value {
+    fn call_with_context(name: &str, args: crate::builtins::BuiltinArgs, context: &mut BuiltinContext<'_>) -> Value {
         call_with_context_result(name, args, context).expect("builtin succeeds")
     }
 
     fn call_with_context_result(
         name: &str,
-        args: Vec<Value>,
+        args: crate::builtins::BuiltinArgs,
         context: &mut BuiltinContext<'_>,
     ) -> Result<Value, crate::builtins::BuiltinError> {
         ENTRIES
@@ -2394,7 +2394,7 @@ mod tests {
         );
     }
 
-    fn call_with_error(name: &str, args: Vec<Value>) -> BuiltinResult {
+    fn call_with_error(name: &str, args: crate::builtins::BuiltinArgs) -> BuiltinResult {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES

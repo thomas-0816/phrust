@@ -53,7 +53,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_exif_imagetype(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -70,7 +70,7 @@ fn builtin_exif_imagetype(
 
 fn builtin_getimagesize(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -94,7 +94,7 @@ fn builtin_getimagesize(
 
 fn builtin_getimagesizefromstring(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -108,7 +108,7 @@ fn builtin_getimagesizefromstring(
 
 fn builtin_exif_read_data(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     read_exif_data_impl(context, args, span, "exif_read_data")
@@ -116,7 +116,7 @@ fn builtin_exif_read_data(
 
 fn builtin_read_exif_data(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     read_exif_data_impl(context, args, span, "read_exif_data")
@@ -124,7 +124,7 @@ fn builtin_read_exif_data(
 
 fn read_exif_data_impl(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
     function: &str,
 ) -> BuiltinResult {
@@ -160,7 +160,7 @@ fn read_exif_data_impl(
 
 fn builtin_exif_tagname(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -172,7 +172,7 @@ fn builtin_exif_tagname(
 
 fn builtin_exif_thumbnail(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 4 {

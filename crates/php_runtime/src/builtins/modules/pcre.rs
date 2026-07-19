@@ -58,7 +58,7 @@ macro_rules! pcre_builtin_adapter {
     ($entry:ident => $implementation:ident) => {
         pub(in crate::builtins::modules) fn $entry(
             context: &mut BuiltinContext<'_>,
-            args: Vec<Value>,
+            args: crate::builtins::BuiltinArgs,
             span: RuntimeSourceSpan,
         ) -> BuiltinResult {
             let mut services = context.pcre_services();
@@ -78,7 +78,7 @@ pcre_builtin_adapter!(builtin_preg_last_error_msg => preg_last_error_msg);
 
 pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let mut services = context.pcre_callback_services();
@@ -87,7 +87,7 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
 
 fn preg_match(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 5 {
@@ -210,7 +210,7 @@ fn find_literal_match(haystack: &[u8], needle: &[u8], start: usize) -> Option<(u
 
 fn preg_match_all(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 5 {
@@ -338,7 +338,7 @@ fn validate_preg_match_all_flags(flags: i64) -> Result<(), BuiltinError> {
 }
 fn preg_replace(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 3 || args.len() > 5 {
@@ -432,7 +432,7 @@ fn replace_literal_bytes(
 
 fn preg_filter(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 3 || args.len() > 5 {
@@ -538,7 +538,7 @@ impl PregReplaceReplacements {
 }
 fn preg_replace_callback(
     context: &mut PcreCallbackServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 3 || args.len() > 6 {
@@ -593,7 +593,7 @@ fn preg_replace_callback(
 
 pub(in crate::builtins::modules) fn builtin_preg_replace_callback_array(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 6 {
@@ -610,7 +610,7 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback_array(
 
 fn preg_split(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 4 {
@@ -851,7 +851,7 @@ fn next_split_search_offset(subject: &[u8], offset: usize, utf8_mode: bool) -> u
 
 fn preg_grep(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 || args.len() > 3 {
@@ -910,7 +910,7 @@ fn preg_grep(
 }
 pub(in crate::builtins::modules) fn builtin_preg_quote(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -926,7 +926,7 @@ pub(in crate::builtins::modules) fn builtin_preg_quote(
 }
 fn preg_last_error(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("preg_last_error", &args, 0)?;
@@ -934,7 +934,7 @@ fn preg_last_error(
 }
 fn preg_last_error_msg(
     context: &mut PcreBuiltinServices<'_, '_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("preg_last_error_msg", &args, 0)?;

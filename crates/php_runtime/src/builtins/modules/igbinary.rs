@@ -43,7 +43,7 @@ pub fn unserialize_value(input: &PhpString) -> Result<Value, String> {
 
 fn builtin_igbinary_serialize(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -56,7 +56,7 @@ fn builtin_igbinary_serialize(
 
 fn builtin_igbinary_unserialize(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {

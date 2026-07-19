@@ -125,7 +125,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_session_cache_expire(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -169,7 +169,7 @@ pub(in crate::builtins::modules) fn builtin_session_cache_expire(
 
 pub(in crate::builtins::modules) fn builtin_session_cache_limiter(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -213,7 +213,7 @@ pub(in crate::builtins::modules) fn builtin_session_cache_limiter(
 
 pub(in crate::builtins::modules) fn builtin_session_status(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_status", &args, 0)?;
@@ -225,7 +225,7 @@ pub(in crate::builtins::modules) fn builtin_session_status(
 
 pub(in crate::builtins::modules) fn builtin_session_abort(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_abort", &args, 0)?;
@@ -241,7 +241,7 @@ pub(in crate::builtins::modules) fn builtin_session_abort(
 
 pub(in crate::builtins::modules) fn builtin_session_reset(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_reset", &args, 0)?;
@@ -257,7 +257,7 @@ pub(in crate::builtins::modules) fn builtin_session_reset(
 
 pub(in crate::builtins::modules) fn builtin_session_unset(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_unset", &args, 0)?;
@@ -273,7 +273,7 @@ pub(in crate::builtins::modules) fn builtin_session_unset(
 
 pub(in crate::builtins::modules) fn builtin_session_gc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_gc", &args, 0)?;
@@ -293,7 +293,7 @@ pub(in crate::builtins::modules) fn builtin_session_gc(
 
 pub(in crate::builtins::modules) fn builtin_session_register_shutdown(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_register_shutdown", &args, 0)?;
@@ -302,7 +302,7 @@ pub(in crate::builtins::modules) fn builtin_session_register_shutdown(
 
 pub(in crate::builtins::modules) fn builtin_session_encode(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_encode", &args, 0)?;
@@ -505,7 +505,7 @@ impl SessionReferenceSerializer {
 
 pub(in crate::builtins::modules) fn builtin_session_decode(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_decode", &args, 1)?;
@@ -893,7 +893,7 @@ fn session_active_start_location(state: Option<&mut crate::SessionState>) -> Opt
 
 pub(in crate::builtins::modules) fn builtin_session_get_cookie_params(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_get_cookie_params", &args, 0)?;
@@ -931,7 +931,7 @@ pub(in crate::builtins::modules) fn builtin_session_get_cookie_params(
 
 pub(in crate::builtins::modules) fn builtin_session_set_cookie_params(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 5 {
@@ -1168,7 +1168,7 @@ fn session_ini_bool(context: &BuiltinContext<'_>, name: &str) -> bool {
 
 pub(in crate::builtins::modules) fn builtin_session_name(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1250,7 +1250,7 @@ fn session_name_is_numeric(name: &str) -> bool {
 
 pub(in crate::builtins::modules) fn builtin_session_module_name(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1307,7 +1307,7 @@ pub(in crate::builtins::modules) fn builtin_session_module_name(
 
 pub(in crate::builtins::modules) fn builtin_session_save_path(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1353,7 +1353,7 @@ pub(in crate::builtins::modules) fn builtin_session_save_path(
 
 pub(in crate::builtins::modules) fn builtin_session_set_save_handler(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 9 {
@@ -1442,7 +1442,7 @@ fn validate_session_callback_arg(
 
 pub(in crate::builtins::modules) fn builtin_session_id(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1478,7 +1478,7 @@ pub(in crate::builtins::modules) fn builtin_session_id(
 
 pub(in crate::builtins::modules) fn builtin_session_create_id(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1532,7 +1532,7 @@ fn session_create_id_prefix_is_valid(prefix: &str) -> bool {
 
 pub(in crate::builtins::modules) fn builtin_session_regenerate_id(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1570,7 +1570,7 @@ pub(in crate::builtins::modules) fn builtin_session_regenerate_id(
 
 pub(in crate::builtins::modules) fn builtin_session_start(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -1784,7 +1784,7 @@ fn session_start_read_and_close_value(value: &Value) -> Result<bool, BuiltinErro
 
 pub(in crate::builtins::modules) fn builtin_session_destroy(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_destroy", &args, 0)?;
@@ -1804,7 +1804,7 @@ pub(in crate::builtins::modules) fn builtin_session_destroy(
 
 pub(in crate::builtins::modules) fn builtin_session_write_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("session_write_close", &args, 0)?;

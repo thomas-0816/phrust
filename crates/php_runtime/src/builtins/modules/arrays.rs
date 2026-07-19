@@ -290,7 +290,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 pub(in crate::builtins::modules) fn builtin_count(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -333,7 +333,7 @@ pub(in crate::builtins::modules) fn builtin_count(
 
 pub(in crate::builtins::modules) fn builtin_array_key_exists(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_key_exists", &args, 2)?;
@@ -346,7 +346,7 @@ pub(in crate::builtins::modules) fn builtin_array_key_exists(
 
 pub(in crate::builtins::modules) fn builtin_array_change_key_case(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -381,7 +381,7 @@ pub(in crate::builtins::modules) fn builtin_array_change_key_case(
 
 pub(in crate::builtins::modules) fn builtin_array_keys(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=3).contains(&args.len()) {
@@ -410,7 +410,7 @@ pub(in crate::builtins::modules) fn builtin_array_keys(
 
 pub(in crate::builtins::modules) fn builtin_array_values(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_values", &args, 1)?;
@@ -427,7 +427,7 @@ pub(in crate::builtins::modules) fn builtin_array_values(
 
 pub(in crate::builtins::modules) fn builtin_array_sum(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_sum", &args, 1)?;
@@ -470,7 +470,7 @@ pub(in crate::builtins::modules) fn builtin_array_sum(
 
 pub(in crate::builtins::modules) fn builtin_array_combine(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_combine", &args, 2)?;
@@ -498,7 +498,7 @@ pub(in crate::builtins::modules) fn builtin_array_combine(
 
 pub(in crate::builtins::modules) fn builtin_array_is_list(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_is_list", &args, 1)?;
@@ -510,7 +510,7 @@ pub(in crate::builtins::modules) fn builtin_array_is_list(
 
 pub(in crate::builtins::modules) fn builtin_array_key_first(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_key_first", &args, 1)?;
@@ -525,7 +525,7 @@ pub(in crate::builtins::modules) fn builtin_array_key_first(
 
 pub(in crate::builtins::modules) fn builtin_array_key_last(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_key_last", &args, 1)?;
@@ -540,7 +540,7 @@ pub(in crate::builtins::modules) fn builtin_array_key_last(
 
 pub(in crate::builtins::modules) fn builtin_in_array(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -565,7 +565,7 @@ pub(in crate::builtins::modules) fn builtin_in_array(
 
 pub(in crate::builtins::modules) fn builtin_array_search(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -590,7 +590,7 @@ pub(in crate::builtins::modules) fn builtin_array_search(
 
 pub(in crate::builtins::modules) fn builtin_range(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -617,7 +617,7 @@ pub(in crate::builtins::modules) fn builtin_range(
 
 pub(in crate::builtins::modules) fn builtin_array_column(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -661,7 +661,7 @@ pub(in crate::builtins::modules) fn builtin_array_column(
 
 pub(in crate::builtins::modules) fn builtin_array_diff(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -674,7 +674,7 @@ pub(in crate::builtins::modules) fn builtin_array_diff(
 
 pub(in crate::builtins::modules) fn builtin_array_diff_assoc(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -687,7 +687,7 @@ pub(in crate::builtins::modules) fn builtin_array_diff_assoc(
 
 pub(in crate::builtins::modules) fn builtin_array_diff_key(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -706,7 +706,7 @@ pub(in crate::builtins::modules) fn builtin_array_diff_key(
 
 pub(in crate::builtins::modules) fn builtin_array_fill(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_fill", &args, 3)?;
@@ -752,7 +752,7 @@ pub(in crate::builtins::modules) fn builtin_array_fill(
 
 pub(in crate::builtins::modules) fn builtin_array_fill_keys(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_fill_keys", &args, 2)?;
@@ -773,7 +773,7 @@ pub(in crate::builtins::modules) fn builtin_array_fill_keys(
 
 pub(in crate::builtins::modules) fn builtin_array_intersect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -788,7 +788,7 @@ pub(in crate::builtins::modules) fn builtin_array_intersect(
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_assoc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -884,7 +884,7 @@ fn array_intersect_by_key_and_value_with_warnings(
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_key(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() < 2 {
@@ -906,7 +906,7 @@ pub(in crate::builtins::modules) fn builtin_array_intersect_key(
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_ukey(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     array_callback_intersect_empty_shortcut("array_intersect_ukey", args, 1)
@@ -914,7 +914,7 @@ pub(in crate::builtins::modules) fn builtin_array_intersect_ukey(
 
 pub(in crate::builtins::modules) fn builtin_array_uintersect(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     array_callback_intersect_empty_shortcut("array_uintersect", args, 1)
@@ -922,7 +922,7 @@ pub(in crate::builtins::modules) fn builtin_array_uintersect(
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_uassoc(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     array_callback_intersect_empty_shortcut("array_intersect_uassoc", args, 1)
@@ -930,7 +930,7 @@ pub(in crate::builtins::modules) fn builtin_array_intersect_uassoc(
 
 pub(in crate::builtins::modules) fn builtin_array_uintersect_uassoc(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     array_callback_intersect_empty_shortcut("array_uintersect_uassoc", args, 2)
@@ -938,7 +938,7 @@ pub(in crate::builtins::modules) fn builtin_array_uintersect_uassoc(
 
 pub(in crate::builtins::modules) fn builtin_array_push(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -956,7 +956,7 @@ pub(in crate::builtins::modules) fn builtin_array_push(
 
 pub(in crate::builtins::modules) fn builtin_array_rand(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -999,7 +999,7 @@ pub(in crate::builtins::modules) fn builtin_array_rand(
 
 pub(in crate::builtins::modules) fn builtin_shuffle(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("shuffle", &args, 1)?;
@@ -1019,7 +1019,7 @@ pub(in crate::builtins::modules) fn builtin_shuffle(
 
 pub(in crate::builtins::modules) fn builtin_current(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("current", &args, 1)?;
@@ -1029,7 +1029,7 @@ pub(in crate::builtins::modules) fn builtin_current(
 
 pub(in crate::builtins::modules) fn builtin_key(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("key", &args, 1)?;
@@ -1041,7 +1041,7 @@ pub(in crate::builtins::modules) fn builtin_key(
 
 pub(in crate::builtins::modules) fn builtin_next(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("next", &args, 1)?;
@@ -1054,7 +1054,7 @@ pub(in crate::builtins::modules) fn builtin_next(
 
 pub(in crate::builtins::modules) fn builtin_prev(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("prev", &args, 1)?;
@@ -1067,7 +1067,7 @@ pub(in crate::builtins::modules) fn builtin_prev(
 
 pub(in crate::builtins::modules) fn builtin_end(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("end", &args, 1)?;
@@ -1080,7 +1080,7 @@ pub(in crate::builtins::modules) fn builtin_end(
 
 pub(in crate::builtins::modules) fn builtin_reset(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("reset", &args, 1)?;
@@ -1093,7 +1093,7 @@ pub(in crate::builtins::modules) fn builtin_reset(
 
 pub(in crate::builtins::modules) fn builtin_array_pop(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_pop", &args, 1)?;
@@ -1106,7 +1106,7 @@ pub(in crate::builtins::modules) fn builtin_array_pop(
 
 pub(in crate::builtins::modules) fn builtin_array_shift(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_shift", &args, 1)?;
@@ -1124,7 +1124,7 @@ pub(in crate::builtins::modules) fn builtin_array_shift(
 
 pub(in crate::builtins::modules) fn builtin_array_unshift(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -1156,7 +1156,7 @@ pub(in crate::builtins::modules) fn builtin_array_unshift(
 
 pub(in crate::builtins::modules) fn builtin_array_slice(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -1184,7 +1184,7 @@ pub(in crate::builtins::modules) fn builtin_array_slice(
 
 pub(in crate::builtins::modules) fn builtin_array_splice(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -1229,7 +1229,7 @@ pub(in crate::builtins::modules) fn builtin_array_splice(
 
 pub(in crate::builtins::modules) fn builtin_array_unique(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1261,7 +1261,7 @@ pub(in crate::builtins::modules) fn builtin_array_unique(
 
 pub(in crate::builtins::modules) fn builtin_array_merge(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let mut output = crate::PhpArray::new();
@@ -1293,7 +1293,7 @@ pub(in crate::builtins::modules) fn builtin_array_merge(
 
 pub(in crate::builtins::modules) fn builtin_array_merge_recursive(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     let mut output = crate::PhpArray::new();
@@ -1306,7 +1306,7 @@ pub(in crate::builtins::modules) fn builtin_array_merge_recursive(
 
 pub(in crate::builtins::modules) fn builtin_array_replace(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -1324,7 +1324,7 @@ pub(in crate::builtins::modules) fn builtin_array_replace(
 
 pub(in crate::builtins::modules) fn builtin_array_replace_recursive(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() {
@@ -1343,7 +1343,7 @@ pub(in crate::builtins::modules) fn builtin_array_replace_recursive(
 
 pub(in crate::builtins::modules) fn builtin_array_reverse(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1366,7 +1366,7 @@ pub(in crate::builtins::modules) fn builtin_array_reverse(
 
 pub(in crate::builtins::modules) fn builtin_array_pad(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_pad", &args, 3)?;
@@ -1405,7 +1405,7 @@ pub(in crate::builtins::modules) fn builtin_array_pad(
 
 pub(in crate::builtins::modules) fn builtin_array_chunk(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -1444,7 +1444,7 @@ pub(in crate::builtins::modules) fn builtin_array_chunk(
 
 pub(in crate::builtins::modules) fn builtin_array_flip(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_flip", &args, 1)?;
@@ -1474,7 +1474,7 @@ fn array_flip_key(value: &Value) -> Option<ArrayKey> {
 
 pub(in crate::builtins::modules) fn builtin_array_callback_requires_vm(
     _context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
+    _args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     Err(BuiltinError::new(
@@ -1485,7 +1485,7 @@ pub(in crate::builtins::modules) fn builtin_array_callback_requires_vm(
 
 pub(in crate::builtins::modules) fn builtin_array_sort_requires_vm(
     _context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
+    _args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     Err(BuiltinError::new(

@@ -33,7 +33,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_simplexml_load_string(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("simplexml_load_string", &args, 1)?;
@@ -54,7 +54,7 @@ fn builtin_simplexml_load_string(
 
 fn builtin_simplexml_load_file(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("simplexml_load_file", &args, 1)?;
@@ -83,7 +83,7 @@ fn builtin_simplexml_load_file(
 
 fn builtin_simplexml_import_dom(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("simplexml_import_dom", &args, 1)?;
@@ -95,7 +95,7 @@ fn builtin_simplexml_import_dom(
 
 fn builtin_dom_import_simplexml(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("dom_import_simplexml", &args, 1)?;

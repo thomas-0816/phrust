@@ -34,7 +34,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_shmop_open(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shmop_open", &args, 4)?;
@@ -67,7 +67,7 @@ fn builtin_shmop_open(
 
 fn builtin_shmop_read(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shmop_read", &args, 3)?;
@@ -99,7 +99,7 @@ fn builtin_shmop_read(
 
 fn builtin_shmop_size(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shmop_size", &args, 1)?;
@@ -115,7 +115,7 @@ fn builtin_shmop_size(
 
 fn builtin_shmop_write(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shmop_write", &args, 3)?;
@@ -157,7 +157,7 @@ fn builtin_shmop_write(
 
 fn builtin_shmop_delete(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shmop_delete", &args, 1)?;
@@ -167,7 +167,7 @@ fn builtin_shmop_delete(
 
 fn builtin_shmop_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shmop_close", &args, 1)?;

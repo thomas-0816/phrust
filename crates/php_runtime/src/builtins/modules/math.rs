@@ -705,7 +705,7 @@ fn number_format_rounded_integer_digits(
 
 pub(in crate::builtins::modules) fn builtin_abs(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("abs", &args, 1)?;
@@ -725,7 +725,7 @@ pub(in crate::builtins::modules) fn builtin_abs(
 
 pub(in crate::builtins::modules) fn builtin_acos(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("acos", &args, f64::acos)
@@ -733,7 +733,7 @@ pub(in crate::builtins::modules) fn builtin_acos(
 
 pub(in crate::builtins::modules) fn builtin_acosh(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("acosh", &args, f64::acosh)
@@ -741,7 +741,7 @@ pub(in crate::builtins::modules) fn builtin_acosh(
 
 pub(in crate::builtins::modules) fn builtin_asin(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("asin", &args, f64::asin)
@@ -749,7 +749,7 @@ pub(in crate::builtins::modules) fn builtin_asin(
 
 pub(in crate::builtins::modules) fn builtin_asinh(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("asinh", &args, f64::asinh)
@@ -757,7 +757,7 @@ pub(in crate::builtins::modules) fn builtin_asinh(
 
 pub(in crate::builtins::modules) fn builtin_atan(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("atan", &args, f64::atan)
@@ -765,7 +765,7 @@ pub(in crate::builtins::modules) fn builtin_atan(
 
 pub(in crate::builtins::modules) fn builtin_atan2(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("atan2", &args, 2)?;
@@ -776,7 +776,7 @@ pub(in crate::builtins::modules) fn builtin_atan2(
 
 pub(in crate::builtins::modules) fn builtin_atanh(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("atanh", &args, f64::atanh)
@@ -784,7 +784,7 @@ pub(in crate::builtins::modules) fn builtin_atanh(
 
 pub(in crate::builtins::modules) fn builtin_base_convert(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("base_convert", &args, 3)?;
@@ -808,7 +808,7 @@ pub(in crate::builtins::modules) fn builtin_base_convert(
 
 pub(in crate::builtins::modules) fn builtin_bindec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("bindec", &args, 1)?;
@@ -824,7 +824,7 @@ pub(in crate::builtins::modules) fn builtin_bindec(
 
 pub(in crate::builtins::modules) fn builtin_decbin(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     decimal_to_base_builtin(context, "decbin", &args, 2, span)
@@ -832,7 +832,7 @@ pub(in crate::builtins::modules) fn builtin_decbin(
 
 pub(in crate::builtins::modules) fn builtin_min(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     min_max_builtin("min", args, false)
@@ -840,7 +840,7 @@ pub(in crate::builtins::modules) fn builtin_min(
 
 pub(in crate::builtins::modules) fn builtin_max(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     min_max_builtin("max", args, true)
@@ -848,7 +848,7 @@ pub(in crate::builtins::modules) fn builtin_max(
 
 pub(in crate::builtins::modules) fn builtin_round(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=3).contains(&args.len()) {
@@ -871,7 +871,7 @@ pub(in crate::builtins::modules) fn builtin_round(
 
 pub(in crate::builtins::modules) fn builtin_floor(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("floor", &args, 1)?;
@@ -882,7 +882,7 @@ pub(in crate::builtins::modules) fn builtin_floor(
 
 pub(in crate::builtins::modules) fn builtin_ceil(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("ceil", &args, 1)?;
@@ -893,7 +893,7 @@ pub(in crate::builtins::modules) fn builtin_ceil(
 
 pub(in crate::builtins::modules) fn builtin_cos(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("cos", &args, f64::cos)
@@ -901,7 +901,7 @@ pub(in crate::builtins::modules) fn builtin_cos(
 
 pub(in crate::builtins::modules) fn builtin_cosh(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("cosh", &args, f64::cosh)
@@ -909,7 +909,7 @@ pub(in crate::builtins::modules) fn builtin_cosh(
 
 pub(in crate::builtins::modules) fn builtin_dechex(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     decimal_to_base_builtin(context, "dechex", &args, 16, span)
@@ -917,7 +917,7 @@ pub(in crate::builtins::modules) fn builtin_dechex(
 
 pub(in crate::builtins::modules) fn builtin_decoct(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     decimal_to_base_builtin(context, "decoct", &args, 8, span)
@@ -925,7 +925,7 @@ pub(in crate::builtins::modules) fn builtin_decoct(
 
 pub(in crate::builtins::modules) fn builtin_deg2rad(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("deg2rad", &args, |value| {
@@ -935,7 +935,7 @@ pub(in crate::builtins::modules) fn builtin_deg2rad(
 
 pub(in crate::builtins::modules) fn builtin_exp(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("exp", &args, f64::exp)
@@ -943,7 +943,7 @@ pub(in crate::builtins::modules) fn builtin_exp(
 
 pub(in crate::builtins::modules) fn builtin_expm1(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("expm1", &args, f64::exp_m1)
@@ -951,7 +951,7 @@ pub(in crate::builtins::modules) fn builtin_expm1(
 
 pub(in crate::builtins::modules) fn builtin_sqrt(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("sqrt", &args, 1)?;
@@ -960,7 +960,7 @@ pub(in crate::builtins::modules) fn builtin_sqrt(
 
 pub(in crate::builtins::modules) fn builtin_pow(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pow", &args, 2)?;
@@ -988,7 +988,7 @@ pub(in crate::builtins::modules) fn builtin_pow(
 
 pub(in crate::builtins::modules) fn builtin_fpow(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fpow", &args, 2)?;
@@ -999,7 +999,7 @@ pub(in crate::builtins::modules) fn builtin_fpow(
 
 pub(in crate::builtins::modules) fn builtin_hexdec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hexdec", &args, 1)?;
@@ -1015,7 +1015,7 @@ pub(in crate::builtins::modules) fn builtin_hexdec(
 
 pub(in crate::builtins::modules) fn builtin_hypot(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hypot", &args, 2)?;
@@ -1026,7 +1026,7 @@ pub(in crate::builtins::modules) fn builtin_hypot(
 
 pub(in crate::builtins::modules) fn builtin_intdiv(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("intdiv", &args, 2)?;
@@ -1045,7 +1045,7 @@ pub(in crate::builtins::modules) fn builtin_intdiv(
 
 pub(in crate::builtins::modules) fn builtin_fmod(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fmod", &args, 2)?;
@@ -1059,7 +1059,7 @@ pub(in crate::builtins::modules) fn builtin_fmod(
 
 pub(in crate::builtins::modules) fn builtin_fdiv(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("fdiv", &args, 2)?;
@@ -1070,7 +1070,7 @@ pub(in crate::builtins::modules) fn builtin_fdiv(
 
 pub(in crate::builtins::modules) fn builtin_is_finite(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_finite", &args, 1)?;
@@ -1081,7 +1081,7 @@ pub(in crate::builtins::modules) fn builtin_is_finite(
 
 pub(in crate::builtins::modules) fn builtin_is_infinite(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_infinite", &args, 1)?;
@@ -1092,7 +1092,7 @@ pub(in crate::builtins::modules) fn builtin_is_infinite(
 
 pub(in crate::builtins::modules) fn builtin_is_nan(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("is_nan", &args, 1)?;
@@ -1101,7 +1101,7 @@ pub(in crate::builtins::modules) fn builtin_is_nan(
 
 pub(in crate::builtins::modules) fn builtin_log(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
@@ -1125,7 +1125,7 @@ pub(in crate::builtins::modules) fn builtin_log(
 
 pub(in crate::builtins::modules) fn builtin_log10(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("log10", &args, f64::log10)
@@ -1133,7 +1133,7 @@ pub(in crate::builtins::modules) fn builtin_log10(
 
 pub(in crate::builtins::modules) fn builtin_log1p(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("log1p", &args, f64::ln_1p)
@@ -1141,7 +1141,7 @@ pub(in crate::builtins::modules) fn builtin_log1p(
 
 pub(in crate::builtins::modules) fn builtin_octdec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("octdec", &args, 1)?;
@@ -1157,7 +1157,7 @@ pub(in crate::builtins::modules) fn builtin_octdec(
 
 pub(in crate::builtins::modules) fn builtin_pi(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("pi", &args, 0)?;
@@ -1166,7 +1166,7 @@ pub(in crate::builtins::modules) fn builtin_pi(
 
 pub(in crate::builtins::modules) fn builtin_rad2deg(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("rad2deg", &args, |value| {
@@ -1176,7 +1176,7 @@ pub(in crate::builtins::modules) fn builtin_rad2deg(
 
 pub(in crate::builtins::modules) fn builtin_sin(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("sin", &args, f64::sin)
@@ -1184,7 +1184,7 @@ pub(in crate::builtins::modules) fn builtin_sin(
 
 pub(in crate::builtins::modules) fn builtin_sinh(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("sinh", &args, f64::sinh)
@@ -1192,7 +1192,7 @@ pub(in crate::builtins::modules) fn builtin_sinh(
 
 pub(in crate::builtins::modules) fn builtin_tan(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("tan", &args, f64::tan)
@@ -1200,7 +1200,7 @@ pub(in crate::builtins::modules) fn builtin_tan(
 
 pub(in crate::builtins::modules) fn builtin_tanh(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     unary_float_builtin("tanh", &args, f64::tanh)
@@ -1208,7 +1208,7 @@ pub(in crate::builtins::modules) fn builtin_tanh(
 
 pub(in crate::builtins::modules) fn builtin_number_format(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {

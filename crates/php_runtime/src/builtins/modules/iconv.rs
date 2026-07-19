@@ -61,7 +61,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_iconv_get_encoding(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
@@ -104,7 +104,7 @@ fn builtin_iconv_get_encoding(
 
 fn builtin_iconv_set_encoding(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -125,7 +125,7 @@ fn builtin_iconv_set_encoding(
 
 fn builtin_iconv(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -151,7 +151,7 @@ fn builtin_iconv(
 
 fn builtin_iconv_mime_encode(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -225,7 +225,7 @@ const ICONV_MIME_DECODE_CONTINUE_ON_ERROR: i64 = 2;
 
 fn builtin_iconv_mime_decode(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -273,7 +273,7 @@ fn builtin_iconv_mime_decode(
 
 fn builtin_iconv_mime_decode_headers(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -342,7 +342,7 @@ fn builtin_iconv_mime_decode_headers(
 
 fn builtin_iconv_strlen(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
@@ -359,7 +359,7 @@ fn builtin_iconv_strlen(
 
 fn builtin_iconv_substr(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -394,7 +394,7 @@ fn builtin_iconv_substr(
 
 fn builtin_iconv_strpos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
@@ -432,7 +432,7 @@ fn builtin_iconv_strpos(
 
 fn builtin_iconv_strrpos(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -994,7 +994,7 @@ mod tests {
     use super::*;
     use crate::{OutputBuffer, PhpString};
 
-    fn call(name: &str, args: Vec<Value>) -> Value {
+    fn call(name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES

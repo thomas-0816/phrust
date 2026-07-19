@@ -91,7 +91,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_ftp_connect(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -125,7 +125,7 @@ fn builtin_ftp_connect(
 
 fn builtin_ftp_ssl_connect(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.is_empty() || args.len() > 3 {
@@ -143,7 +143,7 @@ fn builtin_ftp_ssl_connect(
 
 fn builtin_ftp_login(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -160,7 +160,7 @@ fn builtin_ftp_login(
 
 fn builtin_ftp_pwd(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -175,7 +175,7 @@ fn builtin_ftp_pwd(
 
 fn builtin_ftp_chdir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -191,7 +191,7 @@ fn builtin_ftp_chdir(
 
 fn builtin_ftp_cdup(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -206,7 +206,7 @@ fn builtin_ftp_cdup(
 
 fn builtin_ftp_exec(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -222,7 +222,7 @@ fn builtin_ftp_exec(
 
 fn builtin_ftp_raw(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -240,7 +240,7 @@ fn builtin_ftp_raw(
 
 fn builtin_ftp_mkdir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -256,7 +256,7 @@ fn builtin_ftp_mkdir(
 
 fn builtin_ftp_rmdir(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -272,7 +272,7 @@ fn builtin_ftp_rmdir(
 
 fn builtin_ftp_delete(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -288,7 +288,7 @@ fn builtin_ftp_delete(
 
 fn builtin_ftp_rename(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -305,7 +305,7 @@ fn builtin_ftp_rename(
 
 fn builtin_ftp_site(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -321,7 +321,7 @@ fn builtin_ftp_site(
 
 fn builtin_ftp_alloc(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -344,7 +344,7 @@ fn builtin_ftp_alloc(
 
 fn builtin_ftp_chmod(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -361,7 +361,7 @@ fn builtin_ftp_chmod(
 
 fn builtin_ftp_systype(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -376,7 +376,7 @@ fn builtin_ftp_systype(
 
 fn builtin_ftp_size(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -392,7 +392,7 @@ fn builtin_ftp_size(
 
 fn builtin_ftp_mdtm(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -408,7 +408,7 @@ fn builtin_ftp_mdtm(
 
 fn builtin_ftp_pasv(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -424,7 +424,7 @@ fn builtin_ftp_pasv(
 
 fn builtin_ftp_nlist(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -440,7 +440,7 @@ fn builtin_ftp_nlist(
 
 fn builtin_ftp_rawlist(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=3).contains(&args.len()) {
@@ -457,7 +457,7 @@ fn builtin_ftp_rawlist(
 
 fn builtin_ftp_mlsd(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -473,7 +473,7 @@ fn builtin_ftp_mlsd(
 
 fn builtin_ftp_get(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     ftp_get_impl(context, args).map(Value::Bool)
@@ -481,13 +481,13 @@ fn builtin_ftp_get(
 
 fn builtin_ftp_nb_get(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     Ok(Value::Int(if ftp_get_impl(context, args)? { 1 } else { 0 }))
 }
 
-fn ftp_get_impl(context: &mut BuiltinContext<'_>, args: Vec<Value>) -> Result<bool, BuiltinError> {
+fn ftp_get_impl(context: &mut BuiltinContext<'_>, args: crate::builtins::BuiltinArgs) -> Result<bool, BuiltinError> {
     if !(3..=5).contains(&args.len()) {
         return Err(arity_error("ftp_get", "three to five arguments"));
     }
@@ -505,7 +505,7 @@ fn ftp_get_impl(context: &mut BuiltinContext<'_>, args: Vec<Value>) -> Result<bo
 
 fn builtin_ftp_put(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     ftp_put_impl(context, args, false, false).map(Value::Bool)
@@ -513,7 +513,7 @@ fn builtin_ftp_put(
 
 fn builtin_ftp_append(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     ftp_put_impl(context, args, true, false).map(Value::Bool)
@@ -521,7 +521,7 @@ fn builtin_ftp_append(
 
 fn builtin_ftp_nb_put(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     Ok(Value::Int(if ftp_put_impl(context, args, false, true)? {
@@ -533,7 +533,7 @@ fn builtin_ftp_nb_put(
 
 fn ftp_put_impl(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     append: bool,
     nb: bool,
 ) -> Result<bool, BuiltinError> {
@@ -585,7 +585,7 @@ fn ftp_put_impl(
 
 fn builtin_ftp_fget(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     validate_stream_transfer_args("ftp_fget", args, false)?;
@@ -594,7 +594,7 @@ fn builtin_ftp_fget(
 
 fn builtin_ftp_fput(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     validate_stream_transfer_args("ftp_fput", args, true)?;
@@ -603,7 +603,7 @@ fn builtin_ftp_fput(
 
 fn builtin_ftp_nb_fget(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     validate_stream_transfer_args("ftp_nb_fget", args, false)?;
@@ -612,7 +612,7 @@ fn builtin_ftp_nb_fget(
 
 fn builtin_ftp_nb_fput(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     validate_stream_transfer_args("ftp_nb_fput", args, true)?;
@@ -621,7 +621,7 @@ fn builtin_ftp_nb_fput(
 
 fn builtin_ftp_nb_continue(
     _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -633,7 +633,7 @@ fn builtin_ftp_nb_continue(
 
 fn builtin_ftp_get_option(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 2 {
@@ -650,7 +650,7 @@ fn builtin_ftp_get_option(
 
 fn builtin_ftp_set_option(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 3 {
@@ -671,7 +671,7 @@ fn builtin_ftp_set_option(
 
 fn builtin_ftp_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
@@ -781,7 +781,7 @@ fn offset_arg(name: &str, value: Option<&Value>) -> Result<i64, BuiltinError> {
 
 fn validate_stream_transfer_args(
     name: &str,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     remote_first: bool,
 ) -> Result<(), BuiltinError> {
     if !(4..=5).contains(&args.len()) {
@@ -861,7 +861,7 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    fn call_with_context(context: &mut BuiltinContext<'_>, name: &str, args: Vec<Value>) -> Value {
+    fn call_with_context(context: &mut BuiltinContext<'_>, name: &str, args: crate::builtins::BuiltinArgs) -> Value {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)

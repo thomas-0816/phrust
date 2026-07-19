@@ -55,7 +55,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 
 fn builtin_zip_open(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(context, "zip_open", Some("ZipArchive::open"), span);
@@ -83,7 +83,7 @@ fn builtin_zip_open(
 
 fn builtin_zip_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(context, "zip_close", Some("ZipArchive::close"), span);
@@ -100,7 +100,7 @@ fn builtin_zip_close(
 
 fn builtin_zip_read(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(context, "zip_read", Some("ZipArchive::statIndex"), span);
@@ -145,7 +145,7 @@ fn builtin_zip_read(
 
 fn builtin_zip_entry_open(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(context, "zip_entry_open", None, span);
@@ -159,7 +159,7 @@ fn builtin_zip_entry_open(
 
 fn builtin_zip_entry_close(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(context, "zip_entry_close", None, span);
@@ -175,7 +175,7 @@ fn builtin_zip_entry_close(
 
 fn builtin_zip_entry_read(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(
@@ -206,7 +206,7 @@ fn builtin_zip_entry_read(
 
 fn builtin_zip_entry_name(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(
@@ -223,7 +223,7 @@ fn builtin_zip_entry_name(
 
 fn builtin_zip_entry_filesize(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(
@@ -240,7 +240,7 @@ fn builtin_zip_entry_filesize(
 
 fn builtin_zip_entry_compressedsize(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(
@@ -257,7 +257,7 @@ fn builtin_zip_entry_compressedsize(
 
 fn builtin_zip_entry_compressionmethod(
     context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
+    args: crate::builtins::BuiltinArgs,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     emit_zip_deprecation(

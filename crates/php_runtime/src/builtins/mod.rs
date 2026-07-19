@@ -44,7 +44,7 @@ pub use modules::soap::{
 pub use modules::{array_intrinsics, json_fast, string_intrinsics};
 pub use registry::{BuiltinCompatibility, BuiltinEntry, BuiltinHandlerKind, BuiltinRegistry};
 pub use request_state::{BuiltinRequestState, JsonRequestState, PcreRequestState};
-pub use signatures::{BuiltinOutcome, BuiltinResult, InternalFunction};
+pub use signatures::{BuiltinArgs, BuiltinOutcome, BuiltinResult, InternalFunction};
 
 pub fn hash_algorithm_exists(algorithm: &str) -> bool {
     modules::hash::hash_algorithm_exists(algorithm)
