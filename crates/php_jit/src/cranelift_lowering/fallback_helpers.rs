@@ -168,24 +168,11 @@ pub(super) extern "C" fn test_native_local_store_fallback(
     }
 }
 
-// SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
-#[allow(unsafe_code)]
-pub(super) extern "C" fn test_native_value_lifecycle_fallback(
+pub(super) extern "C" fn test_native_value_release_fallback(
     _runtime: *mut std::ffi::c_void,
-    op: u32,
-    value: i64,
-    out: *mut i64,
+    _value: i64,
 ) -> i32 {
-    let op = if op & 0x8000_0000 != 0 { op & 1 } else { op };
-    if op > 1 {
-        return crate::JitCallStatus::ABI_MISMATCH.0 as i32;
-    }
-    if !out.is_null() {
-        unsafe { out.write(value) };
-        0
-    } else {
-        crate::JitCallStatus::RUNTIME_ERROR.0 as i32
-    }
+    0
 }
 
 // SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
@@ -331,11 +318,13 @@ pub(super) extern "C" fn test_native_array_fetch_fallback(
     _op: u32,
     _array: i64,
     _key: i64,
-) -> crate::JitNativeValueResult {
-    crate::JitNativeValueResult {
-        value: crate::jit_encode_constant(u32::MAX),
-        status: crate::JitCallStatus::RUNTIME_ERROR.0 as i64,
+    out: *mut i64,
+) -> i32 {
+    if !out.is_null() {
+        // SAFETY: test fallback follows the baseline value-helper ABI.
+        unsafe { out.write(crate::jit_encode_constant(u32::MAX)) };
     }
+    crate::JitCallStatus::RUNTIME_ERROR.0 as i32
 }
 
 pub(super) extern "C" fn test_native_array_unset_fallback(
@@ -461,44 +450,3 @@ pub(super) extern "C" fn test_native_execution_poll_fallback(
 ) -> i32 {
     0
 }
-macro_rules! register_value_fallback {
-    ($wrapper:ident => $target:ident ($($name:ident: $ty:ty),* $(,)?)) => {
-        pub(super) extern "C" fn $wrapper(
-            runtime: *mut std::ffi::c_void,
-            $($name: $ty),*
-        ) -> crate::JitNativeValueResult {
-            let mut value = crate::jit_encode_constant(u32::MAX);
-            let status = $target(runtime, $($name,)* &raw mut value);
-            crate::JitNativeValueResult {
-                value,
-                status: i64::from(status),
-            }
-        }
-    };
-}
-
-register_value_fallback!(test_native_unary_register_fallback => test_native_unary_fallback(op: u32, src: i64));
-register_value_fallback!(test_native_binary_register_fallback => test_native_binary_fallback(op: u32, lhs: i64, rhs: i64, function: i64, continuation: i64));
-register_value_fallback!(test_native_compare_register_fallback => test_native_compare_fallback(op: u32, lhs: i64, rhs: i64));
-register_value_fallback!(test_native_cast_register_fallback => test_native_cast_fallback(op: u32, src: i64));
-register_value_fallback!(test_native_local_fetch_register_fallback => test_native_local_fetch_fallback(op: u32, value: i64, function: i64, local: i64, file: i64, start: i64));
-register_value_fallback!(test_native_local_store_register_fallback => test_native_local_store_fallback(op: u32, current: i64, value: i64, function: i64, local: i64));
-register_value_fallback!(test_native_value_lifecycle_register_fallback => test_native_value_lifecycle_fallback(op: u32, value: i64));
-register_value_fallback!(test_native_reference_bind_register_fallback => test_native_reference_bind_fallback(op: u32, value: i64, key: i64, reserved: i64));
-register_value_fallback!(test_native_argument_check_register_fallback => test_native_argument_check_fallback(op: u32, value: i64, target_function: i64, parameter_flags: i64, caller_function: i64, continuation: i64));
-register_value_fallback!(test_native_return_check_register_fallback => test_native_return_check_fallback(op: u32, value: i64, function: i64));
-register_value_fallback!(test_native_exception_new_register_fallback => test_native_exception_new_fallback(op: u32, message: i64, function: i64, continuation: i64));
-register_value_fallback!(test_native_array_new_register_fallback => test_native_array_new_fallback(op: u32));
-register_value_fallback!(test_native_object_new_register_fallback => test_native_object_new_fallback(op: u32));
-register_value_fallback!(test_native_property_fetch_register_fallback => test_native_property_fetch_fallback(op: u32, object: i64, function: i64, continuation: i64));
-register_value_fallback!(test_native_property_assign_register_fallback => test_native_property_assign_fallback(op: u32, object: i64, value: i64, function: i64, continuation: i64));
-register_value_fallback!(test_native_object_clone_register_fallback => test_native_object_clone_fallback(op: u32, object: i64));
-register_value_fallback!(test_native_object_clone_with_register_fallback => test_native_object_clone_with_fallback(op: u32, object: i64, replacements: i64));
-register_value_fallback!(test_native_array_insert_register_fallback => test_native_array_insert_fallback(op: u32, array: i64, key: i64, value: i64));
-register_value_fallback!(test_native_array_unset_register_fallback => test_native_array_unset_fallback(op: u32, array: i64, key: i64));
-register_value_fallback!(test_native_array_spread_register_fallback => test_native_array_spread_fallback(op: u32, array: i64, source: i64));
-register_value_fallback!(test_native_foreach_init_register_fallback => test_native_foreach_init_fallback(op: u32, source: i64, function: i64, local: i64));
-register_value_fallback!(test_native_constant_fetch_register_fallback => test_native_constant_fetch_fallback(op: u32, function: i64, instruction: i64));
-register_value_fallback!(test_native_type_predicate_register_fallback => test_native_type_predicate_fallback(op: u32, src: i64));
-register_value_fallback!(test_native_stable_length_register_fallback => test_native_stable_length_fallback(op: u32, value: i64, function: i64, continuation: i64));
-register_value_fallback!(test_native_string_predicate_register_fallback => test_native_string_predicate_fallback(op: u32, haystack: i64, needle: i64));

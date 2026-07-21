@@ -1906,17 +1906,16 @@ fn execute_native_read_builtin_fast(
 ) -> Result<Option<i64>, String> {
     match (name, arguments) {
         ("count", [array]) => {
-            let Some(index) = context.plain_array_storage_index(*array) else {
+            let Some(length) = context.direct_array_length(*array) else {
                 return Ok(None);
             };
-            let length = context.array_at(index)?.len();
             let length = i64::try_from(length).map_err(|_| "count() result overflow".to_owned())?;
             context.encode(Value::Int(length)).map(Some)
         }
         ("array_key_exists" | "key_exists", [key, array]) => {
-            let Some(index) = context.plain_array_storage_index(*array) else {
+            if context.direct_array_slot(*array).is_none() {
                 return Ok(None);
-            };
+            }
             let key = match context.decode(*key)? {
                 Value::Reference(reference) => reference.get(),
                 key => key,
@@ -1957,7 +1956,7 @@ fn execute_native_read_builtin_fast(
             let Some(key) = php_runtime::api::ArrayKey::from_value(&key) else {
                 return Ok(None);
             };
-            let exists = context.array_at(index)?.get(&key).is_some();
+            let exists = context.direct_array_find_encoded(*array, &key)?.is_some();
             Ok(Some(php_jit::jit_encode_constant(if exists {
                 php_jit::JIT_VALUE_TRUE
             } else {
@@ -3113,22 +3112,40 @@ pub(super) fn execute_native_builtin(
                 }
                 _ => None,
             };
-            let mut values = call_arguments
-                .iter()
-                .map(|argument| context.decode(*argument))
-                .collect::<Result<Vec<_>, _>>()?;
+            // Keep the already encoded native arguments as the call data
+            // plane.  The former path decoded every argument to a Rust
+            // `Value` and encoded it again after callable resolution.  For
+            // arrays that recursively rebuilt a second direct-array tree on
+            // every WordPress hook invocation.  Only arguments that PHP must
+            // turn into reference cells are replaced below.
+            let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
+            encoded.clear();
+            encoded.reserve(arguments.len());
+            encoded.extend_from_slice(arguments);
             if let Value::String(name) = &callback {
                 let name = name.to_string_lossy();
-                if let Some(function) = context
+                let by_ref_parameters = context
                     .function_id(&name)
                     .and_then(|function| context.unit.functions.get(function.index()))
+                    .map(|function| {
+                        let function_name = function.name.clone();
+                        function
+                            .params
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, parameter)| parameter.by_ref)
+                            .map(|(index, parameter)| {
+                                (index, function_name.clone(), parameter.name.clone())
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 {
-                    for (index, parameter) in function.params.iter().enumerate() {
-                        if parameter.by_ref
-                            && values
-                                .get(index)
-                                .is_some_and(|value| !matches!(value, Value::Reference(_)))
-                        {
+                    for (index, function_name, parameter_name) in by_ref_parameters {
+                        if call_arguments.get(index).is_some_and(|value| {
+                            value.cast_unsigned() & php_jit::JIT_VALUE_RUNTIME_KIND_MASK
+                                != php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG
+                        }) {
                             let path = context
                                 .unit
                                 .files
@@ -3137,34 +3154,39 @@ pub(super) fn execute_native_builtin(
                             let line = native_source_line(context, source);
                             context.output.write_bytes(format!(
                                 "\nWarning: {}(): Argument #{} (${}) must be passed by reference, value given in {} on line {}\n",
-                                function.name,
+                                function_name,
                                 index + 1,
-                                parameter.name,
+                                parameter_name,
                                 path,
                                 line
                             ));
-                            if let Some(value) = values.get_mut(index) {
-                                *value = Value::Reference(php_runtime::api::ReferenceCell::new(
-                                    value.clone(),
-                                ));
+                            if let Some(value) = encoded.get_mut(index + 1) {
+                                let decoded = context.decode(*value)?;
+                                *value = context.encode(Value::Reference(
+                                    php_runtime::api::ReferenceCell::new(decoded),
+                                ))?;
                             }
                         }
                     }
                 }
             }
             if let Some(name) = unresolved_name {
+                encoded.clear();
+                context.native_call_encoded_scratch = encoded;
                 return Err(format!(
                     "E_PHP_VM_UNRESOLVED_CALLABLE: function {name} is not defined"
                 ));
             }
-            invoke_native_callable_value_from(
+            let result = invoke_native_encoded_callable_value_from(
                 context,
-                callback,
-                &values,
+                &encoded,
                 source,
                 None,
                 caller_locals.map(|(function, _)| function),
-            )
+            );
+            encoded.clear();
+            context.native_call_encoded_scratch = encoded;
+            result
         }
         "spl_autoload_register" => {
             let Some(callback) = arguments.first() else {
@@ -3488,6 +3510,83 @@ pub(super) fn execute_native_builtin(
                 Value::Reference(reference) => reference.get(),
                 value => value,
             };
+            if let Some(entries) = context.direct_array_entries_for(*arguments) {
+                // The direct array owns already-encoded native values. Pass
+                // those values as borrowed call operands instead of decoding
+                // the complete array to Rust `Value`s and recursively
+                // re-encoding every argument tree for every callback.
+                let entries = entries.to_vec();
+                let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
+                encoded.clear();
+                encoded.reserve(entries.len() + 1);
+                encoded.push(callback_handle);
+                let result = (|| {
+                    let mut metadata: Option<Vec<php_ir::instruction::IrCallArg>> = None;
+                    for (index, entry) in entries.into_iter().enumerate() {
+                        let mut encoded_value = entry.value;
+                        if let Value::String(name) = &callback {
+                            let name = name.to_string_lossy();
+                            if let Some(parameter) = context
+                                .function_id(&name)
+                                .and_then(|function| context.unit.functions.get(function.index()))
+                                .and_then(|function| function.params.get(index))
+                                && parameter.by_ref
+                                && !matches!(context.decode(encoded_value)?, Value::Reference(_))
+                            {
+                                let path = context
+                                    .unit
+                                    .files
+                                    .get(source.span.file.index())
+                                    .map_or("<unknown>", |file| file.path.as_str());
+                                let line = native_source_line(context, source);
+                                context.output.write_bytes(format!(
+                                    "\nWarning: {name}(): Argument #{} (${}) must be passed by reference, value given in {path} on line {line}\n",
+                                    index + 1,
+                                    parameter.name,
+                                ));
+                                encoded_value = context.encode(Value::Reference(
+                                    php_runtime::api::ReferenceCell::new(
+                                        context.decode(encoded_value)?,
+                                    ),
+                                ))?;
+                            }
+                        }
+                        encoded.push(encoded_value);
+                        let name = match context.decode(entry.key)? {
+                            Value::Int(_) => None,
+                            Value::String(name) => Some(name.to_string_lossy()),
+                            value => {
+                                return Err(format!(
+                                    "call_user_func_array(): array key must be int or string, {} given",
+                                    native_value_type_name(&value)
+                                ));
+                            }
+                        };
+                        if name.is_some() && metadata.is_none() {
+                            metadata = Some(
+                                (0..encoded.len().saturating_sub(2))
+                                    .map(|_| positional_native_call_argument())
+                                    .collect(),
+                            );
+                        }
+                        if let Some(metadata) = metadata.as_mut() {
+                            let mut argument = positional_native_call_argument();
+                            argument.name = name;
+                            metadata.push(argument);
+                        }
+                    }
+                    invoke_native_encoded_callable_value_from(
+                        context,
+                        &encoded,
+                        source,
+                        metadata,
+                        caller_locals.map(|(function, _)| function),
+                    )
+                })();
+                encoded.clear();
+                context.native_call_encoded_scratch = encoded;
+                return result;
+            }
             let arguments = match context.decode(*arguments)? {
                 Value::Reference(reference) => reference.get(),
                 value => value,
@@ -3503,7 +3602,7 @@ pub(super) fn execute_native_builtin(
                 let result = (|| {
                     let mut metadata: Option<Vec<php_ir::instruction::IrCallArg>> = None;
                     for (key, value) in arguments.iter() {
-                        encoded.push(context.encode(value.clone())?);
+                        encoded.push(context.encode_baseline_call_value(value.clone())?);
                         let name = match key {
                             php_runtime::api::ArrayKey::Int(_) => None,
                             php_runtime::api::ArrayKey::String(name) => {
@@ -3602,10 +3701,14 @@ pub(super) fn execute_native_builtin(
                 },
                 _ => "dynamic callable".to_owned(),
             };
-            invoke_native_callable_value_from(
+            let mut encoded = Vec::with_capacity(values.len() + 1);
+            encoded.push(context.encode(callback)?);
+            for value in values {
+                encoded.push(context.encode_baseline_call_value(value)?);
+            }
+            invoke_native_encoded_callable_value_from(
                 context,
-                callback,
-                &values,
+                &encoded,
                 source,
                 Some(metadata),
                 caller_locals.map(|(function, _)| function),

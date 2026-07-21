@@ -274,6 +274,7 @@ impl ObjectStorage {
 #[derive(Debug)]
 struct ObjectCell {
     id: u64,
+    property_epoch: Cell<u64>,
     storage: RefCell<ObjectStorage>,
 }
 
@@ -380,6 +381,7 @@ impl ObjectRef {
         Self {
             cell: Rc::new(ObjectCell {
                 id,
+                property_epoch: Cell::new(1),
                 storage: RefCell::new(ObjectStorage {
                     // Shared handle: every instance of one runtime class aliases the
                     // class entry's allocation (no per-instantiation copy, and
@@ -430,6 +432,7 @@ impl ObjectRef {
         Self {
             cell: Rc::new(ObjectCell {
                 id: source.id(),
+                property_epoch: Cell::new(source.property_epoch()),
                 storage: RefCell::new(ObjectStorage {
                     class_name: source.class_name_handle(),
                     display_name: source.display_name_handle(),
@@ -514,6 +517,7 @@ impl ObjectRef {
         Self {
             cell: Rc::new(ObjectCell {
                 id,
+                property_epoch: Cell::new(1),
                 storage: RefCell::new(ObjectStorage {
                     class_name: storage.class_name.clone(),
                     display_name: storage.display_name.clone(),
@@ -547,6 +551,7 @@ impl ObjectRef {
     /// Writes a property value.
     pub fn set_property(&self, name: impl Into<String>, value: Value) {
         self.cell.storage.borrow_mut().set(name.into(), value);
+        self.bump_property_epoch();
     }
 
     /// Writes a property while borrowing its already-published name.
@@ -554,6 +559,7 @@ impl ObjectRef {
     /// materializes a `String` for the side map.
     pub fn set_property_borrowed(&self, name: &str, value: Value) {
         self.cell.storage.borrow_mut().set_borrowed(name, value);
+        self.bump_property_epoch();
     }
 
     /// Attempts to write a property value without panicking on nested borrows.
@@ -563,10 +569,15 @@ impl ObjectRef {
         value: Value,
     ) -> Result<(), BorrowMutError> {
         let name = name.into();
-        self.cell
+        let result = self
+            .cell
             .storage
             .try_borrow_mut()
-            .map(|mut storage| storage.set(name, value))
+            .map(|mut storage| storage.set(name, value));
+        if result.is_ok() {
+            self.bump_property_epoch();
+        }
+        result
     }
 
     /// Runs `f` with a borrowed view of a property value, preferring
@@ -623,6 +634,7 @@ impl ObjectRef {
             // `f` cannot remove the slot; restore defensively regardless.
             storage.set(name.to_owned(), value);
         }
+        self.bump_property_epoch();
         Ok(Some(result))
     }
 
@@ -641,7 +653,11 @@ impl ObjectRef {
 
     /// Removes a property value, returning whether it existed.
     pub fn unset_property(&self, name: &str) -> bool {
-        self.cell.storage.borrow_mut().unset(name)
+        let removed = self.cell.storage.borrow_mut().unset(name);
+        if removed {
+            self.bump_property_epoch();
+        }
+        removed
     }
 
     /// Clears all stored properties as an internal GC action.
@@ -656,6 +672,8 @@ impl ObjectRef {
         }
         storage.dynamic_properties.clear();
         storage.dynamic_order.clear();
+        drop(storage);
+        self.bump_property_epoch();
     }
 
     /// Releases the PHP-visible object handle after the VM proves the object has
@@ -777,8 +795,28 @@ impl ObjectRef {
             return false;
         };
         *slot_value = Some(value);
+        drop(storage);
+        self.bump_property_epoch();
         crate::layout_stats::record_object_declared_slot_write();
         true
+    }
+
+    /// Monotonic property-mutation epoch used by native declared-slot caches.
+    #[must_use]
+    pub fn property_epoch(&self) -> u64 {
+        self.cell.property_epoch.get()
+    }
+
+    /// Stable address of [`Self::property_epoch`] for request-native guards.
+    #[must_use]
+    pub fn property_epoch_address(&self) -> *const u64 {
+        self.cell.property_epoch.as_ptr().cast_const()
+    }
+
+    fn bump_property_epoch(&self) {
+        self.cell
+            .property_epoch
+            .set(self.cell.property_epoch.get().wrapping_add(1).max(1));
     }
 }
 

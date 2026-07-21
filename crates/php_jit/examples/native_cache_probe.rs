@@ -68,21 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn resolve_probe_helper(stable_id: u32) -> Option<usize> {
-    let lifecycle = php_jit::lookup_helper_by_name("phrust_native_value_lifecycle")?;
-    (stable_id == lifecycle.id.0).then_some(probe_value_lifecycle as *const () as usize)
+    let release = php_jit::lookup_helper_by_name("phrust_native_value_release")?;
+    (stable_id == release.id.0).then_some(probe_value_release as *const () as usize)
 }
 
-extern "C" fn probe_value_lifecycle(
-    _context: u64,
-    _operation: u32,
-    encoded: i64,
-    out: *mut i64,
-) -> i32 {
-    if out.is_null() {
-        return 1;
-    }
-    // SAFETY: the generated helper ABI passes a valid status-out pointer.
-    unsafe { out.write(encoded) };
+extern "C" fn probe_value_release(_context: u64, _encoded: i64) -> i32 {
     0
 }
 

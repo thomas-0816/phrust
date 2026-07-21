@@ -425,6 +425,10 @@ pub struct RegionInstruction {
     pub continuation_id: u32,
     /// Locals definitely initialized immediately before this instruction.
     pub live_locals: Vec<LocalId>,
+    /// This instruction owns a real optimizing-to-baseline continuation.
+    /// Unsupported instructions are grouped into baseline islands, so only
+    /// the island entry carries this flag rather than every instruction.
+    pub optimizer_transition_entry: bool,
     /// Authoritative instruction, retained even when native lowering is missing.
     pub source_kind: InstructionKind,
     pub kind: RegionInstructionKind,
@@ -618,6 +622,7 @@ pub enum RegionInstructionKind {
     FetchProperty {
         dst: RegId,
         object: RegionOperand,
+        property: String,
     },
     FetchDynamicStaticProperty {
         dst: RegId,
@@ -631,6 +636,7 @@ pub enum RegionInstructionKind {
         dst: RegId,
         object: RegionOperand,
         value: RegionOperand,
+        property: String,
     },
     CloneObject {
         dst: RegId,
@@ -801,6 +807,10 @@ pub struct RegionBlock {
     /// Original PHP IR block used by callsite and diagnostic metadata. Native
     /// fragmentation may assign a different internal CFG `id`.
     pub source_block: BlockId,
+    /// Stable native continuation for entry into this executable block.
+    /// Unlike the first remaining instruction, this survives optimization
+    /// and identifies the same baseline/optimizing island boundary.
+    pub entry_continuation_id: u32,
     pub entry_live_locals: Vec<LocalId>,
     /// Locals with a materialized value on at least one incoming path.
     /// Unlike safepoint liveness this includes path-dependent values and is
@@ -876,11 +886,7 @@ impl RegionGraph {
             .enumerate()
             .filter_map(|(id, block)| {
                 let region_block = self.blocks.get(block.index())?;
-                let continuation_id = region_block
-                    .instructions
-                    .first()
-                    .map(|instruction| instruction.continuation_id)
-                    .unwrap_or(region_block.terminator_continuation_id);
+                let continuation_id = region_block.entry_continuation_id;
                 Some(RegionOsrEntryPoint {
                     id: id as u32,
                     block,
@@ -1146,6 +1152,7 @@ impl BaselineRegionBuilder {
         let exception_regions = collect_exception_regions(ir_function);
         let method_class = native_method_class(unit, function);
         for (block_index, block) in ir_function.blocks.iter().enumerate() {
+            let entry_continuation_id = next_continuation;
             let mut instructions = Vec::with_capacity(block.instructions.len());
             let mut known_register_strings = BTreeMap::<RegId, String>::new();
             let mut known_local_strings = BTreeMap::<LocalId, String>::new();
@@ -1317,6 +1324,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
@@ -1348,6 +1356,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
@@ -1369,6 +1378,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind,
                                 });
@@ -1395,6 +1405,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: snapshot,
@@ -1433,6 +1444,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::BindReference {
                                         target: local,
@@ -1482,6 +1494,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind,
                                 });
@@ -1565,6 +1578,7 @@ impl BaselineRegionBuilder {
                                 span: instruction.span,
                                 continuation_id: next_continuation,
                                 live_locals: Vec::new(),
+                                optimizer_transition_entry: false,
                                 source_kind: instruction.kind.clone(),
                                 kind: RegionInstructionKind::NewObject {
                                     dst: *dst,
@@ -2730,18 +2744,25 @@ impl BaselineRegionBuilder {
                             caller_strict_types: unit.strict_types,
                         })
                     }
-                    InstructionKind::FetchProperty { dst, object, .. } => {
-                        RegionInstructionKind::FetchProperty {
-                            dst: *dst,
-                            object: lower_operand(unit, *object),
-                        }
-                    }
+                    InstructionKind::FetchProperty {
+                        dst,
+                        object,
+                        property,
+                    } => RegionInstructionKind::FetchProperty {
+                        dst: *dst,
+                        object: lower_operand(unit, *object),
+                        property: property.clone(),
+                    },
                     InstructionKind::AssignProperty {
-                        dst, object, value, ..
+                        dst,
+                        object,
+                        value,
+                        property,
                     } => RegionInstructionKind::AssignProperty {
                         dst: *dst,
                         object: lower_operand(unit, *object),
                         value: lower_operand(unit, *value),
+                        property: property.clone(),
                     },
                     InstructionKind::FetchDynamicProperty {
                         dst,
@@ -3441,6 +3462,7 @@ impl BaselineRegionBuilder {
                     span: instruction.span,
                     continuation_id: next_continuation,
                     live_locals: Vec::new(),
+                    optimizer_transition_entry: false,
                     source_kind: instruction.kind.clone(),
                     kind,
                 });
@@ -3471,6 +3493,7 @@ impl BaselineRegionBuilder {
             blocks.push(RegionBlock {
                 id: block.id,
                 source_block: block.id,
+                entry_continuation_id,
                 entry_live_locals: Vec::new(),
                 entry_state_locals: Vec::new(),
                 instructions,

@@ -445,13 +445,35 @@ impl fmt::Display for CraneliftCodeManagerError {
 
 impl std::error::Error for CraneliftCodeManagerError {}
 
+/// Tier-independent identity of the one live call cell for a PHP function.
+/// Tier/version remain part of `NativeFunctionKey` for code/cache ownership;
+/// only the cell deliberately merges baseline and optimizing publications.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct NativeFunctionCellIdentity {
+    deployment_unit: String,
+    function_id: u32,
+    signature_hash: u64,
+    invalidation_generation: u64,
+}
+
+impl From<&NativeFunctionKey> for NativeFunctionCellIdentity {
+    fn from(key: &NativeFunctionKey) -> Self {
+        Self {
+            deployment_unit: key.deployment_unit.clone(),
+            function_id: key.function_id,
+            signature_hash: key.signature_hash,
+            invalidation_generation: key.invalidation_generation,
+        }
+    }
+}
+
 struct ManagerState {
     next_generation: u64,
     active_fast: Arc<CodeGeneration>,
     active_quality: Arc<CodeGeneration>,
     generations: VecDeque<Arc<CodeGeneration>>,
     cache: HashMap<CraneliftCodeKey, JitFunctionHandle>,
-    function_cells: HashMap<NativeFunctionKey, Arc<NativeIndirectionCell>>,
+    function_cells: HashMap<NativeFunctionCellIdentity, Arc<NativeIndirectionCell>>,
     function_publications: HashMap<NativeFunctionKey, JitFunctionHandle>,
     compiling: HashSet<CraneliftCodeKey>,
     compile_failures: HashMap<CraneliftCodeKey, String>,
@@ -737,9 +759,10 @@ impl CraneliftCodeManager {
         Ok(keys
             .into_iter()
             .map(|key| {
+                let identity = NativeFunctionCellIdentity::from(&key);
                 state
                     .function_cells
-                    .entry(key.clone())
+                    .entry(identity)
                     .or_insert_with(|| Arc::new(NativeIndirectionCell::new(key)))
                     .clone()
             })
@@ -749,10 +772,12 @@ impl CraneliftCodeManager {
     /// Returns a declared cell whether or not machine code is published.
     #[must_use]
     pub fn function_cell(&self, key: &NativeFunctionKey) -> Option<Arc<NativeIndirectionCell>> {
-        self.state
-            .lock()
-            .ok()
-            .and_then(|state| state.function_cells.get(key).cloned())
+        self.state.lock().ok().and_then(|state| {
+            state
+                .function_cells
+                .get(&NativeFunctionCellIdentity::from(key))
+                .cloned()
+        })
     }
 
     /// Compiles and publishes exactly once for `key`.
@@ -863,9 +888,10 @@ impl CraneliftCodeManager {
                 }
                 if state.compiling.insert(key.clone()) {
                     let function_cell = function_key.as_ref().map(|function_key| {
+                        let identity = NativeFunctionCellIdentity::from(function_key);
                         state
                             .function_cells
-                            .entry(function_key.clone())
+                            .entry(identity)
                             .or_insert_with(|| {
                                 Arc::new(NativeIndirectionCell::new(function_key.clone()))
                             })
@@ -1050,10 +1076,23 @@ impl CraneliftCodeManager {
                 })
                 .collect::<Vec<_>>();
             for key in retired_keys {
-                if let Some(cell) = state.function_cells.remove(&key) {
+                state.function_publications.remove(&key);
+                let identity = NativeFunctionCellIdentity::from(&key);
+                if let Some(cell) = state.function_cells.get(&identity) {
+                    let tier = if key.compiler_tier == "optimizing" {
+                        NativeFunctionTier::Optimized
+                    } else {
+                        NativeFunctionTier::Baseline
+                    };
+                    cell.retire_tier(tier);
+                }
+                let still_owned = state
+                    .function_publications
+                    .keys()
+                    .any(|candidate| NativeFunctionCellIdentity::from(candidate) == identity);
+                if !still_owned && let Some(cell) = state.function_cells.remove(&identity) {
                     cell.retire();
                 }
-                state.function_publications.remove(&key);
             }
             self.metrics
                 .bytes_retired
@@ -1103,9 +1142,10 @@ impl CraneliftCodeManager {
                 code_key.compiler_tier == "optimizing",
                 code_key.invalidation_generation,
             );
+            let identity = NativeFunctionCellIdentity::from(&key);
             let cell = state
                 .function_cells
-                .entry(key.clone())
+                .entry(identity)
                 .or_insert_with(|| Arc::new(NativeIndirectionCell::new(key.clone())))
                 .clone();
             if state.function_publications.contains_key(&key) {
@@ -1130,8 +1170,40 @@ impl CraneliftCodeManager {
         key: &NativeFunctionKey,
     ) -> Option<(Arc<NativeIndirectionCell>, JitFunctionHandle)> {
         let state = self.state.lock().ok()?;
+        let identity = NativeFunctionCellIdentity::from(key);
+        let publication = state.function_publications.get(key).or_else(|| {
+            (key.compiler_tier == "optimizing").then(|| {
+                state
+                    .function_publications
+                    .iter()
+                    .find_map(|(candidate, handle)| {
+                        (candidate.compiler_tier == "baseline"
+                            && NativeFunctionCellIdentity::from(candidate) == identity)
+                            .then_some(handle)
+                    })
+            })?
+        })?;
         Some((
-            Arc::clone(state.function_cells.get(key)?),
+            Arc::clone(state.function_cells.get(&identity)?),
+            publication.clone(),
+        ))
+    }
+
+    /// Returns a publication only when the exact requested tier owns code.
+    ///
+    /// Unlike [`Self::published_function`], this does not let an optimizing
+    /// lookup fall back to a baseline publication. Publication diagnostics and
+    /// tier-firewall tests use this to distinguish the two physical code
+    /// products without inspecting process addresses.
+    #[must_use]
+    pub fn published_function_exact(
+        &self,
+        key: &NativeFunctionKey,
+    ) -> Option<(Arc<NativeIndirectionCell>, JitFunctionHandle)> {
+        let state = self.state.lock().ok()?;
+        let identity = NativeFunctionCellIdentity::from(key);
+        Some((
+            Arc::clone(state.function_cells.get(&identity)?),
             state.function_publications.get(key)?.clone(),
         ))
     }

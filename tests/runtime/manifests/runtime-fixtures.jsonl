@@ -82,6 +82,7 @@
 {"id":"foreach-snapshot-mutation","path":"fixtures/runtime/valid/foreach/snapshot-mutation.php","tags":["runtime","foreach"],"expect":{"exit":0,"stdout":"12|1299\n"}}
 {"id":"includes-return","path":"fixtures/runtime/valid/includes/include-return.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"before|child:value|after\n"}}
 {"id":"includes-share-variable","path":"fixtures/runtime/valid/includes/share-variable.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"parent|included\n"}}
+{"id":"includes-function-scope-export","path":"fixtures/runtime/valid/includes/function-scope-export.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"6.8.3\n"}}
 {"id":"includes-once","path":"fixtures/runtime/valid/includes/include-once.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"1\n"}}
 {"id":"includes-error-reporting-state","path":"fixtures/runtime/valid/includes/error-reporting-state.php","tags":["runtime","includes","diagnostics"],"expect":{"exit":0,"stdout":"masked\n7\n"}}
 {"id":"includes-cross-unit-object-receiver","path":"fixtures/runtime/valid/includes/cross-unit-object-receiver.php","tags":["runtime","includes","objects","ownership"],"expect":{"exit":0,"stdout":"object\n"}}

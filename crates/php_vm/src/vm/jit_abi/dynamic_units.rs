@@ -24,22 +24,31 @@ pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
     let resolved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_native_context_for(runtime, "function_resolve", |context| {
             let function = php_ir::FunctionId::new(function);
-            let unit = context.current_dynamic_unit;
-            if let Some(address) = context.resolved_native_entry_address(unit, function) {
-                return Ok(address);
-            }
-            let handle = if let Some(unit) = unit {
-                ensure_dynamic_native_entry(context, unit, function)
-            } else {
-                ensure_native_entry(context, function)
-            }?;
+            // This helper is imported exclusively by streaming-baseline
+            // artifacts. Keep the tier boundary physical: a baseline call
+            // miss may compile and publish only the baseline callee. The
+            // optimizing tier has no resolver-helper relocation and reaches
+            // publication-validated native cells directly.
+            let handle = ensure_native_baseline_entry(context, function)?;
             let address = handle.native_entry_address().ok_or_else(|| {
                 format!(
                     "native function entry {} has no executable address",
                     function.raw()
                 )
             })?;
-            context.cache_resolved_native_entry_address(unit, function, address);
+            context.publish_native_entry_address(function, address);
+            if context.options.native_optimization
+                == super::super::NativeOptimizationPolicy::Optimizing
+            {
+                let compiled = context.compiled.clone();
+                let external_signatures =
+                    visible_external_function_signatures(context, &compiled, function);
+                context.worker_state.schedule_on_demand_optimization(
+                    compiled,
+                    function,
+                    external_signatures,
+                );
+            }
             Ok(address)
         })
     }));
@@ -240,11 +249,40 @@ pub(super) fn ensure_native_entry(
     context: &mut NativeExecutionContext<'_>,
     function: php_ir::FunctionId,
 ) -> Result<php_jit::JitFunctionHandle, String> {
+    let external_signatures =
+        visible_external_function_signatures(context, &context.compiled, function);
+
+    if context.options.native_optimization == super::super::NativeOptimizationPolicy::Optimizing
+        && context.options.tiering.enabled
+        && !context.options.tiering.native_eager
+    {
+        if let Some(handle) = context.worker_state.resolved_native_function(
+            &context.compiled,
+            function,
+            context.options,
+            &external_signatures,
+        ) {
+            std::sync::Arc::make_mut(&mut context.native_entries).insert(function, handle.clone());
+            return Ok(handle);
+        }
+
+        let handle = if let Some(handle) = context.native_entries.get(&function) {
+            handle.clone()
+        } else {
+            ensure_native_baseline_entry(context, function)?
+        };
+        context.worker_state.schedule_on_demand_optimization(
+            context.compiled.clone(),
+            function,
+            external_signatures,
+        );
+        std::sync::Arc::make_mut(&mut context.native_entries).insert(function, handle.clone());
+        return Ok(handle);
+    }
+
     if let Some(handle) = context.native_entries.get(&function) {
         return Ok(handle.clone());
     }
-    let external_signatures =
-        visible_external_function_signatures(context, &context.compiled, function);
     let handle = context.worker_state.resolve_native_function(
         &context.compiled,
         function,
@@ -259,23 +297,21 @@ pub(super) fn ensure_native_entry(
         .ok_or_else(|| format!("native function entry {} was not published", function.raw()))
 }
 
-pub(super) fn ensure_dynamic_native_entry(
+pub(super) fn ensure_native_baseline_entry(
     context: &mut NativeExecutionContext<'_>,
-    unit: usize,
     function: php_ir::FunctionId,
 ) -> Result<php_jit::JitFunctionHandle, String> {
-    prepare_dynamic_native_entry(context, unit, function)?;
-    context
-        .dynamic_units
-        .get(unit)
-        .and_then(|package| package.native_entries.get(&function))
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "dynamic native function entry {} was not published",
-                function.raw()
-            )
-        })
+    let external_signatures =
+        visible_external_function_signatures(context, &context.compiled, function);
+    let mut options = context.options.clone();
+    options.native_optimization = super::super::NativeOptimizationPolicy::Baseline;
+    options.tiering.enabled = false;
+    context.worker_state.resolve_native_function(
+        &context.compiled,
+        function,
+        &options,
+        &external_signatures,
+    )
 }
 
 /// Ensure that a dynamic-unit entry is current without cloning its owning

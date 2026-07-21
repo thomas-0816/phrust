@@ -197,6 +197,14 @@ pub(super) fn execute_native_semantic_operation(
 ) -> Result<i64, String> {
     use php_jit::region_ir::RegionSemanticOperationId as Id;
 
+    if matches!(
+        operation,
+        Id::PropertyAssign | Id::PropertyUnset | Id::PropertyDimAssign | Id::PropertyDimUnset
+    ) && let Some(object) = arguments.first().copied()
+    {
+        context.invalidate_object_property_cache_for_encoded(object)?;
+    }
+
     let outcome = match operation {
         Id::StaticPropertyFetch
         | Id::StaticPropertyAssign

@@ -100,7 +100,7 @@ impl NativeOptimizationPolicy {
 
     #[must_use]
     pub const fn is_optimizing(self) -> bool {
-        !matches!(self, Self::Baseline)
+        matches!(self, Self::Optimizing)
     }
 
     #[must_use]

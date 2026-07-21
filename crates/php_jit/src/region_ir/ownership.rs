@@ -24,6 +24,7 @@ pub struct HelperOwnershipContract {
 }
 
 const NONE: &[HelperInputOwnership] = &[];
+const CONSUME_1: &[HelperInputOwnership] = &[HelperInputOwnership::Consume];
 const BORROW_1: &[HelperInputOwnership] = &[HelperInputOwnership::Borrow];
 const BORROW_2: &[HelperInputOwnership] =
     &[HelperInputOwnership::Borrow, HelperInputOwnership::Borrow];
@@ -85,11 +86,7 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         "phrust_native_array_new" | "phrust_native_object_new" | "phrust_native_exception_new" => {
             Some(owned(NONE, false))
         }
-        "phrust_native_value_lifecycle" => Some(HelperOwnershipContract {
-            inputs: BORROW_1,
-            result: HelperResultOwnership::Borrowed,
-            may_alias_input: true,
-        }),
+        "phrust_native_value_release" => Some(none(CONSUME_1)),
         "phrust_native_echo"
         | "phrust_native_foreach_cleanup"
         | "phrust_native_runtime_fatal"

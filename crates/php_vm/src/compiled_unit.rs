@@ -188,6 +188,16 @@ pub(crate) struct PreparedDeploymentNativeImage {
     pub function_exports: Arc<std::collections::HashMap<Arc<str>, FunctionId>>,
     pub exported_classes: Arc<std::collections::HashSet<Arc<str>>>,
     pub native_call_argument_capacity: usize,
+    /// Immutable source-unit constants in a numeric C-layout view. Generated
+    /// code uses these records for literal string keys without decoding a
+    /// Rust `Value` or allocating a request-local string handle.
+    pub constant_views: Box<[php_jit::JitNativeConstantView]>,
+    /// Dense baseline publication cells indexed by `FunctionId`. Generated
+    /// code loads these cells directly. Optimizing entries are intentionally
+    /// not stored here until the native ABI can preserve an optimized caller
+    /// continuation across a callee side exit.
+    pub native_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
+    pub optimizing_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
 }
 
 impl PreparedUnit {
@@ -606,6 +616,31 @@ impl CompiledUnit {
                     .map(|function| function.params.len() + function.captures.len() + 1)
                     .max()
                     .unwrap_or(0),
+                constant_views: unit
+                    .constants
+                    .iter()
+                    .map(|constant| match constant {
+                        php_ir::IrConstant::String(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING,
+                            reserved: 0,
+                            length: value.len() as u64,
+                            bytes: value.as_ptr() as usize as u64,
+                        },
+                        php_ir::IrConstant::StringBytes(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING,
+                            reserved: 0,
+                            length: value.len() as u64,
+                            bytes: value.as_ptr() as usize as u64,
+                        },
+                        _ => php_jit::JitNativeConstantView::default(),
+                    })
+                    .collect(),
+                native_function_entries: (0..unit.functions.len())
+                    .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                    .collect(),
+                optimizing_function_entries: (0..unit.functions.len())
+                    .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                    .collect(),
             }
         })
     }

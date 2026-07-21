@@ -119,7 +119,12 @@ pub(super) fn invoke_native_function_with_metadata_strict(
             .iter()
             .all(|argument| context.php_handle_is_reference(*argument) == Some(false))
     {
-        bound.extend_from_slice(&raw_supplied[..fixed_count]);
+        bound.extend(
+            raw_supplied[..fixed_count]
+                .iter()
+                .map(|argument| context.duplicate_native_call_argument(*argument))
+                .collect::<Result<smallvec::SmallVec<[i64; 8]>, _>>()?,
+        );
         let visible_arguments = raw_supplied
             .iter()
             .copied()
@@ -227,7 +232,7 @@ pub(super) fn invoke_native_function_with_metadata_strict(
                 );
                 values.insert(key.clone(), value);
             }
-            bound.push(context.encode(Value::Array(values))?);
+            bound.push(context.encode_direct_array_value(values)?);
         } else if let Some(argument) = assigned[index] {
             if parameter.by_ref {
                 match context.decode(argument)? {
@@ -266,6 +271,16 @@ pub(super) fn invoke_native_function_with_metadata_strict(
                 }
                 bound.push(argument);
             } else {
+                if parameter.type_.is_none()
+                    && context.php_handle_is_reference(argument) == Some(false)
+                {
+                    // The prepared binder already knows this parameter takes
+                    // an ordinary value.  Preserve the encoded native data
+                    // plane and give the callee one owned handle; decoding and
+                    // re-encoding here used to rebuild every array argument.
+                    bound.push(context.duplicate_native_call_argument(argument)?);
+                    continue;
+                }
                 let mut value = match context.decode(argument)? {
                     Value::Reference(reference) => reference.get(),
                     value => value,
@@ -286,7 +301,11 @@ pub(super) fn invoke_native_function_with_metadata_strict(
                         ));
                     }
                 }
-                bound.push(context.encode(value)?);
+                // This is the complete baseline binder slow path (reference
+                // dereference and/or scalar coercion).  Keep PhpArray's
+                // canonical COW storage instead of manufacturing a direct
+                // array copy below a dynamic callsite.
+                bound.push(context.encode_baseline_call_value(value)?);
             }
         } else if let Some(default) = &parameter.default {
             let value = native_runtime_constant_value(context, default)?;
@@ -686,6 +705,9 @@ pub(super) fn execute_native_dynamic_callable(
     let Some((callee, arguments)) = encoded.split_first() else {
         return Some(Err("callable operand is missing".to_owned()));
     };
+    let prepared_closure_captures = context
+        .prepared_closure_captures(*callee)
+        .map(smallvec::SmallVec::<[i64; 8]>::from_slice);
     let callee = match context.decode(*callee) {
         Ok(value) => dereference_native_callable_value(value),
         Err(error) => return Some(Err(error)),
@@ -726,23 +748,33 @@ pub(super) fn execute_native_dynamic_callable(
                             )?,
                         );
                     }
-                    closure_arguments.extend(
-                        closure
-                            .captures
-                            .iter()
-                            .map(|capture| {
-                                if capture.name.eq_ignore_ascii_case("this")
-                                    && let Some(object) = &closure.bound_this
-                                {
-                                    context.encode(Value::Object(object.clone()))
-                                } else if let Some(reference) = capture.reference() {
-                                    context.encode(Value::Reference(reference))
-                                } else {
-                                    context.encode(capture.value().cloned().unwrap_or(Value::Null))
-                                }
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    );
+                    if let Some(captures) = prepared_closure_captures.as_deref() {
+                        closure_arguments.extend_from_slice(captures);
+                    } else {
+                        // Compatibility for a closure reached through a
+                        // baseline ReferenceCell. Optimizing/native closure
+                        // values are always published as PreparedClosure and
+                        // cannot enter this branch.
+                        closure_arguments.extend(
+                            closure
+                                .captures
+                                .iter()
+                                .map(|capture| {
+                                    if capture.name.eq_ignore_ascii_case("this")
+                                        && let Some(object) = &closure.bound_this
+                                    {
+                                        context.encode(Value::Object(object.clone()))
+                                    } else if let Some(reference) = capture.reference() {
+                                        context.encode(Value::Reference(reference))
+                                    } else {
+                                        context.encode_baseline_call_value(
+                                            capture.value().cloned().unwrap_or(Value::Null),
+                                        )
+                                    }
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        );
+                    }
                     closure_arguments.extend_from_slice(arguments);
                     let pushed_scope = closure.context.scope_class.is_some();
                     if let Some(scope_class) = &closure.context.scope_class {

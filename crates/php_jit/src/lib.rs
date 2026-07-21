@@ -25,29 +25,46 @@ pub mod region_ir;
 
 pub use abi::{
     JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS,
-    JIT_NATIVE_ARRAY_CACHE_MISS, JIT_NATIVE_ARRAY_VIEW_ABI_VERSION,
-    JIT_NATIVE_FOREACH_VIEW_ABI_VERSION, JIT_NATIVE_GLOBAL_REFERENCE_CACHE_SIZE,
+    JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_CONSTANT_VIEW_NONE,
+    JIT_NATIVE_CONSTANT_VIEW_STRING, JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
+    JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY, JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS,
+    JIT_NATIVE_DIRECT_ARRAY_FREE_NONE, JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY,
+    JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY, JIT_NATIVE_DIRECT_VALUE_CAPACITY,
+    JIT_NATIVE_DIRECT_VALUE_INDEX_BASE, JIT_NATIVE_FOREACH_VIEW_ABI_VERSION,
+    JIT_NATIVE_GLOBAL_REFERENCE_CACHE_SIZE, JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS,
+    JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE, JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION,
+    JIT_NATIVE_REFERENCE_ARRAY_KEY_INT, JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL, JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_TRUE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
+    JIT_NATIVE_REFERENCE_ARRAY_VIEW_EMPTY, JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
     JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
-    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_STRING_VALUE_ZERO,
-    JIT_NATIVE_STRING_VIEW_ABI_VERSION, JIT_NATIVE_VALUE_VIEW_ARRAY,
-    JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT, JIT_NATIVE_VALUE_VIEW_NONE,
-    JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR, JIT_NATIVE_VALUE_VIEW_STRING, JIT_RUNTIME_ABI_HASH,
-    JIT_RUNTIME_ABI_VERSION, JitAbiSlot, JitAbiValue, JitBailout, JitBailoutKind, JitCExit,
-    JitCExitTag, JitCFrameView, JitCValue, JitCValueTag, JitCallResult, JitCallStatus,
-    JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView, JitNativeArgFlags,
-    JitNativeArrayCacheEntry, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
-    JitNativeCallTarget, JitNativeControlRecord, JitNativeDestructorPoint,
-    JitNativeDispatchTrampoline, JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest,
-    JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler, JitNativeFiberState,
-    JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader,
-    JitNativeFunctionEntryCacheRecord, JitNativeGeneratorState,
-    JitNativeGlobalReferenceCacheRecord, JitNativeIndirectionEntry, JitNativePcMetadata,
-    JitNativeReferenceScalarView, JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind,
-    JitNativeRuntimeView, JitNativeRuntimeViewGuard, JitNativeSuspendKind,
-    JitNativeSuspensionGenerationPolicy, JitNativeTransitionState, JitNativeValueResult,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_SHARED_ARRAY_ABI_VERSION,
+    JIT_NATIVE_STRING_VALUE_ZERO, JIT_NATIVE_STRING_VIEW_ABI_VERSION, JIT_NATIVE_VALUE_VIEW_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH, JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT,
+    JIT_NATIVE_VALUE_VIEW_NONE, JIT_NATIVE_VALUE_VIEW_OBJECT_PROPERTIES,
+    JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR, JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_STRING, JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED,
+    JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED, JIT_OPTIMIZING_EXIT_ARRAY_VIEW_MISSING,
+    JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiSlot, JitAbiValue, JitBailout,
+    JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue, JitCValueTag, JitCallResult,
+    JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView,
+    JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
+    JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord, JitNativeDestructorPoint,
+    JitNativeDirectArrayEntry, JitNativeDispatchTrampoline, JitNativeDynamicCodeKind,
+    JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
+    JitNativeFiberState, JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader,
+    JitNativeGeneratorState, JitNativeGlobalReferenceCacheRecord, JitNativeIndirectionEntry,
+    JitNativePcMetadata, JitNativePropertyCacheEntry, JitNativeReferenceArrayEntry,
+    JitNativeReferenceArrayView, JitNativeReferenceScalarView, JitNativeResumeInputKind,
+    JitNativeRootEntry, JitNativeRootKind, JitNativeRuntimeView, JitNativeRuntimeViewGuard,
+    JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy, JitNativeTransitionState,
     JitNativeValueSlot, JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
     JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
     activate_native_runtime_view, jit_native_global_reference_cache_index,
+    jit_native_property_name_hash,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -88,6 +105,7 @@ use std::sync::Arc;
 const JIT_NATIVE_HANDLER_RESUME_TAG: u32 = 0x8000_0000;
 const JIT_NATIVE_SUSPENSION_RESUME_TAG: u32 = 0x4000_0000;
 pub const JIT_NATIVE_TRANSITION_RESUME_TAG: u32 = 0x2000_0000;
+pub const JIT_NATIVE_OPTIMIZING_BLOCK_RESUME_TAG: u32 = 0x1000_0000;
 /// Cranelift release included in restart-persistent native cache identity.
 pub const CRANELIFT_VERSION: &str = "0.133.1";
 
@@ -101,6 +119,10 @@ const fn native_suspension_resume_id(continuation_id: u32) -> i32 {
 
 const fn native_transition_resume_id(continuation_id: u32) -> i32 {
     (JIT_NATIVE_TRANSITION_RESUME_TAG | continuation_id) as i32
+}
+
+const fn native_optimizing_continuation_resume_id(continuation_id: u32) -> i32 {
+    (JIT_NATIVE_OPTIMIZING_BLOCK_RESUME_TAG | continuation_id) as i32
 }
 
 /// Stable native compiler identity embedded in code/cache metadata.
@@ -146,8 +168,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_local_fetch: usize,
     /// Stores through a PHP reference cell or replaces a plain local value.
     pub native_local_store: usize,
-    /// Retains or releases one request-owned native value handle.
-    pub native_value_lifecycle: usize,
+    /// Performs the cold final release of one request-owned native value.
+    pub native_value_release: usize,
     /// Creates or propagates one PHP reference cell.
     pub native_reference_bind: usize,
     /// Enforces one declared PHP function parameter type at a direct call site.
@@ -622,12 +644,35 @@ pub struct JitNativeTransitionMetadata {
     pub span: IrSpan,
     pub live_locals: Vec<LocalId>,
     pub live_registers: Vec<php_ir::RegId>,
-    /// Baseline streaming-frame slot for each dense public snapshot register.
-    /// Empty for optimizing/legacy artifacts whose resume loaders consume the
-    /// dense snapshot directly.
-    #[serde(default)]
-    pub register_frame_slots: Vec<u8>,
     pub result_register: Option<php_ir::RegId>,
+}
+
+/// Production code shape selected for one optimizing instruction.
+///
+/// This is emitted with the artifact rather than reconstructed from source
+/// tests.  In particular, a helper-free optimizing relocation table is not
+/// sufficient evidence when an instruction can immediately return
+/// `RECOMPILE_REQUESTED` and execute the old baseline helper instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum JitProductionLoweringClass {
+    DirectClif,
+    DirectNativeData,
+    CompiledNativeCall,
+    BaselineFragmentTransition,
+}
+
+/// Emitted-code contract row for one optimizing instruction.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct JitProductionLoweringMetadata {
+    pub function: FunctionId,
+    pub continuation_id: u32,
+    /// Stable authoritative `InstructionKind` variant name.
+    pub operation: String,
+    pub class: JitProductionLoweringClass,
+    /// True only when otherwise-direct optimizing code embeds its own exit to
+    /// the generic baseline implementation.  These sites are removed family
+    /// by family by the native hot-path replacement contract.
+    pub operation_local_transition: bool,
 }
 
 /// Process-local generated entry for one function in a compiled unit graph.
@@ -726,6 +771,10 @@ pub struct JitRegionStateMetadata {
     pub suspensions: Vec<JitNativeSuspensionMetadata>,
     pub dynamic_code: Vec<JitNativeDynamicCodeMetadata>,
     pub native_transitions: Vec<JitNativeTransitionMetadata>,
+    /// Authoritative optimizing code-shape manifest. Baseline artifacts leave
+    /// this empty; old cache entries deserialize with an empty manifest.
+    #[serde(default)]
+    pub production_lowering: Vec<JitProductionLoweringMetadata>,
     pub function_entries: Vec<JitNativeFunctionEntryMetadata>,
 }
 
@@ -1201,6 +1250,28 @@ impl JitFunctionHandle {
         self.invoke_i64_transition_impl(state, runtime_abi_hash, true, std::ptr::null_mut())
     }
 
+    /// Enters a baseline continuation and keeps PHP catch/finally unwinding
+    /// inside native code. This is the only production boundary used when an
+    /// optimizing guard rejects its direct native representation.
+    pub fn invoke_i64_native_transition_with_unwind_runtime(
+        &self,
+        state: &JitNativeTransitionState,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let outcome = self.invoke_i64_transition_impl(state, runtime_abi_hash, true, runtime)?;
+        let arity = self.native_entry.map_or(0, |entry| entry.arity);
+        let args = vec![0_i64; usize::from(arity)];
+        self.continue_i64_with_native_unwind_runtime(
+            &args,
+            runtime_abi_hash,
+            runtime,
+            outcome,
+            catch_matches,
+        )
+    }
+
     /// Re-enters a continuation published by this same native artifact. This
     /// is used for suspended nested calls whose caller and saved state share
     /// one generation, including optimizing-tier artifacts.
@@ -1238,9 +1309,10 @@ impl JitFunctionHandle {
         }
         let metadata =
             self.region_state_metadata()
-                .ok_or(JitInvokeError::MissingNativeTransition(
-                    state.continuation_id,
-                ))?;
+                .ok_or(JitInvokeError::MissingNativeTransition {
+                    function: state.function_id,
+                    continuation: state.continuation_id,
+                })?;
         if require_baseline && metadata.compiler_tier != region_ir::NativeCompilerTier::Baseline {
             return Err(JitInvokeError::NativeTransitionRequiresBaseline);
         }
@@ -1251,67 +1323,71 @@ impl JitFunctionHandle {
                 entry.function.raw() == state.function_id
                     && entry.continuation_id == state.continuation_id
             })
-            .ok_or(JitInvokeError::MissingNativeTransition(
-                state.continuation_id,
-            ))?;
+            .ok_or(JitInvokeError::MissingNativeTransition {
+                function: state.function_id,
+                continuation: state.continuation_id,
+            })?;
         let locals_complete = transition
             .live_locals
             .iter()
             .all(|local| state.local_initialized(*local));
-        let registers_complete =
-            transition
-                .live_registers
-                .iter()
-                .enumerate()
-                .all(|(snapshot_slot, _)| {
-                    state.initialized_register_mask
+        let register_source_slots = transition
+            .live_registers
+            .iter()
+            .map(|register| {
+                (0..JIT_DEOPT_MAX_REGISTERS).find(|snapshot_slot| {
+                    let initialized = state.initialized_register_mask
                         & (1_u64
-                            .checked_shl(u32::try_from(snapshot_slot).unwrap_or(u32::MAX))
+                            .checked_shl(u32::try_from(*snapshot_slot).unwrap_or(u32::MAX))
                             .unwrap_or(0))
-                        != 0
-                });
-        let frame_layout_complete = transition.register_frame_slots.is_empty()
-            || (transition.register_frame_slots.len() == transition.live_registers.len()
-                && transition
-                    .register_frame_slots
-                    .iter()
-                    .all(|slot| usize::from(*slot) < JIT_DEOPT_MAX_REGISTERS));
-        if !locals_complete || !registers_complete || !frame_layout_complete {
+                        != 0;
+                    initialized && state.register_ids[*snapshot_slot] == register.raw()
+                })
+            })
+            .collect::<Vec<_>>();
+        let registers_complete = register_source_slots.iter().all(Option::is_some);
+        if !locals_complete || !registers_complete {
             return Err(JitInvokeError::IncompleteNativeTransition(
                 state.continuation_id,
             ));
+        }
+        let mut remapped_state = state.clone();
+        remapped_state.initialized_register_mask =
+            if transition.live_registers.len() >= u64::BITS as usize {
+                u64::MAX
+            } else {
+                (1_u64 << transition.live_registers.len()).saturating_sub(1)
+            };
+        remapped_state.register_ids.fill(u32::MAX);
+        remapped_state.registers.fill(0);
+        for (target_slot, (register, source_slot)) in transition
+            .live_registers
+            .iter()
+            .zip(register_source_slots.into_iter())
+            .enumerate()
+        {
+            let source_slot = source_slot.expect("transition completeness was checked");
+            remapped_state.register_ids[target_slot] = register.raw();
+            remapped_state.registers[target_slot] = state.registers[source_slot];
         }
         let function_entry = metadata
             .function_entries
             .iter()
             .find(|entry| entry.function.raw() == state.function_id)
-            .ok_or(JitInvokeError::MissingNativeTransition(
-                state.continuation_id,
-            ))?;
+            .ok_or(JitInvokeError::MissingNativeTransition {
+                function: state.function_id,
+                continuation: state.continuation_id,
+            })?;
         let Some(mut entry) = self.native_entry else {
             return Err(JitInvokeError::MissingNativeEntry);
         };
         entry.address = function_entry.address;
         entry.arity = function_entry.arity;
         let args = vec![0_i64; usize::from(function_entry.arity)];
-        let normalized_state = (!transition.register_frame_slots.is_empty()).then(|| {
-            let mut normalized = state.clone();
-            normalized.initialized_register_mask = 0;
-            normalized.registers.fill(0);
-            for (source_slot, target_slot) in
-                transition.register_frame_slots.iter().copied().enumerate()
-            {
-                let target_slot = usize::from(target_slot);
-                normalized.registers[target_slot] = state.registers[source_slot];
-                normalized.initialized_register_mask |= 1_u64 << target_slot;
-            }
-            normalized
-        });
-        let resume_state = normalized_state.as_ref().unwrap_or(state);
         entry.invoke_i64_status_out_with_resume(
             &args,
             transition.resume_id,
-            resume_state as *const JitNativeTransitionState,
+            std::ptr::from_ref(&remapped_state),
             runtime,
         )
     }
@@ -1358,14 +1434,14 @@ impl JitFunctionHandle {
         args: &[i64],
         runtime_abi_hash: u64,
         runtime: *mut std::ffi::c_void,
-        mut catch_matches: impl FnMut(&[String], i64) -> bool,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         let Some(entry) = self.native_entry else {
             return Err(JitInvokeError::MissingNativeEntry);
         };
-        let Some(metadata) = self.region_state_metadata() else {
+        if self.region_state_metadata().is_none() {
             return self.invoke_i64_with_deopt_runtime(args, runtime_abi_hash, runtime);
-        };
+        }
         if runtime_abi_hash != JIT_RUNTIME_ABI_HASH || entry.abi_hash != JIT_RUNTIME_ABI_HASH {
             return Err(JitInvokeError::AbiHashMismatch {
                 expected: JIT_RUNTIME_ABI_HASH,
@@ -1378,7 +1454,36 @@ impl JitFunctionHandle {
                 actual: args.len() as u8,
             });
         }
-        let mut outcome = entry.invoke_i64_with_deopt_runtime(args, runtime)?;
+        let outcome = entry.invoke_i64_with_deopt_runtime(args, runtime)?;
+        self.continue_i64_with_native_unwind_runtime(
+            args,
+            runtime_abi_hash,
+            runtime,
+            outcome,
+            catch_matches,
+        )
+    }
+
+    fn continue_i64_with_native_unwind_runtime(
+        &self,
+        args: &[i64],
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        mut outcome: JitI64InvokeOutcome,
+        mut catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let Some(entry) = self.native_entry else {
+            return Err(JitInvokeError::MissingNativeEntry);
+        };
+        let Some(metadata) = self.region_state_metadata() else {
+            return Ok(outcome);
+        };
+        if runtime_abi_hash != JIT_RUNTIME_ABI_HASH || entry.abi_hash != JIT_RUNTIME_ABI_HASH {
+            return Err(JitInvokeError::AbiHashMismatch {
+                expected: JIT_RUNTIME_ABI_HASH,
+                actual: runtime_abi_hash,
+            });
+        }
         loop {
             let JitI64InvokeOutcome::SideExit {
                 status,
@@ -1985,6 +2090,7 @@ fn prepare_native_deopt_out() -> std::mem::MaybeUninit<JitDeoptState> {
         std::ptr::addr_of_mut!((*pointer).yielded_key).write(0);
         std::ptr::addr_of_mut!((*pointer).delegation_handle).write(0);
         std::ptr::addr_of_mut!((*pointer).initialized_register_mask).write(0);
+        std::ptr::addr_of_mut!((*pointer).register_ids).write([u32::MAX; JIT_DEOPT_MAX_REGISTERS]);
         std::ptr::addr_of_mut!((*pointer).runtime_view).write(abi::current_native_runtime_view());
     }
     state
@@ -2062,7 +2168,7 @@ pub enum JitInvokeError {
     /// Caller did not materialize every local required by the OSR entry.
     IncompleteOsrState(u32),
     /// Requested baseline-native continuation is absent.
-    MissingNativeTransition(u32),
+    MissingNativeTransition { function: u32, continuation: u32 },
     /// The selected target is not a non-speculative baseline artifact.
     NativeTransitionRequiresBaseline,
     /// Guard state omits a local/register required by the continuation.
@@ -2089,7 +2195,7 @@ impl JitInvokeError {
             | Self::MissingOsrEntry(_)
             | Self::MissingSuspensionEntry(_)
             | Self::IncompleteOsrState(_)
-            | Self::MissingNativeTransition(_)
+            | Self::MissingNativeTransition { .. }
             | Self::NativeTransitionRequiresBaseline
             | Self::IncompleteNativeTransition(_) => {
                 JitSideExit::new(SideExitReason::UnsupportedValue)

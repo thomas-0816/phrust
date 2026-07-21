@@ -168,6 +168,20 @@ impl NativeIndirectionCell {
         self.baseline_target.store(0, Ordering::Release);
     }
 
+    /// Retires one code tier while keeping the other tier callable.
+    pub(crate) fn retire_tier(&self, tier: NativeFunctionTier) {
+        match tier {
+            NativeFunctionTier::Baseline => self.baseline_target.store(0, Ordering::Release),
+            NativeFunctionTier::Optimized => self.optimized_target.store(0, Ordering::Release),
+        }
+        if self.baseline_target.load(Ordering::Acquire) == 0
+            && self.optimized_target.load(Ordering::Acquire) == 0
+        {
+            self.state
+                .store(NativeIndirectionState::Retired as u8, Ordering::Release);
+        }
+    }
+
     #[must_use]
     pub fn state(&self) -> NativeIndirectionState {
         NativeIndirectionState::from_raw(self.state.load(Ordering::Acquire))

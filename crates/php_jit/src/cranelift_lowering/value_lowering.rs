@@ -42,6 +42,22 @@ pub(super) fn lower_direct_compare(
     lhs_class: SsaValueClass,
     rhs_class: SsaValueClass,
 ) -> Option<ir::Value> {
+    if matches!(
+        op,
+        RegionCompareOpCode::Identical | RegionCompareOpCode::NotIdentical
+    ) && (lhs_class == SsaValueClass::MixedHandle || rhs_class == SsaValueClass::MixedHandle)
+    {
+        let condition = builder.ins().icmp(
+            if op == RegionCompareOpCode::Identical {
+                IntCC::Equal
+            } else {
+                IntCC::NotEqual
+            },
+            lhs,
+            rhs,
+        );
+        return Some(encode_native_bool(builder, condition));
+    }
     if lhs_class == SsaValueClass::Int && rhs_class == SsaValueClass::Int {
         if op == RegionCompareOpCode::Spaceship {
             let less = builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs);

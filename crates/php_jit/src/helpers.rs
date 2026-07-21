@@ -6,7 +6,7 @@ pub use php_runtime::api::JitHelperId;
 
 /// Stable ABI fingerprint for the helper-symbol registry. Bumped whenever the
 /// registry's symbol set or any helper ABI changes.
-pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_0018;
+pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_0019;
 
 /// Helper argument kind.
 #[repr(u32)]
@@ -220,12 +220,12 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     },
     JitHelperSymbol {
         id: JitHelperId(23),
-        name: "phrust_native_value_lifecycle",
-        args: NATIVE_OP_1_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
+        name: "phrust_native_value_release",
+        args: CONTEXT_VALUE_ARGS,
+        returns: JitHelperReturnKind::Status,
         can_throw: false,
         has_side_effects: true,
-        description: "request-owned value retain or release",
+        description: "cold final release of one request-owned value",
     },
     JitHelperSymbol {
         id: JitHelperId(24),
@@ -537,7 +537,7 @@ pub fn resolve_helper_address(
         "phrust_native_echo" => Some(runtime.native_echo),
         "phrust_native_local_fetch" => Some(runtime.native_local_fetch),
         "phrust_native_local_store" => Some(runtime.native_local_store),
-        "phrust_native_value_lifecycle" => Some(runtime.native_value_lifecycle),
+        "phrust_native_value_release" => Some(runtime.native_value_release),
         "phrust_native_reference_bind" => Some(runtime.native_reference_bind),
         "phrust_native_argument_check" => Some(runtime.native_argument_check),
         "phrust_native_return_check" => Some(runtime.native_return_check),

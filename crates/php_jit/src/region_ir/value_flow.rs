@@ -49,6 +49,8 @@ pub struct ExecutableValueFlow {
     borrowed_local_loads: BTreeSet<u32>,
     reference_dimension_loads: BTreeMap<u32, RegId>,
     moved_local_stores: BTreeSet<u32>,
+    moved_register_copies: BTreeSet<u32>,
+    moved_call_operands: BTreeMap<u32, BTreeSet<usize>>,
     elided_discards: BTreeSet<u32>,
     frame_cleanup_locals: BTreeSet<LocalId>,
     ssa: ExecutableSsaGraph,
@@ -129,6 +131,22 @@ impl ExecutableValueFlow {
         self.moved_local_stores.contains(&continuation_id)
     }
 
+    /// Whether an SSA copy is the source owner's final use and therefore
+    /// transfers that ownership to its destination without refcount traffic.
+    #[must_use]
+    pub fn moves_value_into_register(&self, continuation_id: u32) -> bool {
+        self.moved_register_copies.contains(&continuation_id)
+    }
+
+    /// Whether a direct compiled call consumes the source owner's final
+    /// reference for this packed operand instead of retaining a duplicate.
+    #[must_use]
+    pub fn moves_value_into_call(&self, continuation_id: u32, operand: usize) -> bool {
+        self.moved_call_operands
+            .get(&continuation_id)
+            .is_some_and(|operands| operands.contains(&operand))
+    }
+
     #[must_use]
     pub fn elides_discard(&self, continuation_id: u32) -> bool {
         self.elided_discards.contains(&continuation_id)
@@ -141,7 +159,15 @@ impl ExecutableValueFlow {
 
     #[must_use]
     pub fn ownership_move_count(&self) -> usize {
-        self.moved_local_stores.len()
+        self.moved_local_stores
+            .len()
+            .saturating_add(self.moved_register_copies.len())
+            .saturating_add(
+                self.moved_call_operands
+                    .values()
+                    .map(BTreeSet::len)
+                    .sum::<usize>(),
+            )
     }
 
     #[must_use]
@@ -217,6 +243,67 @@ impl ExecutableValueFlow {
                                 src.raw(),
                                 continuation
                             ));
+                        }
+                    }
+                    RegionInstructionKind::Move {
+                        src: RegionOperand::Register(src),
+                        ..
+                    } if self
+                        .moved_register_copies
+                        .contains(&instruction.continuation_id) =>
+                    {
+                        if terminator_uses.contains(&src) {
+                            return Err(format!("moved r{} is used by a terminator", src.raw()));
+                        }
+                        let invalid_use = instruction_uses.get(&src).into_iter().flatten().find(
+                            |&&(use_block, use_index, continuation)| {
+                                (use_block, use_index) != (block_index, instruction_index)
+                                    && !self.elided_discards.contains(&continuation)
+                            },
+                        );
+                        if let Some(&(_, _, continuation)) = invalid_use {
+                            return Err(format!(
+                                "moved r{} is reused at continuation {}",
+                                src.raw(),
+                                continuation
+                            ));
+                        }
+                    }
+                    RegionInstructionKind::NativeCall(ref call)
+                        if self
+                            .moved_call_operands
+                            .contains_key(&instruction.continuation_id) =>
+                    {
+                        for operand_index in &self.moved_call_operands[&instruction.continuation_id]
+                        {
+                            let Some(RegionOperand::Register(src)) =
+                                call.operands.get(*operand_index).copied().flatten()
+                            else {
+                                return Err(format!(
+                                    "moved call operand {} at continuation {} is not a register",
+                                    operand_index, instruction.continuation_id
+                                ));
+                            };
+                            if terminator_uses.contains(&src) {
+                                return Err(format!(
+                                    "call-moved r{} is used by a terminator",
+                                    src.raw()
+                                ));
+                            }
+                            let invalid_use =
+                                instruction_uses.get(&src).into_iter().flatten().find(
+                                    |&&(use_block, use_index, continuation)| {
+                                        (use_block, use_index) != (block_index, instruction_index)
+                                            && !self.elided_discards.contains(&continuation)
+                                    },
+                                );
+                            if let Some(&(_, _, continuation)) = invalid_use {
+                                return Err(format!(
+                                    "call-moved r{} is reused at continuation {}",
+                                    src.raw(),
+                                    continuation
+                                ));
+                            }
                         }
                     }
                     _ => {}
@@ -350,8 +437,14 @@ pub fn analyze_executable_value_flow(
             }
         }
     }
-    let (moved_local_stores, elided_discards) =
+    let (moved_local_stores, mut elided_discards) =
         find_moved_local_stores(region, &local_storage, &register_facts);
+    let (moved_register_copies, moved_copy_discards) =
+        find_moved_register_copies(region, &register_facts);
+    elided_discards.extend(moved_copy_discards);
+    let (moved_call_operands, moved_call_discards) =
+        find_moved_call_operands(region, &register_facts);
+    elided_discards.extend(moved_call_discards);
     let frame_cleanup_locals =
         find_frame_cleanup_locals(region, &moved_local_stores, &local_storage);
 
@@ -362,6 +455,8 @@ pub fn analyze_executable_value_flow(
         borrowed_local_loads,
         reference_dimension_loads,
         moved_local_stores,
+        moved_register_copies,
+        moved_call_operands,
         elided_discards,
         frame_cleanup_locals,
         ssa,
@@ -506,10 +601,9 @@ fn find_moved_local_stores(
                 .get(&register)
                 .copied()
                 .unwrap_or(SsaValueFact::UNKNOWN);
-            if !storage
-                .get(&local)
-                .is_some_and(|storage| storage.is_promoted())
-                || fact.ownership != SsaOwnership::Owned
+            if !storage.get(&local).is_some_and(|storage| {
+                storage.is_promoted() || *storage == LocalStorageClass::MemoryReference
+            }) || fact.ownership != SsaOwnership::Owned
                 || terminator_uses.contains(&register)
             {
                 continue;
@@ -538,6 +632,149 @@ fn find_moved_local_stores(
         }
     }
     (moved_stores, elided_discards)
+}
+
+fn find_moved_register_copies(
+    region: &RegionGraph,
+    register_facts: &BTreeMap<RegId, SsaValueFact>,
+) -> (BTreeSet<u32>, BTreeSet<u32>) {
+    let mut uses = BTreeMap::<RegId, Vec<(usize, usize, bool, u32)>>::new();
+    let mut terminator_uses = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let discarded = matches!(instruction.kind, RegionInstructionKind::Discard { .. });
+            for register in instruction.register_uses() {
+                uses.entry(register).or_default().push((
+                    block_index,
+                    instruction_index,
+                    discarded,
+                    instruction.continuation_id,
+                ));
+            }
+        }
+        terminator_uses.extend(block.terminator.register_uses());
+    }
+
+    let mut moved = BTreeSet::new();
+    let mut elided_discards = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let RegionInstructionKind::Move {
+                src: RegionOperand::Register(source),
+                ..
+            } = instruction.kind
+            else {
+                continue;
+            };
+            if register_facts.get(&source).is_none_or(|fact| {
+                fact.ownership != SsaOwnership::Owned || !fact.has_runtime_lifecycle()
+            }) || terminator_uses.contains(&source)
+            {
+                continue;
+            }
+            let remaining = uses
+                .get(&source)
+                .into_iter()
+                .flatten()
+                .filter(|&&(use_block, use_index, _, _)| {
+                    (use_block, use_index) != (block_index, instruction_index)
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            match remaining.as_slice() {
+                [] => {
+                    moved.insert(instruction.continuation_id);
+                }
+                [(use_block, use_index, true, discard_continuation)]
+                    if *use_block == block_index && *use_index > instruction_index =>
+                {
+                    moved.insert(instruction.continuation_id);
+                    elided_discards.insert(*discard_continuation);
+                }
+                _ => {}
+            }
+        }
+    }
+    (moved, elided_discards)
+}
+
+fn find_moved_call_operands(
+    region: &RegionGraph,
+    register_facts: &BTreeMap<RegId, SsaValueFact>,
+) -> (BTreeMap<u32, BTreeSet<usize>>, BTreeSet<u32>) {
+    let mut uses = BTreeMap::<RegId, Vec<(usize, usize, bool, u32)>>::new();
+    let mut terminator_uses = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let discarded = matches!(instruction.kind, RegionInstructionKind::Discard { .. });
+            for register in instruction.register_uses() {
+                uses.entry(register).or_default().push((
+                    block_index,
+                    instruction_index,
+                    discarded,
+                    instruction.continuation_id,
+                ));
+            }
+        }
+        terminator_uses.extend(block.terminator.register_uses());
+    }
+
+    let mut moved = BTreeMap::<u32, BTreeSet<usize>>::new();
+    let mut elided_discards = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let RegionInstructionKind::NativeCall(call) = &instruction.kind else {
+                continue;
+            };
+            if call.direct_compiled_target().is_none() {
+                continue;
+            }
+            let mut transferred_registers = BTreeSet::new();
+            for (operand_index, operand) in call.operands.iter().enumerate().rev() {
+                let Some(RegionOperand::Register(source)) = operand else {
+                    continue;
+                };
+                if transferred_registers.contains(source)
+                    || register_facts.get(source).is_none_or(|fact| {
+                        fact.ownership != SsaOwnership::Owned || !fact.has_runtime_lifecycle()
+                    })
+                    || terminator_uses.contains(source)
+                {
+                    continue;
+                }
+                let remaining = uses
+                    .get(source)
+                    .into_iter()
+                    .flatten()
+                    .filter(|&&(use_block, use_index, _, _)| {
+                        (use_block, use_index) != (block_index, instruction_index)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                match remaining.as_slice() {
+                    [] => {
+                        moved
+                            .entry(instruction.continuation_id)
+                            .or_default()
+                            .insert(operand_index);
+                        transferred_registers.insert(*source);
+                    }
+                    [(use_block, use_index, true, discard_continuation)]
+                        if *use_block == block_index && *use_index > instruction_index =>
+                    {
+                        moved
+                            .entry(instruction.continuation_id)
+                            .or_default()
+                            .insert(operand_index);
+                        transferred_registers.insert(*source);
+                        elided_discards.insert(*discard_continuation);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (moved, elided_discards)
 }
 
 fn find_borrowed_local_loads(
@@ -825,23 +1062,12 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
                 RegionInstructionKind::BindReference { target, source } => {
                     references.extend([*target, *source]);
                 }
-                RegionInstructionKind::BindReferenceDim { target, array, .. } => {
-                    references.extend([*target, *array]);
-                }
-                RegionInstructionKind::BindReferenceFromPropertyDim { target, object, .. } => {
+                RegionInstructionKind::BindReferenceDim { target, .. }
+                | RegionInstructionKind::BindReferenceFromPropertyDim { target, .. } => {
                     references.insert(*target);
-                    if let RegionOperand::Local(object) = object {
-                        references.insert(*object);
-                    }
                 }
-                RegionInstructionKind::BindReferenceIntoDim { array, source, .. } => {
-                    references.extend([*array, *source]);
-                }
-                RegionInstructionKind::BindReferenceDimFromProperty { array, object, .. } => {
-                    references.insert(*array);
-                    if let RegionOperand::Local(object) = object {
-                        references.insert(*object);
-                    }
+                RegionInstructionKind::BindReferenceIntoDim { source, .. } => {
+                    references.insert(*source);
                 }
                 RegionInstructionKind::BindReferenceProperty { source, .. }
                 | RegionInstructionKind::BindReferenceStaticProperty { source }
@@ -860,13 +1086,6 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
                     references.insert(*local);
                 }
                 RegionInstructionKind::NativeCall(call) => {
-                    for (index, argument) in call.args.iter().enumerate() {
-                        if call.argument_requires_reference_binding(index)
-                            && let Some(local) = argument.by_ref_local
-                        {
-                            references.insert(local);
-                        }
-                    }
                     if let RegionCallResult::ReferenceLocal(local) = call.result {
                         references.insert(local);
                     }
@@ -1395,6 +1614,59 @@ mod tests {
     }
 
     #[test]
+    fn speculative_call_binding_does_not_turn_by_value_local_into_reference_storage() {
+        let mut builder = IrBuilder::new(UnitId::new(4_209));
+        let file = builder.add_file("speculative-call-reference.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("caller", FunctionFlags::default(), span);
+        let local = builder.intern_local(function, "value");
+        builder.push_param(
+            function,
+            IrParam {
+                name: "value".to_owned(),
+                local,
+                required: true,
+                default: None,
+                type_: Some(IrReturnType::String),
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            },
+        );
+        let block = builder.append_block(function);
+        let result = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "cross_unit_target".to_owned(),
+                args: vec![IrCallArg {
+                    name: None,
+                    value: Operand::Local(local),
+                    unpack: false,
+                    value_kind: IrCallArgValueKind::Direct,
+                    by_ref_local: Some(local),
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_ne!(
+            flow.local_storage(local),
+            LocalStorageClass::MemoryReference,
+            "temporary signature-aware call binding is not persistent PHP reference storage"
+        );
+    }
+
+    #[test]
     fn baseline_borrows_local_through_known_by_value_builtin() {
         let mut builder = IrBuilder::new(UnitId::new(4_206));
         let file = builder.add_file("baseline-builtin-borrow.php");
@@ -1500,5 +1772,127 @@ mod tests {
             .verify_ownership(&region)
             .expect_err("forced move must reject later echo use");
         assert!(error.contains("reused"), "{error}");
+    }
+
+    #[test]
+    fn final_ssa_copy_transfers_owned_handle_without_retain_or_discard() {
+        let mut builder = IrBuilder::new(UnitId::new(4_212));
+        let file = builder.add_file("ssa-register-move.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("register_move", FunctionFlags::default(), span);
+        let block = builder.append_block(function);
+        let source = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::NewArray { dst: source },
+            span,
+        );
+        let destination = builder.alloc_register(function);
+        let moved = builder.emit(
+            function,
+            block,
+            InstructionKind::Move {
+                dst: destination,
+                src: Operand::Register(source),
+            },
+            span,
+        );
+        let discarded = builder.emit(
+            function,
+            block,
+            InstructionKind::Discard {
+                src: Operand::Register(source),
+            },
+            span,
+        );
+        builder.terminate_return(function, block, Some(Operand::Register(destination)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert!(flow.moves_value_into_register(
+            region.blocks[0].instructions[moved.index()].continuation_id
+        ));
+        assert!(
+            flow.elides_discard(region.blocks[0].instructions[discarded.index()].continuation_id)
+        );
+        flow.verify_ownership(&region)
+            .expect("last-use register move should verify");
+    }
+
+    #[test]
+    fn final_direct_call_operand_transfers_owner_without_argument_retain() {
+        let mut builder = IrBuilder::new(UnitId::new(4_213));
+        let file = builder.add_file("ssa-call-move.php");
+        let span = IrSpan::new(file, 0, 1);
+        let callee = builder.start_function("consume_array", FunctionFlags::default(), span);
+        let callee_local = builder.intern_local(callee, "value");
+        builder.push_param(
+            callee,
+            IrParam {
+                name: "value".to_owned(),
+                local: callee_local,
+                required: true,
+                default: None,
+                type_: Some(IrReturnType::Array),
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            },
+        );
+        let callee_block = builder.append_block(callee);
+        builder.terminate_return(callee, callee_block, None, span);
+        builder.register_function_name("consume_array", callee);
+
+        let caller = builder.start_function("call_move", FunctionFlags::default(), span);
+        let block = builder.append_block(caller);
+        let source = builder.alloc_register(caller);
+        builder.emit(
+            caller,
+            block,
+            InstructionKind::NewArray { dst: source },
+            span,
+        );
+        let result = builder.alloc_register(caller);
+        let call = builder.emit(
+            caller,
+            block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "consume_array".to_owned(),
+                args: vec![IrCallArg {
+                    name: None,
+                    value: Operand::Register(source),
+                    unpack: false,
+                    value_kind: IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        let discarded = builder.emit(
+            caller,
+            block,
+            InstructionKind::Discard {
+                src: Operand::Register(source),
+            },
+            span,
+        );
+        builder.terminate_return(caller, block, Some(Operand::Register(result)), span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, caller).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+        let call_continuation = region.blocks[0].instructions[call.index()].continuation_id;
+
+        assert!(flow.moves_value_into_call(call_continuation, 0));
+        assert!(
+            flow.elides_discard(region.blocks[0].instructions[discarded.index()].continuation_id)
+        );
+        flow.verify_ownership(&region)
+            .expect("last-use direct-call operand move should verify");
     }
 }

@@ -137,7 +137,7 @@ const IR_OPERATIONS: [&str; 36] = [
     "cast_void",
     "load_local",
     "store_local",
-    "value_lifecycle",
+    "value_release",
     "truthy",
 ];
 const SLOW_PATH_REASONS: [&str; 8] = [
@@ -387,7 +387,7 @@ impl NativeExecutionContext<'_> {
             "reference_or_global_store"
         } else if operation == "truthy" {
             "unknown_truthiness"
-        } else if operation == "value_lifecycle" {
+        } else if operation == "value_release" {
             "ownership_boundary"
         } else {
             "other_runtime_semantics"
@@ -889,14 +889,6 @@ impl NativeExecutionContext<'_> {
         }
     }
 
-    pub(super) fn record_ownership_clone(&self) {
-        if self.options.collect_counters {
-            let mut telemetry = self.runtime_telemetry.borrow_mut();
-            telemetry.counters.native_ownership_clones =
-                telemetry.counters.native_ownership_clones.saturating_add(1);
-        }
-    }
-
     pub(super) fn record_root_rebuild_reason(&self, reason: &'static str) {
         if !self.options.collect_counters {
             return;
@@ -950,9 +942,45 @@ impl NativeExecutionContext<'_> {
         }
     }
 
+    pub(super) fn record_direct_array_materialization(
+        &self,
+        entries: usize,
+        caller: &'static std::panic::Location<'static>,
+    ) {
+        if !self.options.collect_counters {
+            return;
+        }
+        let mut telemetry = self.runtime_telemetry.borrow_mut();
+        let helper = telemetry
+            .helper_timing_stack
+            .last()
+            .map_or("outside_helper", |frame| HELPER_NAMES[frame.helper_index]);
+        *telemetry
+            .counters
+            .native_value_table_materializations_by_kind_and_origin
+            .entry(format!("direct_array@{helper}"))
+            .or_default() += 1;
+        *telemetry
+            .counters
+            .native_value_table_materializations_by_kind_and_origin
+            .entry(format!("direct_array_entry@{helper}"))
+            .or_default() += u64::try_from(entries).unwrap_or(u64::MAX);
+        let site = format!("{}:{}", caller.file(), caller.line());
+        *telemetry
+            .counters
+            .native_value_table_materializations_by_kind_and_origin
+            .entry(format!("direct_array_site@{site}"))
+            .or_default() += 1;
+        *telemetry
+            .counters
+            .native_value_table_materializations_by_kind_and_origin
+            .entry(format!("direct_array_entry_site@{site}"))
+            .or_default() += u64::try_from(entries).unwrap_or(u64::MAX);
+    }
+
     pub(super) fn record_native_transition(
         &self,
-        reason: &'static str,
+        reason: &str,
         elapsed: std::time::Duration,
         nested_helper_time_nanos: u64,
     ) {

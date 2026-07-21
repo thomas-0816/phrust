@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const BASELINE_FRAGMENT_MAX_PHP_BLOCKS: usize = 64;
 /// Persistent schema for deterministic native fragment boundaries and frame
 /// traffic. Increment whenever planning can change emitted fragment code.
-pub const NATIVE_FRAGMENT_PLAN_SCHEMA_VERSION: u32 = 7;
+pub const NATIVE_FRAGMENT_PLAN_SCHEMA_VERSION: u32 = 9;
 // These ceilings are intentionally below the backend's final CLIF admission
 // limits. Planning must leave enough headroom for helper continuations,
 // resume loaders, and frontend SSA edge splitting. The finished CLIF function
@@ -26,7 +26,16 @@ pub const BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM: usize = 4_096;
 pub const OPTIMIZING_REGION_MAX_PHP_BLOCKS: usize = 256;
 pub const OPTIMIZING_REGION_MAX_IR_INSTRUCTIONS: usize = 1_500;
 pub const OPTIMIZING_REGION_MAX_VIRTUAL_VALUES: usize = 768;
-const MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT: usize = 128;
+// A Region block must already be a comfortably bounded unit before the
+// fragment planner groups blocks. Exact CLIF preflight can refine a fragment
+// between Region blocks, but it cannot split one PHP instruction. Keeping a
+// source block at the old 128/450 ceilings allowed one underestimated chunk
+// to consume the complete 70% pre-regalloc margin and become structurally
+// unsplittable. These are chunk ceilings, not whole-fragment ceilings: the
+// planner may still group several cheap chunks and exact preflight can split
+// those groups again without rebuilding PHP semantics.
+const MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT: usize = 64;
+const MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS: usize = 192;
 
 fn estimated_instruction_clif_blocks(instruction: &crate::region_ir::RegionInstruction) -> usize {
     let manifest = baseline_instruction_lowering(&instruction.source_kind);
@@ -61,6 +70,29 @@ fn estimated_instruction_clif_blocks(instruction: &crate::region_ir::RegionInstr
         crate::region_ir::RegionInstructionKind::Compare { .. } => {
             3_usize.saturating_add(usize::from(manifest.requires_safepoint))
         }
+        crate::region_ir::RegionInstructionKind::Unary { .. } => {
+            4_usize.saturating_add(usize::from(manifest.requires_safepoint))
+        }
+        crate::region_ir::RegionInstructionKind::NewArray { .. }
+        | crate::region_ir::RegionInstructionKind::Discard { .. }
+        | crate::region_ir::RegionInstructionKind::IssetLocal { .. }
+        | crate::region_ir::RegionInstructionKind::EmptyLocal { .. }
+        | crate::region_ir::RegionInstructionKind::UnsetLocal { .. } => {
+            6_usize.saturating_add(usize::from(manifest.requires_safepoint))
+        }
+        crate::region_ir::RegionInstructionKind::ArrayInsert { .. }
+        | crate::region_ir::RegionInstructionKind::AppendDim { .. }
+        | crate::region_ir::RegionInstructionKind::IssetDim { .. }
+        | crate::region_ir::RegionInstructionKind::EmptyDim { .. }
+        | crate::region_ir::RegionInstructionKind::FetchDim { .. }
+        | crate::region_ir::RegionInstructionKind::FetchProperty { .. } => {
+            10_usize.saturating_add(usize::from(manifest.requires_safepoint))
+        }
+        crate::region_ir::RegionInstructionKind::ForeachInit { .. }
+        | crate::region_ir::RegionInstructionKind::ForeachNext { .. }
+        | crate::region_ir::RegionInstructionKind::ForeachCleanup { .. } => {
+            8_usize.saturating_add(usize::from(manifest.requires_safepoint))
+        }
         crate::region_ir::RegionInstructionKind::NativeSuspend(_) => {
             3_usize.saturating_add(usize::from(manifest.requires_safepoint))
         }
@@ -68,11 +100,14 @@ fn estimated_instruction_clif_blocks(instruction: &crate::region_ir::RegionInstr
     }
 }
 
-fn region_block_instruction_ranges(block: &RegionBlock) -> Vec<(usize, usize)> {
+fn region_block_instruction_ranges(
+    block: &RegionBlock,
+    forced_boundaries: Option<&BTreeSet<usize>>,
+) -> Vec<(usize, usize)> {
     if block.instructions.is_empty() {
         return vec![(0, 0)];
     }
-    if !region_block_requires_split(block) {
+    if !region_block_requires_split(block) && forced_boundaries.is_none_or(BTreeSet::is_empty) {
         return vec![(0, block.instructions.len())];
     }
 
@@ -83,9 +118,10 @@ fn region_block_instruction_ranges(block: &RegionBlock) -> Vec<(usize, usize)> {
         let instruction_cost = estimated_instruction_clif_blocks(instruction);
         let instruction_count = index.saturating_sub(start);
         if index > start
-            && (instruction_count >= MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
+            && (forced_boundaries.is_some_and(|boundaries| boundaries.contains(&index))
+                || instruction_count >= MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
                 || estimated_blocks.saturating_add(instruction_cost)
-                    > BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS)
+                    > MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS)
         {
             ranges.push((start, index));
             start = index;
@@ -97,12 +133,20 @@ fn region_block_instruction_ranges(block: &RegionBlock) -> Vec<(usize, usize)> {
     ranges
 }
 
-pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGraph {
-    if region
-        .blocks
-        .iter()
-        .all(|block| !region_block_requires_split(block))
-    {
+pub(super) fn split_oversized_region_blocks(region: RegionGraph) -> RegionGraph {
+    split_region_blocks_at_boundaries(region, &BTreeMap::new())
+}
+
+pub(super) fn split_region_blocks_at_boundaries(
+    mut region: RegionGraph,
+    forced_boundaries: &BTreeMap<BlockId, BTreeSet<usize>>,
+) -> RegionGraph {
+    if region.blocks.iter().all(|block| {
+        !region_block_requires_split(block)
+            && forced_boundaries
+                .get(&block.id)
+                .is_none_or(BTreeSet::is_empty)
+    }) {
         return region;
     }
 
@@ -111,7 +155,8 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
         .blocks
         .iter()
         .map(|block| {
-            let chunks = region_block_instruction_ranges(block).len();
+            let chunks =
+                region_block_instruction_ranges(block, forced_boundaries.get(&block.id)).len();
             (0..chunks)
                 .map(|_| {
                     let id = BlockId::new(next_block);
@@ -144,7 +189,7 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
 
     for (old_index, block) in region.blocks.iter().enumerate() {
         let old_id = BlockId::new(old_index as u32);
-        let ranges = region_block_instruction_ranges(block);
+        let ranges = region_block_instruction_ranges(block, forced_boundaries.get(&old_id));
         for (chunk_index, (start, end)) in ranges.into_iter().enumerate() {
             let id = chunk_ids[old_index][chunk_index];
             let instructions = block.instructions[start..end].to_vec();
@@ -194,6 +239,11 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
             blocks.push(RegionBlock {
                 id,
                 source_block: old_id,
+                entry_continuation_id: if start == 0 {
+                    block.entry_continuation_id
+                } else {
+                    block.instructions[start].continuation_id
+                },
                 entry_live_locals,
                 entry_state_locals,
                 instructions,
@@ -226,8 +276,8 @@ pub(super) fn split_oversized_region_blocks(mut region: RegionGraph) -> RegionGr
 }
 
 fn region_block_requires_split(block: &RegionBlock) -> bool {
-    block.instructions.len() > BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS
-        || estimated_region_block_clif_blocks(block) > BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS
+    block.instructions.len() > MAX_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
+        || estimated_region_block_clif_blocks(block) > MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS
 }
 
 fn estimated_region_block_clif_blocks(block: &RegionBlock) -> usize {
@@ -985,12 +1035,12 @@ mod tests {
         .unwrap();
         let region = split_oversized_region_blocks(region);
         region.verify().unwrap();
-        assert_eq!(region.blocks.len(), 13);
+        assert_eq!(region.blocks.len(), 26);
         assert!(
             region
                 .blocks
                 .iter()
-                .all(|block| block.instructions.len() <= 128)
+                .all(|block| block.instructions.len() <= 64)
         );
         let plan = NativeCompilePlan::for_region(&region);
         assert_eq!(plan, NativeCompilePlan::for_region(&region));

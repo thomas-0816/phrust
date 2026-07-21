@@ -61,6 +61,7 @@ impl Vm {
                 })
             },
         );
+        let outcome = super::jit_abi::resume_native_optimizing_exit(&mut context, outcome);
         let (exception_handled, exception_handler_error) = match &outcome {
             Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
                 if *status == php_jit::JitCallStatus::THROW.0 as i32 =>
@@ -161,16 +162,29 @@ impl Vm {
                         throwable,
                     )
                 }
-                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. })
                     if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
                 {
+                    let operation =
+                        context.instruction_kind_debug(state.function_id, state.continuation_id);
                     let message = context
                         .diagnostic
                         .as_ref()
-                        .map_or("native runtime operation failed", |diagnostic| {
-                            diagnostic.message()
-                        })
-                        .to_owned();
+                        .map_or_else(
+                            || {
+                                format!(
+                                    "native runtime operation failed at function {} continuation {} ({}) native version {} control {} marker {:#x} value {}",
+                                    state.function_id,
+                                    state.continuation_id,
+                                    operation,
+                                    state.native_version,
+                                    state.control_status.0,
+                                    state.control_reserved,
+                                    state.control_value,
+                                )
+                            },
+                            |diagnostic| diagnostic.message().to_owned(),
+                        );
                     if context.diagnostic.as_ref().is_some_and(|diagnostic| {
                         diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
                     }) && context

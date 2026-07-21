@@ -27,11 +27,12 @@ use jit_abi::{
     jit_native_reference_bind_abi, jit_native_return_check_abi, jit_native_runtime_fatal_abi,
     jit_native_semantic_dispatch_abi, jit_native_semantic_dispatch_diagnostic_abi,
     jit_native_stable_length_abi, jit_native_string_predicate_abi, jit_native_truthy_abi,
-    jit_native_type_predicate_abi, jit_native_unary_abi, jit_native_value_lifecycle_abi,
+    jit_native_type_predicate_abi, jit_native_unary_abi, jit_native_value_release_abi,
+    resume_native_optimizing_exit,
 };
 use php_runtime::api::{OutputBuffer, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 /// Process-owned state shared by native request coordinators.
@@ -62,6 +63,42 @@ struct BackgroundTieringDecision {
 static PROCESS_LOADED_NATIVE_UNITS: std::sync::OnceLock<
     Arc<native_compile_cache::LoadedNativeUnitRegistry>,
 > = std::sync::OnceLock::new();
+
+type NativeOptimizationJob = Box<dyn FnOnce() + Send + 'static>;
+
+const NATIVE_OPTIMIZATION_WORKERS: usize = 2;
+const NATIVE_OPTIMIZATION_QUEUE_CAPACITY: usize = 128;
+
+static NATIVE_OPTIMIZATION_QUEUE: OnceLock<mpsc::SyncSender<NativeOptimizationJob>> =
+    OnceLock::new();
+
+fn submit_native_optimization_job(job: impl FnOnce() + Send + 'static) -> bool {
+    let sender = NATIVE_OPTIMIZATION_QUEUE.get_or_init(|| {
+        let (sender, receiver) =
+            mpsc::sync_channel::<NativeOptimizationJob>(NATIVE_OPTIMIZATION_QUEUE_CAPACITY);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..NATIVE_OPTIMIZATION_WORKERS {
+            let receiver = Arc::clone(&receiver);
+            std::thread::Builder::new()
+                .name(format!("phrust-optimize-{index}"))
+                .spawn(move || {
+                    loop {
+                        let job = lock_unpoisoned(&receiver).recv();
+                        let Ok(job) = job else {
+                            break;
+                        };
+                        job();
+                    }
+                })
+                .expect("native optimization worker must start");
+        }
+        sender
+    });
+    // A full queue blocks only the cold compile-miss edge. Published warm
+    // calls never enter this service, and the fixed queue prevents one thread
+    // allocation per reached PHP function.
+    sender.send(Box::new(job)).is_ok()
+}
 
 impl Default for VmWorkerState {
     fn default() -> Self {
@@ -240,8 +277,7 @@ impl VmWorkerState {
         } else {
             self.native_compiles.get_or_compile(key, compile)
         };
-        if options.collect_counters
-            && std::env::var_os("PHRUST_NATIVE_COMPILE_FUNCTION_LOG").is_some()
+        if std::env::var_os("PHRUST_NATIVE_COMPILE_FUNCTION_LOG").is_some()
             && let Ok((records, disposition)) = &compiled
             && disposition.compiled()
             && let Some(record) = records.first()
@@ -252,10 +288,16 @@ impl VmWorkerState {
                 .get(function_metadata.span.file.index())
                 .map_or("<unknown>", |file| file.path.as_str());
             eprintln!(
-                "native_compile_function source={} function={} function_id={} compile_time_nanos={} code_bytes={}",
+                "native_compile_function source={} function={} function_id={} entry_address={:#x} compile_time_nanos={} code_bytes={}",
                 source,
                 function_metadata.name,
                 function.raw(),
+                record
+                    .result
+                    .handle
+                    .as_ref()
+                    .and_then(php_jit::JitFunctionHandle::native_entry_address)
+                    .unwrap_or_default(),
                 record.result.stats.native_compile_time_nanos,
                 record.result.stats.native_code_bytes,
             );
@@ -325,35 +367,56 @@ impl VmWorkerState {
         }
 
         let worker = self.clone();
-        let spawn = std::thread::Builder::new()
-            .name("phrust-optimize".to_owned())
-            .spawn(move || {
-                let started = Instant::now();
-                let mut options = VmOptions::default();
-                options.native_optimization = NativeOptimizationPolicy::Optimizing;
-                options.tiering.enabled = false;
-                let result = worker.compile_native_with_priority(
-                    &unit,
-                    function,
-                    &options,
-                    &external_signatures,
-                    true,
-                );
-                let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-                let mut state = lock_unpoisoned(&worker.tiering_state);
-                state.scheduled.remove(&decision.key);
-                state.stats.native_compile_budget_used_us = state
-                    .stats
-                    .native_compile_budget_used_us
-                    .saturating_add(elapsed_us);
-                if result.is_ok() {
-                    state.stats.native_compiled_functions =
-                        state.stats.native_compiled_functions.saturating_add(1);
-                } else {
-                    state.failed.insert(decision.key);
-                }
-            });
-        if spawn.is_err() {
+        let submitted = submit_native_optimization_job(move || {
+            let started = Instant::now();
+            let mut options = VmOptions::default();
+            options.native_optimization = NativeOptimizationPolicy::Optimizing;
+            options.tiering.enabled = false;
+            let result = worker.compile_native_with_priority(
+                &unit,
+                function,
+                &options,
+                &external_signatures,
+                true,
+            );
+            let published_optimizing_entry = result
+                .as_ref()
+                .ok()
+                .and_then(|(records, _)| {
+                    records
+                        .iter()
+                        .find(|record| record.function == function)
+                        .and_then(|record| record.result.handle.as_ref())
+                })
+                .filter(|handle| {
+                    handle.region_state_metadata().is_some_and(|metadata| {
+                        metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
+                    })
+                })
+                .and_then(php_jit::JitFunctionHandle::native_entry_address);
+            if let Some(address) = published_optimizing_entry
+                && let Some(cell) = unit
+                    .prepared_deployment_image()
+                    .optimizing_function_entries
+                    .get(function.index())
+            {
+                cell.store(address, std::sync::atomic::Ordering::Release);
+            }
+            let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            let mut state = lock_unpoisoned(&worker.tiering_state);
+            state.scheduled.remove(&decision.key);
+            state.stats.native_compile_budget_used_us = state
+                .stats
+                .native_compile_budget_used_us
+                .saturating_add(elapsed_us);
+            if published_optimizing_entry.is_some() {
+                state.stats.native_compiled_functions =
+                    state.stats.native_compiled_functions.saturating_add(1);
+            } else {
+                state.failed.insert(decision.key);
+            }
+        });
+        if !submitted {
             let mut state = lock_unpoisoned(&self.tiering_state);
             state.scheduled.remove(&decision.key);
             state.stats.native_compile_budget_rejections = state
@@ -361,6 +424,41 @@ impl VmWorkerState {
                 .native_compile_budget_rejections
                 .saturating_add(1);
         }
+    }
+
+    /// Requests the optimizing product for one function that has already
+    /// acquired a callable baseline body through compile-on-demand.
+    ///
+    /// This is invoked only on the cold unpublished-cell edge. It never runs
+    /// from a published warm call: generated baseline and optimizing callers
+    /// both load the deployment's atomic function cell directly.
+    fn schedule_on_demand_optimization(
+        &self,
+        unit: CompiledUnit,
+        function: php_ir::FunctionId,
+        external_signatures: Vec<php_jit::JitExternalFunctionSignature>,
+    ) {
+        if !self.tiering_options.enabled || self.tiering_options.native_eager {
+            return;
+        }
+        let key = native_compile_cache::NativeCompileCacheKey::new(
+            unit.cache_identity(),
+            function,
+            NativeOptimizationPolicy::Optimizing.opt_level(),
+            external_function_signatures_hash(&external_signatures),
+        );
+        if self.native_compiles.contains(key) {
+            return;
+        }
+        self.schedule_background_optimization(
+            BackgroundTieringDecision {
+                key,
+                entries: self.tiering_options.function_entry_threshold.max(1),
+            },
+            unit,
+            function,
+            external_signatures,
+        );
     }
 
     fn resolve_native_function(
@@ -385,6 +483,22 @@ impl VmWorkerState {
         self.resolved_native_entries
             .insert(fast_key, handle.clone());
         Ok(handle)
+    }
+
+    fn resolved_native_function(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Option<php_jit::JitFunctionHandle> {
+        self.resolved_native_entries
+            .get(native_compile_cache::NativeCompileCacheKey::new(
+                unit.cache_identity(),
+                function,
+                options.native_optimization.opt_level(),
+                external_function_signatures_hash(external_signatures),
+            ))
     }
 
     fn resolve_native_function_cold(
@@ -945,6 +1059,7 @@ impl Vm {
                 })
             },
         );
+        let outcome = resume_native_optimizing_exit(&mut context, outcome);
         let (exception_handled, exception_handler_error) = match &outcome {
             Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
                 if *status == php_jit::JitCallStatus::THROW.0 as i32 =>
@@ -1033,16 +1148,29 @@ impl Vm {
                     let throwable = context.decode_result(value).ok();
                     native_uncaught_throwable_result(std::mem::take(&mut context.output), throwable)
                 }
-                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. })
                     if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
                 {
+                    let operation =
+                        context.instruction_kind_debug(state.function_id, state.continuation_id);
                     let message = context
                         .diagnostic
                         .as_ref()
-                        .map_or("native runtime operation failed", |diagnostic| {
-                            diagnostic.message()
-                        })
-                        .to_owned();
+                        .map_or_else(
+                            || {
+                                format!(
+                                    "native runtime operation failed at function {} continuation {} ({}) native version {} control {} marker {:#x} value {}",
+                                    state.function_id,
+                                    state.continuation_id,
+                                    operation,
+                                    state.native_version,
+                                    state.control_status.0,
+                                    state.control_reserved,
+                                    state.control_value,
+                                )
+                            },
+                            |diagnostic| diagnostic.message().to_owned(),
+                        );
                     if context.diagnostic.as_ref().is_some_and(|diagnostic| {
                         diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
                     }) && context
@@ -1594,9 +1722,9 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_local_store_abi,
             jit_abi::jit_native_local_store_diagnostic_abi
         ),
-        native_value_lifecycle: helper_address!(
-            jit_native_value_lifecycle_abi,
-            jit_abi::jit_native_value_lifecycle_diagnostic_abi
+        native_value_release: helper_address!(
+            jit_native_value_release_abi,
+            jit_abi::jit_native_value_release_diagnostic_abi
         ),
         native_reference_bind: helper_address!(
             jit_native_reference_bind_abi,
@@ -1713,8 +1841,8 @@ mod tests {
     use super::*;
     use php_ir::builder::IrBuilder;
     use php_ir::{
-        ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags, FunctionFlags,
-        InstructionKind, IrConstant, IrParam, IrReturnType, IrSpan, Operand, UnitId,
+        BinaryOp, ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags,
+        FunctionFlags, InstructionKind, IrConstant, IrParam, IrReturnType, IrSpan, Operand, UnitId,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1725,8 +1853,8 @@ mod tests {
 
         assert_ne!(production.native_array_fetch, diagnostic.native_array_fetch);
         assert_ne!(
-            production.native_value_lifecycle,
-            diagnostic.native_value_lifecycle
+            production.native_value_release,
+            diagnostic.native_value_release
         );
         assert_ne!(
             production.native_foreach_next,
@@ -1792,6 +1920,7 @@ mod tests {
         let worker = VmWorkerState::new_with_background_tiering(tiering.clone());
         let options = VmOptions {
             native_optimization: NativeOptimizationPolicy::Optimizing,
+            native_cache: php_jit::NativeCacheMode::Off,
             tiering,
             collect_counters: true,
             ..VmOptions::default()
@@ -1814,7 +1943,9 @@ mod tests {
         let (baseline_cell, _) = php_jit::global_code_manager()
             .unwrap()
             .published_function(&function_key)
-            .expect("tiered baseline publication");
+            .unwrap_or_else(|| {
+                panic!("tiered baseline publication missing for {function_key:?}: {first:#?}")
+            });
         let baseline_address = baseline_cell
             .resolve(function_key.signature_hash, 0)
             .expect("tiered baseline address");
@@ -1836,10 +1967,25 @@ mod tests {
             .published_function(&function_key)
             .expect("optimized publication");
         assert!(Arc::ptr_eq(&baseline_cell, &optimized_cell));
+        let optimized_address = optimized_cell
+            .resolve(function_key.signature_hash, 0)
+            .expect("optimized address");
         assert_ne!(
-            optimized_cell.resolve(function_key.signature_hash, 0),
+            Some(optimized_address),
             Some(baseline_address),
             "optimized code must atomically replace the less-specialized target"
+        );
+        assert_eq!(
+            unit.prepared_deployment_image().native_function_entries[function.index()]
+                .load(std::sync::atomic::Ordering::Acquire),
+            baseline_address,
+            "nested compiled calls must retain a side-exit-free baseline target"
+        );
+        assert_eq!(
+            unit.prepared_deployment_image().optimizing_function_entries[function.index()]
+                .load(std::sync::atomic::Ordering::Acquire),
+            optimized_address,
+            "optimizing callers must observe the independently published optimizing target"
         );
     }
 
@@ -1886,8 +2032,12 @@ mod tests {
     }
 
     fn direct_call_unit() -> CompiledUnit {
-        let mut builder = IrBuilder::new(UnitId::new(993));
-        let file = builder.add_file("native-direct-counter.php");
+        direct_call_unit_with_identity(993, "native-direct-counter.php")
+    }
+
+    fn direct_call_unit_with_identity(unit_id: u32, source: &str) -> CompiledUnit {
+        let mut builder = IrBuilder::new(UnitId::new(unit_id));
+        let file = builder.add_file(source);
         let span = IrSpan::new(file, 0, 24);
         let constant = builder.intern_constant(IrConstant::Int(42));
         let callee = builder.start_function("callee", FunctionFlags::default(), span);
@@ -1923,6 +2073,356 @@ mod tests {
         builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
         builder.set_entry(entry);
         CompiledUnit::new(builder.finish())
+    }
+
+    fn optimizing_array_to_baseline_mutation_unit() -> (CompiledUnit, php_ir::FunctionId) {
+        let mut builder = IrBuilder::new(UnitId::new(9_934));
+        let file = builder.add_file("native-direct-array-baseline-mutation.php");
+        let span = IrSpan::new(file, 0, 32);
+        let nine = builder.intern_constant(IrConstant::Int(9));
+
+        let callee = builder.start_function("append_value", FunctionFlags::default(), span);
+        builder.set_return_type(callee, Some(IrReturnType::Int));
+        let items = builder.intern_local(callee, "items");
+        builder.push_required_param(callee, "items", items);
+        let callee_block = builder.append_block(callee);
+        let appended = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::AppendDim {
+                dst: appended,
+                local: items,
+                dims: Vec::new(),
+                value: Operand::Constant(nine),
+            },
+            span,
+        );
+        builder.terminate_return(
+            callee,
+            callee_block,
+            Some(Operand::Register(appended)),
+            span,
+        );
+        builder.register_function_name("append_value", callee);
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(entry, Some(IrReturnType::Int));
+        let entry_block = builder.append_block(entry);
+        let array = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::NewArray { dst: array },
+            span,
+        );
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "append_value".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Register(array),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        (CompiledUnit::new(builder.finish()), callee)
+    }
+
+    fn optimizing_nested_callee_transition_unit() -> (CompiledUnit, php_ir::FunctionId) {
+        let mut builder = IrBuilder::new(UnitId::new(9_938));
+        let file = builder.add_file("native-nested-optimizing-transition.php");
+        let span = IrSpan::new(file, 0, 32);
+        let negative_nine = builder.intern_constant(IrConstant::Int(-9));
+        let one = builder.intern_constant(IrConstant::Int(1));
+
+        let callee = builder.start_function("absolute_value", FunctionFlags::default(), span);
+        builder.set_return_type(callee, Some(IrReturnType::Int));
+        let callee_block = builder.append_block(callee);
+        let absolute = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::CallFunction {
+                dst: absolute,
+                name: "abs".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Constant(negative_nine),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        builder.terminate_return(
+            callee,
+            callee_block,
+            Some(Operand::Register(absolute)),
+            span,
+        );
+        builder.register_function_name("absolute_value", callee);
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(entry, Some(IrReturnType::Int));
+        let entry_block = builder.append_block(entry);
+        let called = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: called,
+                name: "absolute_value".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::Binary {
+                dst: result,
+                op: BinaryOp::Add,
+                lhs: Operand::Register(called),
+                rhs: Operand::Constant(one),
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        (CompiledUnit::new(builder.finish()), callee)
+    }
+
+    fn optimizing_nested_constant_key_array_transition_unit() -> (CompiledUnit, php_ir::FunctionId)
+    {
+        let mut builder = IrBuilder::new(UnitId::new(9_938_1));
+        let file = builder.add_file("native-nested-constant-key-array-transition.php");
+        let span = IrSpan::new(file, 0, 48);
+        let first_key_constant = builder.intern_constant(IrConstant::String("path".to_owned()));
+        let second_key_constant =
+            builder.intern_constant(IrConstant::String("selector".to_owned()));
+        let nested_value = builder.intern_constant(IrConstant::Int(41));
+        let null = builder.intern_constant(IrConstant::Null);
+
+        let callee = builder.start_function("build_array", FunctionFlags::default(), span);
+        let callee_block = builder.append_block(callee);
+        let array = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::NewArray { dst: array },
+            span,
+        );
+        let first_key = builder.alloc_register(callee);
+        builder.emit_load_const(callee, callee_block, first_key, first_key_constant, span);
+        let nested = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::NewArray { dst: nested },
+            span,
+        );
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::ArrayInsert {
+                array: nested,
+                key: None,
+                value: Operand::Constant(nested_value),
+                by_ref_local: None,
+            },
+            span,
+        );
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::ArrayInsert {
+                array,
+                key: Some(Operand::Register(first_key)),
+                value: Operand::Register(nested),
+                by_ref_local: None,
+            },
+            span,
+        );
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::Discard {
+                src: Operand::Register(first_key),
+            },
+            span,
+        );
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::Discard {
+                src: Operand::Register(nested),
+            },
+            span,
+        );
+        let second_key = builder.alloc_register(callee);
+        builder.emit_load_const(callee, callee_block, second_key, second_key_constant, span);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::ArrayInsert {
+                array,
+                key: Some(Operand::Register(second_key)),
+                value: Operand::Constant(null),
+                by_ref_local: None,
+            },
+            span,
+        );
+        builder.terminate_return(callee, callee_block, Some(Operand::Register(array)), span);
+        builder.register_function_name("build_array", callee);
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        let entry_block = builder.append_block(entry);
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: result,
+                name: "build_array".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        (CompiledUnit::new(builder.finish()), callee)
+    }
+
+    fn optimizing_nested_builtin_constants_unit() -> (CompiledUnit, php_ir::FunctionId) {
+        let mut builder = IrBuilder::new(UnitId::new(9_939));
+        let file = builder.add_file("native-nested-builtin-constants.php");
+        let span = IrSpan::new(file, 0, 64);
+        let pattern = builder.intern_constant(IrConstant::String("/-[0-9]+$/".to_owned()));
+        let replacement = builder.intern_constant(IrConstant::String(String::new()));
+        let subject = builder.intern_constant(IrConstant::String("widget-12".to_owned()));
+        let suffix = builder.intern_constant(IrConstant::String("!".to_owned()));
+
+        let callee = builder.start_function("strip_widget_id", FunctionFlags::default(), span);
+        builder.set_return_type(callee, Some(IrReturnType::String));
+        let id = builder.intern_local(callee, "id");
+        builder.push_required_param(callee, "id", id);
+        let callee_block = builder.append_block(callee);
+        let pattern_value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadConst {
+                dst: pattern_value,
+                constant: pattern,
+            },
+            span,
+        );
+        let replacement_value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadConst {
+                dst: replacement_value,
+                constant: replacement,
+            },
+            span,
+        );
+        let subject_value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::LoadLocal {
+                dst: subject_value,
+                local: id,
+            },
+            span,
+        );
+        let value = builder.alloc_register(callee);
+        builder.emit(
+            callee,
+            callee_block,
+            InstructionKind::CallFunction {
+                dst: value,
+                name: "preg_replace".to_owned(),
+                args: [
+                    Operand::Register(pattern_value),
+                    Operand::Register(replacement_value),
+                    Operand::Register(subject_value),
+                ]
+                .into_iter()
+                .map(|value| php_ir::instruction::IrCallArg {
+                    name: None,
+                    value,
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                })
+                .collect(),
+            },
+            span,
+        );
+        builder.terminate_return(callee, callee_block, Some(Operand::Register(value)), span);
+        builder.register_function_name("strip_widget_id", callee);
+
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        builder.set_return_type(entry, Some(IrReturnType::String));
+        let entry_block = builder.append_block(entry);
+        let called = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::CallFunction {
+                dst: called,
+                name: "strip_widget_id".to_owned(),
+                args: vec![php_ir::instruction::IrCallArg {
+                    name: None,
+                    value: Operand::Constant(subject),
+                    unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                }],
+            },
+            span,
+        );
+        let result = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            entry_block,
+            InstructionKind::Binary {
+                dst: result,
+                op: BinaryOp::Concat,
+                lhs: Operand::Register(called),
+                rhs: Operand::Constant(suffix),
+            },
+            span,
+        );
+        builder.terminate_return(entry, entry_block, Some(Operand::Register(result)), span);
+        builder.set_entry(entry);
+        (CompiledUnit::new(builder.finish()), callee)
     }
 
     fn direct_method_on_demand_unit() -> CompiledUnit {
@@ -2447,6 +2947,296 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "x86_64")]
+    fn tiered_baseline_call_miss_cannot_publish_an_optimizing_callee() {
+        let unit = direct_call_unit_with_identity(9_935, "native-tiered-baseline-firewall.php");
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let result = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_optimization: NativeOptimizationPolicy::TieredBaseline,
+                native_cache: php_jit::NativeCacheMode::Off,
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+            worker,
+        )
+        .execute(unit.clone());
+
+        assert_eq!(result.return_value, Some(Value::Int(42)), "{result:#?}");
+        let callee = unit
+            .unit()
+            .function_table
+            .iter()
+            .find_map(|entry| (entry.name == "callee").then_some(entry.function))
+            .expect("callee function id");
+        let metadata = &unit.unit().functions[callee.index()];
+        let key = |optimizing| {
+            php_jit::native_function_key(
+                unit.prepared_ir_fingerprint().to_owned(),
+                callee.raw(),
+                metadata.params.len(),
+                metadata.local_count,
+                optimizing,
+                0,
+            )
+        };
+        let manager = php_jit::global_code_manager().expect("global code manager");
+        assert!(
+            manager.published_function_exact(&key(false)).is_some(),
+            "baseline resolver must publish the baseline callee"
+        );
+        assert!(
+            manager.published_function_exact(&key(true)).is_none(),
+            "baseline resolver must never compile or publish an optimizing callee"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn optimizing_call_miss_keeps_nested_warm_cell_on_baseline_entry() {
+        let unit = direct_call_unit_with_identity(9_936, "native-on-demand-optimizer-cell.php");
+        let mut tiering = crate::tiering::TieringOptions::default();
+        tiering.collect_stats = true;
+        let worker = VmWorkerState::new(tiering.clone());
+        let result = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_optimization: NativeOptimizationPolicy::Optimizing,
+                native_cache: php_jit::NativeCacheMode::Off,
+                collect_counters: true,
+                tiering,
+                ..VmOptions::default()
+            },
+            worker.clone(),
+        )
+        .execute(unit.clone());
+        assert_eq!(result.return_value, Some(Value::Int(42)), "{result:#?}");
+
+        let callee = unit
+            .unit()
+            .function_table
+            .iter()
+            .find_map(|entry| (entry.name == "callee").then_some(entry.function))
+            .expect("callee function id");
+        let metadata = &unit.unit().functions[callee.index()];
+        let optimizing_key = php_jit::native_function_key(
+            unit.prepared_ir_fingerprint().to_owned(),
+            callee.raw(),
+            metadata.params.len(),
+            metadata.local_count,
+            true,
+            0,
+        );
+        let manager = php_jit::global_code_manager().expect("global code manager");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let optimizing_address = loop {
+            if let Some((cell, handle)) = manager.published_function_exact(&optimizing_key)
+                && handle.region_state_metadata().is_some_and(|metadata| {
+                    metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
+                })
+                && let Some(address) = cell.resolve(optimizing_key.signature_hash, 0)
+            {
+                break address;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "on-demand callee optimization was not published"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let baseline_key = php_jit::native_function_key(
+            unit.prepared_ir_fingerprint().to_owned(),
+            callee.raw(),
+            metadata.params.len(),
+            metadata.local_count,
+            false,
+            0,
+        );
+        let baseline_address = manager
+            .published_function_exact(&baseline_key)
+            .and_then(|(_, handle)| handle.native_entry_address())
+            .expect("on-demand baseline callee publication");
+        let nested_address = unit.prepared_deployment_image().native_function_entries
+            [callee.index()]
+        .load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(nested_address, baseline_address);
+        assert_ne!(nested_address, optimizing_address);
+        assert_eq!(
+            unit.prepared_deployment_image().optimizing_function_entries[callee.index()]
+                .load(std::sync::atomic::Ordering::Acquire),
+            optimizing_address
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn optimizing_direct_array_can_cross_into_baseline_array_mutation() {
+        let (unit, callee) = optimizing_array_to_baseline_mutation_unit();
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let baseline = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Baseline,
+            native_cache: php_jit::NativeCacheMode::Off,
+            collect_counters: true,
+            ..VmOptions::default()
+        };
+        worker
+            .resolve_native_function(&unit, callee, &baseline, &[])
+            .expect("baseline mutation callee must be published before optimizer execution");
+
+        let result = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_optimization: NativeOptimizationPolicy::Optimizing,
+                native_cache: php_jit::NativeCacheMode::Off,
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+            worker,
+        )
+        .execute(unit);
+
+        assert_eq!(result.return_value, Some(Value::Int(9)), "{result:#?}");
+        let counters = result.counters.expect("diagnostic counters");
+        assert_eq!(counters.native_call_dynamic, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn compiled_caller_resumes_rejected_optimizing_callee_and_continues() {
+        let (unit, callee) = optimizing_nested_callee_transition_unit();
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let baseline = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Baseline,
+            native_cache: php_jit::NativeCacheMode::Off,
+            collect_counters: true,
+            ..VmOptions::default()
+        };
+        let baseline_handle = worker
+            .resolve_native_function(&unit, callee, &baseline, &[])
+            .expect("baseline callee");
+        let optimizing = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            native_cache: php_jit::NativeCacheMode::Off,
+            collect_counters: true,
+            ..VmOptions::default()
+        };
+        let optimizing_handle = worker
+            .resolve_native_function(&unit, callee, &optimizing, &[])
+            .expect("optimizing callee");
+        unit.prepared_deployment_image().native_function_entries[callee.index()].store(
+            baseline_handle
+                .native_entry_address()
+                .expect("baseline address"),
+            std::sync::atomic::Ordering::Release,
+        );
+        unit.prepared_deployment_image().optimizing_function_entries[callee.index()].store(
+            optimizing_handle
+                .native_entry_address()
+                .expect("optimizing address"),
+            std::sync::atomic::Ordering::Release,
+        );
+
+        let result = Vm::with_options_and_worker_state(baseline, worker).execute(unit);
+        assert_eq!(result.return_value, Some(Value::Int(10)), "{result:#?}");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn compiled_caller_preserves_array_across_constant_key_callee_transition() {
+        let (unit, callee) = optimizing_nested_constant_key_array_transition_unit();
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let baseline = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Baseline,
+            native_cache: php_jit::NativeCacheMode::Off,
+            ..VmOptions::default()
+        };
+        let baseline_handle = worker
+            .resolve_native_function(&unit, callee, &baseline, &[])
+            .expect("baseline callee");
+        let optimizing = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            native_cache: php_jit::NativeCacheMode::Off,
+            ..VmOptions::default()
+        };
+        let optimizing_handle = worker
+            .resolve_native_function(&unit, callee, &optimizing, &[])
+            .expect("optimizing callee");
+        unit.prepared_deployment_image().native_function_entries[callee.index()].store(
+            baseline_handle
+                .native_entry_address()
+                .expect("baseline address"),
+            std::sync::atomic::Ordering::Release,
+        );
+        unit.prepared_deployment_image().optimizing_function_entries[callee.index()].store(
+            optimizing_handle
+                .native_entry_address()
+                .expect("optimizing address"),
+            std::sync::atomic::Ordering::Release,
+        );
+
+        let result = Vm::with_options_and_worker_state(optimizing, worker).execute(unit);
+        let Some(Value::Array(array)) = result.return_value else {
+            panic!("nested transition did not return an array: {result:#?}");
+        };
+        assert!(
+            array
+                .get(&php_runtime::api::ArrayKey::String("path".into()))
+                .is_some(),
+            "first constant-key insert was lost"
+        );
+        assert!(
+            array
+                .get(&php_runtime::api::ArrayKey::String("selector".into()))
+                .is_some(),
+            "second constant-key insert was lost"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn compiled_caller_preserves_builtin_constants_across_callee_transition() {
+        let (unit, callee) = optimizing_nested_builtin_constants_unit();
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let baseline = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Baseline,
+            native_cache: php_jit::NativeCacheMode::Off,
+            collect_counters: true,
+            ..VmOptions::default()
+        };
+        let baseline_handle = worker
+            .resolve_native_function(&unit, callee, &baseline, &[])
+            .expect("baseline callee");
+        let optimizing = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            native_cache: php_jit::NativeCacheMode::Off,
+            collect_counters: true,
+            ..VmOptions::default()
+        };
+        let optimizing_handle = worker
+            .resolve_native_function(&unit, callee, &optimizing, &[])
+            .expect("optimizing callee");
+        unit.prepared_deployment_image().native_function_entries[callee.index()].store(
+            baseline_handle
+                .native_entry_address()
+                .expect("baseline address"),
+            std::sync::atomic::Ordering::Release,
+        );
+        unit.prepared_deployment_image().optimizing_function_entries[callee.index()].store(
+            optimizing_handle
+                .native_entry_address()
+                .expect("optimizing address"),
+            std::sync::atomic::Ordering::Release,
+        );
+
+        let result = Vm::with_options_and_worker_state(baseline, worker).execute(unit);
+        assert_eq!(
+            result.return_value,
+            Some(Value::String(php_runtime::api::PhpString::from_bytes(
+                b"widget!".to_vec()
+            ))),
+            "{result:#?}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
     fn instance_method_resolver_uses_exact_packed_entry_arity() {
         let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
         let result = Vm::with_options_and_worker_state(
@@ -2614,6 +3404,43 @@ mod tests {
         assert_eq!(warm.return_value, Some(Value::Int(7)), "{warm:#?}");
         let warm_counters = warm.counters.expect("diagnostic counters");
         assert!(warm_counters.native_method_monomorphic_executed >= 2);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn reached_method_is_published_to_the_optimizing_entry_table() {
+        let mut tiering = crate::tiering::TieringOptions::default();
+        tiering.collect_stats = true;
+        let worker = VmWorkerState::new(tiering.clone());
+        let unit = polymorphic_method_pic_unit();
+        let method = unit.unit().classes[0].methods[0].function;
+        let result = Vm::with_options_and_worker_state(
+            VmOptions {
+                native_optimization: NativeOptimizationPolicy::Optimizing,
+                native_cache: php_jit::NativeCacheMode::Off,
+                collect_counters: true,
+                tiering,
+                ..VmOptions::default()
+            },
+            worker,
+        )
+        .execute(unit.clone());
+        assert_eq!(result.return_value, Some(Value::Int(7)), "{result:#?}");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while unit.prepared_deployment_image().optimizing_function_entries[method.index()]
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unit.prepared_deployment_image().optimizing_function_entries[method.index()]
+                .load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "a reached method must not remain permanently baseline-only"
+        );
     }
 
     #[test]
@@ -2931,15 +3758,15 @@ mod tests {
                 .saturating_sub(before.entry_table_constructions),
             2
         );
-        // The root entry still follows the top-level cache path; its demanded
-        // callee is served by the cheap worker index without reconstructing
-        // the persistent function identity.
+        // The root entry still follows the top-level cache path. Its demanded
+        // callee now comes directly from the deployment-owned atomic cell;
+        // the deleted worker entry cache must receive no warm lookup at all.
         assert_eq!(loaded.hits.saturating_sub(before.hits), 1);
         assert_eq!(
             worker
                 .resolved_native_entry_hits()
                 .saturating_sub(entry_hits_before),
-            1
+            0
         );
         std::fs::remove_dir_all(directory).unwrap();
     }

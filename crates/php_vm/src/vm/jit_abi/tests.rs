@@ -1,43 +1,5 @@
 use super::native_builtins::format_native_php_diagnostic;
-use super::{
-    NATIVE_RESOLVED_ENTRY_CACHE_SIZE, NativeResolvedEntryCache, dereference_native_callable_value,
-    jit_native_value_lifecycle_abi, native_array_key_is_cacheable, native_backtrace_frame,
-};
-
-#[test]
-fn resolved_entry_cache_publishes_the_generated_code_abi_record() {
-    let mut cache = NativeResolvedEntryCache::default();
-    let function = php_ir::FunctionId::new(37);
-    cache.insert(91, function, 7, 0x1234);
-    assert_eq!(cache.get(91, function, 7), Some(0x1234));
-    assert_eq!(cache.get(92, function, 7), None);
-    let slot =
-        (function.index() ^ 91_usize.wrapping_mul(31)) & (NATIVE_RESOLVED_ENTRY_CACHE_SIZE - 1);
-    assert_eq!(
-        cache.entries[slot],
-        php_jit::JitNativeFunctionEntryCacheRecord {
-            unit_identity: 91,
-            signature_epoch: 7,
-            address: 0x1234,
-            function_id: function.raw(),
-            reserved: 0,
-        }
-    );
-}
-
-#[test]
-fn read_only_fetch_dim_cache_accepts_only_stable_key_handles() {
-    assert!(native_array_key_is_cacheable(17));
-    assert!(native_array_key_is_cacheable(
-        php_jit::jit_encode_typed_runtime_value(3, php_jit::JIT_VALUE_RUNTIME_STRING_TAG)
-    ));
-    assert!(native_array_key_is_cacheable(php_jit::jit_encode_constant(
-        17
-    )));
-    assert!(!native_array_key_is_cacheable(
-        php_jit::jit_encode_typed_runtime_value(4, php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG)
-    ));
-}
+use super::{dereference_native_callable_value, native_backtrace_frame};
 
 #[test]
 fn positional_builtin_arguments_do_not_require_rebinding() {
@@ -145,38 +107,6 @@ fn immediate_scalar_fast_paths_preserve_native_slot_encoding() {
     assert_eq!(fast_native_cast(0, 0), Some(false_value));
     assert_eq!(fast_native_cast(1, true_value), Some(1));
     assert_eq!(fast_native_cast(6, runtime), Some(null));
-}
-
-#[test]
-fn resolved_native_entry_cache_validates_identity_epoch_and_collisions() {
-    let mut cache = NativeResolvedEntryCache::default();
-    let first = php_ir::FunctionId::new(3);
-    let collision = php_ir::FunctionId::new(3 + 4_096);
-
-    assert_eq!(cache.get(11, first, 7), None);
-    cache.insert(11, first, 7, 0x1234);
-    assert_eq!(cache.get(11, first, 7), Some(0x1234));
-    assert_eq!(cache.get(12, first, 7), None);
-    assert_eq!(cache.get(11, first, 8), None);
-
-    cache.insert(11, collision, 7, 0x5678);
-    assert_eq!(cache.get(11, first, 7), None);
-    assert_eq!(cache.get(11, collision, 7), Some(0x5678));
-}
-
-#[test]
-fn immediate_value_lifecycle_bypasses_request_context() {
-    for encoded in [
-        42,
-        php_jit::jit_encode_constant(u32::MAX),
-        php_jit::jit_encode_constant(php_jit::JIT_VALUE_TRUE),
-    ] {
-        for operation in [0, 1, 0x8000_0000, 0x8000_0001] {
-            let result = jit_native_value_lifecycle_abi(std::ptr::null_mut(), operation, encoded);
-            assert_eq!(result.status, 0);
-            assert_eq!(result.value, encoded);
-        }
-    }
 }
 
 #[test]

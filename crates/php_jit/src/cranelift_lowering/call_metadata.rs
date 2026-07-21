@@ -164,6 +164,28 @@ pub(super) fn stable_builtin_string_predicate(target: &RegionCallTarget) -> Opti
     }
 }
 
+/// ASCII-only case conversion builtins whose PHP 8 semantics can be emitted
+/// directly over the request-owned native string arena.  The numeric value is
+/// an internal lowering selector, never a runtime helper operation ID.
+pub(super) fn stable_builtin_ascii_case(target: &RegionCallTarget) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "strtolower" => Some(0),
+        "strtoupper" => Some(1),
+        _ => None,
+    }
+}
+
 pub(super) fn native_argument_flags(argument: &php_ir::instruction::IrCallArg) -> u32 {
     let mut flags = crate::JitNativeArgFlags::default();
     if argument.name.is_some() {

@@ -2789,6 +2789,7 @@ mod tests {
             suspensions: Vec::new(),
             dynamic_code: Vec::new(),
             native_transitions: Vec::new(),
+            production_lowering: Vec::new(),
             function_entries: vec![crate::JitNativeFunctionEntryMetadata {
                 function: php_ir::FunctionId::new(3),
                 address: 0,

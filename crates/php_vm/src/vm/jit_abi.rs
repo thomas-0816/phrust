@@ -52,55 +52,17 @@ use request_state::{
 };
 use root_index::{RequestRootIndex, RootMutationReason, values_contain_object};
 pub(super) use runtime_ops::{
-    jit_native_argument_check_register_abi as jit_native_argument_check_abi,
-    jit_native_argument_check_register_abi, jit_native_array_fetch_abi,
-    jit_native_array_insert_local_register_abi as jit_native_array_insert_local_abi,
-    jit_native_array_insert_local_register_abi,
-    jit_native_array_insert_register_abi as jit_native_array_insert_abi,
-    jit_native_array_insert_register_abi,
-    jit_native_array_new_register_abi as jit_native_array_new_abi,
-    jit_native_array_new_register_abi,
-    jit_native_array_spread_register_abi as jit_native_array_spread_abi,
-    jit_native_array_spread_register_abi,
-    jit_native_array_unset_register_abi as jit_native_array_unset_abi,
-    jit_native_array_unset_register_abi, jit_native_binary_register_abi as jit_native_binary_abi,
-    jit_native_binary_register_abi, jit_native_cast_register_abi as jit_native_cast_abi,
-    jit_native_cast_register_abi, jit_native_compare_register_abi as jit_native_compare_abi,
-    jit_native_compare_register_abi,
-    jit_native_constant_fetch_register_abi as jit_native_constant_fetch_abi,
-    jit_native_constant_fetch_register_abi, jit_native_echo_abi,
-    jit_native_exception_new_register_abi as jit_native_exception_new_abi,
-    jit_native_exception_new_register_abi, jit_native_execution_poll_abi,
-    jit_native_foreach_cleanup_abi,
-    jit_native_foreach_init_register_abi as jit_native_foreach_init_abi,
-    jit_native_foreach_init_register_abi, jit_native_foreach_next_abi,
-    jit_native_local_fetch_register_abi as jit_native_local_fetch_abi,
-    jit_native_local_fetch_register_abi,
-    jit_native_local_store_register_abi as jit_native_local_store_abi,
-    jit_native_local_store_register_abi,
-    jit_native_object_clone_register_abi as jit_native_object_clone_abi,
-    jit_native_object_clone_register_abi,
-    jit_native_object_clone_with_register_abi as jit_native_object_clone_with_abi,
-    jit_native_object_clone_with_register_abi,
-    jit_native_object_new_register_abi as jit_native_object_new_abi,
-    jit_native_object_new_register_abi,
-    jit_native_property_assign_register_abi as jit_native_property_assign_abi,
-    jit_native_property_assign_register_abi,
-    jit_native_property_fetch_register_abi as jit_native_property_fetch_abi,
-    jit_native_property_fetch_register_abi,
-    jit_native_reference_bind_register_abi as jit_native_reference_bind_abi,
-    jit_native_reference_bind_register_abi,
-    jit_native_return_check_register_abi as jit_native_return_check_abi,
-    jit_native_return_check_register_abi, jit_native_runtime_fatal_abi,
-    jit_native_stable_length_register_abi as jit_native_stable_length_abi,
-    jit_native_stable_length_register_abi,
-    jit_native_string_predicate_register_abi as jit_native_string_predicate_abi,
-    jit_native_string_predicate_register_abi, jit_native_truthy_abi,
-    jit_native_type_predicate_register_abi as jit_native_type_predicate_abi,
-    jit_native_type_predicate_register_abi, jit_native_unary_register_abi as jit_native_unary_abi,
-    jit_native_unary_register_abi,
-    jit_native_value_lifecycle_register_abi as jit_native_value_lifecycle_abi,
-    jit_native_value_lifecycle_register_abi,
+    jit_native_argument_check_abi, jit_native_array_fetch_abi, jit_native_array_insert_abi,
+    jit_native_array_insert_local_abi, jit_native_array_new_abi, jit_native_array_spread_abi,
+    jit_native_array_unset_abi, jit_native_binary_abi, jit_native_cast_abi, jit_native_compare_abi,
+    jit_native_constant_fetch_abi, jit_native_echo_abi, jit_native_exception_new_abi,
+    jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi,
+    jit_native_foreach_next_abi, jit_native_local_fetch_abi, jit_native_local_store_abi,
+    jit_native_object_clone_abi, jit_native_object_clone_with_abi, jit_native_object_new_abi,
+    jit_native_property_assign_abi, jit_native_property_fetch_abi, jit_native_reference_bind_abi,
+    jit_native_return_check_abi, jit_native_runtime_fatal_abi, jit_native_stable_length_abi,
+    jit_native_string_predicate_abi, jit_native_truthy_abi, jit_native_type_predicate_abi,
+    jit_native_unary_abi, jit_native_value_release_abi,
 };
 use semantic_dispatch::*;
 pub(super) use semantic_dispatch::{
@@ -223,63 +185,7 @@ struct NativeMethodPic {
 
 const NATIVE_METHOD_PIC_LIMIT: usize = 4;
 // WordPress routinely reaches several hundred native functions from distinct
-// include units in one request. A 256-slot direct-mapped table caused hot
-// callees to evict each other and re-enter the signature resolver. Keep the
-// request-local table large enough to retain the normal application working
-// set; entries are fixed-size and the lookup remains allocation- and lock-free.
-const NATIVE_RESOLVED_ENTRY_CACHE_SIZE: usize = 4_096;
 const NATIVE_GLOBAL_REFERENCE_CACHE_SIZE: usize = php_jit::JIT_NATIVE_GLOBAL_REFERENCE_CACHE_SIZE;
-
-struct NativeResolvedEntryCache {
-    entries: [php_jit::JitNativeFunctionEntryCacheRecord; NATIVE_RESOLVED_ENTRY_CACHE_SIZE],
-}
-
-impl Default for NativeResolvedEntryCache {
-    fn default() -> Self {
-        Self {
-            entries: [php_jit::JitNativeFunctionEntryCacheRecord::default();
-                NATIVE_RESOLVED_ENTRY_CACHE_SIZE],
-        }
-    }
-}
-
-impl NativeResolvedEntryCache {
-    fn index(unit_identity: u64, function: php_ir::FunctionId) -> usize {
-        (function.index() ^ (unit_identity as usize).wrapping_mul(31))
-            & (NATIVE_RESOLVED_ENTRY_CACHE_SIZE - 1)
-    }
-
-    fn get(
-        &self,
-        unit_identity: u64,
-        function: php_ir::FunctionId,
-        signature_epoch: u64,
-    ) -> Option<usize> {
-        let entry = self.entries[Self::index(unit_identity, function)];
-        (entry.address != 0
-            && entry.unit_identity == unit_identity
-            && entry.function_id == function.raw()
-            && entry.signature_epoch == signature_epoch)
-            .then(|| entry.address as usize)
-    }
-
-    fn insert(
-        &mut self,
-        unit_identity: u64,
-        function: php_ir::FunctionId,
-        signature_epoch: u64,
-        address: usize,
-    ) {
-        self.entries[Self::index(unit_identity, function)] =
-            php_jit::JitNativeFunctionEntryCacheRecord {
-                unit_identity,
-                function_id: function.raw(),
-                signature_epoch,
-                address: address as u64,
-                reserved: 0,
-            };
-    }
-}
 
 struct NativeGlobalReferenceCache {
     entries:
@@ -414,14 +320,21 @@ pub(super) struct NativeExecutionContext<'a> {
     worker_state: &'a super::VmWorkerState,
     native_entries:
         std::sync::Arc<std::collections::BTreeMap<php_ir::FunctionId, php_jit::JitFunctionHandle>>,
-    resolved_native_entries: NativeResolvedEntryCache,
     native_call_encoded_scratch: Vec<i64>,
     native_frame_arena: NativeFrameArena,
     native_method_pics: std::collections::BTreeMap<u64, NativeMethodPic>,
     pub(super) output: php_runtime::api::OutputBuffer,
     values: Vec<Option<NativeStoredValue>>,
     value_slots: Vec<php_jit::JitNativeValueSlot>,
-    array_value_caches: Vec<Option<Box<[php_jit::JitNativeArrayCacheEntry]>>>,
+    direct_value_slots: Box<[php_jit::JitNativeValueSlot]>,
+    direct_value_next: Box<u32>,
+    direct_array_entries: Box<[php_jit::JitNativeDirectArrayEntry]>,
+    direct_array_next: Box<u32>,
+    direct_value_free_head: Box<u32>,
+    direct_array_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS]>,
+    direct_string_bytes: Box<[u8]>,
+    direct_string_next: Box<u32>,
+    object_property_caches: Vec<Option<Box<[php_jit::JitNativePropertyCacheEntry]>>>,
     interned_value_handles: NativeValueIdentityMap,
     global_reference_cache: NativeGlobalReferenceCache,
     native_poll_counter: Box<u32>,
@@ -512,40 +425,6 @@ pub(super) struct NativeExecutionContext<'a> {
 // Generated code holds raw pointers into these parallel vectors while a
 // request is active, so their allocations must not move.
 const NATIVE_VALUE_REFCOUNT_CAPACITY: usize = 1 << 20;
-const NATIVE_ARRAY_CACHE_SLOTS: usize = 16;
-const _: () = assert!(NATIVE_ARRAY_CACHE_SLOTS.is_power_of_two());
-
-fn native_array_cache_slot(encoded_key: i64, unit_identity: u64) -> usize {
-    let key = encoded_key as u64;
-    ((key ^ (key >> 32) ^ unit_identity ^ (unit_identity >> 29)) as usize)
-        & (NATIVE_ARRAY_CACHE_SLOTS - 1)
-}
-
-fn native_array_key_is_cacheable(encoded_key: i64) -> bool {
-    match php_jit::jit_runtime_value_tag(encoded_key) {
-        // PHP strings are immutable and their request-owned handle is retained
-        // by the cache entry. Other runtime handles can mutate or alias and
-        // must be normalized by the semantic helper every time.
-        Some(tag) => tag == php_jit::JIT_VALUE_RUNTIME_STRING_TAG,
-        // Immediate integers and immutable unit constants remain stable. The
-        // latter are namespaced by `native_array_cache_unit_identity`.
-        None => true,
-    }
-}
-
-fn native_array_cache_unit_identity(encoded_key: i64, current_unit_identity: u64) -> u64 {
-    match php_jit::jit_decode_constant(encoded_key) {
-        Some(
-            u32::MAX
-            | php_jit::JIT_VALUE_UNINITIALIZED
-            | php_jit::JIT_VALUE_FALSE
-            | php_jit::JIT_VALUE_TRUE,
-        )
-        | None => 0,
-        Some(_) => current_unit_identity,
-    }
-}
-
 fn stored_value_slot(value: &NativeStoredValue) -> php_jit::JitNativeValueSlot {
     let mut slot = php_jit::JitNativeValueSlot {
         refcount: 1,
@@ -558,16 +437,13 @@ fn stored_value_slot(value: &NativeStoredValue) -> php_jit::JitNativeValueSlot {
             slot.reserved =
                 u32::from(value.as_bytes() == b"0") * php_jit::JIT_NATIVE_STRING_VALUE_ZERO;
             slot.payload = u64::try_from(value.len()).unwrap_or(u64::MAX);
-        }
-        NativeStoredValue::Php(Value::Array(value)) => {
-            slot.kind = php_jit::JIT_NATIVE_VALUE_VIEW_ARRAY;
-            slot.flags = php_jit::JIT_NATIVE_ARRAY_VIEW_ABI_VERSION;
-            slot.payload = u64::try_from(value.len()).unwrap_or(u64::MAX);
+            slot.aux = value.as_bytes().as_ptr() as usize as u64;
         }
         NativeStoredValue::Php(Value::Reference(reference)) => {
             slot.kind = php_jit::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR;
             slot.flags = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION;
             slot.payload = reference.native_scalar_view_address() as u64;
+            slot.aux = reference.native_array_view_address() as u64;
         }
         NativeStoredValue::ArrayIterator(iterator) => {
             if let Some(direct) = iterator.direct.as_ref() {
@@ -583,10 +459,19 @@ fn stored_value_slot(value: &NativeStoredValue) -> php_jit::JitNativeValueSlot {
 
 enum NativeStoredValue {
     Php(Value),
+    /// Native closure record published once with request-owned encoded
+    /// capture handles. Invocation borrows these handles and never rebuilds
+    /// captured arrays through Rust `Value`.
+    PreparedClosure(Box<NativePreparedClosure>),
     GlobalsProxy,
     ArrayIterator(Box<NativeArrayIteratorState>),
     Iterator(Box<NativeIteratorState>),
     GeneratorIterator(Box<NativeGeneratorIteratorState>),
+}
+
+struct NativePreparedClosure {
+    callable: Box<php_runtime::api::CallableValue>,
+    captures: Box<[i64]>,
 }
 
 struct NativeArrayIteratorState {
@@ -620,12 +505,12 @@ struct NativeGeneratorIteratorState {
     finished: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum NativeValueIdentity {
-    Array(u64),
     Object(u64),
     Reference(u64),
-    String(usize),
+    String(php_runtime::api::PhpString),
+    Closure(u64),
     GlobalsProxy,
 }
 
@@ -663,7 +548,15 @@ type NativeValueIdentityMap = std::collections::HashMap<
 pub(super) struct NativeValueArenaBuffers {
     values: Vec<Option<NativeStoredValue>>,
     value_slots: Vec<php_jit::JitNativeValueSlot>,
-    array_value_caches: Vec<Option<Box<[php_jit::JitNativeArrayCacheEntry]>>>,
+    direct_value_slots: Box<[php_jit::JitNativeValueSlot]>,
+    direct_value_next: Box<u32>,
+    direct_array_entries: Box<[php_jit::JitNativeDirectArrayEntry]>,
+    direct_array_next: Box<u32>,
+    direct_value_free_head: Box<u32>,
+    direct_array_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS]>,
+    direct_string_bytes: Box<[u8]>,
+    direct_string_next: Box<u32>,
+    object_property_caches: Vec<Option<Box<[php_jit::JitNativePropertyCacheEntry]>>>,
     interned_value_handles: NativeValueIdentityMap,
     global_reference_cache: NativeGlobalReferenceCache,
     free_value_slots: Vec<u32>,
@@ -674,7 +567,27 @@ impl Default for NativeValueArenaBuffers {
         Self {
             values: Vec::new(),
             value_slots: Vec::with_capacity(NATIVE_VALUE_REFCOUNT_CAPACITY),
-            array_value_caches: Vec::with_capacity(NATIVE_VALUE_REFCOUNT_CAPACITY),
+            direct_value_slots: vec![
+                php_jit::JitNativeValueSlot::default();
+                php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY
+            ]
+            .into_boxed_slice(),
+            direct_value_next: Box::new(0),
+            direct_array_entries: vec![
+                php_jit::JitNativeDirectArrayEntry::default();
+                php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
+            ]
+            .into_boxed_slice(),
+            direct_array_next: Box::new(0),
+            direct_value_free_head: Box::new(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE),
+            direct_array_free_heads: Box::new(
+                [php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+                    php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS],
+            ),
+            direct_string_bytes: vec![0; php_jit::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY]
+                .into_boxed_slice(),
+            direct_string_next: Box::new(0),
+            object_property_caches: Vec::with_capacity(NATIVE_VALUE_REFCOUNT_CAPACITY),
             interned_value_handles: NativeValueIdentityMap::default(),
             global_reference_cache: NativeGlobalReferenceCache::default(),
             free_value_slots: Vec::new(),
@@ -688,7 +601,6 @@ impl std::fmt::Debug for NativeValueArenaBuffers {
             .debug_struct("NativeValueArenaBuffers")
             .field("value_capacity", &self.values.capacity())
             .field("slot_capacity", &self.value_slots.capacity())
-            .field("cache_capacity", &self.array_value_caches.capacity())
             .finish()
     }
 }
@@ -706,7 +618,6 @@ fn take_native_value_arena() -> NativeValueArenaBuffers {
 fn recycle_native_value_arena(arena: NativeValueArenaBuffers) {
     debug_assert!(arena.values.is_empty());
     debug_assert!(arena.value_slots.is_empty());
-    debug_assert!(arena.array_value_caches.is_empty());
     debug_assert!(arena.interned_value_handles.is_empty());
     debug_assert!(
         arena
@@ -734,9 +645,6 @@ fn recycle_native_value_arena(arena: NativeValueArenaBuffers) {
 
 fn stored_value_identity(value: &NativeStoredValue) -> Option<NativeValueIdentity> {
     match value {
-        NativeStoredValue::Php(Value::Array(array)) => {
-            Some(NativeValueIdentity::Array(array.native_storage_id()))
-        }
         NativeStoredValue::Php(Value::Object(object)) => {
             Some(NativeValueIdentity::Object(object.id()))
         }
@@ -744,8 +652,14 @@ fn stored_value_identity(value: &NativeStoredValue) -> Option<NativeValueIdentit
             Some(NativeValueIdentity::Reference(reference.gc_debug_id()))
         }
         NativeStoredValue::Php(Value::String(string)) => {
-            Some(NativeValueIdentity::String(string.native_storage_id()))
+            Some(NativeValueIdentity::String(string.clone()))
         }
+        NativeStoredValue::PreparedClosure(closure) => match closure.callable.as_ref() {
+            php_runtime::api::CallableValue::Closure(closure) => {
+                Some(NativeValueIdentity::Closure(closure.id))
+            }
+            _ => None,
+        },
         NativeStoredValue::GlobalsProxy => Some(NativeValueIdentity::GlobalsProxy),
         _ => None,
     }
@@ -759,6 +673,7 @@ fn stored_value_tag(value: &NativeStoredValue) -> u64 {
         NativeStoredValue::Php(Value::String(_)) => php_jit::JIT_VALUE_RUNTIME_STRING_TAG,
         NativeStoredValue::Php(Value::Float(_)) => php_jit::JIT_VALUE_RUNTIME_FLOAT_TAG,
         NativeStoredValue::Php(Value::Callable(_)) => php_jit::JIT_VALUE_RUNTIME_CALLABLE_TAG,
+        NativeStoredValue::PreparedClosure(_) => php_jit::JIT_VALUE_RUNTIME_CALLABLE_TAG,
         NativeStoredValue::Php(Value::Resource(_)) => php_jit::JIT_VALUE_RUNTIME_RESOURCE_TAG,
         NativeStoredValue::Php(Value::Generator(_)) => php_jit::JIT_VALUE_RUNTIME_GENERATOR_TAG,
         NativeStoredValue::Php(Value::Fiber(_)) => php_jit::JIT_VALUE_RUNTIME_FIBER_TAG,
@@ -784,6 +699,7 @@ fn stored_value_kind(value: &NativeStoredValue) -> &'static str {
         NativeStoredValue::Php(Value::Resource(_)) => "resource",
         NativeStoredValue::Php(Value::Reference(_)) => "reference",
         NativeStoredValue::Php(Value::Callable(_)) => "callable",
+        NativeStoredValue::PreparedClosure(_) => "prepared_closure",
         NativeStoredValue::Php(Value::Generator(_)) => "generator",
         NativeStoredValue::Php(Value::Fiber(_)) => "fiber",
         NativeStoredValue::Php(Value::Uninitialized) => "uninitialized",
@@ -1016,14 +932,21 @@ impl<'a> NativeExecutionContext<'a> {
             options,
             worker_state,
             native_entries,
-            resolved_native_entries: NativeResolvedEntryCache::default(),
             native_call_encoded_scratch: Vec::with_capacity(native_call_argument_capacity),
             native_frame_arena: NativeFrameArena::default(),
             native_method_pics: std::collections::BTreeMap::new(),
             output,
             values: value_arena.values,
             value_slots: value_arena.value_slots,
-            array_value_caches: value_arena.array_value_caches,
+            direct_value_slots: value_arena.direct_value_slots,
+            direct_value_next: value_arena.direct_value_next,
+            direct_array_entries: value_arena.direct_array_entries,
+            direct_array_next: value_arena.direct_array_next,
+            direct_value_free_head: value_arena.direct_value_free_head,
+            direct_array_free_heads: value_arena.direct_array_free_heads,
+            direct_string_bytes: value_arena.direct_string_bytes,
+            direct_string_next: value_arena.direct_string_next,
+            object_property_caches: value_arena.object_property_caches,
             interned_value_handles: value_arena.interned_value_handles,
             global_reference_cache: value_arena.global_reference_cache,
             // Wrapping 4095 + 1 makes the first loop-header visit poll. Native
@@ -1105,19 +1028,47 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     pub(super) fn recycle_native_value_arena(&mut self) {
+        let direct_value_used = usize::try_from(*self.direct_value_next).unwrap_or(0);
+        let direct_array_used = usize::try_from(*self.direct_array_next).unwrap_or(0);
+        let direct_string_used = usize::try_from(*self.direct_string_next).unwrap_or(0);
+        for index in (0..direct_value_used).rev() {
+            while self.direct_value_slots[index].refcount != 0 {
+                if self.release_direct_value_index(index).is_err() {
+                    break;
+                }
+            }
+        }
         for entry in &mut *self.global_reference_cache.entries {
             *entry = php_jit::JitNativeGlobalReferenceCacheRecord::default();
         }
         self.global_reference_cache.names.fill_with(|| None);
-        self.array_value_caches.clear();
+        self.object_property_caches.clear();
         self.values.clear();
         self.value_slots.clear();
+        self.direct_value_slots[..direct_value_used].fill(php_jit::JitNativeValueSlot::default());
+        self.direct_array_entries[..direct_array_used]
+            .fill(php_jit::JitNativeDirectArrayEntry::default());
+        *self.direct_value_next = 0;
+        *self.direct_array_next = 0;
+        *self.direct_value_free_head = php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+        self.direct_array_free_heads
+            .fill(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE);
+        self.direct_string_bytes[..direct_string_used].fill(0);
+        *self.direct_string_next = 0;
         self.interned_value_handles.clear();
         self.free_value_slots.clear();
         recycle_native_value_arena(NativeValueArenaBuffers {
             values: std::mem::take(&mut self.values),
             value_slots: std::mem::take(&mut self.value_slots),
-            array_value_caches: std::mem::take(&mut self.array_value_caches),
+            direct_value_slots: std::mem::take(&mut self.direct_value_slots),
+            direct_value_next: std::mem::take(&mut self.direct_value_next),
+            direct_array_entries: std::mem::take(&mut self.direct_array_entries),
+            direct_array_next: std::mem::take(&mut self.direct_array_next),
+            direct_value_free_head: std::mem::take(&mut self.direct_value_free_head),
+            direct_array_free_heads: std::mem::take(&mut self.direct_array_free_heads),
+            direct_string_bytes: std::mem::take(&mut self.direct_string_bytes),
+            direct_string_next: std::mem::take(&mut self.direct_string_next),
+            object_property_caches: std::mem::take(&mut self.object_property_caches),
             interned_value_handles: std::mem::take(&mut self.interned_value_handles),
             global_reference_cache: std::mem::take(&mut self.global_reference_cache),
             free_value_slots: std::mem::take(&mut self.free_value_slots),
@@ -1135,39 +1086,15 @@ impl<'a> NativeExecutionContext<'a> {
         };
     }
 
-    fn active_unit_cache_identity(&self) -> u64 {
-        self.current_dynamic_unit
-            .and_then(|unit| self.dynamic_units.get(unit))
-            .map_or(self.unit_identity, |unit| unit.compiled.artifact_identity())
-    }
-
-    fn resolved_native_entry_address(
-        &self,
-        unit: Option<usize>,
-        function: php_ir::FunctionId,
-    ) -> Option<usize> {
-        let unit_identity = unit
-            .and_then(|unit| self.dynamic_units.get(unit))
-            .map_or(self.unit_identity, |unit| unit.compiled.artifact_identity());
-        self.resolved_native_entries
-            .get(unit_identity, function, self.external_signature_epoch)
-    }
-
-    fn cache_resolved_native_entry_address(
-        &mut self,
-        unit: Option<usize>,
-        function: php_ir::FunctionId,
-        address: usize,
-    ) {
-        let unit_identity = unit
-            .and_then(|unit| self.dynamic_units.get(unit))
-            .map_or(self.unit_identity, |unit| unit.compiled.artifact_identity());
-        self.resolved_native_entries.insert(
-            unit_identity,
-            function,
-            self.external_signature_epoch,
-            address,
-        );
+    fn publish_native_entry_address(&self, function: php_ir::FunctionId, address: usize) {
+        if let Some(cell) = self
+            .compiled
+            .prepared_deployment_image()
+            .native_function_entries
+            .get(function.index())
+        {
+            cell.store(address, std::sync::atomic::Ordering::Release);
+        }
     }
 
     pub(super) fn attach_root_deployment_image(
@@ -1179,6 +1106,19 @@ impl<'a> NativeExecutionContext<'a> {
         }
         let unit = self.dynamic_units.len();
         let deployment = compiled.prepared_deployment_image();
+        for (function, handle) in self.native_entries.iter() {
+            if !handle.region_state_metadata().is_some_and(|metadata| {
+                metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Baseline
+            }) {
+                continue;
+            }
+            if let (Some(cell), Some(address)) = (
+                deployment.native_function_entries.get(function.index()),
+                handle.native_entry_address(),
+            ) {
+                cell.store(address, std::sync::atomic::Ordering::Release);
+            }
+        }
         // Before the root image is attached there are no runtime declaration
         // overlays. Its compiled entries therefore all share the empty
         // external-signature set; do not rediscover call targets per request.
@@ -1479,6 +1419,306 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(Some(reference))
     }
 
+    fn direct_value_index(encoded: i64) -> Option<usize> {
+        let index = php_jit::jit_decode_runtime_value(encoded)?;
+        let index = index.checked_sub(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)? as usize;
+        (index < php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY).then_some(index)
+    }
+
+    /// Moves one newly constructed PHP array into the canonical native array
+    /// plane at a call-frame boundary. This is an ownership transfer, not a
+    /// shadow view of a retained `PhpArray`: the direct slot and its entries
+    /// become the sole representation consumed by optimizing code.
+    #[track_caller]
+    fn encode_direct_array_value(
+        &mut self,
+        array: php_runtime::api::PhpArray,
+    ) -> Result<i64, String> {
+        let mut entries: Vec<php_jit::JitNativeDirectArrayEntry> = Vec::with_capacity(array.len());
+        for (key, value) in array.iter() {
+            let key = match key {
+                php_runtime::api::ArrayKey::Int(key) => self.encode(Value::Int(key)),
+                php_runtime::api::ArrayKey::String(key) => self.encode(Value::String(key.clone())),
+            };
+            let key = match key {
+                Ok(key) => key,
+                Err(error) => {
+                    for entry in entries {
+                        let _ = self.release(entry.key);
+                        let _ = self.release(entry.value);
+                    }
+                    return Err(error);
+                }
+            };
+            let value = match self.encode(value.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = self.release(key);
+                    for entry in entries {
+                        let _ = self.release(entry.key);
+                        let _ = self.release(entry.value);
+                    }
+                    return Err(error);
+                }
+            };
+            entries.push(php_jit::JitNativeDirectArrayEntry { key, value });
+        }
+
+        let (start, capacity) = match self.reserve_direct_array_entries(entries.len()) {
+            Ok(reserved) => reserved,
+            Err(error) => {
+                for entry in entries {
+                    let _ = self.release(entry.key);
+                    let _ = self.release(entry.value);
+                }
+                return Err(error);
+            }
+        };
+        self.direct_array_entries[start..start + entries.len()].copy_from_slice(&entries);
+
+        let index = if *self.direct_value_free_head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+            let index = *self.direct_value_free_head as usize;
+            let slot = self
+                .direct_value_slots
+                .get(index)
+                .ok_or_else(|| "direct native value free-list entry is missing".to_owned())?;
+            *self.direct_value_free_head = slot.reserved;
+            index
+        } else {
+            let index = usize::try_from(*self.direct_value_next)
+                .map_err(|_| "direct native value index overflow".to_owned())?;
+            if index >= self.direct_value_slots.len() {
+                self.free_direct_array_entries(start, capacity);
+                for entry in entries {
+                    let _ = self.release(entry.key);
+                    let _ = self.release(entry.value);
+                }
+                return Err(format!(
+                    "direct native value arena exhausted at {} slots",
+                    index.saturating_add(1)
+                ));
+            }
+            *self.direct_value_next = u32::try_from(index + 1)
+                .map_err(|_| "direct native value index overflow".to_owned())?;
+            index
+        };
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            refcount: 1,
+            kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+            flags: php_jit::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
+            reserved: u32::try_from(capacity).unwrap_or(u32::MAX),
+            payload: entries.len() as u64,
+            aux: self.direct_array_entries[start..].as_ptr() as usize as u64,
+        };
+        self.record_direct_array_materialization(entries.len(), std::panic::Location::caller());
+        let runtime_index = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+            .ok_or_else(|| "direct native value handle overflow".to_owned())?;
+        Ok((php_jit::JIT_VALUE_RUNTIME_ARRAY_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    fn reserve_direct_array_entries(&mut self, length: usize) -> Result<(usize, usize), String> {
+        let capacity = length
+            .max(php_jit::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY as usize)
+            .next_power_of_two();
+        let bucket = capacity.trailing_zeros() as usize;
+        let head = self.direct_array_free_heads[bucket];
+        if head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+            let start = head as usize;
+            let next = self
+                .direct_array_entries
+                .get(start)
+                .map(|entry| entry.key as u32)
+                .ok_or_else(|| "direct native array free-list entry is missing".to_owned())?;
+            self.direct_array_free_heads[bucket] = next;
+            return Ok((start, capacity));
+        }
+        let start = usize::try_from(*self.direct_array_next)
+            .map_err(|_| "direct native array entry index overflow".to_owned())?;
+        let end = start
+            .checked_add(capacity)
+            .ok_or_else(|| "direct native array entry range overflow".to_owned())?;
+        if end > self.direct_array_entries.len() {
+            let reusable = self
+                .direct_array_free_heads
+                .iter()
+                .filter(|head| **head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE)
+                .count();
+            return Err(format!(
+                "direct native array arena exhausted at {end} entries (next={start}, requested={capacity}, reusable_buckets={reusable})"
+            ));
+        }
+        *self.direct_array_next = u32::try_from(end)
+            .map_err(|_| "direct native array entry index overflow".to_owned())?;
+        Ok((start, capacity))
+    }
+
+    fn free_direct_array_entries(&mut self, start: usize, capacity: usize) {
+        if capacity == 0 {
+            return;
+        }
+        if !capacity.is_power_of_two() {
+            return;
+        }
+        let Ok(start_u32) = u32::try_from(start) else {
+            return;
+        };
+        let bucket = capacity.trailing_zeros() as usize;
+        if bucket >= self.direct_array_free_heads.len() || start >= self.direct_array_entries.len()
+        {
+            return;
+        }
+        let previous = self.direct_array_free_heads[bucket];
+        self.direct_array_entries[start].key = i64::from(previous);
+        self.direct_array_entries[start].value = 0;
+        self.direct_array_free_heads[bucket] = start_u32;
+    }
+
+    fn replace_direct_array(
+        &mut self,
+        index: usize,
+        array: php_runtime::api::PhpArray,
+    ) -> Result<(), String> {
+        let old = *self
+            .direct_value_slots
+            .get(index)
+            .filter(|slot| {
+                slot.refcount != 0 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
+            })
+            .ok_or_else(|| format!("direct native array {index} is missing"))?;
+        let source = array
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        let mut encoded_entries: Vec<php_jit::JitNativeDirectArrayEntry> =
+            Vec::with_capacity(source.len());
+        for (key, value) in source {
+            let key = match key {
+                php_runtime::api::ArrayKey::Int(key) => self.encode(Value::Int(key)),
+                php_runtime::api::ArrayKey::String(key) => self.encode(Value::String(key)),
+            }?;
+            let value = match self.encode(value) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = self.release(key);
+                    for entry in encoded_entries.drain(..) {
+                        let _ = self.release(entry.key);
+                        let _ = self.release(entry.value);
+                    }
+                    return Err(error);
+                }
+            };
+            encoded_entries.push(php_jit::JitNativeDirectArrayEntry { key, value });
+        }
+
+        let base = self.direct_array_entries.as_ptr() as usize;
+        let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+        let old_start = usize::try_from(old.aux)
+            .unwrap_or(base)
+            .saturating_sub(base)
+            / entry_size;
+        let old_length = usize::try_from(old.payload).unwrap_or(0);
+        let old_children = self
+            .direct_array_entries
+            .get(old_start..old_start.saturating_add(old_length))
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|entry| [entry.key, entry.value])
+            .collect::<Vec<_>>();
+        let moved = encoded_entries.len() > old.reserved as usize;
+        let (start, capacity) = if !moved {
+            (old_start, old.reserved as usize)
+        } else {
+            self.reserve_direct_array_entries(encoded_entries.len())?
+        };
+        self.direct_array_entries[start..start + encoded_entries.len()]
+            .copy_from_slice(&encoded_entries);
+        let slot = &mut self.direct_value_slots[index];
+        slot.flags = php_jit::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION;
+        slot.reserved = u32::try_from(capacity).unwrap_or(u32::MAX);
+        slot.payload = encoded_entries.len() as u64;
+        slot.aux = self.direct_array_entries[start..].as_ptr() as usize as u64;
+        if moved {
+            self.free_direct_array_entries(old_start, old.reserved as usize);
+        }
+        for child in old_children {
+            self.release(child)?;
+        }
+        Ok(())
+    }
+
+    fn decode_direct_array(&self, index: usize) -> Result<Value, String> {
+        let slot = self
+            .direct_value_slots
+            .get(index)
+            .filter(|slot| slot.refcount != 0)
+            .ok_or_else(|| format!("direct native value {index} is missing"))?;
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY {
+            return Err(format!("direct native value {index} is not an array"));
+        }
+        let length = usize::try_from(slot.payload)
+            .map_err(|_| format!("direct native array {index} length overflow"))?;
+        let base = self.direct_array_entries.as_ptr() as usize;
+        let address = usize::try_from(slot.aux)
+            .map_err(|_| format!("direct native array {index} address overflow"))?;
+        let byte_offset = address
+            .checked_sub(base)
+            .ok_or_else(|| format!("direct native array {index} address is outside its arena"))?;
+        let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+        if byte_offset % entry_size != 0 {
+            return Err(format!("direct native array {index} address is unaligned"));
+        }
+        let start = byte_offset / entry_size;
+        let entries = self
+            .direct_array_entries
+            .get(start..start.saturating_add(length))
+            .ok_or_else(|| format!("direct native array {index} entries are outside its arena"))?;
+        let mut array = php_runtime::api::PhpArray::with_capacity(length);
+        for entry in entries {
+            let key = self.decode(entry.key)?;
+            let key = php_runtime::api::ArrayKey::from_value(&key)
+                .ok_or_else(|| format!("direct native array {index} has an invalid key"))?;
+            array.insert(key, self.decode(entry.value)?);
+        }
+        Ok(Value::Array(array))
+    }
+
+    fn decode_direct_value(&self, index: usize) -> Result<Value, String> {
+        let slot = self
+            .direct_value_slots
+            .get(index)
+            .filter(|slot| slot.refcount != 0)
+            .ok_or_else(|| format!("direct native value {index} is missing"))?;
+        if matches!(
+            slot.kind,
+            php_jit::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
+                | php_jit::JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY
+        ) {
+            let array = php_runtime::api::PhpArray::clone_from_native_storage_refcount(
+                slot.payload as usize,
+            )
+            .ok_or_else(|| format!("shared native array {index} storage is unavailable"))?;
+            return Ok(Value::Array(array));
+        }
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_STRING {
+            return self.decode_direct_array(index);
+        }
+        let length = usize::try_from(slot.payload)
+            .map_err(|_| format!("direct native string {index} length overflow"))?;
+        let base = self.direct_string_bytes.as_ptr() as usize;
+        let address = usize::try_from(slot.aux)
+            .map_err(|_| format!("direct native string {index} address overflow"))?;
+        let start = address
+            .checked_sub(base)
+            .ok_or_else(|| format!("direct native string {index} is outside its arena"))?;
+        let bytes = self
+            .direct_string_bytes
+            .get(start..start.saturating_add(length))
+            .ok_or_else(|| format!("direct native string {index} bytes are outside its arena"))?;
+        Ok(Value::String(PhpString::from_bytes(bytes.to_vec())))
+    }
+
     fn decode(&self, encoded: i64) -> Result<Value, String> {
         if let Some(constant) = php_jit::jit_decode_constant(encoded) {
             if constant == u32::MAX {
@@ -1502,7 +1742,18 @@ impl<'a> NativeExecutionContext<'a> {
                 .unit
                 .constants
                 .get(constant_index)
-                .ok_or_else(|| format!("native constant {constant} is missing"))?;
+                .ok_or_else(|| {
+                    format!(
+                        "native constant {constant} is missing from active unit {} (dynamic={:?}, constants={}, source={})",
+                        self.unit.id.raw(),
+                        self.current_dynamic_unit,
+                        self.unit.constants.len(),
+                        self.unit
+                            .files
+                            .first()
+                            .map_or("<unknown>", |file| file.path.as_str()),
+                    )
+                })?;
             // Constants embedded in native operands can still require the
             // active request context (for example a runtime-defined constant
             // used as a default argument in a bounded large-unit call graph).
@@ -1513,8 +1764,14 @@ impl<'a> NativeExecutionContext<'a> {
             return Ok(value);
         }
         if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
+            if let Some(direct) = Self::direct_value_index(encoded) {
+                return self.decode_direct_value(direct);
+            }
             return match self.values.get(index as usize).and_then(Option::as_ref) {
                 Some(NativeStoredValue::Php(value)) => Ok(value.clone()),
+                Some(NativeStoredValue::PreparedClosure(closure)) => {
+                    Ok(Value::Callable(closure.callable.clone()))
+                }
                 Some(NativeStoredValue::GlobalsProxy) => {
                     Ok(self.materialize_native_globals_array())
                 }
@@ -1531,7 +1788,66 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(Value::Int(encoded))
     }
 
+    fn encode_prepared_closure(
+        &mut self,
+        callable: Box<php_runtime::api::CallableValue>,
+    ) -> Result<i64, String> {
+        let php_runtime::api::CallableValue::Closure(closure) = callable.as_ref() else {
+            return self.encode_stored_value(NativeStoredValue::Php(Value::Callable(callable)));
+        };
+        let identity = NativeValueIdentity::Closure(closure.id);
+        if let Some(index) = self.interned_value_handles.get(&identity).copied() {
+            self.retain_runtime_value_index(index as usize)?;
+            return Ok(php_jit::jit_encode_typed_runtime_value(
+                index,
+                php_jit::JIT_VALUE_RUNTIME_CALLABLE_TAG,
+            ));
+        }
+        let capture_values = closure
+            .captures
+            .iter()
+            .map(|capture| {
+                if capture.name.eq_ignore_ascii_case("this")
+                    && let Some(object) = &closure.bound_this
+                {
+                    self.encode(Value::Object(object.clone()))
+                } else if let Some(reference) = capture.reference() {
+                    self.encode(Value::Reference(reference))
+                } else {
+                    self.encode(capture.value().cloned().unwrap_or(Value::Null))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match self.encode_stored_value(NativeStoredValue::PreparedClosure(Box::new(
+            NativePreparedClosure {
+                callable,
+                captures: capture_values.clone().into_boxed_slice(),
+            },
+        ))) {
+            Ok(encoded) => Ok(encoded),
+            Err(error) => {
+                for capture in capture_values {
+                    let _ = self.release(capture);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    #[track_caller]
     fn encode(&mut self, value: Value) -> Result<i64, String> {
+        let value = match value {
+            Value::Array(array) => return self.encode_direct_array_value(array),
+            Value::Callable(callable)
+                if matches!(
+                    callable.as_ref(),
+                    php_runtime::api::CallableValue::Closure(_)
+                ) =>
+            {
+                return self.encode_prepared_closure(callable);
+            }
+            value => value,
+        };
         match &value {
             Value::Null => return Ok(php_jit::jit_encode_constant(u32::MAX)),
             Value::Bool(false) => {
@@ -1551,13 +1867,29 @@ impl<'a> NativeExecutionContext<'a> {
         self.encode_stored_value(NativeStoredValue::Php(value))
     }
 
+    /// Encodes one argument owned by the baseline-native compatibility
+    /// binder. Arrays intentionally remain `PhpArray` handles here: the
+    /// baseline callee performs PHP COW semantics, while an optimizing entry
+    /// must admit or convert the value once at its version boundary. This
+    /// avoids recursively rebuilding an entire array tree inside a generic
+    /// callable helper.
+    fn encode_baseline_call_value(&mut self, value: Value) -> Result<i64, String> {
+        match value {
+            Value::Array(array) => {
+                self.encode_stored_value(NativeStoredValue::Php(Value::Array(array)))
+            }
+            value => self.encode(value),
+        }
+    }
+
     fn encode_stored_value(&mut self, value: NativeStoredValue) -> Result<i64, String> {
         let tag = stored_value_tag(&value);
         let kind = stored_value_kind(&value);
         let native_slot = stored_value_slot(&value);
         let identity = stored_value_identity(&value);
-        if let Some(index) =
-            identity.and_then(|identity| self.interned_value_handles.get(&identity).copied())
+        if let Some(index) = identity
+            .as_ref()
+            .and_then(|identity| self.interned_value_handles.get(identity).copied())
         {
             let index = index as usize;
             self.retain_runtime_value_index(index)?;
@@ -1578,7 +1910,7 @@ impl<'a> NativeExecutionContext<'a> {
             }
             *slot = Some(value);
             self.value_slots[index as usize] = native_slot;
-            self.array_value_caches[index as usize] = None;
+            self.object_property_caches[index as usize] = None;
             if let Some(identity) = identity {
                 self.interned_value_handles.insert(identity, index);
             }
@@ -1595,7 +1927,7 @@ impl<'a> NativeExecutionContext<'a> {
         }
         self.values.push(Some(value));
         self.value_slots.push(native_slot);
-        self.array_value_caches.push(None);
+        self.object_property_caches.push(None);
         if let Some(identity) = identity {
             self.interned_value_handles.insert(identity, index);
         }
@@ -1615,6 +1947,17 @@ impl<'a> NativeExecutionContext<'a> {
     /// materialized before an external-unit switch because their indexes are
     /// interpreted against the active unit.
     fn duplicate_native_call_argument(&mut self, encoded: i64) -> Result<i64, String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            let refcount = &mut self
+                .direct_value_slots
+                .get_mut(index)
+                .ok_or_else(|| format!("direct native value {index} is missing"))?
+                .refcount;
+            *refcount = refcount
+                .checked_add(1)
+                .ok_or_else(|| format!("direct native value {index} refcount overflow"))?;
+            return Ok(encoded);
+        }
         if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
             let index = index as usize;
             if matches!(
@@ -1624,7 +1967,16 @@ impl<'a> NativeExecutionContext<'a> {
                 return self.encode(self.materialize_native_globals_array());
             }
             match self.values.get(index).and_then(Option::as_ref) {
-                Some(NativeStoredValue::Php(_)) => {}
+                Some(NativeStoredValue::Php(Value::Array(array))) => {
+                    // This is a baseline/dynamic call-frame duplication, not
+                    // an optimizing-version entry.  Preserve the canonical
+                    // PhpArray COW handle here.  Re-encoding through `encode`
+                    // recursively rebuilt the complete array in the direct
+                    // arena on every call and made WordPress hook dispatch
+                    // consume hundreds of thousands of duplicate entries.
+                    return self.encode_baseline_call_value(Value::Array(array.clone()));
+                }
+                Some(NativeStoredValue::Php(_) | NativeStoredValue::PreparedClosure(_)) => {}
                 Some(NativeStoredValue::GlobalsProxy) => unreachable!(),
                 Some(
                     NativeStoredValue::ArrayIterator(_)
@@ -1654,17 +2006,43 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(encoded)
     }
 
+    fn prepared_closure_captures(&self, encoded: i64) -> Option<&[i64]> {
+        let index = php_jit::jit_decode_runtime_value(encoded)? as usize;
+        match self.values.get(index)?.as_ref()? {
+            NativeStoredValue::PreparedClosure(closure) => Some(&closure.captures),
+            _ => None,
+        }
+    }
+
     /// Move an owned result from the active external unit back to its caller.
     /// Runtime handles already belong to the request-wide arena and need no
     /// clone or replacement slot. Only unit-indexed constants and an unowned
     /// closure require translation.
     fn transfer_external_return(&mut self, encoded: i64, owner_unit: usize) -> Result<i64, String> {
+        if Self::direct_value_index(encoded).is_some() {
+            // Direct arrays may still contain constants indexed by the
+            // callee's IrUnit. Rewrite only those embedded constants while
+            // the callee unit is active; otherwise the caller can interpret
+            // the same numeric index as an unrelated value. The native
+            // array slots remain authoritative and no Rust `PhpArray` is
+            // reconstructed at this boundary.
+            self.stabilize_direct_array_for_cross_unit(encoded)?;
+            return Ok(encoded);
+        }
         if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
             let needs_closure_owner = matches!(
                 self.values.get(index as usize).and_then(Option::as_ref),
                 Some(NativeStoredValue::Php(Value::Callable(callable)))
                     if matches!(
                         callable.as_ref(),
+                        php_runtime::api::CallableValue::Closure(closure)
+                            if closure.context.owner_unit.is_none()
+                    )
+            ) || matches!(
+                self.values.get(index as usize).and_then(Option::as_ref),
+                Some(NativeStoredValue::PreparedClosure(closure))
+                    if matches!(
+                        closure.callable.as_ref(),
                         php_runtime::api::CallableValue::Closure(closure)
                             if closure.context.owner_unit.is_none()
                     )
@@ -1693,6 +2071,17 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn retain(&mut self, encoded: i64) -> Result<(), String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            let refcount = &mut self
+                .direct_value_slots
+                .get_mut(index)
+                .ok_or_else(|| format!("direct native value {index} is missing"))?
+                .refcount;
+            *refcount = refcount
+                .checked_add(1)
+                .ok_or_else(|| format!("direct native value {index} refcount overflow"))?;
+            return Ok(());
+        }
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Ok(());
         };
@@ -1729,7 +2118,11 @@ impl<'a> NativeExecutionContext<'a> {
         };
         match self.values.get(index as usize).and_then(Option::as_ref) {
             Some(NativeStoredValue::Php(Value::Reference(_))) => Some(true),
-            Some(NativeStoredValue::Php(_) | NativeStoredValue::GlobalsProxy) => Some(false),
+            Some(
+                NativeStoredValue::Php(_)
+                | NativeStoredValue::PreparedClosure(_)
+                | NativeStoredValue::GlobalsProxy,
+            ) => Some(false),
             Some(
                 NativeStoredValue::ArrayIterator(_)
                 | NativeStoredValue::Iterator(_)
@@ -1767,7 +2160,9 @@ impl<'a> NativeExecutionContext<'a> {
                 | NativeStoredValue::GeneratorIterator(_),
             )
             | None => None,
-            Some(NativeStoredValue::Php(_)) => Some(Some(index)),
+            Some(NativeStoredValue::Php(_) | NativeStoredValue::PreparedClosure(_)) => {
+                Some(Some(index))
+            }
         }
     }
 
@@ -1775,7 +2170,7 @@ impl<'a> NativeExecutionContext<'a> {
         let index = php_jit::jit_decode_runtime_value(encoded)? as usize;
         match self.values.get(index).and_then(Option::as_ref) {
             Some(NativeStoredValue::Php(value)) => Some(value),
-            Some(NativeStoredValue::GlobalsProxy) => None,
+            Some(NativeStoredValue::PreparedClosure(_) | NativeStoredValue::GlobalsProxy) => None,
             Some(
                 NativeStoredValue::ArrayIterator(_)
                 | NativeStoredValue::Iterator(_)
@@ -1814,10 +2209,71 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn release(&mut self, encoded: i64) -> Result<(), String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            return self.release_direct_value_index(index);
+        }
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Ok(());
         };
         self.release_runtime_value_index(index as usize)
+    }
+
+    fn release_direct_value_index(&mut self, index: usize) -> Result<(), String> {
+        let reached_zero = {
+            let slot = self
+                .direct_value_slots
+                .get_mut(index)
+                .ok_or_else(|| format!("direct native value {index} is missing"))?;
+            if slot.refcount == 0 {
+                return Err(format!("direct native value {index} was already released"));
+            }
+            slot.refcount -= 1;
+            slot.refcount == 0
+        };
+        if !reached_zero {
+            return Ok(());
+        }
+        let slot = self.direct_value_slots[index];
+        if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
+            && !php_runtime::api::PhpArray::release_native_storage_refcount(slot.payload as usize)
+        {
+            return Err(format!(
+                "shared native array {index} storage was already released"
+            ));
+        }
+        let (children, freed_array_range) =
+            if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH {
+                (vec![slot.payload as i64], None)
+            } else if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY {
+                let length = usize::try_from(slot.payload).unwrap_or(0);
+                let base = self.direct_array_entries.as_ptr() as usize;
+                let address = usize::try_from(slot.aux).unwrap_or(base);
+                let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+                let start = address.saturating_sub(base) / entry_size;
+                (
+                    self.direct_array_entries
+                        .get(start..start.saturating_add(length))
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|entry| [entry.key, entry.value])
+                        .collect::<Vec<_>>(),
+                    Some((start, slot.reserved as usize)),
+                )
+            } else {
+                (Vec::new(), None)
+            };
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            reserved: *self.direct_value_free_head,
+            ..php_jit::JitNativeValueSlot::default()
+        };
+        *self.direct_value_free_head = index as u32;
+        if let Some((start, capacity)) = freed_array_range {
+            self.free_direct_array_entries(start, capacity);
+        }
+        for child in children {
+            self.release(child)?;
+        }
+        Ok(())
     }
 
     fn release_runtime_value_index(&mut self, index: usize) -> Result<(), String> {
@@ -1835,7 +2291,7 @@ impl<'a> NativeExecutionContext<'a> {
         };
         if reached_zero {
             self.record_release_to_zero();
-            self.invalidate_array_value_cache(index)?;
+            self.invalidate_object_property_cache(index)?;
             let value = self
                 .values
                 .get_mut(index)
@@ -1847,22 +2303,30 @@ impl<'a> NativeExecutionContext<'a> {
                 self.interned_value_handles.remove(&identity);
             }
             self.value_slots[index] = php_jit::JitNativeValueSlot::default();
-            if let Some(NativeStoredValue::Php(Value::Object(object))) = value {
-                let class_name = object.class_name();
-                // Root membership is observable only for objects whose class
-                // can run user code during destruction. Scanning the complete
-                // request graph for ordinary objects cannot change PHP output
-                // and made every short-lived WordPress value pay for the
-                // largest live global array.
-                if self.object_has_native_destructor(&class_name) {
-                    let uniquely_owned = object.gc_refcount_estimate() == 1;
-                    if uniquely_owned {
-                        self.record_object_release_root_check(true);
-                    }
-                    if uniquely_owned || !self.object_is_request_rooted(object.id()) {
-                        self.run_object_destructor(object)?;
+            match value {
+                Some(NativeStoredValue::Php(Value::Object(object))) => {
+                    let class_name = object.class_name();
+                    // Root membership is observable only for objects whose class
+                    // can run user code during destruction. Scanning the complete
+                    // request graph for ordinary objects cannot change PHP output
+                    // and made every short-lived WordPress value pay for the
+                    // largest live global array.
+                    if self.object_has_native_destructor(&class_name) {
+                        let uniquely_owned = object.gc_refcount_estimate() == 1;
+                        if uniquely_owned {
+                            self.record_object_release_root_check(true);
+                        }
+                        if uniquely_owned || !self.object_is_request_rooted(object.id()) {
+                            self.run_object_destructor(object)?;
+                        }
                     }
                 }
+                Some(NativeStoredValue::PreparedClosure(closure)) => {
+                    for capture in closure.captures {
+                        self.release(capture)?;
+                    }
+                }
+                _ => {}
             }
             self.free_value_slots.push(index as u32);
         }
@@ -1870,6 +2334,12 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn release_if_live(&mut self, encoded: i64) -> Result<(), String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            if self.direct_value_slots[index].refcount == 0 {
+                return Ok(());
+            }
+            return self.release_direct_value_index(index);
+        }
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Ok(());
         };
@@ -1902,6 +2372,25 @@ impl<'a> NativeExecutionContext<'a> {
     fn live_native_values_contain_object(&self, object_id: u64) -> bool {
         self.values.iter().flatten().any(|stored| match stored {
             NativeStoredValue::Php(value) => values_contain_object([value], object_id),
+            NativeStoredValue::PreparedClosure(prepared) => {
+                let php_runtime::api::CallableValue::Closure(closure) = prepared.callable.as_ref()
+                else {
+                    return false;
+                };
+                closure
+                    .bound_this
+                    .as_ref()
+                    .is_some_and(|object| object.id() == object_id)
+                    || closure.captures.iter().any(|capture| {
+                        capture
+                            .value()
+                            .is_some_and(|value| values_contain_object([value], object_id))
+                            || capture.reference().is_some_and(|reference| {
+                                let value = reference.get();
+                                values_contain_object([&value], object_id)
+                            })
+                    })
+            }
             NativeStoredValue::GlobalsProxy => false,
             NativeStoredValue::ArrayIterator(iterator) => {
                 values_contain_object(iterator.source.iter().map(|(_, value)| value), object_id)
@@ -2127,6 +2616,13 @@ impl<'a> NativeExecutionContext<'a> {
         );
         let previous_dynamic_unit = self.current_dynamic_unit.replace(unit);
 
+        // Native code in an included/eval unit uses that unit's dense trusted
+        // function-cell table. The outer request activation describes the
+        // root deployment; refresh the by-value runtime view for the scoped
+        // unit before constructing any nested JitDeoptState. Without this,
+        // FunctionId N from an include indexed root FunctionId N and could
+        // indirect-call arbitrary data as an address.
+        let _runtime_view = activate_native_context(self);
         let result = operation(self);
 
         let active_entries = std::mem::replace(&mut self.native_entries, previous_entries);
@@ -2143,168 +2639,411 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(result)
     }
 
-    fn array_mut(&mut self, encoded: i64) -> Result<&mut php_runtime::api::PhpArray, String> {
-        let index = php_jit::jit_decode_runtime_value(encoded)
-            .ok_or_else(|| "native value is not an array handle".to_owned())?;
-        self.array_mut_at(index as usize)
+    fn direct_array_slot(&self, encoded: i64) -> Option<(usize, php_jit::JitNativeValueSlot)> {
+        let index = Self::direct_value_index(encoded)?;
+        let slot = *self.direct_value_slots.get(index)?;
+        (slot.refcount != 0 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY)
+            .then_some((index, slot))
     }
 
-    fn plain_array_storage_index(&self, encoded: i64) -> Option<usize> {
-        let index = php_jit::jit_decode_runtime_value(encoded)? as usize;
-        matches!(
-            self.values.get(index).and_then(Option::as_ref),
-            Some(NativeStoredValue::Php(Value::Array(_)))
-        )
-        .then_some(index)
+    fn direct_array_entries_for(
+        &self,
+        encoded: i64,
+    ) -> Option<&[php_jit::JitNativeDirectArrayEntry]> {
+        let (_, slot) = self.direct_array_slot(encoded)?;
+        let length = usize::try_from(slot.payload).ok()?;
+        let base = self.direct_array_entries.as_ptr() as usize;
+        let address = usize::try_from(slot.aux).ok()?;
+        let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+        let offset = address.checked_sub(base)?;
+        (offset % entry_size == 0).then_some(())?;
+        let start = offset / entry_size;
+        self.direct_array_entries
+            .get(start..start.checked_add(length)?)
     }
 
-    fn runtime_value_is_uniquely_owned(&self, index: usize) -> bool {
-        self.value_slots
-            .get(index)
-            .is_some_and(|slot| slot.refcount == 1)
+    /// Rewrites unit-indexed constants embedded in a native array tree to
+    /// request-owned native values exactly once before the tree crosses an
+    /// IR-unit boundary.  The array slots remain the authoritative storage;
+    /// this deliberately does not decode the tree to `PhpArray` or allocate
+    /// a second direct-array facade.
+    fn stabilize_direct_array_for_cross_unit(&mut self, encoded: i64) -> Result<(), String> {
+        let mut pending = vec![encoded];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(array) = pending.pop() {
+            let Some((index, slot)) = self.direct_array_slot(array) else {
+                continue;
+            };
+            if !visited.insert(index) {
+                continue;
+            }
+            let length = usize::try_from(slot.payload)
+                .map_err(|_| format!("direct native array {index} length overflow"))?;
+            let base = self.direct_array_entries.as_ptr() as usize;
+            let address = usize::try_from(slot.aux)
+                .map_err(|_| format!("direct native array {index} address overflow"))?;
+            let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+            let offset = address
+                .checked_sub(base)
+                .ok_or_else(|| format!("direct native array {index} is outside its arena"))?;
+            if offset % entry_size != 0 {
+                return Err(format!("direct native array {index} address is unaligned"));
+            }
+            let start = offset / entry_size;
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| format!("direct native array {index} range overflow"))?;
+            if end > self.direct_array_entries.len() {
+                return Err(format!(
+                    "direct native array {index} entries are outside its arena"
+                ));
+            }
+            for entry_index in start..end {
+                let entry = self.direct_array_entries[entry_index];
+                let key = self.stabilize_cross_unit_value(entry.key)?;
+                let value = self.stabilize_cross_unit_value(entry.value)?;
+                self.direct_array_entries[entry_index] =
+                    php_jit::JitNativeDirectArrayEntry { key, value };
+                if Self::direct_value_index(key).is_some() {
+                    pending.push(key);
+                }
+                if Self::direct_value_index(value).is_some() {
+                    pending.push(value);
+                }
+            }
+        }
+        Ok(())
     }
 
-    fn invalidate_array_value_cache(&mut self, index: usize) -> Result<(), String> {
+    fn stabilize_cross_unit_value(&mut self, encoded: i64) -> Result<i64, String> {
+        let Some(constant) = php_jit::jit_decode_constant(encoded) else {
+            return Ok(encoded);
+        };
+        if matches!(
+            constant,
+            u32::MAX
+                | php_jit::JIT_VALUE_UNINITIALIZED
+                | php_jit::JIT_VALUE_FALSE
+                | php_jit::JIT_VALUE_TRUE
+        ) {
+            return Ok(encoded);
+        }
+        let value = self.decode(encoded)?;
+        self.encode(value)
+    }
+
+    fn direct_array_length(&self, encoded: i64) -> Option<usize> {
+        self.direct_array_entries_for(encoded).map(<[_]>::len)
+    }
+
+    fn direct_array_is_unique(&self, encoded: i64) -> Option<bool> {
+        self.direct_array_slot(encoded)
+            .map(|(_, slot)| slot.refcount == 1)
+    }
+
+    fn direct_array_can_append(&self, encoded: i64) -> Option<bool> {
+        let Value::Array(array) = Self::direct_value_index(encoded)
+            .and_then(|index| self.decode_direct_array(index).ok())?
+        else {
+            return None;
+        };
+        Some(array.can_append())
+    }
+
+    fn direct_array_find_encoded(
+        &self,
+        encoded: i64,
+        key: &php_runtime::api::ArrayKey,
+    ) -> Result<Option<i64>, String> {
+        let Some(entries) = self.direct_array_entries_for(encoded) else {
+            return Err("native value is not a direct array".to_owned());
+        };
+        for entry in entries {
+            let entry_key = self.decode(entry.key)?;
+            if php_runtime::api::ArrayKey::from_value(&entry_key).as_ref() == Some(key) {
+                return Ok(Some(entry.value));
+            }
+        }
+        Ok(None)
+    }
+
+    #[track_caller]
+    fn clone_direct_array_handle(&mut self, encoded: i64) -> Result<i64, String> {
+        let (_, source_slot) = self
+            .direct_array_slot(encoded)
+            .ok_or_else(|| "native value is not a direct array".to_owned())?;
+        let entries = self
+            .direct_array_entries_for(encoded)
+            .ok_or_else(|| "direct native array entries are unavailable".to_owned())?
+            .to_vec();
+        let (start, capacity) = self.reserve_direct_array_entries(entries.len())?;
+        let mut retained = Vec::with_capacity(entries.len() * 2);
+        for entry in &entries {
+            for child in [entry.key, entry.value] {
+                if let Err(error) = self.retain(child) {
+                    for child in retained {
+                        let _ = self.release(child);
+                    }
+                    self.free_direct_array_entries(start, capacity);
+                    return Err(error);
+                }
+                retained.push(child);
+            }
+        }
+        self.direct_array_entries[start..start + entries.len()].copy_from_slice(&entries);
+        let index = if *self.direct_value_free_head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+            let index = *self.direct_value_free_head as usize;
+            let slot = self
+                .direct_value_slots
+                .get(index)
+                .ok_or_else(|| "direct native value free-list entry is missing".to_owned())?;
+            *self.direct_value_free_head = slot.reserved;
+            index
+        } else {
+            let index = usize::try_from(*self.direct_value_next)
+                .map_err(|_| "direct native value index overflow".to_owned())?;
+            if index >= self.direct_value_slots.len() {
+                for child in retained {
+                    let _ = self.release(child);
+                }
+                self.free_direct_array_entries(start, capacity);
+                return Err(format!(
+                    "direct native value arena exhausted at {} slots",
+                    index.saturating_add(1)
+                ));
+            }
+            *self.direct_value_next = u32::try_from(index + 1)
+                .map_err(|_| "direct native value index overflow".to_owned())?;
+            index
+        };
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            refcount: 1,
+            kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+            flags: source_slot.flags,
+            reserved: u32::try_from(capacity).unwrap_or(u32::MAX),
+            payload: entries.len() as u64,
+            aux: self.direct_array_entries[start..].as_ptr() as usize as u64,
+        };
+        self.record_direct_array_materialization(entries.len(), std::panic::Location::caller());
+        let runtime_index = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+            .ok_or_else(|| "direct native value handle overflow".to_owned())?;
+        Ok((php_jit::JIT_VALUE_RUNTIME_ARRAY_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    fn direct_array_insert_encoded(
+        &mut self,
+        encoded: i64,
+        key: Option<&php_runtime::api::ArrayKey>,
+        value: i64,
+    ) -> Result<(), String> {
+        let (array_index, mut slot) = self
+            .direct_array_slot(encoded)
+            .ok_or_else(|| "native value is not a direct array".to_owned())?;
+        if slot.refcount != 1 {
+            return Err("direct native array write requires unique ownership".to_owned());
+        }
+        let length = usize::try_from(slot.payload)
+            .map_err(|_| "direct native array length overflow".to_owned())?;
+        let base = self.direct_array_entries.as_ptr() as usize;
+        let address = usize::try_from(slot.aux)
+            .map_err(|_| "direct native array address overflow".to_owned())?;
+        let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+        let offset = address
+            .checked_sub(base)
+            .ok_or_else(|| "direct native array address is outside its arena".to_owned())?;
+        if offset % entry_size != 0 {
+            return Err("direct native array address is unaligned".to_owned());
+        }
+        let mut start = offset / entry_size;
+        let normalized_key = match key {
+            Some(key) => key.clone(),
+            None => {
+                let mut maximum = None::<i64>;
+                for entry in self
+                    .direct_array_entries
+                    .get(start..start.saturating_add(length))
+                    .ok_or_else(|| "direct native array entries are outside its arena".to_owned())?
+                {
+                    if let Value::Int(key) = self.decode(entry.key)? {
+                        maximum = Some(maximum.map_or(key, |current| current.max(key)));
+                    }
+                }
+                php_runtime::api::ArrayKey::Int(match maximum {
+                    Some(i64::MAX) => {
+                        return Err(php_runtime::api::PHP_ARRAY_APPEND_OVERFLOW_MESSAGE.to_owned());
+                    }
+                    Some(maximum) => maximum + 1,
+                    None => 0,
+                })
+            }
+        };
+        let entries = self
+            .direct_array_entries
+            .get(start..start.saturating_add(length))
+            .ok_or_else(|| "direct native array entries are outside its arena".to_owned())?;
+        let mut existing = None;
+        for (position, entry) in entries.iter().enumerate() {
+            let entry_key = self.decode(entry.key)?;
+            if php_runtime::api::ArrayKey::from_value(&entry_key).as_ref() == Some(&normalized_key)
+            {
+                existing = Some(position);
+                break;
+            }
+        }
+        if let Some(position) = existing {
+            let entry_index = start + position;
+            let previous = self.direct_array_entries[entry_index].value;
+            if self.php_handle_is_reference(previous) == Some(true)
+                && self.php_handle_is_reference(value) == Some(false)
+                && let Value::Reference(reference) = self.decode(previous)?
+            {
+                reference.set(self.decode(value)?);
+                return Ok(());
+            }
+            self.retain(value)?;
+            self.direct_array_entries[entry_index].value = value;
+            self.release(previous)?;
+            return Ok(());
+        }
+
+        let encoded_key = match normalized_key {
+            php_runtime::api::ArrayKey::Int(key) => self.encode(Value::Int(key))?,
+            php_runtime::api::ArrayKey::String(key) => self.encode(Value::String(key))?,
+        };
+        if let Err(error) = self.retain(value) {
+            let _ = self.release(encoded_key);
+            return Err(error);
+        }
+        let capacity = slot.reserved as usize;
+        if length == capacity {
+            let (new_start, new_capacity) = match self.reserve_direct_array_entries(length + 1) {
+                Ok(range) => range,
+                Err(error) => {
+                    let _ = self.release(encoded_key);
+                    let _ = self.release(value);
+                    return Err(error);
+                }
+            };
+            self.direct_array_entries
+                .copy_within(start..start + length, new_start);
+            self.free_direct_array_entries(start, capacity);
+            start = new_start;
+            slot.reserved = u32::try_from(new_capacity).unwrap_or(u32::MAX);
+            slot.aux = self.direct_array_entries[start..].as_ptr() as usize as u64;
+        }
+        self.direct_array_entries[start + length] = php_jit::JitNativeDirectArrayEntry {
+            key: encoded_key,
+            value,
+        };
+        slot.payload = (length + 1) as u64;
+        self.direct_value_slots[array_index] = slot;
+        Ok(())
+    }
+
+    fn invalidate_object_property_cache(&mut self, index: usize) -> Result<(), String> {
         let Some(view) = self
-            .array_value_caches
+            .object_property_caches
             .get_mut(index)
             .and_then(Option::take)
         else {
-            if let Some(slot) = self.value_slots.get_mut(index) {
-                slot.aux = 0;
-                slot.reserved = 0;
-            }
             return Ok(());
         };
         if let Some(slot) = self.value_slots.get_mut(index) {
-            slot.aux = 0;
+            slot.kind = php_jit::JIT_NATIVE_VALUE_VIEW_NONE;
+            slot.flags = 0;
             slot.reserved = 0;
+            slot.payload = 0;
+            slot.aux = 0;
         }
         for entry in view.iter().copied() {
-            if entry.key == php_jit::JIT_NATIVE_ARRAY_CACHE_MISS {
+            if entry.name_hash == php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS {
                 continue;
             }
-            for encoded in [entry.key, entry.value] {
-                if let Some(value_index) = php_jit::jit_decode_runtime_value(encoded) {
-                    self.release_runtime_value_index(value_index as usize)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn ensure_native_array_view(&mut self, array_index: usize) -> Result<(), String> {
-        if self.array_value_caches[array_index].is_none() {
-            self.array_value_caches[array_index] = Some(
-                vec![php_jit::JitNativeArrayCacheEntry::default(); NATIVE_ARRAY_CACHE_SLOTS]
-                    .into_boxed_slice(),
-            );
-        }
-        let entries = self.array_value_caches[array_index]
-            .as_ref()
-            .expect("array view was initialized")
-            .as_ptr() as usize as u64;
-        let slot = self
-            .value_slots
-            .get_mut(array_index)
-            .ok_or_else(|| format!("native array value {array_index} has no native slot"))?;
-        slot.aux = entries;
-        Ok(())
-    }
-
-    fn publish_array_value_cache(
-        &mut self,
-        array_index: usize,
-        encoded_key: i64,
-        encoded_value: i64,
-    ) -> Result<(), String> {
-        let unit_identity =
-            native_array_cache_unit_identity(encoded_key, self.active_unit_cache_identity());
-        let slot = native_array_cache_slot(encoded_key, unit_identity);
-        self.ensure_native_array_view(array_index)?;
-        let old = self.array_value_caches[array_index]
-            .as_ref()
-            .expect("array cache was initialized")[slot];
-        if old.key == encoded_key && old.unit_identity == unit_identity {
-            if old.value == encoded_value {
-                return Ok(());
-            }
-            if let Some(value_index) = php_jit::jit_decode_runtime_value(old.value) {
+            if let Some(value_index) = php_jit::jit_decode_runtime_value(entry.value) {
                 self.release_runtime_value_index(value_index as usize)?;
             }
-            if let Some(value_index) = php_jit::jit_decode_runtime_value(encoded_value) {
-                self.retain_runtime_value_index(value_index as usize)?;
-            }
-            let cache = self.array_value_caches[array_index]
-                .as_mut()
-                .expect("array cache remains initialized");
-            cache[slot].value = encoded_value;
-            return Ok(());
         }
-        if old.key != php_jit::JIT_NATIVE_ARRAY_CACHE_MISS {
-            for encoded in [old.key, old.value] {
-                if let Some(value_index) = php_jit::jit_decode_runtime_value(encoded) {
-                    self.release_runtime_value_index(value_index as usize)?;
-                }
-            }
-        }
-        for encoded in [encoded_key, encoded_value] {
-            if let Some(value_index) = php_jit::jit_decode_runtime_value(encoded) {
-                self.retain_runtime_value_index(value_index as usize)?;
-            }
-        }
-        let cache = self.array_value_caches[array_index]
-            .as_mut()
-            .expect("array cache remains initialized");
-        cache[slot] = php_jit::JitNativeArrayCacheEntry {
-            key: encoded_key,
-            value: encoded_value,
-            unit_identity,
-        };
         Ok(())
     }
 
-    fn array_at(&self, index: usize) -> Result<&php_runtime::api::PhpArray, String> {
-        match self.values.get(index).and_then(Option::as_ref) {
-            Some(NativeStoredValue::Php(Value::Array(array))) => Ok(array),
-            _ => Err(format!("native array value {index} is missing")),
-        }
+    fn invalidate_object_property_cache_for_encoded(&mut self, object: i64) -> Result<(), String> {
+        let Some(index) = php_jit::jit_decode_runtime_value(object) else {
+            return Ok(());
+        };
+        self.invalidate_object_property_cache(index as usize)
     }
 
-    fn array_mut_at(&mut self, index: usize) -> Result<&mut php_runtime::api::PhpArray, String> {
-        match self.values.get_mut(index).and_then(Option::as_mut) {
-            Some(NativeStoredValue::Php(Value::Array(array))) => Ok(array),
-            _ => Err(format!("native array value {index} is missing")),
-        }
-    }
-
-    fn insert_array_at_with<T>(
+    fn publish_object_property_cache(
         &mut self,
-        index: usize,
-        mutate: impl FnOnce(&mut php_runtime::api::PhpArray) -> T,
-    ) -> Result<T, String> {
-        let old_identity = NativeValueIdentity::Array(self.array_at(index)?.native_storage_id());
-        if self.interned_value_handles.get(&old_identity) == Some(&(index as u32)) {
-            self.interned_value_handles.remove(&old_identity);
+        object: i64,
+        property: &str,
+        value: i64,
+    ) -> Result<(), String> {
+        let object_index = php_jit::jit_decode_runtime_value(object)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| "native property receiver is not a runtime object".to_owned())?;
+        let object_ref = match self.values.get(object_index).and_then(Option::as_ref) {
+            Some(NativeStoredValue::Php(Value::Object(object))) => object.clone(),
+            _ => return Ok(()),
+        };
+        // Cache only immediates and immutable strings. Object/reference/array
+        // handles can form observable cycles and remain on the baseline path.
+        if let Some(value_index) = php_jit::jit_decode_runtime_value(value) {
+            if !matches!(
+                self.values
+                    .get(value_index as usize)
+                    .and_then(Option::as_ref),
+                Some(NativeStoredValue::Php(Value::String(_)))
+            ) {
+                return Ok(());
+            }
         }
-        self.invalidate_array_value_cache(index)?;
-        let (result, length, new_identity) = {
-            let array = self.array_mut_at(index)?;
-            let result = mutate(array);
-            (
-                result,
-                u64::try_from(array.len()).unwrap_or(u64::MAX),
-                NativeValueIdentity::Array(array.native_storage_id()),
-            )
+        if self.object_property_caches[object_index].is_none() {
+            self.object_property_caches[object_index] = Some(
+                vec![
+                    php_jit::JitNativePropertyCacheEntry::default();
+                    php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE
+                ]
+                .into_boxed_slice(),
+            );
+        }
+        let name_hash = php_jit::jit_native_property_name_hash(property);
+        let mask = php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE - 1;
+        let cache_index = name_hash as usize & mask;
+        let old = self.object_property_caches[object_index]
+            .as_ref()
+            .expect("property cache was initialized")[cache_index];
+        if old.name_hash == name_hash && old.value == value {
+            return Ok(());
+        }
+        if old.name_hash != php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS
+            && let Some(value_index) = php_jit::jit_decode_runtime_value(old.value)
+        {
+            self.release_runtime_value_index(value_index as usize)?;
+        }
+        if let Some(value_index) = php_jit::jit_decode_runtime_value(value) {
+            self.retain_runtime_value_index(value_index as usize)?;
+        }
+        let cache = self.object_property_caches[object_index]
+            .as_mut()
+            .expect("property cache remains initialized");
+        cache[cache_index] = php_jit::JitNativePropertyCacheEntry {
+            name_hash,
+            property_epoch: object_ref.property_epoch(),
+            value,
         };
         let slot = self
             .value_slots
-            .get_mut(index)
-            .ok_or_else(|| format!("native array value {index} has no stable slot"))?;
-        slot.payload = length;
-        self.interned_value_handles
-            .insert(new_identity, index as u32);
-        Ok(result)
+            .get_mut(object_index)
+            .ok_or_else(|| format!("native object value {object_index} has no native slot"))?;
+        slot.kind = php_jit::JIT_NATIVE_VALUE_VIEW_OBJECT_PROPERTIES;
+        slot.flags = php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION;
+        slot.reserved = mask as u32;
+        slot.payload = object_ref.property_epoch_address() as usize as u64;
+        slot.aux = cache.as_ptr() as usize as u64;
+        Ok(())
     }
 
     fn mutate_array(
@@ -2320,6 +3059,14 @@ impl<'a> NativeExecutionContext<'a> {
         encoded: i64,
         mutate: impl FnOnce(&mut php_runtime::api::PhpArray) -> T,
     ) -> Result<T, String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            let Value::Array(mut array) = self.decode_direct_array(index)? else {
+                return Err("direct native value is not an array".to_owned());
+            };
+            let result = mutate(&mut array);
+            self.replace_direct_array(index, array)?;
+            return Ok(result);
+        }
         if let Value::Reference(reference) = self.decode(encoded)? {
             let mut value = reference.get();
             let Value::Array(array) = &mut value else {
@@ -2330,30 +3077,13 @@ impl<'a> NativeExecutionContext<'a> {
             return Ok(result);
         }
         let index = php_jit::jit_decode_runtime_value(encoded)
-            .ok_or_else(|| "native value is not an array handle".to_owned())?
-            as usize;
-        let old_identity = NativeValueIdentity::Array(self.array_at(index)?.native_storage_id());
-        if self.interned_value_handles.get(&old_identity) == Some(&(index as u32)) {
-            self.interned_value_handles.remove(&old_identity);
-        }
-        self.invalidate_array_value_cache(index)?;
-        let (result, length, new_identity) = {
-            let array = self.array_mut(encoded)?;
-            let result = mutate(array);
-            (
-                result,
-                u64::try_from(array.len()).unwrap_or(u64::MAX),
-                NativeValueIdentity::Array(array.native_storage_id()),
-            )
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| "native value is not an array handle".to_owned())?;
+        let array = match self.values.get_mut(index).and_then(Option::as_mut) {
+            Some(NativeStoredValue::Php(Value::Array(array))) => array,
+            _ => return Err("native value is not an array or array reference".to_owned()),
         };
-        let slot = self
-            .value_slots
-            .get_mut(index)
-            .ok_or_else(|| format!("native array value {index} has no stable slot"))?;
-        slot.payload = length;
-        self.interned_value_handles
-            .insert(new_identity, index as u32);
-        Ok(result)
+        Ok(mutate(array))
     }
 
     fn encode_iterator(
@@ -2811,6 +3541,30 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn array_iterator_next(&mut self, encoded: i64) -> Option<Option<(Value, Value)>> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            let iterator = *self.direct_value_slots.get(index)?;
+            if iterator.refcount == 0
+                || iterator.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH
+            {
+                return None;
+            }
+            let cursor = usize::try_from(iterator.aux).ok()?;
+            let length = iterator.reserved as usize;
+            if cursor >= length {
+                return Some(None);
+            }
+            let source = Self::direct_value_index(iterator.payload as i64)?;
+            let source = *self.direct_value_slots.get(source)?;
+            let base = self.direct_array_entries.as_ptr() as usize;
+            let address = usize::try_from(source.aux).ok()?;
+            let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+            let start = address.checked_sub(base)? / entry_size;
+            let entry = *self.direct_array_entries.get(start.checked_add(cursor)?)?;
+            self.direct_value_slots[index].aux = iterator.aux.saturating_add(1);
+            let key = self.decode(entry.key).ok()?;
+            let value = self.decode(entry.value).ok()?;
+            return Some(Some((key, value)));
+        }
         let index = php_jit::jit_decode_runtime_value(encoded)? as usize;
         let NativeStoredValue::ArrayIterator(iterator) = self.values.get_mut(index)?.as_mut()?
         else {
@@ -2850,6 +3604,9 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn close_iterator(&mut self, encoded: i64) -> Result<(), String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            return self.release_direct_value_index(index);
+        }
         let index = php_jit::jit_decode_runtime_value(encoded)
             .ok_or_else(|| "native value is not a foreach iterator handle".to_owned())?;
         let value = self
@@ -2891,6 +3648,12 @@ impl<'a> NativeExecutionContext<'a> {
             .and_then(|instructions| instructions.get(continuation as usize))
             .and_then(Option::as_ref)
             .map(|instruction| NativeInstructionPtr(std::sync::Arc::as_ptr(instruction)))
+    }
+
+    pub(super) fn instruction_kind_debug(&self, function: u32, continuation: u32) -> String {
+        self.instruction_for_continuation(function, continuation)
+            .map(|instruction| format!("{:?}", instruction.kind))
+            .unwrap_or_else(|| "<missing continuation>".to_owned())
     }
 
     fn prepared_native_callsite(
@@ -3338,15 +4101,36 @@ fn rooted_membership_may_change(previous: &Value, replacement: &Value) -> bool {
 pub(super) fn activate_native_context(
     context: &mut NativeExecutionContext<'_>,
 ) -> NativeExecutionContextGuard {
+    let deployment = context.compiled.prepared_deployment_image();
     let runtime_view = php_jit::activate_native_runtime_view(php_jit::JitNativeRuntimeView {
         abi_version: php_jit::JIT_RUNTIME_ABI_VERSION,
         value_slot_capacity: u32::try_from(context.value_slots.capacity()).unwrap_or(u32::MAX),
         value_slots: context.value_slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: context.direct_value_slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(context.direct_value_next.as_mut()) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(context.direct_value_free_head.as_mut()) as usize
+            as u64,
+        direct_array_entries: context.direct_array_entries.as_mut_ptr() as usize as u64,
+        direct_array_next: std::ptr::from_mut(context.direct_array_next.as_mut()) as usize as u64,
+        direct_array_free_heads: context.direct_array_free_heads.as_mut_ptr() as usize as u64,
+        direct_string_bytes: context.direct_string_bytes.as_mut_ptr() as usize as u64,
+        direct_string_next: std::ptr::from_mut(context.direct_string_next.as_mut()) as usize as u64,
+        trusted_constant_views: deployment.constant_views.as_ptr() as usize as u64,
+        trusted_constant_view_count: u32::try_from(deployment.constant_views.len())
+            .unwrap_or(u32::MAX),
+        trusted_constant_view_reserved: 0,
+        trusted_function_entries: deployment.native_function_entries.as_ptr() as usize as u64,
+        trusted_function_entry_count: u32::try_from(deployment.native_function_entries.len())
+            .unwrap_or(u32::MAX),
+        trusted_function_entry_reserved: 0,
+        trusted_optimizing_function_entries: deployment.optimizing_function_entries.as_ptr()
+            as usize as u64,
+        trusted_optimizing_function_entry_count: u32::try_from(
+            deployment.optimizing_function_entries.len(),
+        )
+        .unwrap_or(u32::MAX),
+        trusted_optimizing_function_entry_reserved: 0,
         poll_counter: std::ptr::from_mut(context.native_poll_counter.as_mut()) as usize as u64,
-        function_entry_cache: context.resolved_native_entries.entries.as_mut_ptr() as usize as u64,
-        function_entry_cache_mask: (NATIVE_RESOLVED_ENTRY_CACHE_SIZE - 1) as u32,
-        function_entry_cache_reserved: 0,
-        signature_epoch: std::ptr::from_mut(&mut context.external_signature_epoch) as usize as u64,
         global_reference_cache: context.global_reference_cache.entries.as_mut_ptr() as usize as u64,
         global_reference_cache_mask: (NATIVE_GLOBAL_REFERENCE_CACHE_SIZE - 1) as u32,
         global_reference_cache_reserved: 0,
@@ -4844,7 +5628,35 @@ fn invoke_native_external_function_with_metadata(
     prepare_dynamic_native_entry(context, target.unit, target.function)?;
     let transferred_arguments = arguments
         .iter()
-        .map(|argument| context.duplicate_native_call_argument(*argument))
+        .map(|argument| {
+            let encoded = *argument;
+            let unit_local_constant = php_jit::jit_decode_constant(encoded).is_some_and(|index| {
+                index != u32::MAX
+                    && index != php_jit::JIT_VALUE_UNINITIALIZED
+                    && index != php_jit::JIT_VALUE_FALSE
+                    && index != php_jit::JIT_VALUE_TRUE
+            });
+            let direct_array = NativeExecutionContext::direct_value_index(encoded)
+                .and_then(|index| context.direct_value_slots.get(index))
+                .is_some_and(|slot| {
+                    slot.refcount != 0 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
+                });
+            if unit_local_constant {
+                // Constant indexes are scoped to the caller's IrUnit. Convert
+                // a scalar/string constant exactly once at the boundary.
+                let value = context.decode(encoded)?;
+                context.encode(value)
+            } else if direct_array {
+                // Do not rebuild the entire native array through Rust
+                // `Value`.  Stabilize only embedded unit-local constants in
+                // the authoritative slots, then share the same COW handle
+                // with the external callee.
+                context.stabilize_direct_array_for_cross_unit(encoded)?;
+                context.duplicate_native_call_argument(encoded)
+            } else {
+                context.duplicate_native_call_argument(encoded)
+            }
+        })
         .collect::<Result<smallvec::SmallVec<[i64; 8]>, _>>()?;
     context.with_active_dynamic_unit(target.unit, |context| {
         let pushed_called_class = called_class.is_some();
@@ -5006,6 +5818,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
         runtime,
         |types, value| native_catch_matches(context, types, value),
     );
+    let outcome = resume_native_optimizing_exit(context, outcome);
     if let Some((started_at, child_time_before)) = transition_started_at {
         let nested_helper_time = context
             .active_helper_child_time_nanos()
@@ -5126,7 +5939,16 @@ fn invoke_native_method_with_prepared_trace_arguments(
                         )
                     });
                 Err(format!(
-                    "native method {function_name} returned a runtime error{continuation}"
+                    "native method {function_name} returned a runtime error{continuation} (control_reserved={:#x}, control_value={}, native_version={}, direct_values={}/{}, direct_array_entries={}/{}, direct_string_bytes={}/{})",
+                    state.control_reserved,
+                    state.control_value,
+                    state.native_version,
+                    *context.direct_value_next,
+                    context.direct_value_slots.len(),
+                    *context.direct_array_next,
+                    context.direct_array_entries.len(),
+                    *context.direct_string_next,
+                    context.direct_string_bytes.len(),
                 ))
             }
         }
@@ -5167,6 +5989,257 @@ fn invoke_native_method_with_prepared_trace_arguments(
         }
         Err(error) => Err(format!("native method invocation failed: {error:?}")),
     }
+}
+
+pub(super) fn resume_native_optimizing_exit(
+    context: &mut NativeExecutionContext<'_>,
+    mut outcome: Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError>,
+) -> Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError> {
+    loop {
+        let Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. }) = &outcome else {
+            return outcome;
+        };
+        if *status != php_jit::JitCallStatus::RECOMPILE_REQUESTED.0 as i32 {
+            return outcome;
+        }
+        let transition_instruction =
+            context.instruction_for_continuation(state.function_id, state.continuation_id);
+        let mut transition_reason = transition_instruction
+            .as_ref()
+            .map(|instruction| native_optimizing_transition_reason(&instruction.kind))
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("optimizer_unknown"));
+        if transition_reason.as_ref() == "optimizer_array:IssetDim" {
+            let mut detail = match state.control_reserved {
+                php_jit::JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED => "not_tagged",
+                php_jit::JIT_OPTIMIZING_EXIT_ARRAY_VIEW_MISSING => "view_missing",
+                php_jit::JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED => "key_unsupported",
+                _ => "unknown",
+            }
+            .to_owned();
+            if state.control_reserved == php_jit::JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED
+                && let Some(instruction) = transition_instruction.as_ref()
+                && let php_ir::InstructionKind::IssetDim { local, .. } = &instruction.kind
+                && state.local_initialized(*local)
+            {
+                detail.push(':');
+                detail.push_str(native_transition_value_kind(state.slots[local.index()]));
+            }
+            transition_reason =
+                std::borrow::Cow::Owned(format!("{}:{detail}", transition_reason.as_ref()));
+        } else if transition_reason.as_ref() == "optimizer_local:LoadLocal"
+            && let Some(instruction) = transition_instruction.as_ref()
+            && let php_ir::InstructionKind::LoadLocal { local, .. } = &instruction.kind
+            && state.local_initialized(*local)
+        {
+            let stored = native_transition_stored_value_kind(context, state.slots[local.index()]);
+            let next = context
+                .instruction_for_continuation(
+                    state.function_id,
+                    state.continuation_id.saturating_add(1),
+                )
+                .map(|instruction| {
+                    let rendered = format!("{:?}", instruction.kind);
+                    rendered
+                        .split_once([' ', '{', '('])
+                        .map_or(rendered.as_str(), |(name, _)| name)
+                        .to_owned()
+                })
+                .unwrap_or_else(|| "terminal".to_owned());
+            transition_reason = std::borrow::Cow::Owned(format!(
+                "{}:{stored}:next_{next}",
+                transition_reason.as_ref()
+            ));
+        } else if transition_reason.as_ref() == "optimizer_array:AssignDim"
+            && let Some(instruction) = transition_instruction.as_ref()
+            && let php_ir::InstructionKind::AssignDim { local, .. } = &instruction.kind
+            && state.local_initialized(*local)
+        {
+            let encoded = state.slots[local.index()];
+            let raw = native_transition_value_kind(encoded);
+            let stored = native_transition_stored_value_kind(context, encoded);
+            let descriptor = php_jit::jit_decode_runtime_value(encoded).map_or_else(
+                || "immediate".to_owned(),
+                |index| {
+                    if index >= php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE {
+                        return context
+                            .direct_value_slots
+                            .get((index - php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE) as usize)
+                            .map_or_else(
+                                || "direct_missing".to_owned(),
+                                |slot| format!("direct_kind_{}_refs_{}", slot.kind, slot.refcount),
+                            );
+                    }
+                    match context.values.get(index as usize).and_then(Option::as_ref) {
+                        Some(NativeStoredValue::Php(Value::Reference(reference))) => reference
+                            .try_with_value(|value| match value {
+                                Value::Array(array) => format!(
+                                    "reference_storage_refs_{}",
+                                    array.gc_refcount_estimate()
+                                ),
+                                _ => "reference_non_array".to_owned(),
+                            })
+                            .unwrap_or_else(|_| "reference_borrowed".to_owned()),
+                        _ => "table".to_owned(),
+                    }
+                },
+            );
+            transition_reason = std::borrow::Cow::Owned(format!(
+                "{}:{raw}:{stored}:{descriptor}",
+                transition_reason.as_ref()
+            ));
+        }
+        let transition_started = context
+            .options
+            .collect_counters
+            .then(std::time::Instant::now);
+        let function = php_ir::FunctionId::new(state.function_id);
+        let baseline = ensure_native_baseline_entry(context, function).map_err(|_| {
+            php_jit::JitInvokeError::MissingNativeTransition {
+                function: state.function_id,
+                continuation: state.continuation_id,
+            }
+        })?;
+        let runtime = std::ptr::from_mut(&mut *context).cast::<std::ffi::c_void>();
+        outcome = baseline.invoke_i64_native_transition_with_unwind_runtime(
+            state,
+            php_jit::JIT_RUNTIME_ABI_HASH,
+            runtime,
+            |types, value| native_catch_matches(context, types, value),
+        );
+        if let Some(started) = transition_started {
+            context.record_native_transition(transition_reason.as_ref(), started.elapsed(), 0);
+        }
+    }
+}
+
+fn native_transition_value_kind(encoded: i64) -> &'static str {
+    let encoded = encoded as u64;
+    match encoded & php_jit::JIT_VALUE_RUNTIME_KIND_MASK {
+        php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG => "reference",
+        php_jit::JIT_VALUE_RUNTIME_ARRAY_TAG => "array",
+        php_jit::JIT_VALUE_RUNTIME_OBJECT_TAG => "object",
+        php_jit::JIT_VALUE_RUNTIME_STRING_TAG => "string",
+        php_jit::JIT_VALUE_RUNTIME_FLOAT_TAG => "float",
+        php_jit::JIT_VALUE_RUNTIME_RESOURCE_TAG => "resource",
+        php_jit::JIT_VALUE_RUNTIME_CALLABLE_TAG => "callable",
+        php_jit::JIT_VALUE_RUNTIME_GENERATOR_TAG => "generator",
+        php_jit::JIT_VALUE_RUNTIME_FIBER_TAG => "fiber",
+        php_jit::JIT_VALUE_RUNTIME_ITERATOR_TAG => "iterator",
+        _ if encoded == php_jit::jit_encode_constant(u32::MAX) as u64 => "null",
+        _ if encoded & php_jit::JIT_VALUE_TAG_MASK == php_jit::JIT_VALUE_CONSTANT_TAG => "constant",
+        _ => "immediate",
+    }
+}
+
+fn native_transition_stored_value_kind(
+    context: &NativeExecutionContext<'_>,
+    encoded: i64,
+) -> &'static str {
+    let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
+        return native_transition_value_kind(encoded);
+    };
+    match context.values.get(index as usize).and_then(Option::as_ref) {
+        Some(NativeStoredValue::Php(Value::Reference(reference))) => reference
+            .try_with_value(native_value_type_name)
+            .unwrap_or("borrowed_reference"),
+        Some(NativeStoredValue::Php(value)) => native_value_type_name(value),
+        Some(NativeStoredValue::GlobalsProxy) => "globals_proxy",
+        Some(NativeStoredValue::ArrayIterator(_)) => "array_iterator",
+        Some(NativeStoredValue::Iterator(_)) => "iterator",
+        Some(NativeStoredValue::GeneratorIterator(_)) => "generator_iterator",
+        Some(NativeStoredValue::PreparedClosure(_)) => "prepared_closure",
+        None => "missing",
+    }
+}
+
+fn native_optimizing_transition_reason(
+    kind: &php_ir::InstructionKind,
+) -> std::borrow::Cow<'static, str> {
+    use php_ir::InstructionKind;
+
+    let family = match kind {
+        InstructionKind::LoadLocal { .. }
+        | InstructionKind::StoreLocal { .. }
+        | InstructionKind::Discard { .. }
+        | InstructionKind::IssetLocal { .. }
+        | InstructionKind::EmptyLocal { .. }
+        | InstructionKind::UnsetLocal { .. } => "optimizer_local",
+        InstructionKind::Unary { .. }
+        | InstructionKind::Binary { .. }
+        | InstructionKind::Compare { .. }
+        | InstructionKind::Cast { .. } => "optimizer_scalar",
+        InstructionKind::NewArray { .. }
+        | InstructionKind::ArrayInsert { .. }
+        | InstructionKind::ArraySpread { .. }
+        | InstructionKind::FetchDim { .. }
+        | InstructionKind::AssignDim { .. }
+        | InstructionKind::AppendDim { .. }
+        | InstructionKind::UnsetDim { .. }
+        | InstructionKind::IssetDim { .. }
+        | InstructionKind::EmptyDim { .. } => "optimizer_array",
+        InstructionKind::ForeachInit { .. }
+        | InstructionKind::ForeachInitRef { .. }
+        | InstructionKind::ForeachNext { .. }
+        | InstructionKind::ForeachNextRef { .. }
+        | InstructionKind::ForeachCleanup { .. } => "optimizer_foreach",
+        InstructionKind::FetchProperty { .. }
+        | InstructionKind::AssignProperty { .. }
+        | InstructionKind::FetchDynamicStaticProperty { .. }
+        | InstructionKind::AssignDynamicStaticProperty { .. }
+        | InstructionKind::FetchObjectClassName { .. } => "optimizer_property",
+        InstructionKind::BindReference { .. }
+        | InstructionKind::BindReferenceDim { .. }
+        | InstructionKind::BindReferenceProperty { .. }
+        | InstructionKind::BindReferenceFromProperty { .. }
+        | InstructionKind::BindReferenceFromPropertyDim { .. }
+        | InstructionKind::BindReferencePropertyDim { .. }
+        | InstructionKind::BindReferenceDimFromProperty { .. }
+        | InstructionKind::BindReferenceFromDim { .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { .. }
+        | InstructionKind::BindReferenceStaticProperty { .. }
+        | InstructionKind::BindReferenceFromCall { .. }
+        | InstructionKind::BindReferenceFromMethodCall { .. } => "optimizer_reference",
+        InstructionKind::CallFunction { .. }
+        | InstructionKind::CallMethod { .. }
+        | InstructionKind::CallStaticMethod { .. }
+        | InstructionKind::CallClosure { .. }
+        | InstructionKind::CallCallable { .. }
+        | InstructionKind::Pipe { .. }
+        | InstructionKind::NewObject { .. }
+        | InstructionKind::DynamicNewObject { .. } => "optimizer_call",
+        InstructionKind::Include { .. }
+        | InstructionKind::Eval { .. }
+        | InstructionKind::DeclareFunction { .. }
+        | InstructionKind::DeclareClass { .. } => "optimizer_dynamic_code",
+        _ => "optimizer_other",
+    };
+    // This runs only while diagnostic counters are enabled. Preserve the
+    // exact IR opcode, but not its operands, so an aggregate family cannot
+    // hide the next dominant warm transition after an earlier exit is
+    // removed.
+    if let InstructionKind::Binary { op, .. } = kind {
+        return format!("{family}:Binary:{op:?}").into();
+    }
+    if let InstructionKind::CallFunction { name, args, .. } = kind {
+        let named = args
+            .iter()
+            .filter(|argument| argument.name.is_some())
+            .count();
+        let unpacked = args.iter().filter(|argument| argument.unpack).count();
+        return format!(
+            "{family}:CallFunction:{}:argc{}:named{}:unpack{}",
+            name.trim_start_matches('\\').to_ascii_lowercase(),
+            args.len(),
+            named,
+            unpacked,
+        )
+        .into();
+    }
+    let debug = format!("{kind:?}");
+    let end = debug
+        .find(|character: char| matches!(character, ' ' | '{' | '('))
+        .unwrap_or(debug.len());
+    format!("{family}:{}", &debug[..end]).into()
 }
 
 fn invoke_native_property_magic(
@@ -5572,7 +6645,31 @@ fn execute_native_property_instruction(
                 })
                 .collect::<Option<Vec<_>>>();
             let Some(keys) = keys else {
-                return Some(Err("property dimension key is invalid".to_owned()));
+                let block = context
+                    .unit
+                    .functions
+                    .get(caller_function as usize)
+                    .and_then(|function| {
+                        function.blocks.iter().find(|block| {
+                            block
+                                .instructions
+                                .iter()
+                                .any(|candidate| candidate == instruction)
+                        })
+                    });
+                return Some(Err(format!(
+                    "property dimension key is invalid: instruction={:?} arguments={arguments:?} decoded={:?} block={:?}",
+                    instruction.kind,
+                    arguments
+                        .iter()
+                        .map(|value| context.decode(*value))
+                        .collect::<Vec<_>>(),
+                    block.map(|block| block
+                        .instructions
+                        .iter()
+                        .map(|candidate| &candidate.kind)
+                        .collect::<Vec<_>>())
+                )));
             };
             let _ = object.try_modify_property_value(&property, |value| {
                 unset_native_array_dims(value, &keys);
@@ -5600,7 +6697,31 @@ fn execute_native_property_instruction(
                 })
                 .collect::<Option<Vec<_>>>();
             let Some(keys) = keys else {
-                return Some(Err("property dimension key is invalid".to_owned()));
+                let block = context
+                    .unit
+                    .functions
+                    .get(caller_function as usize)
+                    .and_then(|function| {
+                        function.blocks.iter().find(|block| {
+                            block
+                                .instructions
+                                .iter()
+                                .any(|candidate| candidate == instruction)
+                        })
+                    });
+                return Some(Err(format!(
+                    "property dimension key is invalid: instruction={:?} arguments={arguments:?} decoded={:?} block={:?}",
+                    instruction.kind,
+                    arguments
+                        .iter()
+                        .map(|value| context.decode(*value))
+                        .collect::<Vec<_>>(),
+                    block.map(|block| block
+                        .instructions
+                        .iter()
+                        .map(|candidate| &candidate.kind)
+                        .collect::<Vec<_>>())
+                )));
             };
             if let Some(class) = &class
                 && let Some(entry) = class.properties.iter().find(|entry| entry.name == property)

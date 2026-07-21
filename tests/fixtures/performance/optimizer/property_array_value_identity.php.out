@@ -1,0 +1,7 @@
+string(6) "Sunday"
+array(1) {
+  ["Sunday"]=>
+  string(1) "S"
+}
+object(PropertyArrayValueIdentityMarker)#2 (0) {
+}
