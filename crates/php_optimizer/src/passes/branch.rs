@@ -21,9 +21,11 @@ impl OptimizerPass for BranchSimplify {
     ) -> Result<PassReport, PassError> {
         let mut stats = BranchSimplifyStats::default();
 
-        while let Some(simplification) = find_branch_simplification(transaction.unit()) {
-            apply_branch_simplification(transaction, simplification);
-            stats.record(simplification);
+        while let Some(simplifications) = find_branch_simplifications(transaction.unit()) {
+            for simplification in simplifications {
+                apply_branch_simplification(transaction, simplification);
+                stats.record(simplification);
+            }
         }
 
         let total = stats.total_transformations();
@@ -146,9 +148,13 @@ impl BranchSimplifyStats {
     }
 }
 
-fn find_branch_simplification(unit: &IrUnit) -> Option<BranchSimplification> {
+fn find_branch_simplifications(unit: &IrUnit) -> Option<Vec<BranchSimplification>> {
+    // Apply complete phases in batches. The old implementation returned after
+    // the first match, rebuilding every function CFG after every individual
+    // rewrite. Large source units with thousands of trivial branches therefore
+    // made this otherwise-linear pass quadratic.
+    let mut constant_branches = Vec::new();
     for (function_index, function) in unit.functions.iter().enumerate() {
-        let cfg = CfgView::new(function);
         for (block_index, block) in function.blocks.iter().enumerate() {
             if block_has_exception_boundary(block) {
                 continue;
@@ -157,19 +163,28 @@ fn find_branch_simplification(unit: &IrUnit) -> Option<BranchSimplification> {
                 && let Some(target) =
                     constant_branch_target(function, block_index, &terminator.kind, &unit.constants)
             {
-                return Some(BranchSimplification::ConstantBranch {
+                constant_branches.push(BranchSimplification::ConstantBranch {
                     function: function_index,
                     block: block_index,
                     target,
                 });
             }
         }
+    }
+    if !constant_branches.is_empty() {
+        return Some(constant_branches);
+    }
 
+    let mut empty_block_forwards = Vec::new();
+    for (function_index, function) in unit.functions.iter().enumerate() {
         for (block_index, block) in function.blocks.iter().enumerate() {
             let Some(terminator) = &block.terminator else {
                 continue;
             };
-            for target in terminator_explicit_targets(&terminator.kind) {
+            let targets: BTreeSet<_> = terminator_explicit_targets(&terminator.kind)
+                .into_iter()
+                .collect();
+            for target in targets {
                 let target_index = target.index();
                 if target_index >= function.blocks.len() {
                     continue;
@@ -184,7 +199,7 @@ fn find_branch_simplification(unit: &IrUnit) -> Option<BranchSimplification> {
                     && let TerminatorKind::Jump { target: new_target } = target_terminator.kind
                     && new_target != target
                 {
-                    return Some(BranchSimplification::ForwardEmptyBlock {
+                    empty_block_forwards.push(BranchSimplification::ForwardEmptyBlock {
                         function: function_index,
                         block: block_index,
                         old_target: target,
@@ -193,14 +208,21 @@ fn find_branch_simplification(unit: &IrUnit) -> Option<BranchSimplification> {
                 }
             }
         }
+    }
+    if !empty_block_forwards.is_empty() {
+        return Some(empty_block_forwards);
+    }
 
+    let mut unreachable_tails = Vec::new();
+    for (function_index, function) in unit.functions.iter().enumerate() {
+        let cfg = CfgView::new(function);
         if let Some(simplification) =
             unreachable_empty_tail_simplification(function_index, function, &cfg)
         {
-            return Some(simplification);
+            unreachable_tails.push(simplification);
         }
     }
-    None
+    (!unreachable_tails.is_empty()).then_some(unreachable_tails)
 }
 
 fn apply_branch_simplification(

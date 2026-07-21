@@ -315,6 +315,10 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
             Value::from(counters.native_value_table_high_water),
         );
         native.insert(
+            "value_table_materializations_by_kind_and_origin".to_owned(),
+            counter_map_json(&counters.native_value_table_materializations_by_kind_and_origin),
+        );
+        native.insert(
             "ssa_promoted_locals".to_owned(),
             Value::from(counters.native_ssa_promoted_locals),
         );

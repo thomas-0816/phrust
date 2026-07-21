@@ -12,7 +12,9 @@ pub struct BuiltinEntry {
     function: InternalFunction,
     compatibility: BuiltinCompatibility,
     handler_kind: BuiltinHandlerKind,
+    execution_kind: BuiltinExecutionKind,
     helper_id: u32,
+    dense_id: u32,
 }
 
 impl BuiltinEntry {
@@ -26,7 +28,9 @@ impl BuiltinEntry {
             function,
             compatibility,
             handler_kind: BuiltinHandlerKind::Generic,
+            execution_kind: BuiltinExecutionKind::Runtime,
             helper_id: 0,
+            dense_id: 0,
         }
     }
 
@@ -54,10 +58,22 @@ impl BuiltinEntry {
         self.handler_kind
     }
 
+    /// Prepared execution plane selected once while publishing the registry.
+    #[must_use]
+    pub const fn execution_kind(self) -> BuiltinExecutionKind {
+        self.execution_kind
+    }
+
     /// Stable name-derived helper ID exposed to native code.
     #[must_use]
     pub const fn helper_id(self) -> u32 {
         self.helper_id
+    }
+
+    /// Dense process-independent ID used by trusted generated callsites.
+    #[must_use]
+    pub const fn dense_id(self) -> u32 {
+        self.dense_id
     }
 
     /// Refines generated registry metadata with an intrinsic handler class.
@@ -83,6 +99,14 @@ pub enum BuiltinHandlerKind {
     Session,
     Mysql,
     Generic,
+}
+
+/// Whether a builtin can invoke its exact registry function directly or needs
+/// VM-owned callback/symbol/error-handler semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuiltinExecutionKind {
+    Runtime,
+    Vm,
 }
 
 /// Whether a builtin is PHP-compatible or only for local fixtures.
@@ -139,6 +163,12 @@ impl BuiltinRegistry {
             .get(&helper_id)
             .copied()?;
         entries.get(index).copied()
+    }
+
+    /// Loads a published builtin by its dense trusted-callsite identity.
+    #[must_use]
+    pub fn get_by_dense_id(self, dense_id: u32) -> Option<BuiltinEntry> {
+        entries().get(dense_id as usize).copied()
     }
 
     /// Returns true when a normalized name is registered.
@@ -235,12 +265,24 @@ fn entries() -> &'static [BuiltinEntry] {
                 .flat_map(|(module, entries)| {
                     entries.iter().copied().map(|mut entry| {
                         entry.handler_kind = module_handler_kind(module);
+                        entry.execution_kind = if modules::requires_vm_dispatch(
+                            entry.name,
+                            entry.function,
+                        ) {
+                            BuiltinExecutionKind::Vm
+                        } else {
+                            BuiltinExecutionKind::Runtime
+                        };
                         entry.helper_id = stable_builtin_helper_id(entry.name);
                         entry
                     })
                 })
                 .collect::<Vec<_>>();
             entries.sort_unstable_by_key(|entry| entry.name);
+            for (dense_id, entry) in entries.iter_mut().enumerate() {
+                entry.dense_id = u32::try_from(dense_id)
+                    .expect("builtin registry exceeds dense native ID range");
+            }
             debug_assert!(
                 entries.windows(2).all(|pair| pair[0].name != pair[1].name),
                 "builtin registry names must be unique for binary-search lookup"
@@ -258,6 +300,10 @@ fn entries() -> &'static [BuiltinEntry] {
 
 fn module_handler_kind(module: &str) -> BuiltinHandlerKind {
     match module {
+        // Runtime array handlers operate only on their value arguments and
+        // the diagnostic sink. Callback/sort variants are classified as VM
+        // execution before reaching this handler plane.
+        "arrays" => BuiltinHandlerKind::BorrowedN,
         "json" => BuiltinHandlerKind::Json,
         "pcre" => BuiltinHandlerKind::Pcre,
         "filesystem" => BuiltinHandlerKind::Filesystem,
@@ -279,7 +325,7 @@ fn stable_builtin_helper_id(name: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuiltinHandlerKind, BuiltinRegistry, generated};
+    use super::{BuiltinExecutionKind, BuiltinHandlerKind, BuiltinRegistry, generated};
 
     #[test]
     fn generated_registry_carries_representative_arginfo_signatures() {
@@ -306,10 +352,12 @@ mod tests {
         let json = registry.get("json_encode").expect("json_encode");
         let session = registry.get("session_start").expect("session_start");
         let strlen = registry.get("strlen").expect("strlen");
+        let array_keys = registry.get("array_keys").expect("array_keys");
 
         assert_eq!(json.handler_kind(), BuiltinHandlerKind::Json);
         assert_eq!(session.handler_kind(), BuiltinHandlerKind::Session);
         assert_eq!(strlen.handler_kind(), BuiltinHandlerKind::Generic);
+        assert_eq!(array_keys.handler_kind(), BuiltinHandlerKind::BorrowedN);
         assert_ne!(json.helper_id(), 0);
         assert_eq!(
             BuiltinRegistry::new()
@@ -323,6 +371,36 @@ mod tests {
                 .get("json_encode")
                 .unwrap()
                 .helper_id()
+        );
+    }
+
+    #[test]
+    fn dense_native_ids_round_trip_without_name_lookup() {
+        let registry = BuiltinRegistry::new();
+        for entry in registry.entries() {
+            let resolved = registry
+                .get_by_dense_id(entry.dense_id())
+                .expect("every published dense ID must resolve");
+            assert_eq!(resolved.name(), entry.name());
+            assert_eq!(resolved.dense_id(), entry.dense_id());
+        }
+        assert!(registry.get_by_dense_id(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn execution_plane_keeps_vm_semantics_out_of_exact_runtime_handlers() {
+        let registry = BuiltinRegistry::new();
+        assert_eq!(
+            registry.get("trim").unwrap().execution_kind(),
+            BuiltinExecutionKind::Runtime
+        );
+        assert_eq!(
+            registry.get("array_filter").unwrap().execution_kind(),
+            BuiltinExecutionKind::Vm
+        );
+        assert_eq!(
+            registry.get("var_dump").unwrap().execution_kind(),
+            BuiltinExecutionKind::Vm
         );
     }
 }

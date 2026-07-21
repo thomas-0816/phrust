@@ -1,5 +1,6 @@
 //! Restart-persistent validated native machine-code artifacts.
 
+use bincode::Options;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -8,6 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Current unit-bundle artifact magic. Writers emit only PNA2.
@@ -344,6 +346,12 @@ struct CachedRegionMetadataBundle {
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
+struct CachedRegionMetadataBinaryBundle {
+    graphs: Vec<crate::JitRegionStateMetadata>,
+    roots: Vec<CachedRegionMetadataRoot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct CachedRegionMetadataRoot {
     function_id: u32,
@@ -637,16 +645,20 @@ impl NativeArtifactImage {
         }
         relocations.sort_by_key(|relocation| relocation.offset);
 
-        let signature_metadata = serde_json::to_vec(&CachedRegionMetadataBundle {
-            format: "PRM4".to_owned(),
+        let metadata_bundle = CachedRegionMetadataBinaryBundle {
             graphs: cached_metadata_graphs,
             roots: cached_metadata_roots,
-        })
-        .map_err(|error| {
-            NativeCacheError::InvalidSection(format!(
-                "failed to encode native state metadata: {error}"
-            ))
-        })?;
+        };
+        let metadata_payload = region_metadata_binary_options()
+            .serialize(&metadata_bundle)
+            .map_err(|error| {
+                NativeCacheError::InvalidSection(format!(
+                    "failed to encode native state metadata: {error}"
+                ))
+            })?;
+        let mut signature_metadata = Vec::with_capacity(4 + metadata_payload.len());
+        signature_metadata.extend_from_slice(b"PRM5");
+        signature_metadata.extend_from_slice(&metadata_payload);
 
         Ok(Self {
             identity,
@@ -686,6 +698,37 @@ fn validate_cached_region_metadata(
     Ok(())
 }
 
+fn region_metadata_binary_options() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+}
+
+fn validate_decoded_region_metadata(
+    graphs: Vec<crate::JitRegionStateMetadata>,
+    roots: Vec<CachedRegionMetadataRoot>,
+) -> Result<DecodedRegionMetadata, NativeCacheError> {
+    for metadata in &graphs {
+        validate_cached_region_metadata(metadata)?;
+    }
+    let mut functions = BTreeSet::new();
+    for root in &roots {
+        if root.graph_index as usize >= graphs.len() {
+            return Err(NativeCacheError::InvalidSection(format!(
+                "native metadata root {} has invalid graph index {}",
+                root.function_id, root.graph_index
+            )));
+        }
+        if !functions.insert(root.function_id) {
+            return Err(NativeCacheError::InvalidSection(format!(
+                "duplicate native state metadata for function {}",
+                root.function_id
+            )));
+        }
+    }
+    Ok(DecodedRegionMetadata { graphs, roots })
+}
+
 fn decode_region_metadata(bytes: &[u8]) -> Result<DecodedRegionMetadata, NativeCacheError> {
     if bytes.is_empty() {
         return Ok(DecodedRegionMetadata {
@@ -693,38 +736,29 @@ fn decode_region_metadata(bytes: &[u8]) -> Result<DecodedRegionMetadata, NativeC
             roots: Vec::new(),
         });
     }
+    if let Some(payload) = bytes.strip_prefix(b"PRM5") {
+        let bundle = region_metadata_binary_options()
+            .with_limit(bytes.len() as u64)
+            .deserialize::<CachedRegionMetadataBinaryBundle>(payload)
+            .map_err(|error| {
+                NativeCacheError::InvalidSection(format!(
+                    "invalid PRM5 native state metadata: {error}"
+                ))
+            })?;
+        return validate_decoded_region_metadata(bundle.graphs, bundle.roots);
+    }
     if let Ok(bundle) = serde_json::from_slice::<CachedRegionMetadataBundle>(bytes) {
         if bundle.format != "PRM4" {
             return Err(NativeCacheError::InvalidSection(
                 "unsupported native state metadata format".to_owned(),
             ));
         }
-        for metadata in &bundle.graphs {
-            validate_cached_region_metadata(metadata)?;
-        }
-        let mut functions = BTreeSet::new();
-        for root in &bundle.roots {
-            if root.graph_index as usize >= bundle.graphs.len() {
-                return Err(NativeCacheError::InvalidSection(format!(
-                    "native metadata root {} has invalid graph index {}",
-                    root.function_id, root.graph_index
-                )));
-            }
-            if !functions.insert(root.function_id) {
-                return Err(NativeCacheError::InvalidSection(format!(
-                    "duplicate native state metadata for function {}",
-                    root.function_id
-                )));
-            }
-        }
-        return Ok(DecodedRegionMetadata {
-            graphs: bundle.graphs,
-            roots: bundle.roots,
-        });
+        return validate_decoded_region_metadata(bundle.graphs, bundle.roots);
     }
 
-    // PNA1/PRM3 is accepted for one migration window. New writers emit only
-    // the graph-deduplicated PRM4 bundle above.
+    // PRM3 remains readable for the legacy PNA1 migration window. PRM4 stays
+    // readable so already validated PNA2 artifacts survive the metadata-codec
+    // transition; new writers emit compact graph-deduplicated PRM5.
     let envelope =
         serde_json::from_slice::<CachedRegionMetadataEnvelope>(bytes).map_err(|error| {
             NativeCacheError::InvalidSection(format!("invalid native state metadata: {error}"))
@@ -852,6 +886,7 @@ struct AtomicStats {
 pub struct NativeArtifactCache {
     config: NativeCacheConfig,
     stats: AtomicStats,
+    directory_bytes: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for NativeArtifactCache {
@@ -865,12 +900,16 @@ impl fmt::Debug for NativeArtifactCache {
 
 impl NativeArtifactCache {
     pub fn new(config: NativeCacheConfig) -> Result<Self, NativeCacheError> {
-        if config.mode != NativeCacheMode::Off {
+        let directory_bytes = if config.mode != NativeCacheMode::Off {
             prepare_cache_directory(&config.directory)?;
-        }
+            shared_directory_bytes(&config.directory)?
+        } else {
+            Arc::new(AtomicU64::new(0))
+        };
         Ok(Self {
             config,
             stats: AtomicStats::default(),
+            directory_bytes,
         })
     }
 
@@ -1001,6 +1040,7 @@ impl NativeArtifactCache {
                 removed = removed.saturating_add(1);
             }
         }
+        self.directory_bytes.store(0, Ordering::Release);
         Ok(removed)
     }
 
@@ -1052,11 +1092,6 @@ impl NativeArtifactCache {
         identity: &NativeCacheIdentity,
         bytes: &[u8],
     ) -> Result<(), NativeCacheError> {
-        enforce_total_cache_limit(
-            &self.config.directory,
-            self.config.max_cache_bytes,
-            bytes.len(),
-        )?;
         let key = identity.cache_key();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1067,18 +1102,43 @@ impl NativeArtifactCache {
                 .directory
                 .join(format!(".{key}.{}.{}.tmp", std::process::id(), nonce));
         let destination = self.artifact_path(identity);
+        let previous_bytes = fs::symlink_metadata(&destination)
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map_or(0, |metadata| metadata.len());
+        let incoming_bytes = bytes.len() as u64;
+        let reservation = incoming_bytes.saturating_sub(previous_bytes);
+        reserve_directory_bytes(
+            &self.directory_bytes,
+            self.config.max_cache_bytes,
+            reservation,
+        )?;
         // Validate the final serialized representation before it can become
         // visible to concurrent readers. This also guards serializer changes.
         let _ = decode_artifact(bytes, identity, &self.config)?;
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, &destination)?;
-        sync_directory(&self.config.directory)?;
-        Ok(())
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)?;
+            file.write_all(bytes)?;
+            // Native artifacts are a rebuildable cache, not authoritative user
+            // data. Atomic rename gives readers an all-or-nothing file, while the
+            // mandatory decode/validation above and on every cold load rejects a
+            // file lost or damaged by a host crash. Forcing both the file and the
+            // containing directory to stable storage here made every function
+            // miss pay multiple device flushes on the request thread.
+            fs::rename(&temp, &destination)?;
+            Ok(())
+        })();
+        if write_result.is_err() && reservation != 0 {
+            self.directory_bytes
+                .fetch_sub(reservation, Ordering::AcqRel);
+        } else if write_result.is_ok() && previous_bytes > incoming_bytes {
+            self.directory_bytes
+                .fetch_sub(previous_bytes - incoming_bytes, Ordering::AcqRel);
+        }
+        write_result
     }
 }
 
@@ -1994,7 +2054,6 @@ fn acquire_lock(path: &Path) -> Result<(LockGuard, bool), NativeCacheError> {
         match OpenOptions::new().create_new(true).write(true).open(path) {
             Ok(mut file) => {
                 writeln!(file, "{}", std::process::id())?;
-                file.sync_all()?;
                 return Ok((
                     LockGuard {
                         path: path.to_owned(),
@@ -2127,17 +2186,8 @@ fn quarantine(path: &Path) -> Result<(), NativeCacheError> {
     }
 }
 
-fn sync_directory(path: &Path) -> Result<(), NativeCacheError> {
-    File::open(path)?.sync_all()?;
-    Ok(())
-}
-
-fn enforce_total_cache_limit(
-    path: &Path,
-    limit: u64,
-    incoming: usize,
-) -> Result<(), NativeCacheError> {
-    let mut total = incoming as u64;
+fn scan_directory_bytes(path: &Path) -> Result<u64, NativeCacheError> {
+    let mut total = 0_u64;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let metadata = fs::symlink_metadata(entry.path())?;
@@ -2150,14 +2200,39 @@ fn enforce_total_cache_limit(
             total = total.saturating_add(metadata.len());
         }
     }
-    if total > limit {
-        return Err(NativeCacheError::SizeLimit {
-            what: "total cache",
-            actual: total,
-            limit,
-        });
+    Ok(total)
+}
+
+fn shared_directory_bytes(path: &Path) -> Result<Arc<AtomicU64>, NativeCacheError> {
+    static USAGE: OnceLock<Mutex<BTreeMap<PathBuf, Arc<AtomicU64>>>> = OnceLock::new();
+    let usage = USAGE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut usage = usage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(bytes) = usage.get(path) {
+        return Ok(Arc::clone(bytes));
     }
-    Ok(())
+    let bytes = Arc::new(AtomicU64::new(scan_directory_bytes(path)?));
+    usage.insert(path.to_owned(), Arc::clone(&bytes));
+    Ok(bytes)
+}
+
+fn reserve_directory_bytes(
+    current: &AtomicU64,
+    limit: u64,
+    incoming: u64,
+) -> Result<(), NativeCacheError> {
+    current
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            let next = current.saturating_add(incoming);
+            (next <= limit).then_some(next)
+        })
+        .map(|_| ())
+        .map_err(|current| NativeCacheError::SizeLimit {
+            what: "total cache",
+            actual: current.saturating_add(incoming),
+            limit,
+        })
 }
 
 fn artifact_checksum(bytes: &[u8]) -> [u8; 32] {
@@ -2683,6 +2758,88 @@ mod tests {
         (path, cache)
     }
 
+    fn sample_region_metadata() -> crate::JitRegionStateMetadata {
+        crate::JitRegionStateMetadata {
+            local_count: 2,
+            compiler_tier: crate::region_ir::NativeCompilerTier::Baseline,
+            native_version: 1,
+            compiled_to_compiled_call_sites: 0,
+            compiled_to_compiled_method_call_sites: 0,
+            inlined_call_sites: 0,
+            inline_bytes_added: 0,
+            tail_call_sites: 0,
+            inline_rejected_by_reason: BTreeMap::new(),
+            continuations: vec![crate::JitContinuationMetadata {
+                id: 7,
+                function: php_ir::FunctionId::new(3),
+                block: php_ir::BlockId::new(4),
+                instruction: Some(php_ir::InstrId::new(5)),
+                span: php_ir::IrSpan::new(php_ir::FileId::new(1), 10, 20),
+                live_locals: vec![php_ir::LocalId::new(0), php_ir::LocalId::new(1)],
+            }],
+            native_pc_ranges: vec![crate::JitNativePcRange {
+                function: php_ir::FunctionId::new(3),
+                start: 8,
+                end: 16,
+                continuation_id: 7,
+            }],
+            osr_entries: Vec::new(),
+            exception_handlers: Vec::new(),
+            safepoints: Vec::new(),
+            suspensions: Vec::new(),
+            dynamic_code: Vec::new(),
+            native_transitions: Vec::new(),
+            production_lowering: Vec::new(),
+            function_entries: vec![crate::JitNativeFunctionEntryMetadata {
+                function: php_ir::FunctionId::new(3),
+                address: 0,
+                arity: 1,
+                code_bytes: 64,
+                native_stack_bytes: 16,
+                local_count: 2,
+                direct_call_sites: 0,
+                direct_method_call_sites: 0,
+                inlined_call_sites: 0,
+                inline_bytes_added: 0,
+                tail_call_sites: 0,
+                inline_rejected_by_reason: BTreeMap::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn prm5_binary_metadata_roundtrips_and_prm4_remains_readable() {
+        let graphs = vec![sample_region_metadata()];
+        let roots = vec![CachedRegionMetadataRoot {
+            function_id: 3,
+            graph_index: 0,
+        }];
+        let binary_bundle = CachedRegionMetadataBinaryBundle {
+            graphs: graphs.clone(),
+            roots: roots.clone(),
+        };
+        let mut binary = b"PRM5".to_vec();
+        binary.extend(
+            region_metadata_binary_options()
+                .serialize(&binary_bundle)
+                .unwrap(),
+        );
+        let decoded = decode_region_metadata(&binary).unwrap();
+        assert_eq!(decoded.graphs, graphs);
+        assert_eq!(decoded.roots, roots);
+
+        let legacy = serde_json::to_vec(&CachedRegionMetadataBundle {
+            format: "PRM4".to_owned(),
+            graphs: graphs.clone(),
+            roots: roots.clone(),
+        })
+        .unwrap();
+        let decoded_legacy = decode_region_metadata(&legacy).unwrap();
+        assert_eq!(decoded_legacy.graphs, graphs);
+        assert_eq!(decoded_legacy.roots, roots);
+        assert!(binary.len() < legacy.len());
+    }
+
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn pna_roundtrip_maps_rx_and_executes_after_reload() {
@@ -2950,5 +3107,21 @@ mod tests {
         symlink(&outside, cache.artifact_path(&expected)).unwrap();
         assert!(cache.load(&expected, |_| None).is_err());
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn directory_byte_reservation_is_atomic_and_bounded() {
+        let bytes = AtomicU64::new(10);
+        reserve_directory_bytes(&bytes, 15, 5).unwrap();
+        assert_eq!(bytes.load(Ordering::Acquire), 15);
+        assert!(matches!(
+            reserve_directory_bytes(&bytes, 15, 1),
+            Err(NativeCacheError::SizeLimit {
+                what: "total cache",
+                actual: 16,
+                limit: 15,
+            })
+        ));
+        assert_eq!(bytes.load(Ordering::Acquire), 15);
     }
 }

@@ -2,7 +2,8 @@
 
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-pub(crate) const BASELINE_FUNCTION_SPECIALIZATION: &str = "executable-region-v2";
+pub(crate) const BASELINE_FUNCTION_SPECIALIZATION: &str = "streaming-baseline-v7-borrowed-locals";
+pub(crate) const OPTIMIZING_FUNCTION_SPECIALIZATION: &str = "ssa-optimizing-v1";
 
 /// Constructs the exact symbolic publication key used by declaration and
 /// machine-code publication.
@@ -26,7 +27,12 @@ pub fn native_function_key(
         } else {
             "baseline".to_owned()
         },
-        version: BASELINE_FUNCTION_SPECIALIZATION.to_owned(),
+        version: if optimizing {
+            OPTIMIZING_FUNCTION_SPECIALIZATION
+        } else {
+            BASELINE_FUNCTION_SPECIALIZATION
+        }
+        .to_owned(),
         invalidation_generation,
     }
 }
@@ -160,6 +166,20 @@ impl NativeIndirectionCell {
             .store(NativeIndirectionState::Retired as u8, Ordering::Release);
         self.optimized_target.store(0, Ordering::Release);
         self.baseline_target.store(0, Ordering::Release);
+    }
+
+    /// Retires one code tier while keeping the other tier callable.
+    pub(crate) fn retire_tier(&self, tier: NativeFunctionTier) {
+        match tier {
+            NativeFunctionTier::Baseline => self.baseline_target.store(0, Ordering::Release),
+            NativeFunctionTier::Optimized => self.optimized_target.store(0, Ordering::Release),
+        }
+        if self.baseline_target.load(Ordering::Acquire) == 0
+            && self.optimized_target.load(Ordering::Acquire) == 0
+        {
+            self.state
+                .store(NativeIndirectionState::Retired as u8, Ordering::Release);
+        }
     }
 
     #[must_use]

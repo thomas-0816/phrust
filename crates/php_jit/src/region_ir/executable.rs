@@ -425,6 +425,10 @@ pub struct RegionInstruction {
     pub continuation_id: u32,
     /// Locals definitely initialized immediately before this instruction.
     pub live_locals: Vec<LocalId>,
+    /// This instruction owns a real optimizing-to-baseline continuation.
+    /// Unsupported instructions are grouped into baseline islands, so only
+    /// the island entry carries this flag rather than every instruction.
+    pub optimizer_transition_entry: bool,
     /// Authoritative instruction, retained even when native lowering is missing.
     pub source_kind: InstructionKind,
     pub kind: RegionInstructionKind,
@@ -442,20 +446,72 @@ impl RegionInstruction {
                 uses.push(register);
             }
         };
-        match self.kind {
+        match &self.kind {
             RegionInstructionKind::Move { src, .. }
             | RegionInstructionKind::Unary { src, .. }
             | RegionInstructionKind::Cast { src, .. }
             | RegionInstructionKind::Discard { src }
-            | RegionInstructionKind::Echo { src } => push(src),
+            | RegionInstructionKind::Echo { src } => push(*src),
             RegionInstructionKind::Binary { lhs, rhs, .. }
             | RegionInstructionKind::Compare { lhs, rhs, .. } => {
-                push(lhs);
-                push(rhs);
+                push(*lhs);
+                push(*rhs);
+            }
+            RegionInstructionKind::NativeCall(call) => {
+                for operand in call.operands.iter().flatten() {
+                    push(*operand);
+                }
+                let mut push_ir = |operand: Operand| {
+                    if let Operand::Register(register) = operand {
+                        uses.push(register);
+                    }
+                };
+                for argument in &call.args {
+                    push_ir(argument.value);
+                    if let Some(dimension) = &argument.by_ref_dim {
+                        for dimension in &dimension.dims {
+                            push_ir(*dimension);
+                        }
+                    }
+                    if let Some(property) = &argument.by_ref_property {
+                        push_ir(property.object);
+                    }
+                    if let Some(property) = &argument.by_ref_property_dim {
+                        push_ir(property.object);
+                        for dimension in &property.dims {
+                            push_ir(*dimension);
+                        }
+                    }
+                }
             }
             _ => php_ir::instruction_register_uses(&self.source_kind, &mut uses),
         }
+        uses.sort_unstable();
+        uses.dedup();
         uses
+    }
+
+    /// Returns registers materialized or updated by this instruction. This is
+    /// the baseline planner's definition set; it deliberately follows the
+    /// executable operation while retaining the authoritative source defs for
+    /// forms that have not been rewritten.
+    #[must_use]
+    pub fn register_definitions(&self) -> Vec<RegId> {
+        let mut definitions = Vec::new();
+        php_ir::instruction_register_defs(&self.source_kind, &mut definitions);
+        match &self.kind {
+            RegionInstructionKind::ArrayInsert { array, .. }
+            | RegionInstructionKind::ArraySpread { array, .. } => definitions.push(*array),
+            RegionInstructionKind::ForeachNext { key, value, .. } => {
+                definitions.extend(*key);
+                definitions.push(*value);
+            }
+            RegionInstructionKind::ForeachNextRef { key, .. } => definitions.extend(*key),
+            _ => {}
+        }
+        definitions.sort_unstable();
+        definitions.dedup();
+        definitions
     }
 }
 
@@ -566,6 +622,7 @@ pub enum RegionInstructionKind {
     FetchProperty {
         dst: RegId,
         object: RegionOperand,
+        property: String,
     },
     FetchDynamicStaticProperty {
         dst: RegId,
@@ -579,6 +636,7 @@ pub enum RegionInstructionKind {
         dst: RegId,
         object: RegionOperand,
         value: RegionOperand,
+        property: String,
     },
     CloneObject {
         dst: RegId,
@@ -604,6 +662,7 @@ pub enum RegionInstructionKind {
         array: RegionOperand,
         key: RegionOperand,
         quiet: bool,
+        mode: php_ir::instruction::DimFetchMode,
     },
     FetchConst {
         dst: RegId,
@@ -748,6 +807,10 @@ pub struct RegionBlock {
     /// Original PHP IR block used by callsite and diagnostic metadata. Native
     /// fragmentation may assign a different internal CFG `id`.
     pub source_block: BlockId,
+    /// Stable native continuation for entry into this executable block.
+    /// Unlike the first remaining instruction, this survives optimization
+    /// and identifies the same baseline/optimizing island boundary.
+    pub entry_continuation_id: u32,
     pub entry_live_locals: Vec<LocalId>,
     /// Locals with a materialized value on at least one incoming path.
     /// Unlike safepoint liveness this includes path-dependent values and is
@@ -823,11 +886,7 @@ impl RegionGraph {
             .enumerate()
             .filter_map(|(id, block)| {
                 let region_block = self.blocks.get(block.index())?;
-                let continuation_id = region_block
-                    .instructions
-                    .first()
-                    .map(|instruction| instruction.continuation_id)
-                    .unwrap_or(region_block.terminator_continuation_id);
+                let continuation_id = region_block.entry_continuation_id;
                 Some(RegionOsrEntryPoint {
                     id: id as u32,
                     block,
@@ -865,7 +924,9 @@ impl RegionGraph {
     pub fn has_native_trampoline_calls(&self) -> bool {
         self.blocks.iter().any(|block| {
             block.instructions.iter().any(|instruction| {
-                matches!(&instruction.kind, RegionInstructionKind::NativeCall(call) if call.direct_compiled_target().is_none())
+                matches!(&instruction.kind, RegionInstructionKind::NativeCall(call)
+                    if call.direct_compiled_target().is_none()
+                        && !matches!(call.target, RegionCallTarget::Semantic { .. }))
             })
         })
     }
@@ -1091,6 +1152,7 @@ impl BaselineRegionBuilder {
         let exception_regions = collect_exception_regions(ir_function);
         let method_class = native_method_class(unit, function);
         for (block_index, block) in ir_function.blocks.iter().enumerate() {
+            let entry_continuation_id = next_continuation;
             let mut instructions = Vec::with_capacity(block.instructions.len());
             let mut known_register_strings = BTreeMap::<RegId, String>::new();
             let mut known_local_strings = BTreeMap::<LocalId, String>::new();
@@ -1262,6 +1324,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
@@ -1293,6 +1356,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
@@ -1314,6 +1378,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind,
                                 });
@@ -1340,6 +1405,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: snapshot,
@@ -1378,6 +1444,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind: RegionInstructionKind::BindReference {
                                         target: local,
@@ -1427,6 +1494,7 @@ impl BaselineRegionBuilder {
                                     span: instruction.span,
                                     continuation_id: next_continuation,
                                     live_locals: Vec::new(),
+                                    optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
                                     kind,
                                 });
@@ -1510,6 +1578,7 @@ impl BaselineRegionBuilder {
                                 span: instruction.span,
                                 continuation_id: next_continuation,
                                 live_locals: Vec::new(),
+                                optimizer_transition_entry: false,
                                 source_kind: instruction.kind.clone(),
                                 kind: RegionInstructionKind::NewObject {
                                     dst: *dst,
@@ -1618,11 +1687,13 @@ impl BaselineRegionBuilder {
                         array,
                         key,
                         quiet,
+                        mode,
                     } => RegionInstructionKind::FetchDim {
                         dst: *dst,
                         array: lower_operand(unit, *array),
                         key: lower_operand(unit, *key),
                         quiet: *quiet,
+                        mode: *mode,
                     },
                     InstructionKind::ArrayGet { dst, array, index } => {
                         RegionInstructionKind::FetchDim {
@@ -1630,6 +1701,7 @@ impl BaselineRegionBuilder {
                             array: lower_operand(unit, *array),
                             key: lower_operand(unit, *index),
                             quiet: false,
+                            mode: php_ir::instruction::DimFetchMode::Read,
                         }
                     }
                     InstructionKind::FetchConst { dst, .. } => {
@@ -2672,18 +2744,25 @@ impl BaselineRegionBuilder {
                             caller_strict_types: unit.strict_types,
                         })
                     }
-                    InstructionKind::FetchProperty { dst, object, .. } => {
-                        RegionInstructionKind::FetchProperty {
-                            dst: *dst,
-                            object: lower_operand(unit, *object),
-                        }
-                    }
+                    InstructionKind::FetchProperty {
+                        dst,
+                        object,
+                        property,
+                    } => RegionInstructionKind::FetchProperty {
+                        dst: *dst,
+                        object: lower_operand(unit, *object),
+                        property: property.clone(),
+                    },
                     InstructionKind::AssignProperty {
-                        dst, object, value, ..
+                        dst,
+                        object,
+                        value,
+                        property,
                     } => RegionInstructionKind::AssignProperty {
                         dst: *dst,
                         object: lower_operand(unit, *object),
                         value: lower_operand(unit, *value),
+                        property: property.clone(),
                     },
                     InstructionKind::FetchDynamicProperty {
                         dst,
@@ -3383,6 +3462,7 @@ impl BaselineRegionBuilder {
                     span: instruction.span,
                     continuation_id: next_continuation,
                     live_locals: Vec::new(),
+                    optimizer_transition_entry: false,
                     source_kind: instruction.kind.clone(),
                     kind,
                 });
@@ -3413,6 +3493,7 @@ impl BaselineRegionBuilder {
             blocks.push(RegionBlock {
                 id: block.id,
                 source_block: block.id,
+                entry_continuation_id,
                 entry_live_locals: Vec::new(),
                 entry_state_locals: Vec::new(),
                 instructions,
@@ -3740,19 +3821,84 @@ fn declaration_metadata(unit: &IrUnit, function: FunctionId) -> RegionDeclaratio
     }
 }
 
-fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
-    let mut candidates = params.iter().copied().collect::<BTreeSet<_>>();
-    let mut definitions = Vec::with_capacity(blocks.len());
-    let mut predecessors = vec![Vec::<usize>::new(); blocks.len()];
-    for block in blocks.iter() {
-        let mut defs = BTreeSet::new();
-        for instruction in &block.instructions {
-            if let Some(local) = native_local_state_definition(&instruction.kind) {
-                defs.insert(local);
-                candidates.insert(local);
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalBitSet {
+    words: Vec<u64>,
+}
+
+impl LocalBitSet {
+    fn empty(word_count: usize) -> Self {
+        Self {
+            words: vec![0; word_count],
+        }
+    }
+
+    fn insert(&mut self, local: LocalId) {
+        let index = local.index();
+        self.words[index / u64::BITS as usize] |= 1_u64 << (index % u64::BITS as usize);
+    }
+
+    fn union_with(&mut self, other: &Self) {
+        for (word, other) in self.words.iter_mut().zip(&other.words) {
+            *word |= *other;
+        }
+    }
+
+    fn intersect_with_out(&mut self, incoming: &Self, definitions: &Self) {
+        for ((word, incoming), definitions) in self
+            .words
+            .iter_mut()
+            .zip(&incoming.words)
+            .zip(&definitions.words)
+        {
+            *word &= *incoming | *definitions;
+        }
+    }
+
+    fn replace_with_out(&mut self, incoming: &Self, definitions: &Self) {
+        for ((word, incoming), definitions) in self
+            .words
+            .iter_mut()
+            .zip(&incoming.words)
+            .zip(&definitions.words)
+        {
+            *word = *incoming | *definitions;
+        }
+    }
+
+    fn to_locals(&self) -> Vec<LocalId> {
+        let mut locals = Vec::new();
+        for (word_index, word) in self.words.iter().copied().enumerate() {
+            let mut remaining = word;
+            while remaining != 0 {
+                let bit = remaining.trailing_zeros() as usize;
+                let index = u32::try_from(word_index * u64::BITS as usize + bit)
+                    .expect("local bitset index derives from LocalId");
+                locals.push(LocalId::new(index));
+                remaining &= remaining - 1;
             }
         }
-        definitions.push(defs);
+        locals
+    }
+}
+
+fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
+    let mut definition_ids = Vec::with_capacity(blocks.len());
+    let mut predecessors = vec![Vec::<usize>::new(); blocks.len()];
+    let mut local_count = params
+        .iter()
+        .map(|local| local.index().saturating_add(1))
+        .max()
+        .unwrap_or(0);
+    for block in blocks.iter() {
+        let mut defs = Vec::new();
+        for instruction in &block.instructions {
+            if let Some(local) = native_local_state_definition(&instruction.kind) {
+                defs.push(local);
+                local_count = local_count.max(local.index().saturating_add(1));
+            }
+        }
+        definition_ids.push(defs);
         for target in block.terminator.targets() {
             if let Some(target_predecessors) = predecessors.get_mut(target.index()) {
                 target_predecessors.push(block.id.index());
@@ -3760,31 +3906,40 @@ fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
         }
     }
 
-    let entry = params.iter().copied().collect::<BTreeSet<_>>();
+    let word_count = local_count.div_ceil(u64::BITS as usize);
+    let mut candidates = LocalBitSet::empty(word_count);
+    let mut definitions = Vec::with_capacity(blocks.len());
+    for defs in definition_ids {
+        let mut definition = LocalBitSet::empty(word_count);
+        for local in defs {
+            definition.insert(local);
+            candidates.insert(local);
+        }
+        definitions.push(definition);
+    }
+    let mut entry = LocalBitSet::empty(word_count);
+    for local in params {
+        entry.insert(*local);
+        candidates.insert(*local);
+    }
     let mut initialized_in = vec![candidates.clone(); blocks.len()];
     if let Some(first) = initialized_in.first_mut() {
         *first = entry.clone();
     }
+    let mut incoming = LocalBitSet::empty(word_count);
     loop {
-        let initialized_out = initialized_in
-            .iter()
-            .zip(&definitions)
-            .map(|(incoming, defs)| incoming.union(defs).copied().collect::<BTreeSet<_>>())
-            .collect::<Vec<_>>();
         let mut changed = false;
         for block_index in 1..blocks.len() {
             let Some((first, rest)) = predecessors[block_index].split_first() else {
                 continue;
             };
-            let mut incoming = initialized_out[*first].clone();
+            incoming.replace_with_out(&initialized_in[*first], &definitions[*first]);
             for predecessor in rest {
-                incoming = incoming
-                    .intersection(&initialized_out[*predecessor])
-                    .copied()
-                    .collect();
+                incoming
+                    .intersect_with_out(&initialized_in[*predecessor], &definitions[*predecessor]);
             }
             if initialized_in[block_index] != incoming {
-                initialized_in[block_index] = incoming;
+                initialized_in[block_index].clone_from(&incoming);
                 changed = true;
             }
         }
@@ -3793,24 +3948,20 @@ fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
         }
     }
 
-    let mut materialized_in = vec![BTreeSet::<LocalId>::new(); blocks.len()];
+    let mut materialized_in = vec![LocalBitSet::empty(word_count); blocks.len()];
     if let Some(first) = materialized_in.first_mut() {
         *first = entry.clone();
     }
     loop {
-        let materialized_out = materialized_in
-            .iter()
-            .zip(&definitions)
-            .map(|(incoming, defs)| incoming.union(defs).copied().collect::<BTreeSet<_>>())
-            .collect::<Vec<_>>();
         let mut changed = false;
         for block_index in 1..blocks.len() {
-            let incoming = predecessors[block_index]
-                .iter()
-                .flat_map(|predecessor| materialized_out[*predecessor].iter().copied())
-                .collect::<BTreeSet<_>>();
+            incoming.words.fill(0);
+            for predecessor in &predecessors[block_index] {
+                incoming.union_with(&materialized_in[*predecessor]);
+                incoming.union_with(&definitions[*predecessor]);
+            }
             if materialized_in[block_index] != incoming {
-                materialized_in[block_index] = incoming;
+                materialized_in[block_index].clone_from(&incoming);
                 changed = true;
             }
         }
@@ -3824,17 +3975,17 @@ fn populate_live_locals(blocks: &mut [RegionBlock], params: &[LocalId]) {
     {
         let mut initialized = incoming;
         let mut materialized = state_incoming;
-        block.entry_live_locals = initialized.iter().copied().collect();
-        block.entry_state_locals = materialized.iter().copied().collect();
+        block.entry_live_locals = initialized.to_locals();
+        block.entry_state_locals = materialized.to_locals();
         for instruction in &mut block.instructions {
-            instruction.live_locals = initialized.iter().copied().collect();
+            instruction.live_locals = initialized.to_locals();
             if let Some(local) = native_local_state_definition(&instruction.kind) {
                 initialized.insert(local);
                 materialized.insert(local);
             }
         }
-        block.terminator_live_locals = initialized.into_iter().collect();
-        block.terminator_state_locals = materialized.into_iter().collect();
+        block.terminator_live_locals = initialized.to_locals();
+        block.terminator_state_locals = materialized.to_locals();
     }
 }
 

@@ -76,7 +76,6 @@ fn execute_native_include(
     {
         let source = context
             .instruction_for_continuation(request.caller_function_id, request.continuation_id)
-            .cloned()
             .ok_or_else(|| "native include call metadata is missing".to_owned())?;
         for declaration in compiled
             .unit()
@@ -118,16 +117,16 @@ fn execute_native_include(
     context
         .included_files
         .insert(resolved.canonical_path.clone());
-    let caller = context
+    let caller_locals = context
         .unit
         .functions
         .get(request.caller_function_id as usize)
-        .cloned()
+        .map(|caller| caller.locals.clone())
         .ok_or_else(|| "native include caller function is missing".to_owned())?;
     let mut inherited_globals = std::mem::take(&mut context.inherited_globals);
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *const i64;
-        for (index, name) in caller.locals.iter().enumerate() {
+        for (index, name) in caller_locals.iter().enumerate() {
             // SAFETY: Generated code passes a synchronous stack slot containing
             // one encoded value for every local in the caller function.
             let encoded = unsafe { caller_frame.add(index).read() };
@@ -135,7 +134,18 @@ fn execute_native_include(
             if matches!(value, Value::Uninitialized) {
                 continue;
             }
-            inherited_globals.insert(name.clone(), value);
+            match inherited_globals.get(name).cloned() {
+                Some(Value::Reference(reference)) => match value {
+                    Value::Reference(replacement) if reference.ptr_eq(&replacement) => {}
+                    Value::Reference(replacement) => {
+                        inherited_globals.insert(name.clone(), Value::Reference(replacement));
+                    }
+                    replacement => reference.set(replacement),
+                },
+                _ => {
+                    inherited_globals.insert(name.clone(), value);
+                }
+            }
         }
     }
     NATIVE_INCLUDE_GLOBALS.with(|globals| {
@@ -158,6 +168,9 @@ fn execute_native_include(
     });
     NATIVE_INCLUDE_MYSQL.with(|mysql| {
         mysql.replace(Some(context.mysql_state.clone()));
+    });
+    NATIVE_INCLUDE_FILTER_INPUT_ARRAYS.with(|arrays| {
+        arrays.replace(Some(Rc::clone(&context.filter_input_arrays)));
     });
     NATIVE_INCLUDE_FUNCTION_NAMES.with(|names| {
         names.replace(Some(context.visible_include_function_names()));
@@ -210,9 +223,10 @@ fn execute_native_include(
     context.restore_include_symbols(returned_symbols);
     let exports = NATIVE_INCLUDE_EXPORTS.with(|exports| exports.borrow_mut().take());
     context.inherited_globals = returned_globals;
+    context.reconcile_native_global_reference_cache()?;
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *mut i64;
-        for (index, name) in caller.locals.iter().enumerate() {
+        for (index, name) in caller_locals.iter().enumerate() {
             let Some(value) = context.inherited_globals.get(name).cloned() else {
                 continue;
             };
@@ -235,7 +249,8 @@ fn execute_native_include(
         );
         context.diagnostic = diagnostic;
         return Err(format!(
-            "E_PHP_INCLUDE_EXECUTION: included native entry failed: {detail}"
+            "E_PHP_INCLUDE_EXECUTION: included native entry {} failed: {detail}",
+            resolved.canonical_path.display()
         ));
     }
     if let Some(exports) = exports {
@@ -267,19 +282,21 @@ fn execute_native_eval(
         .include_compiler
         .clone()
         .ok_or_else(|| "E_PHP_VM_INCLUDE_COMPILER: eval compiler is unavailable".to_owned())?;
-    let caller = context
+    let (caller_locals, caller_file) = context
         .unit
         .functions
         .get(request.caller_function_id as usize)
-        .cloned()
+        .map(|caller| (caller.locals.clone(), caller.span.file))
         .ok_or_else(|| "native eval caller function is missing".to_owned())?;
     let caller_instruction =
         context.instruction_for_continuation(request.caller_function_id, request.continuation_id);
-    let caller_line =
-        caller_instruction.map_or(1, |instruction| native_source_line(context, instruction));
+    let caller_line = caller_instruction
+        .as_ref()
+        .map_or(1, |instruction| native_source_line(context, instruction));
     let caller_file = caller_instruction
+        .as_ref()
         .map(|instruction| instruction.span.file)
-        .unwrap_or(caller.span.file);
+        .unwrap_or(caller_file);
     let source_path = context.unit.files.get(caller_file.index()).map_or_else(
         || "<eval>".to_owned(),
         |file| format!("{}({caller_line}) : eval()'d code", file.path),
@@ -290,14 +307,25 @@ fn execute_native_eval(
     let mut inherited_globals = std::mem::take(&mut context.inherited_globals);
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *const i64;
-        for (index, name) in caller.locals.iter().enumerate() {
+        for (index, name) in caller_locals.iter().enumerate() {
             // SAFETY: Generated code owns this synchronous caller-local frame.
             let encoded = unsafe { caller_frame.add(index).read() };
             let value = context.decode(encoded)?;
             if matches!(value, Value::Uninitialized) {
                 continue;
             }
-            inherited_globals.insert(name.clone(), value);
+            match inherited_globals.get(name).cloned() {
+                Some(Value::Reference(reference)) => match value {
+                    Value::Reference(replacement) if reference.ptr_eq(&replacement) => {}
+                    Value::Reference(replacement) => {
+                        inherited_globals.insert(name.clone(), Value::Reference(replacement));
+                    }
+                    replacement => reference.set(replacement),
+                },
+                _ => {
+                    inherited_globals.insert(name.clone(), value);
+                }
+            }
         }
     }
     NATIVE_INCLUDE_GLOBALS.with(|globals| {
@@ -320,6 +348,9 @@ fn execute_native_eval(
     });
     NATIVE_INCLUDE_MYSQL.with(|mysql| {
         mysql.replace(Some(context.mysql_state.clone()));
+    });
+    NATIVE_INCLUDE_FILTER_INPUT_ARRAYS.with(|arrays| {
+        arrays.replace(Some(Rc::clone(&context.filter_input_arrays)));
     });
     NATIVE_INCLUDE_FUNCTION_NAMES.with(|names| {
         names.replace(Some(context.visible_include_function_names()));
@@ -372,9 +403,10 @@ fn execute_native_eval(
     context.restore_include_symbols(returned_symbols);
     let exports = NATIVE_INCLUDE_EXPORTS.with(|exports| exports.borrow_mut().take());
     context.inherited_globals = returned_globals;
+    context.reconcile_native_global_reference_cache()?;
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *mut i64;
-        for (index, name) in caller.locals.iter().enumerate() {
+        for (index, name) in caller_locals.iter().enumerate() {
             let Some(value) = context.inherited_globals.get(name).cloned() else {
                 continue;
             };
@@ -418,7 +450,7 @@ fn render_native_include_failure(
         .instruction_for_continuation(request.caller_function_id, request.continuation_id)
         .map_or((1, 0, 0), |instruction| {
             (
-                native_source_line(context, instruction),
+                native_source_line(context, &instruction),
                 instruction.span.start,
                 instruction.span.end,
             )
@@ -462,6 +494,7 @@ fn render_native_include_failure(
 // SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
 #[allow(unsafe_code)]
 pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
+    runtime: *mut NativeRequestFastState,
     _vm_context: u64,
     request: *mut php_jit::JitNativeDynamicCodeRequest,
     out: *mut php_jit::JitCallResult,
@@ -469,6 +502,9 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
     if request.is_null() || out.is_null() {
         return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
     }
+    let _ = with_native_context_for(runtime, "dynamic_code", |context| {
+        context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+    });
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // SAFETY: Generated code owns this request for the synchronous call.
         let request = unsafe { &*request };
@@ -484,7 +520,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
                 | php_jit::JitNativeDynamicCodeKind::REQUIRE
                 | php_jit::JitNativeDynamicCodeKind::REQUIRE_ONCE
         ) {
-            with_native_context_for("dynamic_code", |context| match execute_native_include(context, request) {
+            with_native_context_for(runtime, "dynamic_code", |context| match execute_native_include(context, request) {
                 Ok(NativeDynamicCodeOutcome::Returned(value)) => {
                     (php_jit::JitCallStatus::RETURN, Some(value))
                 }
@@ -508,7 +544,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
             })
             .unwrap_or((php_jit::JitCallStatus::RUNTIME_ERROR, None))
         } else if request.kind == php_jit::JitNativeDynamicCodeKind::EVAL {
-            with_native_context_for("dynamic_code", |context| match execute_native_eval(context, request) {
+            with_native_context_for(runtime, "dynamic_code", |context| match execute_native_eval(context, request) {
                 Ok(NativeDynamicCodeOutcome::Returned(value)) => {
                     (php_jit::JitCallStatus::RETURN, Some(value))
                 }
@@ -522,7 +558,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
             })
             .unwrap_or((php_jit::JitCallStatus::RUNTIME_ERROR, None))
         } else if request.kind == php_jit::JitNativeDynamicCodeKind::DECLARE_FUNCTION {
-            with_native_context_for("dynamic_code", |context| {
+            with_native_context_for(runtime, "dynamic_code", |context| {
                 let function = php_ir::FunctionId::new(request.declared_function_id);
                 let Some(target) = context.unit.functions.get(function.index()) else {
                     return (php_jit::JitCallStatus::RUNTIME_ERROR, None);
@@ -538,7 +574,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
             })
             .unwrap_or((php_jit::JitCallStatus::RUNTIME_ERROR, None))
         } else if request.kind == php_jit::JitNativeDynamicCodeKind::DECLARE_CLASS {
-            with_native_context_for("dynamic_code", |context| {
+            with_native_context_for(runtime, "dynamic_code", |context| {
                 let class =
                     context.unit.classes.iter().find(|class| {
                         stable_native_symbol_hash(&class.name) == request.symbol_hash
@@ -554,13 +590,12 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
             })
             .unwrap_or((php_jit::JitCallStatus::RUNTIME_ERROR, None))
         } else if request.kind == php_jit::JitNativeDynamicCodeKind::REGISTER_CONSTANT {
-            with_native_context_for("dynamic_code", |context| {
+            with_native_context_for(runtime, "dynamic_code", |context| {
                 let instruction = context
                     .instruction_for_continuation(
                         request.caller_function_id,
                         request.continuation_id,
-                    )
-                    .cloned();
+                    );
                 let Some(instruction) = instruction else {
                     return (php_jit::JitCallStatus::ABI_MISMATCH, None);
                 };
@@ -595,13 +630,12 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
             })
             .unwrap_or((php_jit::JitCallStatus::RUNTIME_ERROR, None))
         } else if request.kind == php_jit::JitNativeDynamicCodeKind::EMIT_DIAGNOSTIC {
-            with_native_context_for("dynamic_code", |context| {
+            with_native_context_for(runtime, "dynamic_code", |context| {
                 let instruction = context
                     .instruction_for_continuation(
                         request.caller_function_id,
                         request.continuation_id,
-                    )
-                    .cloned();
+                    );
                 let Some(instruction) = instruction else {
                     return (php_jit::JitCallStatus::ABI_MISMATCH, None);
                 };
@@ -643,7 +677,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
             })
             .unwrap_or((php_jit::JitCallStatus::RUNTIME_ERROR, None))
         } else if request.kind == php_jit::JitNativeDynamicCodeKind::MAKE_CLOSURE {
-            with_native_context_for("dynamic_code", |context| {
+            with_native_context_for(runtime, "dynamic_code", |context| {
                 let captures = context
                     .instruction_for_continuation(
                         request.caller_function_id,
@@ -693,18 +727,14 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
                     .get(request.declared_function_id as usize)
                     .and_then(|function| {
                         let file = context.unit.files.get(function.span.file.index())?;
-                        let line = std::fs::read(&file.path).ok().map_or(1, |bytes| {
-                            bytes
-                                .iter()
-                                .take(function.span.start as usize)
-                                .filter(|byte| **byte == b'\n')
-                                .count()
-                                + 1
-                        });
+                        let line = context
+                            .compiled
+                            .source_display_line(function.span, false)
+                            .unwrap_or(1);
                         Some(php_runtime::api::ClosureDebugInfo {
                             name: format!("{{closure:{}:{line}}}", file.path),
                             file: file.path.clone(),
-                            line: line as i64,
+                            line,
                             parameters: function
                                 .params
                                 .iter()
@@ -721,7 +751,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
                 let called_class = context
                     .called_classes
                     .last()
-                    .map(|class| std::sync::Arc::<str>::from(class.as_str()))
+                    .cloned()
                     .or_else(|| scope_class.clone());
                 let closure_context = php_runtime::api::ClosureContext {
                     owner_unit: context.current_dynamic_unit,

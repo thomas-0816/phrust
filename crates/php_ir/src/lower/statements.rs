@@ -822,6 +822,7 @@ impl LoweringContext<'_> {
                             array: Operand::Register(source_value),
                             key: dim,
                             quiet: false,
+                            mode: DimFetchMode::Lvalue,
                         },
                         span,
                     );
@@ -1176,6 +1177,7 @@ impl LoweringContext<'_> {
                     array: Operand::Register(value),
                     key: Operand::Constant(key),
                     quiet: false,
+                    mode: DimFetchMode::Read,
                 },
                 span,
             );

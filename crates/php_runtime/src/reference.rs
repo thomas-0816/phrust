@@ -6,7 +6,7 @@
 //! so register values cannot accidentally become reference aliases.
 
 use crate::{
-    Value,
+    ArrayKey, Value,
     layout_stats::{
         SOURCE_BY_REF_ARGUMENT_BINDING, SOURCE_REFERENCE_DEREFERENCE,
         SOURCE_STACK_REGISTER_LOCAL_MOVE, enter_default_layout_source_family,
@@ -30,6 +30,66 @@ pub const NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION: u32 = 1;
 pub const NATIVE_REFERENCE_SCALAR_VIEW_EMPTY: u32 = 0;
 /// The scalar view contains a valid immediate encoded value.
 pub const NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED: u32 = 1;
+/// ABI version for a reference-owned, read-only array `isset` view.
+pub const NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION: u32 = 2;
+pub const NATIVE_REFERENCE_ARRAY_VIEW_EMPTY: u32 = 0;
+pub const NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED: u32 = 1;
+pub const NATIVE_REFERENCE_ARRAY_KEY_INT: u32 = 1;
+pub const NATIVE_REFERENCE_ARRAY_KEY_STRING: u32 = 2;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED: u32 = 0;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_NULL: u32 = 1;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED: u32 = 2;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_FALSE: u32 = 3;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_TRUE: u32 = 4;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_INT: u32 = 5;
+pub const NATIVE_REFERENCE_ARRAY_VALUE_STRING: u32 = 6;
+
+/// One key and PHP-nullness record in a reference-owned array view.
+///
+/// String bytes remain owned by the immutable array value in the reference
+/// cell. Every mutation invalidates the view before that value can move or be
+/// released, so generated code never observes stale pointers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NativeReferenceArrayEntry {
+    pub kind: u32,
+    pub non_null: u32,
+    pub integer: i64,
+    pub string_length: u64,
+    pub string_bytes: u64,
+    pub value_kind: u32,
+    pub value_flags: u32,
+    pub value_payload: i64,
+    pub value_length: u64,
+    pub value_bytes: u64,
+}
+
+/// Stable descriptor for direct native `isset($reference[$key])` reads.
+#[repr(C)]
+#[derive(Debug)]
+pub struct NativeReferenceArrayView {
+    pub abi_version: u32,
+    pub state: Cell<u32>,
+    pub length: Cell<u64>,
+    pub entries: Cell<u64>,
+    pub storage_refcount: Cell<u64>,
+    pub dirty: Cell<u32>,
+    pub reserved: u32,
+}
+
+impl Default for NativeReferenceArrayView {
+    fn default() -> Self {
+        Self {
+            abi_version: NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
+            state: Cell::new(NATIVE_REFERENCE_ARRAY_VIEW_EMPTY),
+            length: Cell::new(0),
+            entries: Cell::new(0),
+            storage_refcount: Cell::new(0),
+            dirty: Cell::new(0),
+            reserved: 0,
+        }
+    }
+}
 
 /// Stable, versioned view that native code may inspect without depending on
 /// `ReferenceStorage`, `RefCell`, or `Value` layout.
@@ -69,6 +129,8 @@ struct ReferenceStorage {
     id: u64,
     value: RefCell<Value>,
     native_scalar: NativeReferenceScalarView,
+    native_array: NativeReferenceArrayView,
+    native_array_entries: RefCell<Vec<NativeReferenceArrayEntry>>,
 }
 
 /// Weak debug handle to reference-cell storage for GC tests.
@@ -108,6 +170,8 @@ impl ReferenceCell {
                 id: next_reference_cell_id(),
                 value: RefCell::new(value),
                 native_scalar: NativeReferenceScalarView::default(),
+                native_array: NativeReferenceArrayView::default(),
+                native_array_entries: RefCell::new(Vec::new()),
             }),
         }
     }
@@ -115,6 +179,7 @@ impl ReferenceCell {
     /// Reads the contained value by cloning it.
     #[must_use]
     pub fn get(&self) -> Value {
+        self.materialize_native_array_overlay();
         let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
         self.inner.value.borrow().clone()
     }
@@ -124,6 +189,7 @@ impl ReferenceCell {
     /// This checked accessor is preferred outside low-level runtime internals.
     /// It returns `Err` if another caller currently holds a mutable borrow.
     pub fn try_get(&self) -> Result<Value, BorrowError> {
+        self.materialize_native_array_overlay();
         let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
         self.inner.value.try_borrow().map(|value| value.clone())
     }
@@ -136,11 +202,13 @@ impl ReferenceCell {
     #[doc(hidden)]
     #[must_use]
     pub fn borrow(&self) -> Ref<'_, Value> {
+        self.materialize_native_array_overlay();
         self.inner.value.borrow()
     }
 
     /// Runs `f` with a checked immutable borrow of the contained value.
     pub fn try_with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> Result<T, BorrowError> {
+        self.materialize_native_array_overlay();
         self.inner.value.try_borrow().map(|value| f(&value))
     }
 
@@ -153,16 +221,24 @@ impl ReferenceCell {
         &self,
         f: impl FnOnce(&mut Value) -> T,
     ) -> Result<T, BorrowMutError> {
-        self.inner.value.try_borrow_mut().map(|mut value| {
+        self.materialize_native_array_overlay();
+        let result = {
+            let mut value = self.inner.value.try_borrow_mut()?;
             self.invalidate_native_scalar();
             f(&mut value)
-        })
+        };
+        self.publish_native_array_view();
+        Ok(result)
     }
 
     /// Replaces the contained value.
     pub fn set(&self, value: Value) {
+        self.inner.native_array.dirty.set(0);
         self.invalidate_native_scalar();
-        *self.inner.value.borrow_mut() = value;
+        {
+            *self.inner.value.borrow_mut() = value;
+        }
+        self.publish_native_array_view();
     }
 
     /// Attempts to replace the contained value.
@@ -170,10 +246,14 @@ impl ReferenceCell {
     /// This checked accessor is preferred outside low-level runtime internals.
     /// It returns `Err` if another caller currently holds a borrow.
     pub fn try_set(&self, value: Value) -> Result<(), BorrowMutError> {
-        self.inner.value.try_borrow_mut().map(|mut slot| {
+        self.inner.native_array.dirty.set(0);
+        {
+            let mut slot = self.inner.value.try_borrow_mut()?;
             self.invalidate_native_scalar();
             *slot = value;
-        })
+        }
+        self.publish_native_array_view();
+        Ok(())
     }
 
     /// Returns the address of the stable scalar-only native view.
@@ -185,6 +265,15 @@ impl ReferenceCell {
     #[must_use]
     pub fn native_scalar_view_address(&self) -> usize {
         std::ptr::from_ref(&self.inner.native_scalar) as usize
+    }
+
+    /// Returns a stable descriptor for direct read-only array `isset` access.
+    /// Publication is rebuilt only after mutation invalidates the cell.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_array_view_address(&self) -> usize {
+        self.publish_native_array_view();
+        std::ptr::from_ref(&self.inner.native_array) as usize
     }
 
     /// Publishes one immediate encoded value for native reference reads.
@@ -203,6 +292,109 @@ impl ReferenceCell {
             .native_scalar
             .state
             .set(NATIVE_REFERENCE_SCALAR_VIEW_EMPTY);
+        self.inner
+            .native_array
+            .state
+            .set(NATIVE_REFERENCE_ARRAY_VIEW_EMPTY);
+    }
+
+    fn publish_native_array_view(&self) {
+        if self.inner.native_array.state.get() == NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED {
+            return;
+        }
+        let Ok(value) = self.inner.value.try_borrow() else {
+            return;
+        };
+        let Value::Array(array) = &*value else {
+            return;
+        };
+        let mut entries = self.inner.native_array_entries.borrow_mut();
+        entries.clear();
+        entries.reserve(array.len());
+        for (key, value) in array.iter() {
+            let Some(non_null) = native_isset_value(value) else {
+                entries.clear();
+                return;
+            };
+            let (value_kind, value_flags, value_payload, value_length, value_bytes) =
+                native_array_value_view(value);
+            let entry = match key {
+                ArrayKey::Int(integer) => NativeReferenceArrayEntry {
+                    kind: NATIVE_REFERENCE_ARRAY_KEY_INT,
+                    non_null: u32::from(non_null),
+                    integer,
+                    string_length: 0,
+                    string_bytes: 0,
+                    value_kind,
+                    value_flags,
+                    value_payload,
+                    value_length,
+                    value_bytes,
+                },
+                ArrayKey::String(string) => NativeReferenceArrayEntry {
+                    kind: NATIVE_REFERENCE_ARRAY_KEY_STRING,
+                    non_null: u32::from(non_null),
+                    integer: 0,
+                    string_length: string.len() as u64,
+                    string_bytes: string.as_bytes().as_ptr() as usize as u64,
+                    value_kind,
+                    value_flags,
+                    value_payload,
+                    value_length,
+                    value_bytes,
+                },
+            };
+            entries.push(entry);
+        }
+        self.inner
+            .native_array
+            .entries
+            .set(entries.as_ptr() as usize as u64);
+        self.inner.native_array.length.set(entries.len() as u64);
+        self.inner
+            .native_array
+            .storage_refcount
+            .set(array.native_storage_refcount_address() as u64);
+        self.inner
+            .native_array
+            .state
+            .set(NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED);
+    }
+
+    fn materialize_native_array_overlay(&self) {
+        if self.inner.native_array.dirty.get() == 0 {
+            return;
+        }
+        self.inner
+            .native_array
+            .state
+            .set(NATIVE_REFERENCE_ARRAY_VIEW_EMPTY);
+        let entries = self.inner.native_array_entries.borrow().clone();
+        {
+            let mut stored = self.inner.value.borrow_mut();
+            let Value::Array(array) = &mut *stored else {
+                self.inner.native_array.dirty.set(0);
+                return;
+            };
+            let original = array
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Vec<_>>();
+            for ((key, original), entry) in original.into_iter().zip(entries) {
+                let value = match entry.value_kind {
+                    NATIVE_REFERENCE_ARRAY_VALUE_NULL => Value::Null,
+                    NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED => Value::Uninitialized,
+                    NATIVE_REFERENCE_ARRAY_VALUE_FALSE => Value::Bool(false),
+                    NATIVE_REFERENCE_ARRAY_VALUE_TRUE => Value::Bool(true),
+                    NATIVE_REFERENCE_ARRAY_VALUE_INT => Value::Int(entry.value_payload),
+                    NATIVE_REFERENCE_ARRAY_VALUE_STRING => original,
+                    _ => continue,
+                };
+                array.insert(key, value);
+            }
+        }
+        self.inner.native_array.dirty.set(0);
+        self.publish_native_array_view();
     }
 
     /// Returns true when both cells point at the same shared storage.
@@ -241,6 +433,39 @@ impl ReferenceCell {
     /// runtime-semantics cycle-collection test hook after proving the cell is not rooted.
     pub fn gc_clear(&self) {
         self.set(Value::Uninitialized);
+    }
+}
+
+fn native_array_value_view(value: &Value) -> (u32, u32, i64, u64, u64) {
+    match value {
+        Value::Null => (NATIVE_REFERENCE_ARRAY_VALUE_NULL, 0, 0, 0, 0),
+        Value::Uninitialized => (NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED, 0, 0, 0, 0),
+        Value::Bool(false) => (NATIVE_REFERENCE_ARRAY_VALUE_FALSE, 0, 0, 0, 0),
+        Value::Bool(true) => (NATIVE_REFERENCE_ARRAY_VALUE_TRUE, 0, 0, 0, 0),
+        Value::Int(value) if !matches!(((*value as u64) >> 48) as u16, 0x7ff1 | 0x7ff2) => {
+            (NATIVE_REFERENCE_ARRAY_VALUE_INT, 0, *value, 0, 0)
+        }
+        Value::String(value) => (
+            NATIVE_REFERENCE_ARRAY_VALUE_STRING,
+            u32::from(value.as_bytes() == b"0"),
+            0,
+            value.len() as u64,
+            value.as_bytes().as_ptr() as usize as u64,
+        ),
+        _ => (NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, 0, 0, 0, 0),
+    }
+}
+
+fn native_isset_value(value: &Value) -> Option<bool> {
+    match value {
+        Value::Null | Value::Uninitialized => Some(false),
+        Value::Reference(reference) => reference
+            .inner
+            .value
+            .try_borrow()
+            .ok()
+            .and_then(|value| native_isset_value(&value)),
+        _ => Some(true),
     }
 }
 
@@ -660,7 +885,9 @@ impl From<Value> for TempValue {
 #[cfg(test)]
 mod tests {
     use super::{
-        Lvalue, LvalueKind, NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+        Lvalue, LvalueKind, NATIVE_REFERENCE_ARRAY_KEY_STRING, NATIVE_REFERENCE_ARRAY_VALUE_INT,
+        NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION, NATIVE_REFERENCE_ARRAY_VIEW_EMPTY,
+        NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED, NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
         NATIVE_REFERENCE_SCALAR_VIEW_EMPTY, NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
         NativeReferenceScalarView, ReferenceCell, Slot, TempValue,
     };
@@ -941,5 +1168,46 @@ mod tests {
         cell.try_with_value_mut(|value| *value = Value::Int(43))
             .expect("mutable reference view");
         assert_eq!(view.state.get(), NATIVE_REFERENCE_SCALAR_VIEW_EMPTY);
+    }
+
+    #[test]
+    fn native_array_view_is_published_once_and_invalidated_before_mutation() {
+        assert_eq!(std::mem::size_of::<super::NativeReferenceArrayEntry>(), 64);
+        assert_eq!(std::mem::size_of::<super::NativeReferenceArrayView>(), 40);
+        let mut array = PhpArray::new();
+        array.insert(
+            ArrayKey::String(crate::PhpString::from_bytes(b"post_type".to_vec())),
+            Value::Int(1),
+        );
+        let cell = ReferenceCell::new(Value::Array(array));
+        let address = cell.native_array_view_address();
+        let view = &cell.inner.native_array;
+        assert_eq!(view.abi_version, NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION);
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED);
+        assert_eq!(view.length.get(), 1);
+        assert_eq!(address, std::ptr::from_ref(view) as usize);
+        let entry = cell.inner.native_array_entries.borrow()[0];
+        assert_eq!(entry.kind, NATIVE_REFERENCE_ARRAY_KEY_STRING);
+        assert_eq!(entry.non_null, 1);
+        assert_eq!(entry.value_kind, NATIVE_REFERENCE_ARRAY_VALUE_INT);
+        assert_eq!(entry.value_payload, 1);
+
+        cell.inner.native_array_entries.borrow_mut()[0].value_payload = 42;
+        view.dirty.set(1);
+        let Value::Array(materialized) = cell.get() else {
+            panic!("native overlay did not remain an array");
+        };
+        assert_eq!(
+            materialized.get(&ArrayKey::String(crate::PhpString::from_bytes(
+                b"post_type".to_vec()
+            ))),
+            Some(&Value::Int(42))
+        );
+        assert_eq!(view.dirty.get(), 0);
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED);
+
+        cell.try_with_value_mut(|value| *value = Value::Null)
+            .expect("reference mutation");
+        assert_eq!(view.state.get(), NATIVE_REFERENCE_ARRAY_VIEW_EMPTY);
     }
 }

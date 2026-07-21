@@ -42,7 +42,9 @@ pub use modules::soap::{
     SoapParsedBody, build_soap_envelope, load_wsdl, parse_soap_response, parse_wsdl, soap_http_post,
 };
 pub use modules::{array_intrinsics, json_fast, string_intrinsics};
-pub use registry::{BuiltinCompatibility, BuiltinEntry, BuiltinHandlerKind, BuiltinRegistry};
+pub use registry::{
+    BuiltinCompatibility, BuiltinEntry, BuiltinExecutionKind, BuiltinHandlerKind, BuiltinRegistry,
+};
 pub use request_state::{BuiltinRequestState, JsonRequestState, PcreRequestState};
 pub use signatures::{BuiltinOutcome, BuiltinResult, InternalFunction};
 

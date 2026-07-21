@@ -444,6 +444,13 @@ pub enum SymbolVisibility {
 pub struct ExtensionRegistry {
     extensions: BTreeMap<&'static str, ExtensionDescriptor>,
     enabled: BTreeSet<&'static str>,
+    php_functions_by_name: BTreeMap<&'static str, Vec<FunctionLocation>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FunctionLocation {
+    extension: &'static str,
+    index: usize,
 }
 
 impl ExtensionRegistry {
@@ -463,9 +470,24 @@ impl ExtensionRegistry {
             }
             map.insert(extension.name(), extension);
         }
+        let mut php_functions_by_name = BTreeMap::<_, Vec<_>>::new();
+        for (extension_name, extension) in &map {
+            for (index, function) in extension.functions().iter().enumerate() {
+                if function.visibility() == SymbolVisibility::PhpVisible {
+                    php_functions_by_name
+                        .entry(function.name())
+                        .or_default()
+                        .push(FunctionLocation {
+                            extension: extension_name,
+                            index,
+                        });
+                }
+            }
+        }
         Self {
             extensions: map,
             enabled,
+            php_functions_by_name,
         }
     }
 
@@ -598,9 +620,22 @@ impl ExtensionRegistry {
     /// Finds a PHP-visible function case-insensitively among enabled extensions.
     #[must_use]
     pub fn enabled_php_function(&self, name: &str) -> Option<&FunctionDescriptor> {
-        self.enabled_php_functions()
-            .into_iter()
-            .find(|function| function.name().eq_ignore_ascii_case(name))
+        let locations = self.php_functions_by_name.get(name).or_else(|| {
+            self.php_functions_by_name
+                .iter()
+                .find(|(function_name, _)| function_name.eq_ignore_ascii_case(name))
+                .map(|(_, locations)| locations)
+        })?;
+        locations.iter().find_map(|location| {
+            self.enabled
+                .contains(location.extension)
+                .then(|| {
+                    self.extensions
+                        .get(location.extension)
+                        .and_then(|extension| extension.functions().get(location.index))
+                })
+                .flatten()
+        })
     }
 
     /// Finds an enabled class/interface/trait/enum case-insensitively.

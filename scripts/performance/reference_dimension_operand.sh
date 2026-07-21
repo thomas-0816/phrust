@@ -18,7 +18,7 @@ cargo build -q -p php_vm_cli --bin php-vm
     --native-cache off \
     --counters-json "${counters}" \
     "${fixture}" >"${actual}"
-printf '3000\n' >"${expected}"
+printf '3000\n3000\n' >"${expected}"
 if ! cmp -s "${expected}" "${actual}"; then
     printf '%s\n' '[fail] reference dimension-operand fixture output changed' >&2
     diff -u "${expected}" "${actual}" >&2 || true
@@ -41,10 +41,10 @@ if fetches != 0 or reference_fetches != 0:
         "[fail] reference dimension loop crossed the local-fetch helper "
         f"{fetches} time(s), including {reference_fetches} reference dereference(s)"
     )
-if dimension_fetches != 1000:
+if dimension_fetches != 2002:
     raise SystemExit(
-        f"[fail] reference dimension loop used {dimension_fetches} array fetches; expected 1000"
+        f"[fail] reference dimension loops used {dimension_fetches} array fetches; expected 2002"
     )
 PY
 
-printf '%s\n' '[pass] reference dimension operands dereference inside the owning helper'
+printf '%s\n' '[pass] reference-backed and plain dimension operands avoid local-fetch helpers'

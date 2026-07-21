@@ -4,6 +4,12 @@ pub(super) fn publish_native_call_diagnostic(
     context: &mut NativeExecutionContext<'_>,
     message: String,
 ) {
+    // A typed helper can publish the precise failure before the native caller
+    // observes the generic non-zero status. Preserve that root cause instead
+    // of replacing it with an outer "callee returned a runtime error".
+    if context.diagnostic.is_some() {
+        return;
+    }
     if message.starts_with("E_PHP_VM_UNRESOLVED_CALLABLE:")
         || message.starts_with("E_PHP_VM_UNKNOWN_CLASS:")
     {

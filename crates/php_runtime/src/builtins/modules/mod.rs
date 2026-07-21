@@ -54,3 +54,27 @@ pub(in crate::builtins) mod sysvshm;
 pub(in crate::builtins) mod xml;
 pub(in crate::builtins) mod zip;
 pub(in crate::builtins) mod zlib;
+
+use super::InternalFunction;
+
+/// Classifies the small set of registry stubs whose complete semantics live
+/// in the VM. This runs once while the immutable builtin registry is built;
+/// generated warm calls consume only the resulting numeric execution kind.
+pub(in crate::builtins) fn requires_vm_dispatch(name: &str, function: InternalFunction) -> bool {
+    let function = function as usize;
+    let stub = function == arrays::builtin_array_callback_requires_vm as InternalFunction as usize
+        || function == arrays::builtin_array_sort_requires_vm as InternalFunction as usize
+        || function == core::builtin_config_requires_vm as InternalFunction as usize
+        || function == core::builtin_environment_requires_vm as InternalFunction as usize
+        || function == core::builtin_error_handling_requires_vm as InternalFunction as usize
+        || function == core::builtin_output_buffering_requires_vm as InternalFunction as usize
+        || function == core::builtin_process_requires_vm as InternalFunction as usize
+        || function == core::builtin_settype_requires_vm as InternalFunction as usize
+        || function == spl::builtin_spl_autoload_requires_vm as InternalFunction as usize
+        || function
+            == reflection::builtin_symbol_introspection_requires_vm as InternalFunction as usize;
+    stub || matches!(
+        name,
+        "preg_replace_callback" | "preg_replace_callback_array" | "var_dump"
+    )
+}

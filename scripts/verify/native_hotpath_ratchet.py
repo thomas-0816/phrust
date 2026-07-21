@@ -83,7 +83,36 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_jit",
             "--lib",
-            "optimized_exit_after_effect_does_not_repeat_effect_in_baseline",
+            "optimizer_partitions_unsupported_effect_without_downgrading_function",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_jit",
+            "--lib",
+            "optimizer_transitions_once_to_dynamic_baseline_without_repeating_effect",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_jit",
+            "--lib",
+            "optimizer_rejects_top_level_local_ssa_until_include_scope_is_native",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
+            "vm::jit_abi::tests::native_value_slots_keep_iterator_state_out_of_line",
+            "--",
+            "--exact",
         ],
         [
             "cargo",
@@ -110,7 +139,61 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_vm",
             "--lib",
+            "reached_method_is_published_to_the_optimizing_entry_table",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
             "server_worker_publishes_optimized_entry_after_hot_baseline_threshold",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_jit",
+            "--lib",
+            "published_same_unit_entry_bypasses_the_warm_resolver",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
+            "optimizing_call_miss_keeps_nested_warm_cell_on_baseline_entry",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
+            "compiled_caller_resumes_rejected_optimizing_callee_and_continues",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
+            "compiled_caller_preserves_builtin_constants_across_callee_transition",
+        ],
+        [
+            "cargo",
+            "test",
+            "-q",
+            "-p",
+            "php_vm",
+            "--lib",
+            "tiered_baseline_call_miss_cannot_publish_an_optimizing_callee",
         ],
         [
             "cargo",
@@ -127,6 +210,82 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         if completed.returncode != 0:
             failures.append(f"generated hot-path fixture failed: {' '.join(command)}")
 
+    deleted_warm_cache_symbols = (
+        "JitNativeFunctionEntryCacheRecord",
+        "function_entry_cache",
+        "resolved_native_entry_address",
+        "register_frame_slots",
+        "register_state_slot_count",
+        "emit_streaming_register_restore_loop",
+        "JitNativeArrayCacheEntry",
+        "JIT_NATIVE_ARRAY_CACHE_MISS",
+        "array_value_caches",
+        "publish_array_value_cache",
+        "ensure_native_array_view",
+        "invalidate_array_value_cache",
+        "JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY_MATERIALIZED",
+        "direct_materialized_arrays",
+        "direct_array_facades",
+        "native_array_views",
+        "publish_native_array_view",
+        "publish_direct_array_facade",
+        "release_native_array_view",
+        "plain_array_storage_index",
+        "runtime_value_is_uniquely_owned",
+        "insert_array_at_with",
+        "NativeValueIdentity::Array",
+        "baseline_optimizing_reentry_blocks",
+        "optimizing_reentry_block_is_eligible",
+    )
+    sources = (
+        ROOT / "crates/php_jit/src/abi.rs",
+        ROOT / "crates/php_jit/src/cranelift_lowering.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/runtime_ops.rs",
+    )
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in sources)
+    for symbol in deleted_warm_cache_symbols:
+        require(
+            failures,
+            symbol not in combined,
+            f"deleted request-local function-entry validation path returned: {symbol}",
+        )
+
+    emitted_contract_sources = (
+        ROOT / "crates/php_jit/src/lib.rs",
+        ROOT / "crates/php_jit/src/cranelift_lowering/executable_region.rs",
+        ROOT / "crates/php_jit/src/cranelift_lowering/tests.rs",
+    )
+    emitted_contract = "\n".join(
+        path.read_text(encoding="utf-8") for path in emitted_contract_sources
+    )
+    for symbol in (
+        "JitProductionLoweringClass",
+        "JitProductionLoweringMetadata",
+        "production_lowering",
+        "operation_local_transition",
+    ):
+        require(
+            failures,
+            symbol in emitted_contract,
+            f"emitted production lowering contract disappeared: {symbol}",
+        )
+    require(
+        failures,
+        "optimizing_production_lowering_class" not in emitted_contract,
+        "syntactic optimizing lowering classifier returned; manifest must record emitted code",
+    )
+    for test_name in (
+        "optimizing_manifest_records_the_emitted_division_transition",
+        "optimizing_unknown_scalar_truthiness_uses_guarded_native_lanes",
+        "optimizer_transitions_once_to_dynamic_baseline_without_repeating_effect",
+    ):
+        require(
+            failures,
+            test_name in emitted_contract,
+            f"emitted-code transition proof disappeared: {test_name}",
+        )
+
 
 def ratchet_profile(
     failures: list[str], counters: dict[str, Any], baseline: dict[str, Any] | None
@@ -140,6 +299,11 @@ def ratchet_profile(
     )
     root_scans = number(counters, "runtime_helper_object_release_root_scans")
     dynamic_calls = number(counters, "call_dynamic", "native_call_dynamic")
+    optimizing_transitions = sum(
+        count
+        for reason, count in mapping(counters, "native_transition_by_reason").items()
+        if reason.startswith("optimizer_")
+    )
     eligible = sum(
         number(counters, name)
         for name in (
@@ -161,23 +325,42 @@ def ratchet_profile(
     compile_attempts = number(counters, "compile_attempts", "native_compile_attempts")
     helper_nanos = number(counters, "runtime_helper_time_nanos")
     execution_nanos = number(counters, "execution_time_nanos", "native_execution_time_nanos")
+    value_allocations = number(counters, "value_table_allocations")
+    value_high_water = number(counters, "value_table_high_water")
+    call_transport = number(counters, "call_frame_bytes", "native_call_frame_bytes")
 
-    require(failures, helper_calls <= 750_000, f"runtime helper calls {helper_calls} exceed 750000")
+    require(failures, helper_calls <= 150_000, f"runtime helper calls {helper_calls} exceed 150000")
     require(failures, reads <= 50_000, f"local read helpers {reads} exceed 50000")
     require(failures, stores <= 25_000, f"local store helpers {stores} exceed 25000")
     require(failures, truthy <= 25_000, f"truthiness helpers {truthy} exceed 25000")
     require(
         failures,
-        retain_release <= 150_000,
-        f"retain/release helpers {retain_release} exceed 150000",
+        retain_release <= 25_000,
+        f"retain/release helpers {retain_release} exceed 25000",
     )
     require(failures, root_scans <= 250, f"root scans {root_scans} exceed 250")
-    require(failures, dynamic_calls <= 50_000, f"dynamic calls {dynamic_calls} exceed 50000")
+    require(failures, dynamic_calls <= 10_000, f"dynamic calls {dynamic_calls} exceed 10000")
     require(
         failures,
-        eligible > 0 and executed * 100 >= eligible * 90,
-        f"stable direct-call ratio {executed}/{eligible} is below 90%",
+        optimizing_transitions == 0,
+        f"ordinary optimizing execution entered {optimizing_transitions} baseline continuations",
     )
+    require(
+        failures,
+        eligible > 0 and executed * 100 >= eligible * 95,
+        f"stable direct-call ratio {executed}/{eligible} is below 95%",
+    )
+    require(
+        failures,
+        value_allocations <= 50_000,
+        f"value-table allocations {value_allocations} exceed 50000",
+    )
+    require(
+        failures,
+        value_high_water <= 30_000,
+        f"value-table high-water {value_high_water} exceeds 30000",
+    )
+    require(failures, call_transport <= 3_000_000, f"call transport {call_transport} exceeds 3MB")
     require(failures, compile_attempts == 0, f"warm profile compiled {compile_attempts} functions")
     require(
         failures,

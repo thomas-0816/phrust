@@ -93,6 +93,22 @@ pub enum CastKind {
     Void,
 }
 
+/// Whether a dimension fetch produces an ordinary value or participates in
+/// later lvalue/reference binding.
+///
+/// Both modes preserve PHP lookup diagnostics. The distinction lets native
+/// lowering retain cached value snapshots only for reads; lvalue fetches must
+/// keep observing the container element itself.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DimFetchMode {
+    /// Ordinary PHP value read.
+    #[default]
+    Read,
+    /// Value lookup that is coupled to a following lvalue/reference action.
+    Lvalue,
+}
+
 /// One IR instruction with a stable ID and source span.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Instruction {
@@ -667,6 +683,8 @@ pub enum InstructionKind {
         array: Operand,
         key: Operand,
         quiet: bool,
+        #[serde(default)]
+        mode: DimFetchMode,
     },
     /// Assigns a local array dimension by value.
     AssignDim {

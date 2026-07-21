@@ -3,6 +3,9 @@ use php_server::{config::ServerConfig, server};
 use std::{env, str::FromStr};
 use tracing_subscriber::{EnvFilter, fmt};
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const DEFAULT_TOKIO_WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
 
 fn main() {

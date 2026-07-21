@@ -22,10 +22,61 @@ printf '32\n' | cmp -s - "$OUT_DIR/native-smoke.out" || {
     exit 1
 }
 jq -e '
-  .schema_version == 11 and
+  .schema_version == 13 and
   .native_execution_entries > 0 and
   ((.native_compile_successes + .native_cache_hits) > 0)
 ' "$counters" >/dev/null
+
+# Cross-unit calls share one request value arena. Warm calls retain existing
+# immutable/object handles and transfer the owned return handle instead of
+# cloning both sides through decode/encode. Once the included signature is
+# published, by-value lvalues must also avoid speculative ReferenceCells. The
+# loop turns either regression into a deterministic high-water failure.
+transfer_counters="$OUT_DIR/native-cross-unit-transfer-counters.json"
+transfer_output="$OUT_DIR/native-cross-unit-transfer.out"
+"$VM" run --counters-json "$transfer_counters" \
+    tests/fixtures/performance/native_tier/cross_unit_handle_transfer.php \
+    >"$transfer_output"
+cmp -s \
+    tests/fixtures/performance/native_tier/cross_unit_handle_transfer.php.out \
+    "$transfer_output" || {
+    printf '%s\n' '[fail] native cross-unit transfer output differs from PHP' >&2
+    exit 1
+}
+jq -e '
+  .native_cross_unit_direct_executed > 0 and
+  .native_value_table_allocations < 1200 and
+  .native_value_table_high_water < 1200 and
+  .native_value_table_reuses < 100
+' "$transfer_counters" >/dev/null || {
+    printf '%s\n' '[fail] native cross-unit handle transfer exceeded its arena budget' >&2
+    exit 1
+}
+
+# Positional by-value builtins call the stable-ID helper directly. The former
+# generic call-frame path wrote 512000 bytes for this fixture; the direct ABI
+# publishes only the 32000 bytes of actual i64 arguments.
+compact_builtin_counters="$OUT_DIR/native-compact-builtin-counters.json"
+compact_builtin_output="$OUT_DIR/native-compact-builtin.out"
+"$VM" run --counters-json "$compact_builtin_counters" \
+    tests/fixtures/performance/native_tier/compact_builtin_arguments.php \
+    >"$compact_builtin_output"
+cmp -s \
+    tests/fixtures/performance/native_tier/compact_builtin_arguments.php.out \
+    "$compact_builtin_output" || {
+    printf '%s\n' '[fail] compact builtin argument output differs from PHP' >&2
+    exit 1
+}
+jq -e '
+  .native_builtin_direct_executed == 3000 and
+  .native_call_direct == 3000 and
+  .native_callsite_total == 3000 and
+  .runtime_helper_calls_by_id.string_predicate == 3000 and
+  .native_call_frame_bytes <= 40000
+' "$compact_builtin_counters" >/dev/null || {
+    printf '%s\n' '[fail] direct builtin calls exceeded the compact frame budget' >&2
+    exit 1
+}
 
 python3 - <<'PY'
 import json

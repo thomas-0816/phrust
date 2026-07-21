@@ -65,6 +65,13 @@ dependency safety.
 compile time. Request execution clones only that cheap handle; it does not
 clone the lowered `IrUnit` to enter the VM.
 
+When exact source text is retained for every file, that text is the canonical
+compiled-unit identity. Function-scoped native fingerprints reuse one prepared
+semantic-context hash and format only the function requested by a compile or
+cache lookup. Dormant function bodies are not eagerly formatted merely to
+construct the unit. Synthetic units without complete retained source continue
+to hash every IR function so their identity cannot omit executable input.
+
 When the same canonical path is requested with changed source metadata, changed
 source hash on the compile path, or a changed optimization level, old entries
 for that path are removed and counted as stale invalidations. Compile failures

@@ -13,7 +13,6 @@ use crate::region_ir::{RegionGraph, RegionInstructionKind};
 pub struct ExecutableSsaGraph {
     predecessors: Vec<Vec<BlockId>>,
     reachable: BTreeSet<BlockId>,
-    dominators: Vec<BTreeSet<BlockId>>,
     immediate_dominators: Vec<Option<BlockId>>,
     dominance_frontiers: Vec<BTreeSet<BlockId>>,
     local_phis: BTreeMap<BlockId, BTreeSet<LocalId>>,
@@ -30,9 +29,17 @@ impl ExecutableSsaGraph {
 
     #[must_use]
     pub fn dominates(&self, dominator: BlockId, block: BlockId) -> bool {
-        self.dominators
-            .get(block.index())
-            .is_some_and(|dominators| dominators.contains(&dominator))
+        if dominator == block {
+            return self.reachable.contains(&block);
+        }
+        let mut current = self.immediate_dominator(block);
+        while let Some(block) = current {
+            if block == dominator {
+                return true;
+            }
+            current = self.immediate_dominator(block);
+        }
+        false
     }
 
     #[must_use]
@@ -120,37 +127,36 @@ pub fn build_executable_ssa(
     }
 
     let entry = region.blocks[0].id;
-    let reachable = reachable_blocks(region, entry);
-    let all_reachable = reachable.clone();
-    let mut dominators = vec![BTreeSet::new(); block_count];
-    for block in &region.blocks {
-        if !reachable.contains(&block.id) {
-            continue;
-        }
-        dominators[block.id.index()] = if block.id == entry {
-            BTreeSet::from([entry])
-        } else {
-            all_reachable.clone()
-        };
+    let reverse_postorder = reverse_postorder(region, entry);
+    let reachable = reverse_postorder.iter().copied().collect::<BTreeSet<_>>();
+    let mut rpo_index = vec![usize::MAX; block_count];
+    for (index, block) in reverse_postorder.iter().copied().enumerate() {
+        rpo_index[block.index()] = index;
     }
+    // Cooper-Harvey-Kennedy immediate dominators. The previous implementation
+    // materialized one BTreeSet containing every dominator for every block and
+    // repeatedly cloned/intersected those sets. Region fragmentation made
+    // that O(B^3)-shaped implementation dominate real WordPress compilation.
+    // Immediate dominators are the actual input required for dominance
+    // frontiers and phi placement, so compute them directly and never build
+    // the quadratic dominator matrix.
+    let mut immediate_dominators = vec![None; block_count];
+    immediate_dominators[entry.index()] = Some(entry);
     loop {
         let mut changed = false;
-        for block in region.blocks.iter().skip(1) {
-            if !reachable.contains(&block.id) {
-                continue;
-            }
-            let mut incoming = predecessors[block.id.index()]
+        for block in reverse_postorder.iter().copied().skip(1) {
+            let mut incoming = predecessors[block.index()]
                 .iter()
-                .filter(|predecessor| reachable.contains(predecessor));
-            let mut next = incoming.next().map_or_else(BTreeSet::new, |predecessor| {
-                dominators[predecessor.index()].clone()
-            });
+                .copied()
+                .filter(|predecessor| immediate_dominators[predecessor.index()].is_some());
+            let Some(mut next) = incoming.next() else {
+                continue;
+            };
             for predecessor in incoming {
-                next.retain(|candidate| dominators[predecessor.index()].contains(candidate));
+                next = intersect_dominators(predecessor, next, &immediate_dominators, &rpo_index);
             }
-            next.insert(block.id);
-            if next != dominators[block.id.index()] {
-                dominators[block.id.index()] = next;
+            if immediate_dominators[block.index()] != Some(next) {
+                immediate_dominators[block.index()] = Some(next);
                 changed = true;
             }
         }
@@ -159,22 +165,7 @@ pub fn build_executable_ssa(
         }
     }
 
-    let mut immediate_dominators = vec![None; block_count];
-    for block in region.blocks.iter().skip(1) {
-        if !reachable.contains(&block.id) {
-            continue;
-        }
-        let strict = dominators[block.id.index()]
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != block.id)
-            .collect::<Vec<_>>();
-        immediate_dominators[block.id.index()] = strict.iter().copied().find(|candidate| {
-            strict
-                .iter()
-                .all(|other| other == candidate || dominators[candidate.index()].contains(other))
-        });
-    }
+    immediate_dominators[entry.index()] = None;
 
     let mut dominance_frontiers = vec![BTreeSet::new(); block_count];
     for block in &region.blocks {
@@ -228,25 +219,57 @@ pub fn build_executable_ssa(
     ExecutableSsaGraph {
         predecessors,
         reachable,
-        dominators,
         immediate_dominators,
         dominance_frontiers,
         local_phis,
     }
 }
 
-fn reachable_blocks(region: &RegionGraph, entry: BlockId) -> BTreeSet<BlockId> {
-    let mut reachable = BTreeSet::new();
-    let mut work = vec![entry];
-    while let Some(block) = work.pop() {
-        if !reachable.insert(block) {
-            continue;
+fn intersect_dominators(
+    mut left: BlockId,
+    mut right: BlockId,
+    immediate_dominators: &[Option<BlockId>],
+    rpo_index: &[usize],
+) -> BlockId {
+    while left != right {
+        while rpo_index[left.index()] > rpo_index[right.index()] {
+            left = immediate_dominators[left.index()]
+                .expect("processed predecessor has an immediate dominator");
         }
-        if let Some(block) = region.blocks.get(block.index()) {
-            work.extend(block.terminator.targets());
+        while rpo_index[right.index()] > rpo_index[left.index()] {
+            right = immediate_dominators[right.index()]
+                .expect("processed predecessor has an immediate dominator");
         }
     }
-    reachable
+    left
+}
+
+fn reverse_postorder(region: &RegionGraph, entry: BlockId) -> Vec<BlockId> {
+    let mut visited = vec![false; region.blocks.len()];
+    let mut postorder = Vec::new();
+    let mut work = vec![(entry, false)];
+    while let Some((block, expanded)) = work.pop() {
+        if expanded {
+            postorder.push(block);
+            continue;
+        }
+        if visited[block.index()] {
+            continue;
+        }
+        visited[block.index()] = true;
+        work.push((block, true));
+        if let Some(block) = region.blocks.get(block.index()) {
+            let mut targets = block.terminator.targets();
+            targets.reverse();
+            for target in targets {
+                if !visited[target.index()] {
+                    work.push((target, false));
+                }
+            }
+        }
+    }
+    postorder.reverse();
+    postorder
 }
 
 const fn local_definition(kind: &RegionInstructionKind) -> Option<LocalId> {

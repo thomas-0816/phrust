@@ -7,8 +7,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::function::{FunctionFlags, IrCapture, IrParam, IrReturnType};
 use crate::ids::{BlockId, FileId, FunctionId, LocalId, RegId};
 use crate::instruction::{
-    CallableKind, CastKind, ClosureCaptureArg, CompareOp, InstructionKind, IrCallArgValueKind,
-    IrCallDimTarget, IrCallPropertyDimTarget, IrCallPropertyTarget, IrDiagnosticSeverity,
+    CallableKind, CastKind, ClosureCaptureArg, CompareOp, DimFetchMode, InstructionKind,
+    IrCallArgValueKind, IrCallDimTarget, IrCallPropertyDimTarget, IrCallPropertyTarget,
+    IrDiagnosticSeverity,
 };
 use crate::literal_text::{
     InterpolatedDim, InterpolatedPart, heredoc_literal_body, interpolated_literal_parts,

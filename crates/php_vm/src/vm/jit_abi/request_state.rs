@@ -1,15 +1,22 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
+use std::sync::Arc;
+
+pub(super) type NativeTraceArguments = smallvec::SmallVec<[i64; 4]>;
 
 #[derive(Clone)]
 pub(super) struct NativeBacktraceFrame {
-    pub(super) function: String,
-    pub(super) class: Option<String>,
-    pub(super) call_type: Option<&'static str>,
-    pub(super) file: Option<String>,
-    pub(super) line: i64,
+    /// One shared metadata record replaces separate function/file/class
+    /// refcount bumps on every userland call. Introspection materializes the
+    /// individual fields only when PHP actually requests a backtrace.
+    pub(super) metadata: Option<super::NativeFunctionMetadataPtr>,
+    pub(super) class: Option<Arc<str>>,
     pub(super) object: Option<php_runtime::api::ObjectRef>,
-    pub(super) arguments: Vec<php_runtime::api::Value>,
+    /// Arguments are present on every native PHP call for `func_get_arg()` and
+    /// backtraces. Preserve their already-live arena handles inline instead of
+    /// cloning PHP values on every call; exceptional/introspection paths
+    /// materialize values lazily while the synchronous caller still owns them.
+    pub(super) arguments: NativeTraceArguments,
 }
 
 /// Persistent, structurally shared function visibility for nested PHP units.

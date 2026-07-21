@@ -25,23 +25,46 @@ pub mod region_ir;
 
 pub use abi::{
     JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS,
+    JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_CONSTANT_VIEW_NONE,
+    JIT_NATIVE_CONSTANT_VIEW_STRING, JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
+    JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY, JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS,
+    JIT_NATIVE_DIRECT_ARRAY_FREE_NONE, JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY,
+    JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY, JIT_NATIVE_DIRECT_VALUE_CAPACITY,
+    JIT_NATIVE_DIRECT_VALUE_INDEX_BASE, JIT_NATIVE_FOREACH_VIEW_ABI_VERSION,
+    JIT_NATIVE_GLOBAL_REFERENCE_CACHE_SIZE, JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS,
+    JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE, JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION,
+    JIT_NATIVE_REFERENCE_ARRAY_KEY_INT, JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL, JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_TRUE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
+    JIT_NATIVE_REFERENCE_ARRAY_VIEW_EMPTY, JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
     JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
-    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_VALUE_VIEW_ARRAY,
-    JIT_NATIVE_VALUE_VIEW_NONE, JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
-    JIT_NATIVE_VALUE_VIEW_STRING, JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiSlot,
-    JitAbiValue, JitBailout, JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue,
-    JitCValueTag, JitCallResult, JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle,
-    JitFrameView, JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
-    JitNativeCallTarget, JitNativeControlRecord, JitNativeDestructorPoint,
-    JitNativeDispatchTrampoline, JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest,
-    JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler, JitNativeFiberState,
-    JitNativeFrameHeader, JitNativeGeneratorState, JitNativeIndirectionEntry, JitNativePcMetadata,
-    JitNativeReferenceScalarView, JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind,
-    JitNativeRuntimeView, JitNativeRuntimeViewGuard, JitNativeSuspendKind,
-    JitNativeSuspensionGenerationPolicy, JitNativeTransitionState, JitNativeValueView,
-    JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_SHARED_ARRAY_ABI_VERSION,
+    JIT_NATIVE_STRING_VALUE_ZERO, JIT_NATIVE_STRING_VIEW_ABI_VERSION, JIT_NATIVE_VALUE_VIEW_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH, JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT,
+    JIT_NATIVE_VALUE_VIEW_NONE, JIT_NATIVE_VALUE_VIEW_OBJECT_PROPERTIES,
+    JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR, JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_STRING, JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED,
+    JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED, JIT_OPTIMIZING_EXIT_ARRAY_VIEW_MISSING,
+    JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiSlot, JitAbiValue, JitBailout,
+    JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue, JitCValueTag, JitCallResult,
+    JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView,
+    JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
+    JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord, JitNativeDestructorPoint,
+    JitNativeDirectArrayEntry, JitNativeDispatchTrampoline, JitNativeDynamicCodeKind,
+    JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
+    JitNativeFiberState, JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader,
+    JitNativeGeneratorState, JitNativeGlobalReferenceCacheRecord, JitNativeIndirectionEntry,
+    JitNativePcMetadata, JitNativePropertyCacheEntry, JitNativeReferenceArrayEntry,
+    JitNativeReferenceArrayView, JitNativeReferenceScalarView, JitNativeResumeInputKind,
+    JitNativeRootEntry, JitNativeRootKind, JitNativeRuntimeView, JitNativeRuntimeViewGuard,
+    JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy, JitNativeTransitionState,
+    JitNativeValueSlot, JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
     JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
-    activate_native_runtime_view,
+    activate_native_runtime_view, jit_native_global_reference_cache_index,
+    jit_native_property_name_hash,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -51,9 +74,9 @@ pub use code_manager::{
 };
 pub use cranelift_lowering::{
     CraneliftClifSmokeResult, CraneliftLoweringError, CraneliftLoweringStats,
-    CraneliftNativeCompiler, NativeCompilePlan, NativeFunctionKey, NativeFunctionTier,
-    NativeIndirectionCell, NativeIndirectionState, build_trivial_add_clif_smoke,
-    native_function_key,
+    CraneliftNativeCompiler, NATIVE_FRAGMENT_PLAN_SCHEMA_VERSION, NativeCompilePlan,
+    NativeFunctionKey, NativeFunctionTier, NativeIndirectionCell, NativeIndirectionState,
+    build_trivial_add_clif_smoke, native_compiler_mode_identity, native_function_key,
 };
 pub use dynamic_code::{
     DynamicCodeCacheDisposition, DynamicCodeCacheKey, DynamicCodeCompileError,
@@ -82,6 +105,7 @@ use std::sync::Arc;
 const JIT_NATIVE_HANDLER_RESUME_TAG: u32 = 0x8000_0000;
 const JIT_NATIVE_SUSPENSION_RESUME_TAG: u32 = 0x4000_0000;
 pub const JIT_NATIVE_TRANSITION_RESUME_TAG: u32 = 0x2000_0000;
+pub const JIT_NATIVE_OPTIMIZING_BLOCK_RESUME_TAG: u32 = 0x1000_0000;
 /// Cranelift release included in restart-persistent native cache identity.
 pub const CRANELIFT_VERSION: &str = "0.133.1";
 
@@ -95,6 +119,10 @@ const fn native_suspension_resume_id(continuation_id: u32) -> i32 {
 
 const fn native_transition_resume_id(continuation_id: u32) -> i32 {
     (JIT_NATIVE_TRANSITION_RESUME_TAG | continuation_id) as i32
+}
+
+const fn native_optimizing_continuation_resume_id(continuation_id: u32) -> i32 {
+    (JIT_NATIVE_OPTIMIZING_BLOCK_RESUME_TAG | continuation_id) as i32
 }
 
 /// Stable native compiler identity embedded in code/cache metadata.
@@ -114,6 +142,10 @@ impl CraneliftCompilerIdentity {
 pub struct JitRuntimeHelperAddresses {
     /// Typed dynamic-call resolver/invoker; never an interpreter dispatcher.
     pub native_call_dispatch: usize,
+    /// Direct statically identified builtin invocation over packed i64 arguments.
+    pub native_builtin_dispatch: usize,
+    /// Direct typed PHP semantic operation over packed i64 operands.
+    pub native_semantic_dispatch: usize,
     /// Resolves or compiles one statically known PHP callee without invoking it.
     pub native_function_resolve: usize,
     /// Allocates bounded request-local native call-frame storage.
@@ -136,8 +168,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_local_fetch: usize,
     /// Stores through a PHP reference cell or replaces a plain local value.
     pub native_local_store: usize,
-    /// Retains or releases one request-owned native value handle.
-    pub native_value_lifecycle: usize,
+    /// Performs the cold final release of one request-owned native value.
+    pub native_value_release: usize,
     /// Creates or propagates one PHP reference cell.
     pub native_reference_bind: usize,
     /// Enforces one declared PHP function parameter type at a direct call site.
@@ -160,6 +192,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_object_clone_with: usize,
     /// Inserts or appends one PHP array element.
     pub native_array_insert: usize,
+    /// Consumes a local array owner, inserts, and returns its replacement.
+    pub native_array_insert_local: usize,
     /// Fetches one PHP array dimension.
     pub native_array_fetch: usize,
     /// Removes one PHP array dimension.
@@ -176,21 +210,40 @@ pub struct JitRuntimeHelperAddresses {
     pub native_constant_fetch: usize,
     /// Typed PHP truthiness operation used by native branches.
     pub native_truthy: usize,
-    /// Stable builtin PHP type-predicate slow path.
+    /// Direct, non-allocating PHP type-predicate operation.
     pub native_type_predicate: usize,
     /// Typed `strlen`/array `count` slow path for stable value views.
     pub native_stable_length: usize,
+    /// Direct string contains/starts-with/ends-with predicate over native handles.
+    pub native_string_predicate: usize,
     /// Typed runtime-fatal publication operation.
     pub native_runtime_fatal: usize,
     /// Cooperative execution-deadline poll emitted at native loop headers.
     pub native_execution_poll: usize,
 }
 
+/// Type predicates that generated baseline code may invoke without building a
+/// generic PHP call frame. Numeric values are part of the runtime-helper ABI.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JitNativeTypePredicate {
+    Int = 1,
+    Float = 2,
+    String = 3,
+    Bool = 4,
+    Null = 5,
+    Array = 6,
+    Object = 7,
+    Resource = 8,
+    Scalar = 9,
+    Iterable = 10,
+}
+
 /// Stable high-bit namespace for immutable IR constant handles.
 pub const JIT_VALUE_CONSTANT_TAG: u64 = 0x7ff1_0000_0000_0000;
 /// Stable high-bit namespace for request-owned runtime value handles.
 pub const JIT_VALUE_RUNTIME_TAG: u64 = 0x7ff2_0000_0000_0000;
-/// Stable high-bit namespace for request-owned reference-cell handles.
+/// Stable high-bit namespace for request-owned reference handles.
 pub const JIT_VALUE_RUNTIME_REFERENCE_TAG: u64 = 0x7ff2_0001_0000_0000;
 /// Stable high-bit namespace for request-owned array handles.
 pub const JIT_VALUE_RUNTIME_ARRAY_TAG: u64 = 0x7ff2_0002_0000_0000;
@@ -198,12 +251,12 @@ pub const JIT_VALUE_RUNTIME_ARRAY_TAG: u64 = 0x7ff2_0002_0000_0000;
 pub const JIT_VALUE_RUNTIME_OBJECT_TAG: u64 = 0x7ff2_0003_0000_0000;
 /// Stable high-bit namespace for request-owned string handles.
 pub const JIT_VALUE_RUNTIME_STRING_TAG: u64 = 0x7ff2_0004_0000_0000;
-/// Stable high-bit namespace for request-owned boxed float values.
+/// Stable high-bit namespace for request-owned float handles.
 pub const JIT_VALUE_RUNTIME_FLOAT_TAG: u64 = 0x7ff2_0005_0000_0000;
-/// Stable high-bit namespace for request-owned callable handles.
-pub const JIT_VALUE_RUNTIME_CALLABLE_TAG: u64 = 0x7ff2_0006_0000_0000;
 /// Stable high-bit namespace for request-owned resource handles.
-pub const JIT_VALUE_RUNTIME_RESOURCE_TAG: u64 = 0x7ff2_0007_0000_0000;
+pub const JIT_VALUE_RUNTIME_RESOURCE_TAG: u64 = 0x7ff2_0006_0000_0000;
+/// Stable high-bit namespace for request-owned callable handles.
+pub const JIT_VALUE_RUNTIME_CALLABLE_TAG: u64 = 0x7ff2_0007_0000_0000;
 /// Stable high-bit namespace for request-owned generator handles.
 pub const JIT_VALUE_RUNTIME_GENERATOR_TAG: u64 = 0x7ff2_0008_0000_0000;
 /// Stable high-bit namespace for request-owned fiber handles.
@@ -220,6 +273,14 @@ pub const JIT_VALUE_UNINITIALIZED: u32 = u32::MAX - 1;
 pub const JIT_VALUE_FALSE: u32 = u32::MAX - 2;
 /// Reserved immutable handle for PHP `true`.
 pub const JIT_VALUE_TRUE: u32 = u32::MAX - 3;
+/// Local-fetch helper flag for an ordinary non-global slot whose immediate
+/// values can bypass request-context decoding.
+pub const JIT_LOCAL_FETCH_PLAIN_LOCAL: u32 = 1 << 1;
+/// Local-store helper flag for an ordinary non-global slot. The runtime still
+/// checks both handles for PHP references before using the plain replacement
+/// path.
+pub const JIT_LOCAL_STORE_PLAIN_LOCAL: u32 = 1;
+pub const JIT_LOCAL_STORE_MOVE_INPUT: u32 = 2;
 
 /// Encodes one IR constant identity in an i64 native slot.
 #[must_use]
@@ -296,8 +357,19 @@ pub struct JitCompileRequest {
     pub region_id: String,
     /// Optional PHP function or method name for reports.
     pub function_name: Option<String>,
-    /// Optional stable IR fingerprint when available.
+    /// Optional stable fingerprint of the requested function IR.
     pub ir_fingerprint: Option<String>,
+    /// Stable identity of the source unit used to address linkage cells.
+    ///
+    /// This is deliberately separate from `ir_fingerprint`: changing an
+    /// unrelated function must invalidate neither this function's code cache
+    /// nor its single-flight compile key, while every declaration in one unit
+    /// must still agree on the same indirection-cell namespace.
+    pub deployment_identity: Option<String>,
+    /// Process-local numeric identity shared with the active runtime unit.
+    /// It is used only for request-cache addressing and is never persisted as
+    /// an address-bearing artifact identity.
+    pub deployment_runtime_identity: u64,
     /// Optimization level active when the request was made.
     pub opt_level: u8,
     /// Effective runtime/compiler configuration hash for process-cache identity.
@@ -318,6 +390,8 @@ impl JitCompileRequest {
             region_id: region_id.into(),
             function_name: None,
             ir_fingerprint: None,
+            deployment_identity: None,
+            deployment_runtime_identity: 0,
             opt_level: 0,
             config_hash: 0,
             invalidation_generation: 0,
@@ -347,6 +421,20 @@ impl JitCompileRequest {
     #[must_use]
     pub fn with_ir_fingerprint(mut self, ir_fingerprint: impl Into<String>) -> Self {
         self.ir_fingerprint = Some(ir_fingerprint.into());
+        self
+    }
+
+    /// Adds the source-unit identity used by native linkage cells.
+    #[must_use]
+    pub fn with_deployment_identity(mut self, identity: impl Into<String>) -> Self {
+        self.deployment_identity = Some(identity.into());
+        self
+    }
+
+    /// Adds the numeric identity used by the request-local native entry cache.
+    #[must_use]
+    pub const fn with_deployment_runtime_identity(mut self, identity: u64) -> Self {
+        self.deployment_runtime_identity = identity;
         self
     }
 
@@ -559,6 +647,34 @@ pub struct JitNativeTransitionMetadata {
     pub result_register: Option<php_ir::RegId>,
 }
 
+/// Production code shape selected for one optimizing instruction.
+///
+/// This is emitted with the artifact rather than reconstructed from source
+/// tests.  In particular, a helper-free optimizing relocation table is not
+/// sufficient evidence when an instruction can immediately return
+/// `RECOMPILE_REQUESTED` and execute the old baseline helper instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum JitProductionLoweringClass {
+    DirectClif,
+    DirectNativeData,
+    CompiledNativeCall,
+    BaselineFragmentTransition,
+}
+
+/// Emitted-code contract row for one optimizing instruction.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct JitProductionLoweringMetadata {
+    pub function: FunctionId,
+    pub continuation_id: u32,
+    /// Stable authoritative `InstructionKind` variant name.
+    pub operation: String,
+    pub class: JitProductionLoweringClass,
+    /// True only when otherwise-direct optimizing code embeds its own exit to
+    /// the generic baseline implementation.  These sites are removed family
+    /// by family by the native hot-path replacement contract.
+    pub operation_local_transition: bool,
+}
+
 /// Process-local generated entry for one function in a compiled unit graph.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct JitNativeFunctionEntryMetadata {
@@ -655,6 +771,10 @@ pub struct JitRegionStateMetadata {
     pub suspensions: Vec<JitNativeSuspensionMetadata>,
     pub dynamic_code: Vec<JitNativeDynamicCodeMetadata>,
     pub native_transitions: Vec<JitNativeTransitionMetadata>,
+    /// Authoritative optimizing code-shape manifest. Baseline artifacts leave
+    /// this empty; old cache entries deserialize with an empty manifest.
+    #[serde(default)]
+    pub production_lowering: Vec<JitProductionLoweringMetadata>,
     pub function_entries: Vec<JitNativeFunctionEntryMetadata>,
 }
 
@@ -1093,6 +1213,32 @@ impl JitFunctionHandle {
         entry.invoke_i64_with_deopt(args)
     }
 
+    /// Invokes a validated native entry with the request fast-state pointer
+    /// that generated code passes unchanged to callees and runtime helpers.
+    pub fn invoke_i64_with_deopt_runtime(
+        &self,
+        args: &[i64],
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let Some(entry) = self.native_entry else {
+            return Err(JitInvokeError::MissingNativeEntry);
+        };
+        if runtime_abi_hash != JIT_RUNTIME_ABI_HASH || entry.abi_hash != JIT_RUNTIME_ABI_HASH {
+            return Err(JitInvokeError::AbiHashMismatch {
+                expected: JIT_RUNTIME_ABI_HASH,
+                actual: runtime_abi_hash,
+            });
+        }
+        if args.len() != usize::from(entry.arity) {
+            return Err(JitInvokeError::ArityMismatch {
+                expected: entry.arity,
+                actual: args.len() as u8,
+            });
+        }
+        entry.invoke_i64_with_deopt_runtime(args, runtime)
+    }
+
     /// Enters the exact baseline-native continuation described by `state`.
     /// Live locals/registers are reconstructed from the shared native state;
     /// instructions before the continuation are not executed again.
@@ -1101,7 +1247,29 @@ impl JitFunctionHandle {
         state: &JitNativeTransitionState,
         runtime_abi_hash: u64,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        self.invoke_i64_transition_impl(state, runtime_abi_hash, true)
+        self.invoke_i64_transition_impl(state, runtime_abi_hash, true, std::ptr::null_mut())
+    }
+
+    /// Enters a baseline continuation and keeps PHP catch/finally unwinding
+    /// inside native code. This is the only production boundary used when an
+    /// optimizing guard rejects its direct native representation.
+    pub fn invoke_i64_native_transition_with_unwind_runtime(
+        &self,
+        state: &JitNativeTransitionState,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let outcome = self.invoke_i64_transition_impl(state, runtime_abi_hash, true, runtime)?;
+        let arity = self.native_entry.map_or(0, |entry| entry.arity);
+        let args = vec![0_i64; usize::from(arity)];
+        self.continue_i64_with_native_unwind_runtime(
+            &args,
+            runtime_abi_hash,
+            runtime,
+            outcome,
+            catch_matches,
+        )
     }
 
     /// Re-enters a continuation published by this same native artifact. This
@@ -1112,7 +1280,18 @@ impl JitFunctionHandle {
         state: &JitNativeTransitionState,
         runtime_abi_hash: u64,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        self.invoke_i64_transition_impl(state, runtime_abi_hash, false)
+        self.invoke_i64_transition_impl(state, runtime_abi_hash, false, std::ptr::null_mut())
+    }
+
+    /// Re-enters a continuation while preserving the request fast-state
+    /// pointer used by the suspended native call.
+    pub fn invoke_i64_same_artifact_transition_runtime(
+        &self,
+        state: &JitNativeTransitionState,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        self.invoke_i64_transition_impl(state, runtime_abi_hash, false, runtime)
     }
 
     fn invoke_i64_transition_impl(
@@ -1120,6 +1299,7 @@ impl JitFunctionHandle {
         state: &JitNativeTransitionState,
         runtime_abi_hash: u64,
         require_baseline: bool,
+        runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         if runtime_abi_hash != JIT_RUNTIME_ABI_HASH {
             return Err(JitInvokeError::AbiHashMismatch {
@@ -1129,9 +1309,10 @@ impl JitFunctionHandle {
         }
         let metadata =
             self.region_state_metadata()
-                .ok_or(JitInvokeError::MissingNativeTransition(
-                    state.continuation_id,
-                ))?;
+                .ok_or(JitInvokeError::MissingNativeTransition {
+                    function: state.function_id,
+                    continuation: state.continuation_id,
+                })?;
         if require_baseline && metadata.compiler_tier != region_ir::NativeCompilerTier::Baseline {
             return Err(JitInvokeError::NativeTransitionRequiresBaseline);
         }
@@ -1142,37 +1323,61 @@ impl JitFunctionHandle {
                 entry.function.raw() == state.function_id
                     && entry.continuation_id == state.continuation_id
             })
-            .ok_or(JitInvokeError::MissingNativeTransition(
-                state.continuation_id,
-            ))?;
+            .ok_or(JitInvokeError::MissingNativeTransition {
+                function: state.function_id,
+                continuation: state.continuation_id,
+            })?;
         let locals_complete = transition
             .live_locals
             .iter()
             .all(|local| state.local_initialized(*local));
-        let registers_complete =
-            transition
-                .live_registers
-                .iter()
-                .enumerate()
-                .all(|(snapshot_slot, _)| {
-                    state.initialized_register_mask
+        let register_source_slots = transition
+            .live_registers
+            .iter()
+            .map(|register| {
+                (0..JIT_DEOPT_MAX_REGISTERS).find(|snapshot_slot| {
+                    let initialized = state.initialized_register_mask
                         & (1_u64
-                            .checked_shl(u32::try_from(snapshot_slot).unwrap_or(u32::MAX))
+                            .checked_shl(u32::try_from(*snapshot_slot).unwrap_or(u32::MAX))
                             .unwrap_or(0))
-                        != 0
-                });
+                        != 0;
+                    initialized && state.register_ids[*snapshot_slot] == register.raw()
+                })
+            })
+            .collect::<Vec<_>>();
+        let registers_complete = register_source_slots.iter().all(Option::is_some);
         if !locals_complete || !registers_complete {
             return Err(JitInvokeError::IncompleteNativeTransition(
                 state.continuation_id,
             ));
         }
+        let mut remapped_state = state.clone();
+        remapped_state.initialized_register_mask =
+            if transition.live_registers.len() >= u64::BITS as usize {
+                u64::MAX
+            } else {
+                (1_u64 << transition.live_registers.len()).saturating_sub(1)
+            };
+        remapped_state.register_ids.fill(u32::MAX);
+        remapped_state.registers.fill(0);
+        for (target_slot, (register, source_slot)) in transition
+            .live_registers
+            .iter()
+            .zip(register_source_slots.into_iter())
+            .enumerate()
+        {
+            let source_slot = source_slot.expect("transition completeness was checked");
+            remapped_state.register_ids[target_slot] = register.raw();
+            remapped_state.registers[target_slot] = state.registers[source_slot];
+        }
         let function_entry = metadata
             .function_entries
             .iter()
             .find(|entry| entry.function.raw() == state.function_id)
-            .ok_or(JitInvokeError::MissingNativeTransition(
-                state.continuation_id,
-            ))?;
+            .ok_or(JitInvokeError::MissingNativeTransition {
+                function: state.function_id,
+                continuation: state.continuation_id,
+            })?;
         let Some(mut entry) = self.native_entry else {
             return Err(JitInvokeError::MissingNativeEntry);
         };
@@ -1182,7 +1387,8 @@ impl JitFunctionHandle {
         entry.invoke_i64_status_out_with_resume(
             &args,
             transition.resume_id,
-            state as *const JitNativeTransitionState,
+            std::ptr::from_ref(&remapped_state),
+            runtime,
         )
     }
 
@@ -1211,14 +1417,31 @@ impl JitFunctionHandle {
         &self,
         args: &[i64],
         runtime_abi_hash: u64,
-        mut catch_matches: impl FnMut(&[String], i64) -> bool,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        self.invoke_i64_with_native_unwind_runtime(
+            args,
+            runtime_abi_hash,
+            std::ptr::null_mut(),
+            catch_matches,
+        )
+    }
+
+    /// Runs native unwind with a request fast-state pointer passed directly
+    /// through every generated continuation entry.
+    pub fn invoke_i64_with_native_unwind_runtime(
+        &self,
+        args: &[i64],
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         let Some(entry) = self.native_entry else {
             return Err(JitInvokeError::MissingNativeEntry);
         };
-        let Some(metadata) = self.region_state_metadata() else {
-            return self.invoke_i64_with_deopt(args, runtime_abi_hash);
-        };
+        if self.region_state_metadata().is_none() {
+            return self.invoke_i64_with_deopt_runtime(args, runtime_abi_hash, runtime);
+        }
         if runtime_abi_hash != JIT_RUNTIME_ABI_HASH || entry.abi_hash != JIT_RUNTIME_ABI_HASH {
             return Err(JitInvokeError::AbiHashMismatch {
                 expected: JIT_RUNTIME_ABI_HASH,
@@ -1231,7 +1454,36 @@ impl JitFunctionHandle {
                 actual: args.len() as u8,
             });
         }
-        let mut outcome = entry.invoke_i64_with_deopt(args)?;
+        let outcome = entry.invoke_i64_with_deopt_runtime(args, runtime)?;
+        self.continue_i64_with_native_unwind_runtime(
+            args,
+            runtime_abi_hash,
+            runtime,
+            outcome,
+            catch_matches,
+        )
+    }
+
+    fn continue_i64_with_native_unwind_runtime(
+        &self,
+        args: &[i64],
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        mut outcome: JitI64InvokeOutcome,
+        mut catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let Some(entry) = self.native_entry else {
+            return Err(JitInvokeError::MissingNativeEntry);
+        };
+        let Some(metadata) = self.region_state_metadata() else {
+            return Ok(outcome);
+        };
+        if runtime_abi_hash != JIT_RUNTIME_ABI_HASH || entry.abi_hash != JIT_RUNTIME_ABI_HASH {
+            return Err(JitInvokeError::AbiHashMismatch {
+                expected: JIT_RUNTIME_ABI_HASH,
+                actual: runtime_abi_hash,
+            });
+        }
         loop {
             let JitI64InvokeOutcome::SideExit {
                 status,
@@ -1296,6 +1548,7 @@ impl JitFunctionHandle {
                         JitCallStatus::CONTINUE,
                         value,
                         resume_state,
+                        runtime,
                     )?;
                 }
                 JitNativeUnwindTarget::Finally {
@@ -1303,8 +1556,8 @@ impl JitFunctionHandle {
                     pending,
                     handler_index: _,
                 } => {
-                    outcome =
-                        entry.invoke_i64_handler_resume(args, block, pending, value, state)?;
+                    outcome = entry
+                        .invoke_i64_handler_resume(args, block, pending, value, state, runtime)?;
                 }
                 JitNativeUnwindTarget::Propagate(_) => {
                     return Ok(JitI64InvokeOutcome::SideExit {
@@ -1327,6 +1580,26 @@ impl JitFunctionHandle {
         input: JitNativeResumeInputKind,
         value: i64,
         runtime_abi_hash: u64,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        self.invoke_i64_suspension_resume_runtime(
+            args,
+            state,
+            input,
+            value,
+            runtime_abi_hash,
+            std::ptr::null_mut(),
+        )
+    }
+
+    /// Resumes a generated suspension with the original request fast state.
+    pub fn invoke_i64_suspension_resume_runtime(
+        &self,
+        args: &[i64],
+        state: &JitDeoptState,
+        input: JitNativeResumeInputKind,
+        value: i64,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         let Some(metadata) = self.region_state_metadata() else {
             return Err(JitInvokeError::MissingSuspensionEntry(
@@ -1357,7 +1630,7 @@ impl JitFunctionHandle {
                 actual: args.len() as u8,
             });
         }
-        entry.invoke_i64_suspension_resume(args, state, input, value)
+        entry.invoke_i64_suspension_resume(args, state, input, value, runtime)
     }
 
     /// Resumes a generator/fiber continuation and executes any generated
@@ -1369,17 +1642,52 @@ impl JitFunctionHandle {
         input: JitNativeResumeInputKind,
         value: i64,
         runtime_abi_hash: u64,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        self.invoke_i64_suspension_resume_with_native_unwind_runtime(
+            args,
+            state,
+            input,
+            value,
+            runtime_abi_hash,
+            std::ptr::null_mut(),
+            catch_matches,
+        )
+    }
+
+    /// Resumes a suspension and generated unwind with direct request state.
+    pub fn invoke_i64_suspension_resume_with_native_unwind_runtime(
+        &self,
+        args: &[i64],
+        state: &JitDeoptState,
+        input: JitNativeResumeInputKind,
+        value: i64,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
         mut catch_matches: impl FnMut(&[String], i64) -> bool,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         let Some(metadata) = self.region_state_metadata() else {
-            return self.invoke_i64_suspension_resume(args, state, input, value, runtime_abi_hash);
+            return self.invoke_i64_suspension_resume_runtime(
+                args,
+                state,
+                input,
+                value,
+                runtime_abi_hash,
+                runtime,
+            );
         };
         let Some(entry) = self.native_entry else {
             return Err(JitInvokeError::MissingNativeEntry);
         };
         let function = FunctionId::new(state.function_id);
-        let mut outcome =
-            self.invoke_i64_suspension_resume(args, state, input, value, runtime_abi_hash)?;
+        let mut outcome = self.invoke_i64_suspension_resume_runtime(
+            args,
+            state,
+            input,
+            value,
+            runtime_abi_hash,
+            runtime,
+        )?;
         loop {
             let JitI64InvokeOutcome::SideExit {
                 status,
@@ -1443,6 +1751,7 @@ impl JitFunctionHandle {
                         JitCallStatus::CONTINUE,
                         value,
                         resume_state,
+                        runtime,
                     )?;
                 }
                 JitNativeUnwindTarget::Finally {
@@ -1450,8 +1759,8 @@ impl JitFunctionHandle {
                     pending,
                     handler_index: _,
                 } => {
-                    outcome =
-                        entry.invoke_i64_handler_resume(args, block, pending, value, state)?;
+                    outcome = entry
+                        .invoke_i64_handler_resume(args, block, pending, value, state, runtime)?;
                 }
                 JitNativeUnwindTarget::Propagate(_) => {
                     return Ok(JitI64InvokeOutcome::SideExit {
@@ -1558,7 +1867,12 @@ impl JitNativeEntry {
         if self.kind != JitNativeEntryKind::PackedI64StatusOut {
             return Err(JitInvokeError::MissingOsrEntry(entry_id));
         }
-        self.invoke_i64_status_out_with_resume(args, entry_id as i32, state as *const _)
+        self.invoke_i64_status_out_with_resume(
+            args,
+            entry_id as i32,
+            state as *const _,
+            std::ptr::null_mut(),
+        )
     }
 
     fn invoke_i64_handler_resume(
@@ -1568,6 +1882,7 @@ impl JitNativeEntry {
         status: JitCallStatus,
         value: i64,
         mut state: JitDeoptState,
+        runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         if self.kind != JitNativeEntryKind::PackedI64StatusOut {
             return Err(JitInvokeError::MissingNativeEntry);
@@ -1578,6 +1893,7 @@ impl JitNativeEntry {
             args,
             native_handler_resume_id(block),
             &state as *const _,
+            runtime,
         )
     }
 
@@ -1587,6 +1903,7 @@ impl JitNativeEntry {
         state: &JitDeoptState,
         input: JitNativeResumeInputKind,
         value: i64,
+        runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         if self.kind != JitNativeEntryKind::PackedI64StatusOut {
             return Err(JitInvokeError::MissingSuspensionEntry(
@@ -1604,6 +1921,7 @@ impl JitNativeEntry {
             args,
             native_suspension_resume_id(state.continuation_id),
             &resumed as *const _,
+            runtime,
         )
     }
 
@@ -1686,7 +2004,15 @@ impl JitNativeEntry {
         self,
         args: &[i64],
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        self.invoke_i64_status_out_with_resume(args, -1, std::ptr::null())
+        self.invoke_i64_status_out_with_resume(args, -1, std::ptr::null(), std::ptr::null_mut())
+    }
+
+    fn invoke_i64_with_deopt_runtime(
+        self,
+        args: &[i64],
+        runtime: *mut std::ffi::c_void,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        self.invoke_i64_status_out_with_resume(args, -1, std::ptr::null(), runtime)
     }
 
     fn invoke_i64_status_out_with_resume(
@@ -1694,11 +2020,16 @@ impl JitNativeEntry {
         args: &[i64],
         resume_id: i32,
         resume_state: *const JitDeoptState,
+        runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         let mut out = 0_i64;
         let out_ptr = &mut out as *mut i64;
-        let mut deopt = JitDeoptState::default();
-        let deopt_ptr = &mut deopt as *mut JitDeoptState;
+        // Normal native returns only use the request runtime view inside this
+        // buffer. Do not clear the 256 local and 64 register slots for every
+        // warm call; complete the sparse state only when native code actually
+        // reports a side exit.
+        let mut deopt = prepare_native_deopt_out();
+        let deopt_ptr = deopt.as_mut_ptr();
         // SAFETY: Handles are created only after Cranelift defines the matching
         // packed status/out signature. `args.as_ptr()` remains valid for the
         // synchronous native call, including the zero-length case where native
@@ -1706,23 +2037,100 @@ impl JitNativeEntry {
         // and exact arity before reaching this call.
         let status = unsafe {
             let function: extern "C" fn(
+                *mut std::ffi::c_void,
                 *const i64,
                 *mut i64,
                 *mut JitDeoptState,
                 i32,
                 *const JitDeoptState,
             ) -> i32 = mem::transmute(self.address);
-            function(args.as_ptr(), out_ptr, deopt_ptr, resume_id, resume_state)
+            function(
+                runtime,
+                args.as_ptr(),
+                out_ptr,
+                deopt_ptr,
+                resume_id,
+                resume_state,
+            )
         };
         if status == JitCallStatus::RETURN.0 as i32 {
             Ok(JitI64InvokeOutcome::Returned(out))
         } else {
+            // SAFETY: the call initializes every slot selected by the masks.
+            // The preparation initialized all scalar metadata; this fills the
+            // complementary sparse slots before constructing the Rust value.
+            let deopt = unsafe { complete_native_deopt_out(deopt) };
             Ok(JitI64InvokeOutcome::SideExit {
                 status,
                 value: out,
                 state: deopt,
             })
         }
+    }
+}
+
+fn prepare_native_deopt_out() -> std::mem::MaybeUninit<JitDeoptState> {
+    let mut state = std::mem::MaybeUninit::<JitDeoptState>::uninit();
+    let pointer = state.as_mut_ptr();
+    // SAFETY: each write targets a distinct scalar/metadata field. The large
+    // value arrays deliberately remain uninitialized until a side exit.
+    unsafe {
+        std::ptr::addr_of_mut!((*pointer).function_id).write(u32::MAX);
+        std::ptr::addr_of_mut!((*pointer).continuation_id).write(u32::MAX);
+        std::ptr::addr_of_mut!((*pointer).slot_count).write(0);
+        std::ptr::addr_of_mut!((*pointer).native_version).write(0);
+        std::ptr::addr_of_mut!((*pointer).initialized_mask).write(0);
+        std::ptr::addr_of_mut!((*pointer).initialized_masks_high)
+            .write([0; JIT_DEOPT_LOCAL_MASK_WORDS - 1]);
+        std::ptr::addr_of_mut!((*pointer).control_status).write(JitCallStatus::CONTINUE);
+        std::ptr::addr_of_mut!((*pointer).control_reserved).write(0);
+        std::ptr::addr_of_mut!((*pointer).control_value).write(0);
+        std::ptr::addr_of_mut!((*pointer).suspend_kind).write(0);
+        std::ptr::addr_of_mut!((*pointer).suspend_flags).write(0);
+        std::ptr::addr_of_mut!((*pointer).yielded_key).write(0);
+        std::ptr::addr_of_mut!((*pointer).delegation_handle).write(0);
+        std::ptr::addr_of_mut!((*pointer).initialized_register_mask).write(0);
+        std::ptr::addr_of_mut!((*pointer).register_ids).write([u32::MAX; JIT_DEOPT_MAX_REGISTERS]);
+        std::ptr::addr_of_mut!((*pointer).runtime_view).write(abi::current_native_runtime_view());
+    }
+    state
+}
+
+/// Completes the inactive portion of a sparse native side-exit state.
+///
+/// # Safety
+///
+/// `state` must have been produced by [`prepare_native_deopt_out`], and native
+/// code must have initialized every local/register selected by its masks.
+unsafe fn complete_native_deopt_out(
+    mut state: std::mem::MaybeUninit<JitDeoptState>,
+) -> JitDeoptState {
+    let pointer = state.as_mut_ptr();
+    // SAFETY: scalar masks were initialized before the native call. Selected
+    // elements were written by native code; the loops initialize every other
+    // element without reading it.
+    unsafe {
+        let low_mask = std::ptr::addr_of!((*pointer).initialized_mask).read();
+        let high_masks = std::ptr::addr_of!((*pointer).initialized_masks_high).read();
+        let slots = std::ptr::addr_of_mut!((*pointer).slots).cast::<i64>();
+        for index in 0..JIT_DEOPT_MAX_SLOTS {
+            let mask = if index < u64::BITS as usize {
+                low_mask
+            } else {
+                high_masks[index / u64::BITS as usize - 1]
+            };
+            if mask & (1_u64 << (index % u64::BITS as usize)) == 0 {
+                slots.add(index).write(0);
+            }
+        }
+        let register_mask = std::ptr::addr_of!((*pointer).initialized_register_mask).read();
+        let registers = std::ptr::addr_of_mut!((*pointer).registers).cast::<i64>();
+        for index in 0..JIT_DEOPT_MAX_REGISTERS {
+            if register_mask & (1_u64 << index) == 0 {
+                registers.add(index).write(0);
+            }
+        }
+        state.assume_init()
     }
 }
 
@@ -1760,7 +2168,7 @@ pub enum JitInvokeError {
     /// Caller did not materialize every local required by the OSR entry.
     IncompleteOsrState(u32),
     /// Requested baseline-native continuation is absent.
-    MissingNativeTransition(u32),
+    MissingNativeTransition { function: u32, continuation: u32 },
     /// The selected target is not a non-speculative baseline artifact.
     NativeTransitionRequiresBaseline,
     /// Guard state omits a local/register required by the continuation.
@@ -1787,7 +2195,7 @@ impl JitInvokeError {
             | Self::MissingOsrEntry(_)
             | Self::MissingSuspensionEntry(_)
             | Self::IncompleteOsrState(_)
-            | Self::MissingNativeTransition(_)
+            | Self::MissingNativeTransition { .. }
             | Self::NativeTransitionRequiresBaseline
             | Self::IncompleteNativeTransition(_) => {
                 JitSideExit::new(SideExitReason::UnsupportedValue)
@@ -1944,9 +2352,10 @@ impl JitEngine {
         if request.region_id.is_empty() {
             return Err(JitError::EmptyRegionId);
         }
-        if request.ir_fingerprint.is_none() {
-            request.ir_fingerprint = Some(stable_ir_fingerprint(unit));
-        }
+        let deployment_identity = request
+            .deployment_identity
+            .get_or_insert_with(|| stable_ir_fingerprint(unit))
+            .clone();
         if request.dependency_identity.is_none() {
             request.dependency_identity = Some(stable_dependency_identity(unit));
         }
@@ -1960,6 +2369,9 @@ impl JitEngine {
             let mut function_request = request.clone();
             function_request.region_id = format!("{base_region}.function.{index}");
             function_request.function_name = Some(function.name.clone());
+            function_request.ir_fingerprint =
+                Some(stable_function_ir_fingerprint(unit, function_id));
+            function_request.deployment_identity = Some(deployment_identity.clone());
             let result = self.compile_function_with_runtime_helpers(
                 unit,
                 function_id,
@@ -2023,7 +2435,10 @@ impl JitEngine {
         runtime_helpers: JitRuntimeHelperAddresses,
     ) -> Result<JitCompileResult, JitError> {
         if request.ir_fingerprint.is_none() {
-            request.ir_fingerprint = Some(stable_ir_fingerprint(unit));
+            request.ir_fingerprint = Some(stable_function_ir_fingerprint(unit, function));
+        }
+        if request.deployment_identity.is_none() {
+            request.deployment_identity = Some(stable_ir_fingerprint(unit));
         }
         if request.dependency_identity.is_none() {
             request.dependency_identity = Some(stable_dependency_identity(unit));
@@ -2061,9 +2476,18 @@ impl JitEngine {
         &mut self,
         unit: &IrUnit,
         function: FunctionId,
-        request: JitCompileRequest,
+        mut request: JitCompileRequest,
         backend: &mut B,
     ) -> Result<JitCompileResult, JitError> {
+        if request.ir_fingerprint.is_none() {
+            request.ir_fingerprint = Some(stable_function_ir_fingerprint(unit, function));
+        }
+        if request.deployment_identity.is_none() {
+            request.deployment_identity = Some(stable_ir_fingerprint(unit));
+        }
+        if request.dependency_identity.is_none() {
+            request.dependency_identity = Some(stable_dependency_identity(unit));
+        }
         self.compile_inner(
             request,
             Some(unit),
@@ -2122,30 +2546,150 @@ pub fn stable_ir_fingerprint(unit: &IrUnit) -> String {
     format!(
         "php-ir-v{}-{:016x}",
         unit.version,
-        stable_text_hash(&format!("{unit:?}"))
+        stable_format_hash(format_args!("{unit:?}"))
     )
+}
+
+struct FunctionDeclarations<'unit>(&'unit [php_ir::IrFunction]);
+
+impl fmt::Debug for FunctionDeclarations<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.0.iter().map(|function| {
+                (
+                    &function.name,
+                    &function.params,
+                    function.flags,
+                    &function.return_type,
+                    function.returns_by_ref,
+                    &function.captures,
+                    &function.attributes,
+                )
+            }))
+            .finish()
+    }
+}
+
+/// Stable identity for one requested PHP function and its semantic inputs.
+/// Unrelated function bodies are deliberately excluded so a function-on-demand
+/// artifact survives edits elsewhere in the source unit. Declaration shapes,
+/// class metadata, and the declaring file's strict-types mode remain included
+/// because they can change call lowering without changing the requested body.
+#[must_use]
+pub fn stable_function_ir_fingerprint(unit: &IrUnit, function: FunctionId) -> String {
+    let Some(body) = unit.functions.get(function.index()) else {
+        return format!("php-function-ir-v2-missing-{}", function.raw());
+    };
+    stable_function_ir_fingerprint_with_context(
+        unit,
+        function,
+        body,
+        stable_function_ir_fingerprint_context(unit),
+    )
+}
+
+/// Shared semantic identity used by function-scoped IR fingerprints.
+///
+/// Preparing this once lets function-on-demand callers hash only the requested
+/// body instead of formatting every dormant body in the source unit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StableFunctionIrFingerprintContext(u64);
+
+/// Hashes the unit-wide semantic tables shared by function-scoped identities.
+#[must_use]
+pub fn stable_function_ir_fingerprint_context(unit: &IrUnit) -> StableFunctionIrFingerprintContext {
+    StableFunctionIrFingerprintContext(stable_function_semantic_context_hash(unit))
+}
+
+/// Computes one function identity with an already prepared semantic context.
+#[must_use]
+pub fn stable_function_ir_fingerprint_in_context(
+    unit: &IrUnit,
+    function: FunctionId,
+    context: StableFunctionIrFingerprintContext,
+) -> String {
+    let Some(body) = unit.functions.get(function.index()) else {
+        return format!("php-function-ir-v2-missing-{}", function.raw());
+    };
+    stable_function_ir_fingerprint_with_context(unit, function, body, context)
+}
+
+/// Computes every function-scoped cache identity while hashing shared semantic
+/// tables only once. This is the production path for a prepared source unit.
+#[must_use]
+pub fn stable_function_ir_fingerprints(unit: &IrUnit) -> Vec<String> {
+    let semantic_context = stable_function_ir_fingerprint_context(unit);
+    unit.functions
+        .iter()
+        .enumerate()
+        .map(|(index, body)| {
+            let function = FunctionId::new(u32::try_from(index).unwrap_or(u32::MAX));
+            stable_function_ir_fingerprint_with_context(unit, function, body, semantic_context)
+        })
+        .collect()
+}
+
+fn stable_function_semantic_context_hash(unit: &IrUnit) -> u64 {
+    // Constant IDs are unit-relative and are embedded in the function body.
+    // Include the immutable table until php_ir exposes a canonical reachable-
+    // constant walk. Calls may be specialized from declaration and class
+    // metadata, so hash those tables while projecting every foreign function
+    // down to its body-free declaration shape.
+    let declarations = FunctionDeclarations(&unit.functions);
+    stable_format_hash(format_args!(
+        "constants={:?};declarations={declarations:?};function_table={:?};\
+         constant_table={:?};classes={:?}",
+        unit.constants, unit.function_table, unit.constant_table, unit.classes,
+    ))
+}
+
+fn stable_function_ir_fingerprint_with_context(
+    unit: &IrUnit,
+    function: FunctionId,
+    body: &php_ir::IrFunction,
+    semantic_context: StableFunctionIrFingerprintContext,
+) -> String {
+    let semantic_context = semantic_context.0;
+    let identity = stable_format_hash(format_args!(
+        "function={body:?};semantic_context={semantic_context:016x};strict_types={}",
+        unit.strict_types_for_function(function),
+    ));
+    format!("php-function-ir-v2-{identity:016x}")
 }
 
 /// Stable dependency-graph fingerprint used by native cache identities.
 #[must_use]
 pub fn stable_dependency_identity(unit: &IrUnit) -> String {
-    let dependencies = format!(
+    let dependencies = stable_format_hash(format_args!(
         "{:?}:{:?}:{:?}",
         unit.files, unit.linked_file_entries, unit.linked_entry_autoload_declarations
-    );
-    format!(
-        "php-dependencies-v1-{:016x}",
-        stable_text_hash(&dependencies)
-    )
+    ));
+    format!("php-dependencies-v1-{dependencies:016x}")
 }
 
-fn stable_text_hash(text: &str) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in text.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+struct StableFormatHasher(u64);
+
+impl StableFormatHasher {
+    const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325_u64)
     }
-    hash
+}
+
+impl fmt::Write for StableFormatHasher {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        for byte in text.bytes() {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Ok(())
+    }
+}
+
+fn stable_format_hash(arguments: fmt::Arguments<'_>) -> u64 {
+    let mut hasher = StableFormatHasher::new();
+    fmt::Write::write_fmt(&mut hasher, arguments).expect("stable hash formatter cannot fail");
+    hasher.0
 }
 
 impl Default for JitEngine {
@@ -2179,8 +2723,84 @@ mod tests {
     }
 
     #[test]
+    fn function_fingerprint_excludes_unrelated_function_bodies() {
+        fn unit_with_foreign_result(foreign_constant: usize) -> php_ir::IrUnit {
+            let mut builder = IrBuilder::new(UnitId::new(45));
+            let file = builder.add_file("function-cache-identity.php");
+            let span = IrSpan::new(file, 0, 8);
+            let constants = [
+                builder.intern_constant(IrConstant::Int(1)),
+                builder.intern_constant(IrConstant::Int(2)),
+            ];
+
+            for (name, constant) in [
+                ("requested", constants[0]),
+                ("unrelated", constants[foreign_constant]),
+            ] {
+                let function = builder.start_function(name, FunctionFlags::default(), span);
+                builder.set_return_type(function, Some(IrReturnType::Int));
+                let block = builder.append_block(function);
+                let result = builder.alloc_register(function);
+                builder.emit(
+                    function,
+                    block,
+                    InstructionKind::LoadConst {
+                        dst: result,
+                        constant,
+                    },
+                    span,
+                );
+                builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+            }
+            builder.set_entry(FunctionId::new(0));
+            builder.finish()
+        }
+
+        let first = unit_with_foreign_result(0);
+        let changed = unit_with_foreign_result(1);
+        let batched = crate::stable_function_ir_fingerprints(&first);
+        let context = crate::stable_function_ir_fingerprint_context(&first);
+
+        assert_eq!(batched.len(), first.functions.len());
+        assert_eq!(
+            batched[0],
+            crate::stable_function_ir_fingerprint(&first, FunctionId::new(0))
+        );
+        assert_eq!(
+            batched[1],
+            crate::stable_function_ir_fingerprint(&first, FunctionId::new(1))
+        );
+        assert_eq!(
+            batched[0],
+            crate::stable_function_ir_fingerprint_in_context(&first, FunctionId::new(0), context,)
+        );
+
+        assert_ne!(
+            crate::stable_ir_fingerprint(&first),
+            crate::stable_ir_fingerprint(&changed)
+        );
+        assert_eq!(
+            crate::stable_function_ir_fingerprint(&first, FunctionId::new(0)),
+            crate::stable_function_ir_fingerprint(&changed, FunctionId::new(0))
+        );
+        assert_ne!(
+            crate::stable_function_ir_fingerprint(&first, FunctionId::new(1)),
+            crate::stable_function_ir_fingerprint(&changed, FunctionId::new(1))
+        );
+
+        let mut strict = first.clone();
+        strict.strict_types = true;
+        strict.file_strict_types[0] = true;
+        assert_ne!(
+            crate::stable_function_ir_fingerprint(&first, FunctionId::new(0)),
+            crate::stable_function_ir_fingerprint(&strict, FunctionId::new(0))
+        );
+    }
+
+    #[test]
     fn compile_function_does_not_publish_same_unit_callee_body() {
         extern "C" fn trampoline(
+            _runtime: *mut std::ffi::c_void,
             _vm_context: u64,
             _frame: *mut crate::JitNativeCallFrame,
             out: *mut crate::JitCallResult,
@@ -2303,7 +2923,21 @@ mod tests {
         let metadata = handle.region_state_metadata().expect("entry metadata");
         assert_eq!(metadata.function_entries.len(), 1);
         assert_eq!(metadata.function_entries[0].function, entry);
-        assert_eq!(handle.relocatable_code().unwrap().functions.len(), 1);
+        let artifact_functions = &handle.relocatable_code().unwrap().functions;
+        assert_eq!(
+            artifact_functions
+                .iter()
+                .filter(|function| function.function.index() < unit.functions.len())
+                .count(),
+            1,
+            "internal native fragments must not be counted as foreign PHP function bodies"
+        );
+        assert!(
+            artifact_functions
+                .iter()
+                .filter(|function| function.function.index() < unit.functions.len())
+                .all(|function| function.function == entry)
+        );
         assert_eq!(
             handle.invoke_i64(&[], crate::JIT_RUNTIME_ABI_HASH).unwrap(),
             4

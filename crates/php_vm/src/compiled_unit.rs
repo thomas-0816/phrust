@@ -17,6 +17,7 @@ use std::{
 };
 
 static NEXT_COMPILED_UNIT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
+static PREPARED_BUILTIN_DEFINITIONS: OnceLock<Box<[PreparedBuiltinDefinition]>> = OnceLock::new();
 
 /// Authoritative IR unit handed to the native execution coordinator.
 #[derive(Clone)]
@@ -165,36 +166,120 @@ impl SymbolIndex {
 #[derive(Debug)]
 struct PreparedUnit {
     ir_verification_errors: OnceLock<usize>,
+    class_validation: OnceLock<PreparedClassValidation>,
     native_indexes: OnceLock<PreparedNativeIndexes>,
     ir_fingerprint: OnceLock<String>,
+    function_ir_fingerprint_context: OnceLock<php_jit::StableFunctionIrFingerprintContext>,
+    function_ir_fingerprints: Box<[OnceLock<String>]>,
     dependency_identity: OnceLock<String>,
+    external_function_calls: OnceLock<PreparedExternalFunctionCalls>,
+    native_function_metadata: OnceLock<Box<[Arc<PreparedNativeFunctionMetadata>]>>,
+    deployment_image: OnceLock<PreparedDeploymentNativeImage>,
     ir_verification_runs: AtomicU64,
     continuation_index_runs: AtomicU64,
     ir_fingerprint_runs: AtomicU64,
+    function_ir_fingerprint_runs: AtomicU64,
     dependency_identity_runs: AtomicU64,
     class_validation_runs: AtomicU64,
 }
 
+#[derive(Debug)]
+pub(crate) struct PreparedDeploymentNativeImage {
+    pub function_exports: Arc<std::collections::HashMap<Arc<str>, FunctionId>>,
+    pub exported_classes: Arc<std::collections::HashSet<Arc<str>>>,
+    pub native_call_argument_capacity: usize,
+    /// Immutable source-unit constants in a numeric C-layout view. Generated
+    /// code uses these records for literal string keys without decoding a
+    /// Rust `Value` or allocating a request-local string handle.
+    pub constant_views: Box<[php_jit::JitNativeConstantView]>,
+    /// Dense baseline publication cells indexed by `FunctionId`. Generated
+    /// code loads these cells directly. Optimizing entries are intentionally
+    /// not stored here until the native ABI can preserve an optimized caller
+    /// continuation across a callee side exit.
+    pub native_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
+    pub optimizing_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
+}
+
 impl PreparedUnit {
-    fn new() -> Self {
+    fn new(function_count: usize, function_ir_fingerprints: Option<Box<[String]>>) -> Self {
+        let function_ir_fingerprint_runs = u64::from(function_ir_fingerprints.is_some());
+        let mut fingerprint_slots = (0..function_count)
+            .map(|_| OnceLock::new())
+            .collect::<Vec<_>>();
+        if let Some(fingerprints) = function_ir_fingerprints {
+            for (slot, fingerprint) in fingerprint_slots.iter_mut().zip(fingerprints) {
+                let _ = slot.set(fingerprint);
+            }
+        }
         Self {
             ir_verification_errors: OnceLock::new(),
+            class_validation: OnceLock::new(),
             native_indexes: OnceLock::new(),
             ir_fingerprint: OnceLock::new(),
+            function_ir_fingerprint_context: OnceLock::new(),
+            function_ir_fingerprints: fingerprint_slots.into_boxed_slice(),
             dependency_identity: OnceLock::new(),
+            external_function_calls: OnceLock::new(),
+            native_function_metadata: OnceLock::new(),
+            deployment_image: OnceLock::new(),
             ir_verification_runs: AtomicU64::new(0),
             continuation_index_runs: AtomicU64::new(0),
             ir_fingerprint_runs: AtomicU64::new(0),
+            function_ir_fingerprint_runs: AtomicU64::new(function_ir_fingerprint_runs),
             dependency_identity_runs: AtomicU64::new(0),
             class_validation_runs: AtomicU64::new(0),
         }
     }
 }
 
+/// Immutable result of validating the class graph owned by a compiled unit.
+///
+/// The result belongs to the published unit rather than to a request. Warm
+/// execution reads this once-initialized value and never traverses the class
+/// hierarchy again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PreparedClassValidation {
+    Valid,
+    Invalid(Arc<str>),
+}
+
+#[derive(Debug)]
+struct PreparedExternalFunctionCalls {
+    by_function: Box<[Box<[PreparedExternalFunctionCall]>]>,
+    whole_unit: Box<[PreparedExternalFunctionCall]>,
+}
+
+/// A statically named call that may resolve to a function in another unit.
+///
+/// Whether the target is currently visible and has by-reference parameters is
+/// intentionally resolved at runtime. Only the source-IR scan and name
+/// normalization are prepared here because those are immutable.
+#[derive(Debug)]
+pub(crate) struct PreparedExternalFunctionCall {
+    pub normalized_name: Box<str>,
+    pub source_name: Box<str>,
+}
+
+/// Immutable userland-call metadata shared by every invocation of a function.
+#[derive(Debug)]
+pub(crate) struct PreparedNativeFunctionMetadata {
+    pub name: Arc<str>,
+    pub params: Arc<[php_ir::IrParam]>,
+    pub span: IrSpan,
+    pub trace_function: Arc<str>,
+    pub trace_class: Option<Arc<str>>,
+    pub trace_call_type: Option<&'static str>,
+    pub trace_file: Option<Arc<str>>,
+    pub trace_line: i64,
+    pub capture_count: usize,
+    pub implicit_closure_this: bool,
+    pub instance_method: bool,
+}
+
 #[derive(Debug)]
 struct PreparedNativeIndexes {
-    continuation_instructions: Arc<BTreeMap<(u32, u32), Arc<php_ir::Instruction>>>,
-    callsites: Arc<BTreeMap<(u32, u32), Arc<NativeCallSiteDescriptor>>>,
+    continuation_instructions: Arc<Vec<Vec<Option<Arc<php_ir::Instruction>>>>>,
+    callsites: Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>>,
 }
 
 /// Typed operation selected by one native callsite descriptor.
@@ -221,20 +306,116 @@ pub(crate) enum NativeCallSiteKind {
 #[derive(Debug)]
 pub(crate) struct NativeCallSiteDescriptor {
     pub kind: NativeCallSiteKind,
-    pub function_id: u32,
-    pub continuation_id: u32,
-    pub source_block_id: u32,
-    pub source_instruction_id: u32,
     pub span: IrSpan,
     pub target_symbol: Option<Arc<str>>,
     pub target_function: Option<FunctionId>,
+    /// Stable builtin entry resolved once with immutable callsite metadata.
+    /// Generated code and this immutable table are published together, so the
+    /// warm path needs neither a registry lookup nor redundant ID validation.
+    pub direct_builtin: Option<PreparedNativeBuiltin>,
     pub arguments: Arc<[php_ir::instruction::IrCallArg]>,
     pub argument_operand_offset: usize,
-    pub result_slot: u32,
-    pub returns_by_reference: bool,
     pub pic_slot: u64,
     semantic_instruction: Arc<php_ir::Instruction>,
     method_pic: PersistentNativeMethodPic,
+}
+
+/// Immutable builtin metadata resolved while preparing a native callsite.
+///
+/// Direct builtin calls use this record for dispatch and validation without
+/// repeating registry and generated-arginfo hash lookups on every invocation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreparedNativeBuiltin {
+    pub entry: php_runtime::api::BuiltinEntry,
+    pub metadata: Option<&'static php_std::generated::arginfo::GeneratedFunctionMetadata>,
+    pub type_info: Option<&'static php_std::arginfo::FunctionArgInfo>,
+    /// The immutable positional callsite was checked against the published
+    /// arginfo once. PHP-visible value/type checks still run where required,
+    /// but warm execution does not recount the same signature parameters.
+    pub fixed_arity_validated: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedBuiltinDefinition {
+    entry: php_runtime::api::BuiltinEntry,
+    metadata: Option<&'static php_std::generated::arginfo::GeneratedFunctionMetadata>,
+    type_info: Option<&'static php_std::arginfo::FunctionArgInfo>,
+}
+
+impl PreparedNativeBuiltin {
+    pub(crate) fn for_entry(
+        entry: php_runtime::api::BuiltinEntry,
+        argument_count: usize,
+        positional: bool,
+    ) -> Self {
+        let definition = prepared_builtin_definitions()
+            .get(entry.dense_id() as usize)
+            .copied()
+            .filter(|definition| definition.entry.dense_id() == entry.dense_id())
+            .expect("published builtin dense ID must resolve to its prepared definition");
+        Self::from_definition(definition, argument_count, positional)
+    }
+
+    pub(crate) fn for_dense_id(
+        dense_id: u32,
+        argument_count: usize,
+        positional: bool,
+    ) -> Option<Self> {
+        let definition = prepared_builtin_definitions()
+            .get(dense_id as usize)
+            .copied()?;
+        (definition.entry.dense_id() == dense_id)
+            .then(|| Self::from_definition(definition, argument_count, positional))
+    }
+
+    fn from_definition(
+        definition: PreparedBuiltinDefinition,
+        argument_count: usize,
+        positional: bool,
+    ) -> Self {
+        let PreparedBuiltinDefinition {
+            entry,
+            metadata,
+            type_info,
+        } = definition;
+        Self {
+            entry,
+            metadata,
+            type_info,
+            fixed_arity_validated: positional
+                && prepared_builtin_arity_is_valid(entry.name(), metadata, argument_count),
+        }
+    }
+}
+
+fn prepared_builtin_definitions() -> &'static [PreparedBuiltinDefinition] {
+    PREPARED_BUILTIN_DEFINITIONS.get_or_init(|| {
+        php_runtime::api::BuiltinRegistry::new()
+            .entries()
+            .iter()
+            .copied()
+            .map(|entry| {
+                let metadata = php_std::arginfo::function_metadata_indexed(entry.name());
+                let type_info = metadata
+                    .filter(|metadata| {
+                        matches!(metadata.extension, "hash" | "json" | "pcre" | "tokenizer")
+                            && !metadata.params.iter().any(|parameter| {
+                                parameter
+                                    .type_decl
+                                    .split('|')
+                                    .any(|atom| atom.trim() == "callable")
+                            })
+                    })
+                    .and_then(|_| php_std::arginfo::function_arginfo_indexed(entry.name()));
+                PreparedBuiltinDefinition {
+                    entry,
+                    metadata,
+                    type_info,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    })
 }
 
 impl NativeCallSiteDescriptor {
@@ -382,6 +563,8 @@ pub struct PreparedUnitStats {
     pub continuation_index_runs: u64,
     /// Stable full-IR fingerprints computed.
     pub ir_fingerprint_runs: u64,
+    /// Batched function-scoped fingerprint passes.
+    pub function_ir_fingerprint_runs: u64,
     /// Stable dependency identities computed.
     pub dependency_identity_runs: u64,
     /// Static class-table validation passes.
@@ -408,6 +591,60 @@ pub struct CompiledUnitLayoutStats {
 }
 
 impl CompiledUnit {
+    pub(crate) fn prepared_deployment_image(&self) -> &PreparedDeploymentNativeImage {
+        self.inner.prepared.deployment_image.get_or_init(|| {
+            let unit = self.unit();
+            let mut function_exports =
+                std::collections::HashMap::with_capacity(unit.function_table.len());
+            for entry in &unit.function_table {
+                function_exports
+                    .entry(Arc::<str>::from(entry.name.to_ascii_lowercase()))
+                    .or_insert(entry.function);
+            }
+            PreparedDeploymentNativeImage {
+                function_exports: Arc::new(function_exports),
+                exported_classes: Arc::new(
+                    unit.classes
+                        .iter()
+                        .filter(|class| class.span.start != 0 || class.span.end != 0)
+                        .map(|class| Arc::<str>::from(class.name.as_str()))
+                        .collect(),
+                ),
+                native_call_argument_capacity: unit
+                    .functions
+                    .iter()
+                    .map(|function| function.params.len() + function.captures.len() + 1)
+                    .max()
+                    .unwrap_or(0),
+                constant_views: unit
+                    .constants
+                    .iter()
+                    .map(|constant| match constant {
+                        php_ir::IrConstant::String(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING,
+                            reserved: 0,
+                            length: value.len() as u64,
+                            bytes: value.as_ptr() as usize as u64,
+                        },
+                        php_ir::IrConstant::StringBytes(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING,
+                            reserved: 0,
+                            length: value.len() as u64,
+                            bytes: value.as_ptr() as usize as u64,
+                        },
+                        _ => php_jit::JitNativeConstantView::default(),
+                    })
+                    .collect(),
+                native_function_entries: (0..unit.functions.len())
+                    .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                    .collect(),
+                optimizing_function_entries: (0..unit.functions.len())
+                    .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                    .collect(),
+            }
+        })
+    }
+
     /// Wraps an IR unit and snapshots all source files that are currently readable.
     #[must_use]
     pub fn new(unit: IrUnit) -> Self {
@@ -494,7 +731,14 @@ impl CompiledUnit {
                 })
                 .collect(),
         };
-        let artifact_identity = artifact_identity(&unit, &sources);
+        let has_complete_source_identity = !sources.entries.is_empty()
+            && sources.entries.len() == unit.files.len()
+            && sources.entries.iter().all(Option::is_some);
+        let function_ir_fingerprints = (!has_complete_source_identity)
+            .then(|| php_jit::stable_function_ir_fingerprints(&unit).into_boxed_slice());
+        let artifact_identity =
+            artifact_identity(&unit, &sources, function_ir_fingerprints.as_deref());
+        let function_count = unit.functions.len();
         Self {
             inner: Arc::new(CompiledUnitInner {
                 cache_id: NEXT_COMPILED_UNIT_CACHE_ID.fetch_add(1, Ordering::Relaxed),
@@ -506,7 +750,7 @@ impl CompiledUnit {
                 class_lookup,
                 unit_class_lookup,
                 sources,
-                prepared: PreparedUnit::new(),
+                prepared: PreparedUnit::new(function_count, function_ir_fingerprints),
             }),
         }
     }
@@ -600,17 +844,32 @@ impl CompiledUnit {
         })
     }
 
+    pub(crate) fn prepared_class_validation(&self) -> &PreparedClassValidation {
+        self.inner.prepared.class_validation.get_or_init(|| {
+            self.inner
+                .prepared
+                .class_validation_runs
+                .fetch_add(1, Ordering::Relaxed);
+            validate_native_class_table(&self.inner.unit).map_or_else(
+                |diagnostic| PreparedClassValidation::Invalid(Arc::from(diagnostic)),
+                |()| PreparedClassValidation::Valid,
+            )
+        })
+    }
+
     fn prepared_native_indexes(&self) -> &PreparedNativeIndexes {
         self.inner.prepared.native_indexes.get_or_init(|| {
             self.inner
                 .prepared
                 .continuation_index_runs
                 .fetch_add(1, Ordering::Relaxed);
-            let mut instructions = BTreeMap::new();
-            let mut callsites = BTreeMap::new();
+            let mut instructions = Vec::with_capacity(self.inner.unit.functions.len());
+            let mut callsites = Vec::with_capacity(self.inner.unit.functions.len());
             let metadata = php_jit::region_ir::CompileMetadata::default();
             for function_index in 0..self.inner.unit.functions.len() {
                 let function = FunctionId::new(function_index as u32);
+                let mut function_instructions = Vec::new();
+                let mut function_callsites = Vec::new();
                 if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
                     &self.inner.unit,
                     function,
@@ -623,50 +882,67 @@ impl CompiledUnit {
                                 span: instruction.span,
                                 kind: instruction.source_kind.clone(),
                             });
-                            instructions.insert(
-                                (function.raw(), instruction.continuation_id),
-                                Arc::clone(&semantic_instruction),
-                            );
+                            let continuation = instruction.continuation_id as usize;
+                            if function_instructions.len() <= continuation {
+                                function_instructions.resize_with(continuation + 1, || None);
+                            }
+                            function_instructions[continuation] =
+                                Some(Arc::clone(&semantic_instruction));
                             if let php_jit::region_ir::RegionInstructionKind::NativeCall(call) =
                                 &instruction.kind
                             {
                                 let (kind, target_symbol, target_function) =
                                     native_callsite_target(&call.target);
-                                let result_slot = match call.result {
-                                    php_jit::region_ir::RegionCallResult::Register(register) => {
-                                        register.raw()
-                                    }
-                                    php_jit::region_ir::RegionCallResult::ReferenceLocal(local) => {
-                                        local.raw()
-                                    }
-                                    php_jit::region_ir::RegionCallResult::Discard => u32::MAX,
+                                let direct_builtin = if kind == NativeCallSiteKind::Function
+                                    && target_function.is_none()
+                                {
+                                    target_symbol.as_deref().and_then(|name| {
+                                        let normalized = name.trim_start_matches('\\');
+                                        (!normalized.contains('\\'))
+                                            .then(|| normalized.to_ascii_lowercase())
+                                            .and_then(|normalized| {
+                                                php_runtime::api::BuiltinRegistry::new()
+                                                    .get(&normalized)
+                                            })
+                                            .filter(|entry| entry.helper_id() != 0)
+                                            .map(|entry| {
+                                                PreparedNativeBuiltin::for_entry(
+                                                    entry,
+                                                    call.args.len(),
+                                                    call.args.iter().all(|argument| {
+                                                        argument.name.is_none() && !argument.unpack
+                                                    }),
+                                                )
+                                            })
+                                    })
+                                } else {
+                                    None
                                 };
                                 let pic_slot = (u64::from(function.raw()) << 32)
                                     | u64::from(instruction.continuation_id);
-                                callsites.insert(
-                                    (function.raw(), instruction.continuation_id),
-                                    Arc::new(NativeCallSiteDescriptor {
+                                let continuation = instruction.continuation_id as usize;
+                                if function_callsites.len() <= continuation {
+                                    function_callsites.resize_with(continuation + 1, || None);
+                                }
+                                function_callsites[continuation] =
+                                    Some(Arc::new(NativeCallSiteDescriptor {
                                         kind,
-                                        function_id: function.raw(),
-                                        continuation_id: instruction.continuation_id,
-                                        source_block_id: block.id.raw(),
-                                        source_instruction_id: instruction.id.raw(),
                                         span: instruction.span,
                                         target_symbol,
                                         target_function,
+                                        direct_builtin,
                                         arguments: Arc::from(call.args.clone()),
                                         argument_operand_offset: call.argument_operand_offset,
-                                        result_slot,
-                                        returns_by_reference: call.returns_by_reference,
                                         pic_slot,
                                         semantic_instruction,
                                         method_pic: PersistentNativeMethodPic::default(),
-                                    }),
-                                );
+                                    }));
                             }
                         }
                     }
                 }
+                instructions.push(function_instructions);
+                callsites.push(function_callsites);
             }
             PreparedNativeIndexes {
                 continuation_instructions: Arc::new(instructions),
@@ -677,14 +953,166 @@ impl CompiledUnit {
 
     pub(crate) fn prepared_continuation_instructions(
         &self,
-    ) -> Arc<BTreeMap<(u32, u32), Arc<php_ir::Instruction>>> {
+    ) -> Arc<Vec<Vec<Option<Arc<php_ir::Instruction>>>>> {
         Arc::clone(&self.prepared_native_indexes().continuation_instructions)
     }
 
     pub(crate) fn prepared_native_callsites(
         &self,
-    ) -> Arc<BTreeMap<(u32, u32), Arc<NativeCallSiteDescriptor>>> {
+    ) -> Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>> {
         Arc::clone(&self.prepared_native_indexes().callsites)
+    }
+
+    fn prepared_external_function_call_index(&self) -> &PreparedExternalFunctionCalls {
+        self.inner.prepared.external_function_calls.get_or_init(|| {
+            let local_functions = self
+                .inner
+                .unit
+                .function_table
+                .iter()
+                .map(|entry| entry.name.to_ascii_lowercase())
+                .collect::<std::collections::HashSet<_>>();
+            let mut whole_unit = BTreeMap::<String, String>::new();
+            let by_function = self
+                .inner
+                .unit
+                .functions
+                .iter()
+                .map(|function| {
+                    let mut calls = BTreeMap::<String, String>::new();
+                    for instruction in function.blocks.iter().flat_map(|block| &block.instructions)
+                    {
+                        let name = match &instruction.kind {
+                            php_ir::InstructionKind::CallFunction { name, .. }
+                            | php_ir::InstructionKind::BindReferenceFromCall { name, .. } => name,
+                            _ => continue,
+                        };
+                        let normalized = name.to_ascii_lowercase();
+                        if local_functions.contains(&normalized) {
+                            continue;
+                        }
+                        calls.insert(normalized.clone(), name.clone());
+                        whole_unit.insert(normalized, name.clone());
+                    }
+                    calls
+                        .into_iter()
+                        .map(
+                            |(normalized_name, source_name)| PreparedExternalFunctionCall {
+                                normalized_name: normalized_name.into_boxed_str(),
+                                source_name: source_name.into_boxed_str(),
+                            },
+                        )
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice()
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            let whole_unit = whole_unit
+                .into_iter()
+                .map(
+                    |(normalized_name, source_name)| PreparedExternalFunctionCall {
+                        normalized_name: normalized_name.into_boxed_str(),
+                        source_name: source_name.into_boxed_str(),
+                    },
+                )
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            PreparedExternalFunctionCalls {
+                by_function,
+                whole_unit,
+            }
+        })
+    }
+
+    pub(crate) fn prepared_external_function_calls(
+        &self,
+        function: FunctionId,
+    ) -> &[PreparedExternalFunctionCall] {
+        self.prepared_external_function_call_index()
+            .by_function
+            .get(function.index())
+            .map_or(&[], Box::as_ref)
+    }
+
+    pub(crate) fn prepared_unit_external_function_calls(&self) -> &[PreparedExternalFunctionCall] {
+        &self.prepared_external_function_call_index().whole_unit
+    }
+
+    pub(crate) fn prepared_native_function_metadata_ptr(
+        &self,
+        function: FunctionId,
+    ) -> Option<*const PreparedNativeFunctionMetadata> {
+        self.inner
+            .prepared
+            .native_function_metadata
+            .get_or_init(|| {
+                let method_metadata = self
+                    .inner
+                    .unit
+                    .classes
+                    .iter()
+                    .flat_map(|class| {
+                        class.methods.iter().map(move |method| {
+                            (
+                                method.function,
+                                (
+                                    Arc::<str>::from(class.display_name.as_str()),
+                                    if method.flags.is_static { "::" } else { "->" },
+                                ),
+                            )
+                        })
+                    })
+                    .collect::<std::collections::HashMap<_, _>>();
+                self.inner
+                    .unit
+                    .functions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, function)| {
+                        let function_id = FunctionId::new(
+                            u32::try_from(index).expect("function index exceeds u32"),
+                        );
+                        let trace_function = function
+                            .name
+                            .rsplit_once("::")
+                            .map_or(function.name.as_str(), |(_, method)| method);
+                        let (trace_class, trace_call_type) = method_metadata
+                            .get(&function_id)
+                            .map_or((None, None), |(class, call_type)| {
+                                (Some(Arc::clone(class)), Some(*call_type))
+                            });
+                        Arc::new(PreparedNativeFunctionMetadata {
+                            name: Arc::from(function.name.as_str()),
+                            params: Arc::from(function.params.clone()),
+                            span: function.span,
+                            trace_function: Arc::from(trace_function),
+                            trace_class,
+                            trace_call_type,
+                            trace_file: self
+                                .inner
+                                .unit
+                                .files
+                                .get(function.span.file.index())
+                                .map(|file| Arc::from(file.path.as_str())),
+                            trace_line: self.source_display_line(function.span, false).unwrap_or(0),
+                            capture_count: function.captures.len(),
+                            implicit_closure_this: function.flags.is_closure
+                                && !function.flags.is_static
+                                && function.locals.first().is_some_and(|name| name == "this")
+                                && !function
+                                    .captures
+                                    .iter()
+                                    .any(|capture| capture.local == php_ir::LocalId::new(0)),
+                            instance_method: method_metadata
+                                .get(&function_id)
+                                .is_some_and(|(_, call_type)| *call_type == "->"),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .get(function.index())
+            .map(Arc::as_ptr)
     }
 
     pub(crate) fn prepared_ir_fingerprint(&self) -> &str {
@@ -693,8 +1121,38 @@ impl CompiledUnit {
                 .prepared
                 .ir_fingerprint_runs
                 .fetch_add(1, Ordering::Relaxed);
-            php_jit::stable_ir_fingerprint(&self.inner.unit)
+            // Native linkage needs a source-sensitive deployment namespace,
+            // not a second serialization of the complete IR. The artifact
+            // identity was already computed while constructing this unit and
+            // includes its retained source contents and declaration tables.
+            format!(
+                "php-compiled-artifact-v1-{:016x}",
+                self.inner.artifact_identity
+            )
         })
+    }
+
+    pub(crate) fn prepared_function_ir_fingerprint(&self, function: FunctionId) -> Option<&str> {
+        let prepared = &self.inner.prepared;
+        Some(
+            prepared
+                .function_ir_fingerprints
+                .get(function.index())?
+                .get_or_init(|| {
+                    prepared
+                        .function_ir_fingerprint_runs
+                        .fetch_add(1, Ordering::Relaxed);
+                    let context = *prepared.function_ir_fingerprint_context.get_or_init(|| {
+                        php_jit::stable_function_ir_fingerprint_context(&self.inner.unit)
+                    });
+                    php_jit::stable_function_ir_fingerprint_in_context(
+                        &self.inner.unit,
+                        function,
+                        context,
+                    )
+                })
+                .as_str(),
+        )
     }
 
     pub(crate) fn prepared_dependency_identity(&self) -> &str {
@@ -725,6 +1183,11 @@ impl CompiledUnit {
                 .inner
                 .prepared
                 .ir_fingerprint_runs
+                .load(Ordering::Relaxed),
+            function_ir_fingerprint_runs: self
+                .inner
+                .prepared
+                .function_ir_fingerprint_runs
                 .load(Ordering::Relaxed),
             dependency_identity_runs: self
                 .inner
@@ -894,8 +1357,12 @@ impl PartialEq for CompiledUnit {
     }
 }
 
-fn artifact_identity(unit: &IrUnit, sources: &CompiledSourceRepository) -> u64 {
-    let mut hash = stable_hash(b"phrust.compiled-unit.v1");
+fn artifact_identity(
+    unit: &IrUnit,
+    sources: &CompiledSourceRepository,
+    function_ir_fingerprints: Option<&[String]>,
+) -> u64 {
+    let mut hash = stable_hash(b"phrust.compiled-unit.v3");
     hash = hash_bytes(hash, &unit.id.raw().to_le_bytes());
     for (index, file) in unit.files.iter().enumerate() {
         hash = hash_field(hash, file.path.as_bytes());
@@ -918,7 +1385,113 @@ fn artifact_identity(unit: &IrUnit, sources: &CompiledSourceRepository) -> u64 {
         hash = hash_field(hash, class.name.as_bytes());
         hash = hash_bytes(hash, &class.id.raw().to_le_bytes());
     }
+    if let Some(function_ir_fingerprints) = function_ir_fingerprints {
+        hash = hash_bytes(hash, &[0]);
+        for fingerprint in function_ir_fingerprints {
+            hash = hash_field(hash, fingerprint.as_bytes());
+        }
+    } else {
+        // Complete retained source text is the canonical identity. The
+        // compiler/build identity separately versions deterministic lowering.
+        hash = hash_bytes(hash, &[1]);
+    }
     hash
+}
+
+fn validate_native_class_table(unit: &IrUnit) -> Result<(), String> {
+    let find_class = |name: &str| {
+        let normalized = normalize_class_name(name);
+        unit.classes.iter().find(|class| class.name == normalized)
+    };
+    for class in unit
+        .classes
+        .iter()
+        .filter(|class| !class.flags.is_conditional)
+    {
+        if let Some(parent_name) = class.parent.as_deref()
+            && let Some(parent) = find_class(parent_name)
+        {
+            if parent.flags.is_final || parent.flags.is_enum {
+                return Err(format!(
+                    "Class {} cannot extend final class {}",
+                    class.display_name, parent.display_name
+                ));
+            }
+            for method in &class.methods {
+                let mut ancestor = Some(parent);
+                while let Some(current) = ancestor {
+                    if current.methods.iter().any(|candidate| {
+                        candidate.name.eq_ignore_ascii_case(&method.name)
+                            && candidate.flags.is_final
+                    }) {
+                        return Err(format!(
+                            "Cannot override final method {}::{}()",
+                            current.display_name, method.name
+                        ));
+                    }
+                    ancestor = current.parent.as_deref().and_then(&find_class);
+                }
+            }
+        }
+
+        if class.flags.is_abstract || class.flags.is_interface || class.flags.is_trait {
+            continue;
+        }
+        let implements = |name: &str| {
+            let mut current = Some(class);
+            while let Some(candidate) = current {
+                if let Some(method) = candidate
+                    .methods
+                    .iter()
+                    .find(|method| method.name.eq_ignore_ascii_case(name))
+                {
+                    return Some(method);
+                }
+                current = candidate.parent.as_deref().and_then(&find_class);
+            }
+            None
+        };
+        let mut required = Vec::new();
+        let mut ancestor = class.parent.as_deref().and_then(&find_class);
+        while let Some(current) = ancestor {
+            required.extend(
+                current
+                    .methods
+                    .iter()
+                    .filter(|method| method.flags.is_abstract)
+                    .map(|method| (current, method)),
+            );
+            ancestor = current.parent.as_deref().and_then(&find_class);
+        }
+        for interface_name in &class.interfaces {
+            if let Some(interface) = find_class(interface_name) {
+                required.extend(interface.methods.iter().map(|method| (interface, method)));
+            }
+        }
+        for (owner, method) in required {
+            let Some(implementation) = implements(&method.name) else {
+                return Err(format!(
+                    "Class {} contains an abstract method {}::{}()",
+                    class.display_name, owner.display_name, method.name
+                ));
+            };
+            if implementation.flags.is_abstract {
+                return Err(format!(
+                    "Class {} contains an abstract method {}::{}()",
+                    class.display_name, owner.display_name, method.name
+                ));
+            }
+            if owner.flags.is_interface
+                && (implementation.flags.is_private || implementation.flags.is_protected)
+            {
+                return Err(format!(
+                    "Access level to {}::{}() must be public",
+                    class.display_name, method.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
@@ -958,6 +1531,33 @@ fn native_callsite_target(
         }
         RegionCallTarget::Semantic { .. } => (NativeCallSiteKind::Semantic, None, None),
     }
+}
+
+fn prepared_builtin_arity_is_valid(
+    name: &str,
+    metadata: Option<&php_std::generated::arginfo::GeneratedFunctionMetadata>,
+    argument_count: usize,
+) -> bool {
+    let Some(metadata) = metadata else {
+        return true;
+    };
+    let required = metadata
+        .params
+        .iter()
+        .filter(|parameter| {
+            !parameter.optional && parameter.default_value.is_none() && !parameter.variadic
+        })
+        .count();
+    let required = match name {
+        "array_intersect_uassoc" | "array_intersect_ukey" | "array_uintersect" => 2,
+        "array_uintersect_uassoc" => 3,
+        _ => required,
+    };
+    let variadic = metadata
+        .params
+        .last()
+        .is_some_and(|parameter| parameter.variadic);
+    argument_count >= required && (variadic || argument_count <= metadata.params.len())
 }
 
 fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
@@ -1010,6 +1610,50 @@ mod tests {
     }
 
     #[test]
+    fn class_graph_validation_is_prepared_once_per_compiled_unit() {
+        let compiled = CompiledUnit::new(IrUnit::new(UnitId::new(77)));
+
+        assert_eq!(compiled.prepared_unit_stats().class_validation_runs, 0);
+        assert_eq!(
+            compiled.prepared_class_validation(),
+            &PreparedClassValidation::Valid
+        );
+        assert_eq!(compiled.prepared_unit_stats().class_validation_runs, 1);
+        assert_eq!(
+            compiled.prepared_class_validation(),
+            &PreparedClassValidation::Valid
+        );
+        assert_eq!(compiled.prepared_unit_stats().class_validation_runs, 1);
+    }
+
+    #[test]
+    fn deployment_symbol_image_is_prepared_once_and_preserves_first_function() {
+        let mut unit = IrUnit::new(UnitId::new(78));
+        unit.function_table.push(FunctionEntry {
+            name: "App\\Boot".to_owned(),
+            function: FunctionId::new(1),
+        });
+        unit.function_table.push(FunctionEntry {
+            name: "app\\boot".to_owned(),
+            function: FunctionId::new(2),
+        });
+        let compiled = CompiledUnit::new(unit);
+
+        let first = compiled.prepared_deployment_image();
+        let functions = Arc::clone(&first.function_exports);
+        let classes = Arc::clone(&first.exported_classes);
+        let second = compiled.prepared_deployment_image();
+
+        assert!(std::ptr::eq(first, second));
+        assert!(Arc::ptr_eq(&functions, &second.function_exports));
+        assert!(Arc::ptr_eq(&classes, &second.exported_classes));
+        assert_eq!(
+            second.function_exports.get("app\\boot"),
+            Some(&FunctionId::new(1))
+        );
+    }
+
+    #[test]
     fn continuation_instruction_index_is_shared_per_compiled_unit() {
         let compiled = CompiledUnit::new(IrUnit::new(UnitId::new(0)));
 
@@ -1022,6 +1666,13 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first, &second));
         assert!(std::ptr::eq(first_ir_fingerprint, second_ir_fingerprint));
+        assert_eq!(
+            first_ir_fingerprint,
+            format!(
+                "php-compiled-artifact-v1-{:016x}",
+                compiled.artifact_identity()
+            )
+        );
         assert!(std::ptr::eq(
             first_dependency_identity,
             second_dependency_identity
@@ -1241,6 +1892,95 @@ mod tests {
         );
         assert_eq!(first.metadata_json(), same.metadata_json());
         assert!(first.metadata_json().contains("phrust.compiled-unit.v1"));
+    }
+
+    #[test]
+    fn artifact_identity_includes_function_ir_without_retained_source() {
+        fn returning_unit(value: i64) -> IrUnit {
+            let mut builder = php_ir::IrBuilder::new(UnitId::new(77));
+            let file = builder.add_file("synthetic.php");
+            let span = IrSpan::new(file, 0, 8);
+            let constant = builder.intern_constant(IrConstant::Int(value));
+            let function = builder.start_function("main", php_ir::FunctionFlags::default(), span);
+            let block = builder.append_block(function);
+            let result = builder.alloc_register(function);
+            builder.emit_load_const(function, block, result, constant, span);
+            builder.terminate_return(
+                function,
+                block,
+                Some(php_ir::Operand::Register(result)),
+                span,
+            );
+            builder.set_entry(function);
+            builder.finish()
+        }
+
+        let first = CompiledUnit::new(returning_unit(1));
+        let same = CompiledUnit::new(returning_unit(1));
+        let changed = CompiledUnit::new(returning_unit(2));
+
+        assert_eq!(first.artifact_identity(), same.artifact_identity());
+        assert_ne!(first.artifact_identity(), changed.artifact_identity());
+        assert_eq!(first.prepared_unit_stats().function_ir_fingerprint_runs, 1);
+    }
+
+    #[test]
+    fn retained_source_defers_function_fingerprints_until_requested() {
+        let mut builder = php_ir::IrBuilder::new(UnitId::new(78));
+        let file = builder.add_file("retained.php");
+        let span = IrSpan::new(file, 0, 20);
+        let constant = builder.intern_constant(IrConstant::Int(1));
+        for name in ["entry", "dormant"] {
+            let function = builder.start_function(name, php_ir::FunctionFlags::default(), span);
+            let block = builder.append_block(function);
+            let result = builder.alloc_register(function);
+            builder.emit_load_const(function, block, result, constant, span);
+            builder.terminate_return(
+                function,
+                block,
+                Some(php_ir::Operand::Register(result)),
+                span,
+            );
+        }
+        builder.set_entry(FunctionId::new(0));
+        let compiled = CompiledUnit::try_with_sources(
+            builder.finish(),
+            [(
+                FileId::new(0),
+                Arc::<str>::from("<?php function dormant() {}"),
+            )],
+        )
+        .expect("retained source should match the unit file");
+
+        assert_eq!(
+            compiled.prepared_unit_stats().function_ir_fingerprint_runs,
+            0
+        );
+        let first = compiled
+            .prepared_function_ir_fingerprint(FunctionId::new(0))
+            .expect("entry fingerprint should exist")
+            .to_owned();
+        assert_eq!(
+            compiled.prepared_unit_stats().function_ir_fingerprint_runs,
+            1
+        );
+        assert_eq!(
+            compiled.prepared_function_ir_fingerprint(FunctionId::new(0)),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            compiled.prepared_unit_stats().function_ir_fingerprint_runs,
+            1
+        );
+        assert!(
+            compiled
+                .prepared_function_ir_fingerprint(FunctionId::new(1))
+                .is_some()
+        );
+        assert_eq!(
+            compiled.prepared_unit_stats().function_ir_fingerprint_runs,
+            2
+        );
     }
 
     #[test]

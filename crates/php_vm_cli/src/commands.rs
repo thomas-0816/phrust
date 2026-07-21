@@ -515,6 +515,8 @@ where
                 "function": report.function_name,
                 "reason": reason,
                 "diagnostics": report.result.diagnostics,
+                "compile_time_nanos": report.result.stats.native_compile_time_nanos,
+                "code_bytes": report.result.stats.native_code_bytes,
                 "native_only": true,
                 "executed": false,
             })

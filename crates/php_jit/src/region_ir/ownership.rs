@@ -24,11 +24,17 @@ pub struct HelperOwnershipContract {
 }
 
 const NONE: &[HelperInputOwnership] = &[];
+const CONSUME_1: &[HelperInputOwnership] = &[HelperInputOwnership::Consume];
 const BORROW_1: &[HelperInputOwnership] = &[HelperInputOwnership::Borrow];
 const BORROW_2: &[HelperInputOwnership] =
     &[HelperInputOwnership::Borrow, HelperInputOwnership::Borrow];
 const BORROW_3: &[HelperInputOwnership] = &[
     HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+];
+const CONSUME_BORROW_2: &[HelperInputOwnership] = &[
+    HelperInputOwnership::Consume,
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
 ];
@@ -47,9 +53,10 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         may_alias_input: false,
     };
     match name {
-        "phrust_jit_native_call_dispatch" | "phrust_jit_native_dynamic_code" => {
-            Some(owned(NONE, false))
-        }
+        "phrust_jit_native_call_dispatch"
+        | "phrust_jit_native_builtin_dispatch"
+        | "phrust_jit_native_semantic_dispatch"
+        | "phrust_jit_native_dynamic_code" => Some(owned(NONE, false)),
         "phrust_jit_native_function_resolve"
         | "phrust_native_frame_alloc"
         | "phrust_native_frame_release" => Some(none(NONE)),
@@ -68,20 +75,18 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         | "phrust_native_array_unset"
         | "phrust_native_array_spread"
         | "phrust_native_object_clone_with" => Some(owned(BORROW_2, true)),
+        "phrust_native_string_predicate" => Some(owned(BORROW_2, false)),
         "phrust_native_local_store"
         | "phrust_native_reference_bind"
         | "phrust_native_property_fetch"
         | "phrust_native_array_insert" => Some(owned(BORROW_3, true)),
+        "phrust_native_array_insert_local" => Some(owned(CONSUME_BORROW_2, true)),
         "phrust_native_property_assign" => Some(owned(BORROW_2, true)),
         "phrust_native_argument_check" => Some(owned(BORROW_1, true)),
         "phrust_native_array_new" | "phrust_native_object_new" | "phrust_native_exception_new" => {
             Some(owned(NONE, false))
         }
-        "phrust_native_value_lifecycle" => Some(HelperOwnershipContract {
-            inputs: BORROW_1,
-            result: HelperResultOwnership::Borrowed,
-            may_alias_input: true,
-        }),
+        "phrust_native_value_release" => Some(none(CONSUME_1)),
         "phrust_native_echo"
         | "phrust_native_foreach_cleanup"
         | "phrust_native_runtime_fatal"

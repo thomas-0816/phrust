@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import subprocess
+import re
 from pathlib import Path
 
 
@@ -38,6 +39,7 @@ def main() -> int:
         tests = read("crates/php_jit/src/cranelift_lowering/tests.rs")
         root_index = read("crates/php_vm/src/vm/jit_abi/root_index.rs")
         runtime = read("crates/php_vm/src/vm/jit_abi.rs")
+        runtime_ops = read("crates/php_vm/src/vm/jit_abi/runtime_ops.rs")
         optimizer = read("crates/php_jit/src/region_ir/opt/executable.rs")
         ownership = read("crates/php_jit/src/region_ir/ownership.rs")
         value_flow = read("crates/php_jit/src/region_ir/value_flow.rs")
@@ -121,9 +123,9 @@ def main() -> int:
                 "promoted array mutation can regress to local fetch/store helpers",
             ),
             (
-                "flow.verify_ownership(region)",
+                "verify_ownership(region)",
                 executable,
-                "optimizing code generation does not run the ownership verifier",
+                "native code generation does not run the ownership verifier",
             ),
             (
                 "ownership_verifier_rejects_use_after_forced_move",
@@ -142,10 +144,18 @@ def main() -> int:
 
         if "fn reaches_object(" in runtime:
             failures.append("whole-request per-object root search remains on release path")
-        if "RegionInstructionKind::Move { dst, src } =>" in lowering and (
-            "native_operations.value_lifecycle" not in lowering
+        if "phrust_native_value_lifecycle" in lowering:
+            failures.append("deleted generic retain/release helper returned")
+        if re.search(
+            r"lower_native_value_operation\(\s*module,\s*builder,\s*"
+            r"(?:native_operations\.value_release|native_value_release_helper|lifecycle)",
+            lowering,
         ):
-            failures.append("runtime handle copies lost their guarded retain slow path")
+            failures.append(
+                "typed final release regressed through the opcode/out-pointer value adapter"
+            )
+        if "jit_native_value_lifecycle_abi" in runtime_ops:
+            failures.append("deleted combined lifecycle runtime ABI returned")
 
     if not failures:
         commands = (

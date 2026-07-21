@@ -549,6 +549,24 @@ mod identity_storage {
     }
 
     #[test]
+    fn borrowed_property_writes_preserve_declared_and_dynamic_semantics() {
+        let class = representative_class();
+        let object = ObjectRef::new_with_display_name(&class, "child");
+
+        object.set_property_borrowed("value", Value::Int(41));
+        object.set_property_borrowed("dynamicBorrowed", Value::Int(42));
+
+        assert_eq!(object.get_property("value"), Some(Value::Int(41)));
+        assert_eq!(object.get_property("dynamicBorrowed"), Some(Value::Int(42)));
+        assert!(
+            object
+                .properties_snapshot()
+                .iter()
+                .any(|(name, value)| name == "dynamicBorrowed" && *value == Value::Int(42))
+        );
+    }
+
+    #[test]
     fn default_declared_slots_template_is_display_name_independent() {
         let class = representative_class();
         // Different display spellings select different debug-label layout

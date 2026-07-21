@@ -284,12 +284,13 @@ impl NativeFrameArena {
 // SAFETY: this ABI boundary returns an opaque integer address without dereferencing it.
 #[allow(unsafe_code)]
 pub(in crate::vm) extern "C" fn jit_native_frame_alloc_abi(
+    runtime: *mut NativeRequestFastState,
     _vm_context: u64,
     bytes: u64,
     alignment: u64,
 ) -> u64 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_native_context(|context| {
+        with_native_context_for(runtime, "frame_arena", |context| {
             let bytes = usize::try_from(bytes).map_err(|_| {
                 "E_PHP_VM_NATIVE_FRAME_LIMIT: frame size does not fit usize".to_owned()
             })?;
@@ -318,12 +319,15 @@ pub(in crate::vm) extern "C" fn jit_native_frame_alloc_abi(
 }
 
 pub(in crate::vm) extern "C" fn jit_native_frame_release_abi(
+    runtime: *mut NativeRequestFastState,
     _vm_context: u64,
     address: u64,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if with_native_context(|context| context.native_frame_arena.release(address as usize))
-            .is_some_and(|result| result.is_ok())
+        if with_native_context_for(runtime, "frame_arena", |context| {
+            context.native_frame_arena.release(address as usize)
+        })
+        .is_some_and(|result| result.is_ok())
         {
             0
         } else {

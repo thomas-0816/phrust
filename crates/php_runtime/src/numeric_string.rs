@@ -169,6 +169,13 @@ pub fn classify_php_string(value: &PhpString) -> NumericString {
 /// numeric-string model used by scalar conversion.
 #[must_use]
 pub fn classify_array_key(value: &PhpString) -> NumericStringArrayKey {
+    // PHP only converts canonical decimal integer strings to integer array
+    // keys. Every such spelling starts with an ASCII digit or `-`; common
+    // identifier-like keys can therefore bypass fingerprinting and the
+    // numeric-string cache entirely.
+    if !matches!(value.as_bytes().first(), Some(b'-' | b'0'..=b'9')) {
+        return NumericStringArrayKey::String;
+    }
     let classified = classify_php_string(value);
     match (classified.canonical, classified.value) {
         (NumericStringCanonicalKind::Integer, Some(NumericStringValue::Int(value))) => {
@@ -568,5 +575,26 @@ mod tests {
         assert!(!array_key_has_numeric_string_ambiguity(&PhpString::from(
             "name"
         )));
+    }
+
+    #[test]
+    fn identifier_array_keys_bypass_numeric_classification() {
+        reset_cache_and_stats();
+
+        assert_eq!(
+            classify_array_key(&PhpString::from("post_type")),
+            NumericStringArrayKey::String
+        );
+        assert_eq!(
+            classify_array_key(&PhpString::from("+42")),
+            NumericStringArrayKey::String
+        );
+        assert_eq!(take_cache_stats().classify_calls, 0);
+
+        assert_eq!(
+            classify_array_key(&PhpString::from("-42")),
+            NumericStringArrayKey::Integer(-42)
+        );
+        assert_eq!(take_cache_stats().classify_calls, 1);
     }
 }

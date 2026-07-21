@@ -260,8 +260,12 @@ impl PhpString {
     /// This is only suitable for request-local caches that also validate the
     /// current bytes. It is not a PHP-visible identity.
     #[must_use]
-    pub(crate) fn storage_id(&self) -> usize {
+    pub fn native_storage_id(&self) -> usize {
         self.storage.addr()
+    }
+
+    pub(crate) fn storage_id(&self) -> usize {
+        self.native_storage_id()
     }
 
     /// Test/debug convenience for non-runtime display.

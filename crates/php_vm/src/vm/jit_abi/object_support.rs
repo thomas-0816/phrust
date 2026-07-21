@@ -480,20 +480,16 @@ pub(super) fn execute_native_array_object(
                         );
                     };
                     let member = member.to_string_lossy();
-                    let class = context
-                        .unit
-                        .classes
+                    let Some(class) = native_active_class_handle(context, &owner) else {
+                        return Err(format!(
+                            "E_PHP_THROW:ReflectionException:Property {owner}::${member} does not exist"
+                        ));
+                    };
+                    let Some(property) = class
+                        .properties
                         .iter()
-                        .find(|class| class.name == normalize_class_name(&owner))
-                        .cloned();
-                    let Some((class, property)) = class.and_then(|class| {
-                        class
-                            .properties
-                            .iter()
-                            .find(|property| property.name == member)
-                            .cloned()
-                            .map(|property| (class, property))
-                    }) else {
+                        .find(|property| property.name == member)
+                    else {
                         return Err(format!(
                             "E_PHP_THROW:ReflectionException:Property {owner}::${member} does not exist"
                         ));
@@ -765,12 +761,7 @@ pub(super) fn execute_native_array_object(
                     }
                     "getmethods" | "getmethod" => {
                         let owner = string_property("name").unwrap_or_default();
-                        let class = context
-                            .unit
-                            .classes
-                            .iter()
-                            .find(|class| class.name == normalize_class_name(&owner))
-                            .cloned()
+                        let class = native_active_class_handle(context, &owner)
                             .ok_or_else(|| "reflection class metadata is missing".to_owned())?;
                         let requested = arguments
                             .get(1)
@@ -830,12 +821,7 @@ pub(super) fn execute_native_array_object(
                     }
                     "getproperties" | "getproperty" => {
                         let owner = string_property("name").unwrap_or_default();
-                        let class = context
-                            .unit
-                            .classes
-                            .iter()
-                            .find(|class| class.name == normalize_class_name(&owner))
-                            .cloned()
+                        let class = native_active_class_handle(context, &owner)
                             .ok_or_else(|| "reflection class metadata is missing".to_owned())?;
                         let requested = arguments
                             .get(1)
@@ -898,16 +884,11 @@ pub(super) fn execute_native_array_object(
                     }
                     "getconstants" | "getconstant" | "getreflectionconstant" => {
                         let owner = string_property("name").unwrap_or_default();
-                        let local_class = context
-                            .unit
-                            .classes
-                            .iter()
-                            .find(|class| class.name == normalize_class_name(&owner))
-                            .cloned();
+                        let local_class = native_active_class_handle(context, &owner);
                         let (owner_unit, class) = if let Some(class) = local_class {
                             (None, class)
                         } else {
-                            let (unit, class) = native_external_class(context, &owner)
+                            let (unit, class) = native_external_class_handle(context, &owner)
                                 .ok_or_else(|| "reflection class metadata is missing".to_owned())?;
                             (Some(unit), class)
                         };

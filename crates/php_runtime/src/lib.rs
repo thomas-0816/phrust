@@ -127,20 +127,20 @@ pub mod api {
     #[cfg(feature = "full-runtime")]
     pub use crate::builtins::{
         ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
-        BuiltinErrorContext, BuiltinHandlerKind, BuiltinOutcome, BuiltinRegistry,
-        BuiltinRequestState, BuiltinResult, CurlState, FilesystemRuntimeState, FtpOptionValue,
-        FtpState, GettextState, IconvEncodingState, ImapConnectionConfig, ImapMailboxSnapshot,
-        ImapState, InternalFunction, JSON_ERROR_RECURSION, JSON_PARTIAL_OUTPUT_ON_ERROR,
-        JSON_THROW_ON_ERROR, JsonRequestState, LdapSearchScope, LdapState, MbSubstituteCharacter,
-        NORMALIZER_FORM_C, NORMALIZER_FORM_D, NORMALIZER_FORM_KC, NORMALIZER_FORM_KD, OpcacheState,
-        OpenSslErrorState, PcntlState, PcreRequestState, ReadlineState, SYSVMSG_EAGAIN,
-        SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState, SoapParsedBody, SoapState, SocketState,
-        Ssh2FingerprintHash, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
-        SysvSemaphoreError, SysvSemaphoreState, SysvSharedMemoryState, build_soap_envelope,
-        hash_algorithm_exists, igbinary_serialize_value, igbinary_unserialize_value,
-        is_normalized_string, load_wsdl, msgpack_pack_value, msgpack_unpack_value,
-        normalize_string, parse_soap_response, parse_wsdl, soap_http_post,
-        validate_fileinfo_options,
+        BuiltinErrorContext, BuiltinExecutionKind, BuiltinHandlerKind, BuiltinOutcome,
+        BuiltinRegistry, BuiltinRequestState, BuiltinResult, CurlState, FilesystemRuntimeState,
+        FtpOptionValue, FtpState, GettextState, IconvEncodingState, ImapConnectionConfig,
+        ImapMailboxSnapshot, ImapState, InternalFunction, JSON_ERROR_RECURSION,
+        JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, JsonRequestState, LdapSearchScope,
+        LdapState, MbSubstituteCharacter, NORMALIZER_FORM_C, NORMALIZER_FORM_D, NORMALIZER_FORM_KC,
+        NORMALIZER_FORM_KD, OpcacheState, OpenSslErrorState, PcntlState, PcreRequestState,
+        ReadlineState, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState,
+        SoapParsedBody, SoapState, SocketState, Ssh2FingerprintHash, Ssh2State, StreamContextState,
+        StrtokState, SysvMessageQueueState, SysvSemaphoreError, SysvSemaphoreState,
+        SysvSharedMemoryState, build_soap_envelope, hash_algorithm_exists,
+        igbinary_serialize_value, igbinary_unserialize_value, is_normalized_string, load_wsdl,
+        msgpack_pack_value, msgpack_unpack_value, normalize_string, parse_soap_response,
+        parse_wsdl, soap_http_post, validate_fileinfo_options,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -320,8 +320,15 @@ pub mod experimental {
     #[doc(hidden)]
     pub mod native_reference {
         pub use crate::reference::{
+            NATIVE_REFERENCE_ARRAY_KEY_INT, NATIVE_REFERENCE_ARRAY_KEY_STRING,
+            NATIVE_REFERENCE_ARRAY_VALUE_FALSE, NATIVE_REFERENCE_ARRAY_VALUE_INT,
+            NATIVE_REFERENCE_ARRAY_VALUE_NULL, NATIVE_REFERENCE_ARRAY_VALUE_STRING,
+            NATIVE_REFERENCE_ARRAY_VALUE_TRUE, NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED,
+            NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
+            NATIVE_REFERENCE_ARRAY_VIEW_EMPTY, NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
             NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
-            NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, NativeReferenceScalarView,
+            NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, NativeReferenceArrayEntry,
+            NativeReferenceArrayView, NativeReferenceScalarView,
         };
     }
 }

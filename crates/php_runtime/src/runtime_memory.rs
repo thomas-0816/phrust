@@ -10,8 +10,283 @@
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::cell::Cell;
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::ptr::NonNull;
 use std::rc::Rc;
+
+/// ABI-stable single-threaded shared storage used by native-visible PHP data.
+/// The strong counter is the first field, so published native descriptors may
+/// retain a COW snapshot with one direct integer update instead of calling
+/// through Rust's opaque `Rc` implementation.
+#[repr(C)]
+struct SharedHeader<T> {
+    strong: Cell<usize>,
+    weak: Cell<usize>,
+    value: ManuallyDrop<T>,
+}
+
+pub(crate) struct Shared<T> {
+    ptr: NonNull<SharedHeader<T>>,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+pub(crate) struct WeakShared<T> {
+    ptr: NonNull<SharedHeader<T>>,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl<T> Shared<T> {
+    pub(crate) fn new(value: T) -> Self {
+        let header = Box::new(SharedHeader {
+            strong: Cell::new(1),
+            // One implicit weak owner keeps the allocation alive while any
+            // strong handle exists.
+            weak: Cell::new(1),
+            value: ManuallyDrop::new(value),
+        });
+        Self {
+            ptr: NonNull::from(Box::leak(header)),
+            _not_send: PhantomData,
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn header(&self) -> &SharedHeader<T> {
+        // SAFETY: every strong handle owns one count in this live allocation.
+        unsafe { self.ptr.as_ref() }
+    }
+
+    pub(crate) fn strong_count(&self) -> usize {
+        self.header().strong.get()
+    }
+
+    pub(crate) fn downgrade(&self) -> WeakShared<T> {
+        let weak = self.header().weak.get();
+        if weak == usize::MAX {
+            std::process::abort();
+        }
+        self.header().weak.set(weak + 1);
+        WeakShared {
+            ptr: self.ptr,
+            _not_send: PhantomData,
+        }
+    }
+
+    pub(crate) fn make_mut(this: &mut Self) -> &mut T
+    where
+        T: Clone,
+    {
+        if this.strong_count() != 1 {
+            let separated = T::clone(this);
+            *this = Self::new(separated);
+        }
+        // SAFETY: `this` owns the only strong reference after separation and
+        // is exclusively borrowed for the returned lifetime.
+        #[allow(unsafe_code)]
+        unsafe {
+            &mut *(&mut (*this.ptr.as_ptr()).value as *mut ManuallyDrop<T> as *mut T)
+        }
+    }
+
+    pub(crate) fn try_unwrap(this: Self) -> Result<T, Self> {
+        if this.strong_count() != 1 {
+            return Err(this);
+        }
+        let ptr = this.ptr;
+        std::mem::forget(this);
+        // SAFETY: the forgotten handle was the sole strong owner. Move the
+        // value once, retire the implicit weak owner, and free only when no
+        // explicit weak handle remains.
+        #[allow(unsafe_code)]
+        unsafe {
+            (*ptr.as_ptr()).strong.set(0);
+            let value = ManuallyDrop::take(&mut (*ptr.as_ptr()).value);
+            let weak = (*ptr.as_ptr()).weak.get() - 1;
+            (*ptr.as_ptr()).weak.set(weak);
+            if weak == 0 {
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+            Ok(value)
+        }
+    }
+
+    /// Address of the stable native-visible strong count.
+    pub(crate) fn strong_count_address(&self) -> usize {
+        std::ptr::from_ref(&self.header().strong) as usize
+    }
+
+    /// Address of the immutable storage payload.
+    #[allow(unsafe_code)]
+    pub(crate) fn clone_from_strong_count_address(address: usize) -> Option<Self> {
+        let ptr = NonNull::new(address as *mut SharedHeader<T>)?;
+        // SAFETY: callers obtain this address from `strong_count_address` on
+        // the same concrete `Shared<T>` ABI. A non-zero strong count keeps the
+        // initialized value alive while we acquire another owner.
+        unsafe {
+            let strong = (*ptr.as_ptr()).strong.get();
+            if strong == 0 {
+                return None;
+            }
+            if strong == usize::MAX {
+                std::process::abort();
+            }
+            (*ptr.as_ptr()).strong.set(strong + 1);
+        }
+        Some(Self {
+            ptr,
+            _not_send: PhantomData,
+        })
+    }
+
+    #[allow(unsafe_code)]
+    pub(crate) fn from_retained_strong_count_address(address: usize) -> Option<Self> {
+        let ptr = NonNull::new(address as *mut SharedHeader<T>)?;
+        // SAFETY: the native slot transferred one already-retained strong
+        // owner to this handle. No counter update is required here.
+        if unsafe { (*ptr.as_ptr()).strong.get() } == 0 {
+            return None;
+        }
+        Some(Self {
+            ptr,
+            _not_send: PhantomData,
+        })
+    }
+}
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        let strong = self.header().strong.get();
+        if strong == usize::MAX {
+            std::process::abort();
+        }
+        self.header().strong.set(strong + 1);
+        Self {
+            ptr: self.ptr,
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl<T> Deref for Shared<T> {
+    type Target = T;
+
+    #[allow(unsafe_code)]
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: a live strong handle guarantees an initialized value.
+        unsafe { &*(&(*self.ptr.as_ptr()).value as *const ManuallyDrop<T> as *const T) }
+    }
+}
+
+impl<T> AsRef<T> for Shared<T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Shared<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Shared")
+            .field("strong", &self.strong_count())
+            .field("value", &self.deref())
+            .finish()
+    }
+}
+
+impl<T: PartialEq> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+impl<T: Eq> Eq for Shared<T> {}
+
+impl<T> Drop for Shared<T> {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        let header = self.header();
+        let strong = header.strong.get();
+        if strong > 1 {
+            header.strong.set(strong - 1);
+            return;
+        }
+        // SAFETY: this is the last strong owner. Drop the value exactly once,
+        // then retire the implicit weak owner and possibly the allocation.
+        unsafe {
+            header.strong.set(0);
+            ManuallyDrop::drop(&mut (*self.ptr.as_ptr()).value);
+            let weak = header.weak.get() - 1;
+            header.weak.set(weak);
+            if weak == 0 {
+                drop(Box::from_raw(self.ptr.as_ptr()));
+            }
+        }
+    }
+}
+
+impl<T> WeakShared<T> {
+    #[allow(unsafe_code)]
+    fn header(&self) -> &SharedHeader<T> {
+        // SAFETY: this weak handle owns one weak count in the allocation.
+        unsafe { self.ptr.as_ref() }
+    }
+
+    pub(crate) fn strong_count(&self) -> usize {
+        self.header().strong.get()
+    }
+
+    pub(crate) fn upgrade(&self) -> Option<Shared<T>> {
+        let strong = self.strong_count();
+        if strong == 0 {
+            return None;
+        }
+        if strong == usize::MAX {
+            std::process::abort();
+        }
+        self.header().strong.set(strong + 1);
+        Some(Shared {
+            ptr: self.ptr,
+            _not_send: PhantomData,
+        })
+    }
+}
+
+impl<T> Clone for WeakShared<T> {
+    fn clone(&self) -> Self {
+        let weak = self.header().weak.get();
+        if weak == usize::MAX {
+            std::process::abort();
+        }
+        self.header().weak.set(weak + 1);
+        Self {
+            ptr: self.ptr,
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl<T> Drop for WeakShared<T> {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        let weak = self.header().weak.get() - 1;
+        self.header().weak.set(weak);
+        if weak == 0 {
+            debug_assert_eq!(self.header().strong.get(), 0);
+            // SAFETY: the final weak and all strong owners are gone.
+            unsafe { drop(Box::from_raw(self.ptr.as_ptr())) };
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for WeakShared<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WeakShared")
+            .field("strong", &self.strong_count())
+            .finish()
+    }
+}
 
 /// Header of a [`CompactBytes`] allocation; the bytes follow directly
 /// after it in the same heap block.
@@ -266,6 +541,20 @@ impl std::fmt::Debug for CompactBytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_storage_clones_separates_and_keeps_weak_lifetime_exact() {
+        let mut first = Shared::new(vec![1_u32]);
+        let weak = first.downgrade();
+        let second = first.clone();
+        assert_eq!(first.strong_count(), 2);
+        Shared::make_mut(&mut first).push(2);
+        assert_eq!(&*first, &[1, 2]);
+        assert_eq!(&*second, &[1]);
+        assert_eq!(weak.strong_count(), 1);
+        drop(second);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn round_trips_bytes_of_every_size_class() {

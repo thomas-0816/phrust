@@ -297,38 +297,32 @@ fn verify_function_body(
     for capture in &function.captures {
         verify_local(capture.local, function.local_count, errors);
     }
-    contextualize_errors(
-        errors,
-        header_errors,
+    contextualize_errors(errors, header_errors, || {
         format!(
             "function={} span={}:{}-{} state",
             function_id.raw(),
             function.span.file.raw(),
             function.span.start,
             function.span.end
-        ),
-    );
+        )
+    });
     for (index, block) in function.blocks.iter().enumerate() {
         let block_errors = errors.len();
         verify_block_id(block.id, index, errors);
-        contextualize_errors(
-            errors,
-            block_errors,
+        contextualize_errors(errors, block_errors, || {
             format!(
                 "function={} block={} state",
                 function_id.raw(),
                 block.id.raw()
-            ),
-        );
+            )
+        });
         verify_block(unit, function_id, function, block, errors);
     }
     let register_errors = errors.len();
     verify_register_definitions(function, errors);
-    contextualize_errors(
-        errors,
-        register_errors,
-        format!("function={} register-state", function_id.raw()),
-    );
+    contextualize_errors(errors, register_errors, || {
+        format!("function={} register-state", function_id.raw())
+    });
 }
 
 fn verify_block(
@@ -351,9 +345,7 @@ fn verify_block(
             ));
         }
         verify_instruction(unit, function, instruction, errors);
-        contextualize_errors(
-            errors,
-            instruction_errors,
+        contextualize_errors(errors, instruction_errors, || {
             format!(
                 "function={} block={} instruction={} span={}:{}-{} operand/state",
                 function_id.raw(),
@@ -362,16 +354,14 @@ fn verify_block(
                 instruction.span.file.raw(),
                 instruction.span.start,
                 instruction.span.end
-            ),
-        );
+            )
+        });
     }
     match &block.terminator {
         Some(terminator) => {
             let terminator_errors = errors.len();
             verify_terminator(unit, function, terminator, errors);
-            contextualize_errors(
-                errors,
-                terminator_errors,
+            contextualize_errors(errors, terminator_errors, || {
                 format!(
                     "function={} block={} terminator span={}:{}-{} operand/state",
                     function_id.raw(),
@@ -379,8 +369,8 @@ fn verify_block(
                     terminator.span.file.raw(),
                     terminator.span.start,
                     terminator.span.end
-                ),
-            );
+                )
+            });
         }
         None => errors.push(error(
             VerificationErrorCode::MissingTerminator,
@@ -393,7 +383,15 @@ fn verify_block(
     }
 }
 
-fn contextualize_errors(errors: &mut [VerificationError], start: usize, context: String) {
+fn contextualize_errors(
+    errors: &mut [VerificationError],
+    start: usize,
+    context: impl FnOnce() -> String,
+) {
+    if start >= errors.len() {
+        return;
+    }
+    let context = context();
     for error in &mut errors[start..] {
         error.message = format!("{context}: {}", error.message);
     }
@@ -1606,7 +1604,12 @@ fn mark_instruction_defs(kind: &InstructionKind, defined: &mut [bool]) {
     }
 }
 
-fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
+/// Appends every register written by one instruction.
+///
+/// This is shared by verification and native fragment layout so bounded
+/// baseline compilation does not need a second, drifting instruction-kind
+/// match just to identify fragment-local values.
+pub fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
     match kind {
         InstructionKind::LoadConst { dst, .. }
         | InstructionKind::FetchConst { dst, .. }

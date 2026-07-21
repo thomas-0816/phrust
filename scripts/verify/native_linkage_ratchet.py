@@ -56,7 +56,7 @@ def main() -> int:
         failures,
         "whole_unit_function_order" not in lowering
         and "whole_unit_function_order" not in layout
-        and "BTreeMap::from([(root.function, root.clone())])" in lowering,
+        and "BTreeMap::from([(function, region)])" in lowering,
         "production compilation can admit PHP bodies beyond the requested function",
     )
     require(
@@ -86,16 +86,19 @@ def main() -> int:
     require(
         failures,
         'PNA_MAGIC: [u8; 4] = *b"PNA2"' in cache
-        and "compiled-source-v2-" in text("crates/php_vm/src/vm/mod.rs")
-        and "-function-{}" in text("crates/php_vm/src/vm/mod.rs"),
+        and "stable_function_ir_fingerprint" in text("crates/php_vm/src/vm/mod.rs")
+        and "compiled-function-source-v3-" in text("crates/php_vm/src/vm/mod.rs")
+        and "with_deployment_identity" in text("crates/php_vm/src/vm/mod.rs"),
         "native cache identity is not scoped to one PHP function artifact",
     )
     require(
         failures,
-        'format: "PRM4".to_owned()' in cache
+        'signature_metadata.extend_from_slice(b"PRM5")' in cache
+        and 'bytes.strip_prefix(b"PRM5")' in cache
+        and "CachedRegionMetadataBinaryBundle" in cache
         and "cached_metadata_graph_indices" in cache
         and "encode_functions_v2" in cache,
-        "PNA2 repeats graph metadata or per-function ABI identity",
+        "PNA2 does not use compact PRM5 graph metadata or repeats per-function ABI identity",
     )
     require(
         failures,
@@ -130,7 +133,8 @@ def main() -> int:
     )
     require(
         failures,
-        "worker_registry_reuses_loaded_artifact_without_remapping_file" in vm_tests,
+        "worker_fast_entry_cache_reuses_loaded_artifact_without_identity_rebuild"
+        in vm_tests,
         "per-request artifact mapping regression test is missing",
     )
     require(

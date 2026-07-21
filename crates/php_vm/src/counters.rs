@@ -113,6 +113,7 @@ pub struct VmCounters {
     pub native_value_table_allocations: u64,
     pub native_value_table_reuses: u64,
     pub native_value_table_high_water: u64,
+    pub native_value_table_materializations_by_kind_and_origin: BTreeMap<String, u64>,
     pub native_ssa_promoted_locals: u64,
     pub native_ssa_promoted_registers: u64,
     pub native_ownership_moves: u64,
@@ -129,7 +130,7 @@ impl VmCounters {
         format!(
             concat!(
                 "{{\n",
-                "  \"schema_version\": 11,\n",
+                "  \"schema_version\": 13,\n",
                 "  \"native_compile_attempts\": {},\n",
                 "  \"native_compile_successes\": {},\n",
                 "  \"native_compile_failures\": {},\n",
@@ -221,6 +222,7 @@ impl VmCounters {
                 "  \"native_value_table_allocations\": {},\n",
                 "  \"native_value_table_reuses\": {},\n",
                 "  \"native_value_table_high_water\": {},\n",
+                "  \"native_value_table_materializations_by_kind_and_origin\": {},\n",
                 "  \"native_ssa_promoted_locals\": {},\n",
                 "  \"native_ssa_promoted_registers\": {},\n",
                 "  \"native_ownership_moves\": {},\n",
@@ -322,6 +324,7 @@ impl VmCounters {
             self.native_value_table_allocations,
             self.native_value_table_reuses,
             self.native_value_table_high_water,
+            counter_map_json(&self.native_value_table_materializations_by_kind_and_origin),
             self.native_ssa_promoted_locals,
             self.native_ssa_promoted_registers,
             self.native_ownership_moves,
@@ -399,7 +402,7 @@ mod tests {
             .insert("native_\"binary\"".to_owned(), 17);
 
         let parsed: serde_json::Value = serde_json::from_str(&counters.to_json()).unwrap();
-        assert_eq!(parsed["schema_version"], 11);
+        assert_eq!(parsed["schema_version"], 13);
         assert_eq!(parsed["runtime_helper_calls_by_id"]["native_\"binary\""], 2);
         assert_eq!(
             parsed["runtime_helper_time_nanos_by_id"]["native_\"binary\""],

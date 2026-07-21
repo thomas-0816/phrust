@@ -160,6 +160,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--warmups", type=int, default=int(os.environ.get("PHRUST_WORDPRESS_ROOT_WARMUPS", "5")))
     parser.add_argument(
+        "--cold-probe-concurrency",
+        type=int,
+        default=0,
+        help=(
+            "issue exactly this many concurrent Phrust requests before every "
+            "warmup and record their latency and process RSS; 0 disables the probe"
+        ),
+    )
+    parser.add_argument(
         "--concurrency",
         default=os.environ.get("PHRUST_WORDPRESS_CONCURRENCY", ""),
         help="comma-separated levels; default is 1, CPU count, and twice CPU count",
@@ -179,6 +188,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=float(os.environ.get("PHRUST_WORDPRESS_TIMEOUT_SECONDS", "120")),
     )
     parser.add_argument("--metrics-token", default=os.environ.get("PHRUST_METRICS_TOKEN", ""))
+    parser.add_argument(
+        "--native-cache",
+        choices=("off", "read", "write", "read-write"),
+        default=os.environ.get("PHRUST_NATIVE_CACHE_MODE", "off"),
+        help="Persistent native artifact cache mode for a managed Phrust server",
+    )
+    parser.add_argument(
+        "--native-cache-dir",
+        default=os.environ.get("PHRUST_NATIVE_CACHE_DIR", ""),
+        help="Persistent native artifact directory shared across managed server restarts",
+    )
+    parser.add_argument(
+        "--require-zero-native-compiles",
+        action="store_true",
+        help="fail a diagnostic restart probe unless the profiled request compiles no native code",
+    )
+    parser.add_argument(
+        "--max-value-table-allocations",
+        type=int,
+        default=None,
+        help="fail a diagnostic request above this native value-slot allocation count",
+    )
+    parser.add_argument(
+        "--max-value-table-high-water",
+        type=int,
+        default=None,
+        help="fail a diagnostic request above this native value-table high-water mark",
+    )
     parser.add_argument(
         "--engine-preset",
         choices=("baseline", "default"),
@@ -385,6 +422,8 @@ def validate_configuration(args: argparse.Namespace) -> list[str]:
     levels = concurrency_levels(args.concurrency)
     if args.samples < 1:
         errors.append("samples must be positive")
+    if args.cold_probe_concurrency < 0:
+        errors.append("--cold-probe-concurrency must be non-negative")
     if args.strict and args.mode == "clean" and args.samples < 30:
         errors.append("strict clean mode requires at least 30 measured requests per concurrency")
     if args.strict and args.mode == "clean" and not args.database_identity:
@@ -748,6 +787,15 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
         "--max-execution-ms",
         str(max(1, int(args.timeout_seconds * 1000))),
     ]
+    command.extend(["--native-cache", args.native_cache])
+    native_cache_artifact = None
+    if args.native_cache_dir:
+        native_cache_dir = repo_path(args.native_cache_dir)
+        if native_cache_dir is None:
+            raise EnvironmentError("native cache directory could not be resolved")
+        native_cache_dir.mkdir(parents=True, exist_ok=True)
+        command.extend(["--native-cache-dir", str(native_cache_dir)])
+        native_cache_artifact = rel(native_cache_dir)
     preload_manifest = out_dir / "phrust-script-cache-preload.txt"
     preload_manifest.write_text("index.php\n", encoding="utf-8")
     command.extend(["--script-cache-preload", str(preload_manifest)])
@@ -755,6 +803,8 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
         "server_log": rel(log_path),
         "script_cache_preload": rel(preload_manifest),
     }
+    if native_cache_artifact is not None:
+        artifacts["native_cache_dir"] = native_cache_artifact
     if args.mode == "diagnostic":
         profile_dir = out_dir / "request-profiles"
         trace_path = out_dir / "perf-trace.jsonl"
@@ -779,6 +829,12 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
     if args.mode == "clean":
         process_env.update(performance_environment)
         process_env.pop("PHRUST_PERF_ABLATION", None)
+        process_env.pop("PHRUST_NATIVE_COMPILE_FUNCTION_LOG", None)
+    else:
+        # Per-function compiler timing is diagnostic log data, not PHP stderr.
+        # Keep it opt-in so generic counter collection cannot change observable
+        # program diagnostics or make preset comparisons nondeterministic.
+        process_env["PHRUST_NATIVE_COMPILE_FUNCTION_LOG"] = "1"
     process = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
@@ -987,6 +1043,21 @@ def collect_clean(
 ) -> dict[str, Any]:
     observables = parse_observables(args.observable)
     failures: list[str] = []
+    cold_probe = None
+    if args.cold_probe_concurrency:
+        cold_probe = sample_curve(
+            phrust.target,
+            args.path,
+            args.cold_probe_concurrency,
+            args.cold_probe_concurrency,
+            args.timeout_seconds,
+        )
+        failures.extend(
+            validate_cold_probe(
+                cold_probe,
+                args.cold_probe_concurrency,
+            )
+        )
     for target in (phrust.target, php.target):
         for _ in range(args.warmups):
             http_get(target, args.path, args.timeout_seconds)
@@ -1022,6 +1093,7 @@ def collect_clean(
                 "process_sampling_hz": 20,
             },
             "environment": environment_identity(docroot, args.database_identity),
+            "cold_probe": cold_probe,
             "engines": {
                 managed.target.name: {
                     "command": managed.command,
@@ -1132,6 +1204,7 @@ def collect_clean(
         "timing_eligible": not control_failures,
         "measurement_model": measurement_model,
         "environment": environment,
+        "cold_probe": cold_probe,
         "engines": engines,
         "baseline_comparisons": baseline_comparisons,
         "php_control_comparisons": php_control_comparisons,
@@ -1168,6 +1241,51 @@ def collect_diagnostics(
     profiles = sorted((out_dir / "request-profiles").glob("*.json"))
     profile = json.loads(profiles[-1].read_text(encoding="utf-8")) if profiles else {}
     failures = [] if sample["status"] < 500 else [f"diagnostic request returned HTTP {sample['status']}"]
+    native = profile.get("native", {})
+    compile_attempts = native.get("compile_attempts")
+    compile_time_nanos = native.get("compile_time_nanos")
+    if args.require_zero_native_compiles and compile_attempts != 0:
+        failures.append(
+            f"restart request performed {compile_attempts!r} native compile attempts; expected 0"
+        )
+    value_table_allocations = native.get("value_table_allocations")
+    if (
+        args.max_value_table_allocations is not None
+        and (
+            not isinstance(value_table_allocations, int)
+            or value_table_allocations > args.max_value_table_allocations
+        )
+    ):
+        failures.append(
+            "native value-table allocations "
+            f"{value_table_allocations!r} exceed {args.max_value_table_allocations}"
+        )
+    value_table_high_water = native.get("value_table_high_water")
+    if (
+        args.max_value_table_high_water is not None
+        and (
+            not isinstance(value_table_high_water, int)
+            or value_table_high_water > args.max_value_table_high_water
+        )
+    ):
+        failures.append(
+            "native value-table high-water "
+            f"{value_table_high_water!r} exceeds {args.max_value_table_high_water}"
+        )
+    cache_restart = {
+        "schema_version": 1,
+        "cache_mode": args.native_cache,
+        "cache_directory": phrust.artifacts.get("native_cache_dir"),
+        "compile_attempts": compile_attempts,
+        "compile_time_nanos": compile_time_nanos,
+        "request_wall_ms": sample.get("wall_ms"),
+        "status": "pass"
+        if compile_attempts == 0 and sample["status"] < 500
+        else "fail",
+    }
+    cache_restart_path = out_dir / "cache-restart.json"
+    write_json(cache_restart, cache_restart_path)
+    phrust.artifacts["cache_restart"] = rel(cache_restart_path)
     return {
         "schema_version": 2,
         "status": "fail" if failures else "pass",
@@ -1242,6 +1360,25 @@ def validate_curves(
                         f"{name} concurrency {concurrency} sample {index} {sample_field} "
                         "differs from the warmed correctness sample"
                     )
+    return failures
+
+
+def validate_cold_probe(
+    curve: dict[str, Any],
+    requested: int,
+) -> list[str]:
+    failures: list[str] = []
+    if curve["completed_samples"] != requested:
+        failures.append(
+            "Phrust cold probe completed "
+            f"{curve['completed_samples']} of {requested} requests"
+        )
+    failures.extend(f"Phrust cold probe: {failure}" for failure in curve["failures"])
+    for index, sample in enumerate(curve["samples"]):
+        if sample["status"] >= 500:
+            failures.append(
+                f"Phrust cold probe sample {index} returned HTTP {sample['status']}"
+            )
     return failures
 
 
@@ -1759,6 +1896,26 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             lines.append(f"- reason: {reason}")
         lines.append("")
     if "engines" in report:
+        cold_probe = report.get("cold_probe")
+        if cold_probe:
+            latency = cold_probe["latency_ms"]
+            peak_rss = cold_probe["process"]["peak_rss_bytes"]
+            peak_rss_mib = (
+                "unavailable"
+                if peak_rss is None
+                else f"{peak_rss / (1024 * 1024):.1f} MiB"
+            )
+            lines.extend(
+                [
+                    "## Cold Phrust probe",
+                    "",
+                    f"- concurrency {cold_probe['concurrency']}: "
+                    f"{cold_probe['completed_samples']}/{cold_probe['requested_samples']} completed, "
+                    f"p50 {latency['p50']:.3f} ms, p95 {latency['p95']:.3f} ms, "
+                    f"peak process-tree RSS {peak_rss_mib}",
+                    "",
+                ]
+            )
         lines.extend(["## Clean timing", ""])
         for name, engine in report["engines"].items():
             lines.append(f"### {name}")
@@ -1967,8 +2124,8 @@ def self_test() -> int:
     assert "requires --mode clean" in " ".join(validate_configuration(invalid_ab))
     assert cranelift_dependency_version()
     source_abi = native_source_abi_identity()
-    assert source_abi["version"] == 24
-    assert source_abi["hash"] == 0x0DC1_A824_0000_002F
+    assert source_abi["version"] == 33
+    assert source_abi["hash"] == 0x0DC1_A833_0000_0038
     host_cpu = cpu_identity()
     assert len(host_cpu["feature_fingerprint_sha256"]) == 64
     ab_off = {

@@ -17,6 +17,7 @@ use std::time::Instant;
 
 const DEFAULT_NATIVE_COMPILE_CACHE_ENTRIES: usize = 4_096;
 const DEFAULT_LOADED_NATIVE_UNIT_ENTRIES: usize = 4_096;
+const DEFAULT_RESOLVED_NATIVE_ENTRY_ENTRIES: usize = 4_096;
 const DEFAULT_NATIVE_COMPILE_PARALLELISM: usize = 1;
 const DEFAULT_NATIVE_COMPILE_QUEUE_LIMIT: usize = 64;
 
@@ -154,6 +155,38 @@ pub(super) struct LoadedNativeUnitRegistry {
     maps: AtomicU64,
     entry_table_constructions: AtomicU64,
     mapped_executable_bytes: AtomicU64,
+}
+
+/// Worker-local fast index for already validated and generation-owning native
+/// entries. The first lookup still constructs and validates the complete
+/// persistent identity; subsequent requests for the same immutable
+/// `CompiledUnit` avoid re-hashing and formatting the full function IR.
+#[derive(Debug, Default)]
+pub(super) struct ResolvedNativeEntryCache {
+    entries: RwLock<HashMap<NativeCompileCacheKey, php_jit::JitFunctionHandle>>,
+    hits: AtomicU64,
+}
+
+impl ResolvedNativeEntryCache {
+    pub(super) fn get(&self, key: NativeCompileCacheKey) -> Option<php_jit::JitFunctionHandle> {
+        let handle = read_unpoisoned(&self.entries).get(&key).cloned();
+        if handle.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        handle
+    }
+
+    pub(super) fn insert(&self, key: NativeCompileCacheKey, handle: php_jit::JitFunctionHandle) {
+        let mut entries = write_unpoisoned(&self.entries);
+        if entries.len() < DEFAULT_RESOLVED_NATIVE_ENTRY_ENTRIES || entries.contains_key(&key) {
+            entries.insert(key, handle);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

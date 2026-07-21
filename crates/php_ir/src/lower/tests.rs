@@ -2378,6 +2378,7 @@ fn dim_fetch_lowers_binary_index_expression() {
     assert!(snapshot.contains("local:1 $counter"), "{snapshot}");
     assert!(snapshot.contains("binary r"), "{snapshot}");
     assert!(snapshot.contains("fetch_dim r"), "{snapshot}");
+    assert!(snapshot.contains("mode=read"), "{snapshot}");
 }
 
 #[test]
@@ -2426,6 +2427,40 @@ fn large_constant_array_literal_lowers_to_one_constant_load() {
             .instructions
             .iter()
             .any(|instruction| matches!(instruction.kind, InstructionKind::LoadConst { .. }))
+    }));
+}
+
+#[test]
+fn deeply_populated_constant_array_uses_total_shape_for_compaction() {
+    let nested = |prefix: &str| {
+        (0..64)
+            .map(|index| format!("\"{prefix}-{index}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let frontend = analyze_source(&format!(
+        "<?php function values() {{ return [[{}], [{}]]; }}",
+        nested("left"),
+        nested("right"),
+    ));
+    let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+    assert!(result.verification.is_ok(), "{:#?}", result.verification);
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let function = result
+        .unit
+        .functions
+        .iter()
+        .find(|function| function.name == "values")
+        .expect("values function");
+    assert_eq!(function.register_count, 1);
+    assert!(function.blocks.iter().all(|block| {
+        block.instructions.iter().all(|instruction| {
+            !matches!(
+                instruction.kind,
+                InstructionKind::NewArray { .. } | InstructionKind::ArrayInsert { .. }
+            )
+        })
     }));
 }
 
@@ -2794,6 +2829,7 @@ fn call_arg_property_dimension_emits_by_ref_metadata() {
     assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
     let snapshot = result.unit.to_snapshot_text();
     assert!(snapshot.contains("by_ref_property_dim="), "{snapshot}");
+    assert!(snapshot.contains("mode=lvalue"), "{snapshot}");
 }
 
 #[test]

@@ -5,9 +5,9 @@ pub(super) fn lower_native_dynamic_code(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     native_dynamic_code_helper: Option<NativeHelper>,
-    locals: &BTreeMap<LocalId, Variable>,
-    register_variables: &BTreeMap<RegId, Variable>,
-    registers: &mut BTreeMap<RegId, Variable>,
+    locals: &NativeLocalMap,
+    register_variables: &NativeRegisterMap,
+    registers: &mut NativeRegisterMap,
     operation: &RegionNativeDynamicCode,
     instruction: &RegionInstruction,
     result_out: ir::Value,
@@ -212,8 +212,8 @@ pub(super) fn lower_native_dynamic_code(
             3,
         ));
         let frame_ptr = builder.ins().stack_addr(pointer_type, frame_slot, 0);
-        for (local, variable) in locals {
-            let value = builder.use_var(*variable);
+        for local in locals.keys() {
+            let value = use_local_variable(builder, locals, *local)?;
             builder.ins().store(
                 MemFlagsData::new(),
                 value,
@@ -254,14 +254,14 @@ pub(super) fn lower_native_dynamic_code(
     builder.ins().return_(&[status]);
     builder.switch_to_block(success);
     if !locals.is_empty() {
-        for (local, variable) in locals {
+        for local in locals.keys() {
             let value = builder.ins().load(
                 types::I64,
                 MemFlagsData::new(),
                 caller_frame,
                 i32::try_from(local.index().saturating_mul(8)).unwrap_or(i32::MAX),
             );
-            builder.def_var(*variable, value);
+            define_local_variable(builder, locals, *local, value)?;
         }
     }
     if let Some(destination) = destination {

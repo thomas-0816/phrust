@@ -8,7 +8,7 @@
 ///
 /// Increment this whenever serialized cache identity or lowering semantics can
 /// no longer be shared with code produced from an earlier Region IR shape.
-pub const REGION_IR_SCHEMA_VERSION: u32 = 13;
+pub const REGION_IR_SCHEMA_VERSION: u32 = 14;
 
 mod bind;
 mod builder;
@@ -73,7 +73,7 @@ pub use ssa::{
     build_executable_ssa,
 };
 pub use value_flow::{
-    ExecutableValueFlow, LocalStorageClass, analyze_baseline_executable_ownership,
+    ExecutableValueFlow, LocalStorageClass, analyze_baseline_value_ownership,
     analyze_executable_value_flow,
 };
 pub use verify::{RegionVerifyError, verify_region_graph};

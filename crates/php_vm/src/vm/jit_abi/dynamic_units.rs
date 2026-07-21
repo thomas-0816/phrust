@@ -6,10 +6,11 @@ use super::*;
 /// itself through the uniform packed-argument ABI. This keeps the cold
 /// single-flight compile path in Rust while removing the full call dispatcher
 /// from every warm invocation.
-// `out` is a synchronous caller-owned machine-word slot.
-// SAFETY: the item validates the pointer before writing through it.
+// SAFETY: audited native ABI pointer boundary; `out` is a synchronous
+// caller-owned machine-word slot checked before it is written.
 #[allow(unsafe_code)]
 pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
+    runtime: *mut NativeRequestFastState,
     _vm_context: u64,
     function: u64,
     out: *mut usize,
@@ -21,19 +22,34 @@ pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
         return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
     };
     let resolved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_native_context(|context| {
+        with_native_context_for(runtime, "function_resolve", |context| {
             let function = php_ir::FunctionId::new(function);
-            let handle = if let Some(unit) = context.current_dynamic_unit {
-                ensure_dynamic_native_entry(context, unit, function)
-            } else {
-                ensure_native_entry(context, function)
-            }?;
-            handle.native_entry_address().ok_or_else(|| {
+            // This helper is imported exclusively by streaming-baseline
+            // artifacts. Keep the tier boundary physical: a baseline call
+            // miss may compile and publish only the baseline callee. The
+            // optimizing tier has no resolver-helper relocation and reaches
+            // publication-validated native cells directly.
+            let handle = ensure_native_baseline_entry(context, function)?;
+            let address = handle.native_entry_address().ok_or_else(|| {
                 format!(
                     "native function entry {} has no executable address",
                     function.raw()
                 )
-            })
+            })?;
+            context.publish_native_entry_address(function, address);
+            if context.options.native_optimization
+                == super::super::NativeOptimizationPolicy::Optimizing
+            {
+                let compiled = context.compiled.clone();
+                let external_signatures =
+                    visible_external_function_signatures(context, &compiled, function);
+                context.worker_state.schedule_on_demand_optimization(
+                    compiled,
+                    function,
+                    external_signatures,
+                );
+            }
+            Ok(address)
         })
     }));
     match resolved {
@@ -44,7 +60,9 @@ pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
             0
         }
         Ok(Some(Err(message))) => {
-            let _ = with_native_context(|context| publish_native_call_diagnostic(context, message));
+            let _ = with_native_context_for(runtime, "function_resolve", |context| {
+                publish_native_call_diagnostic(context, message)
+            });
             php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
         }
         Ok(None) => php_jit::JitCallStatus::COMPILE_REQUIRED.0 as i32,
@@ -94,27 +112,27 @@ pub(super) fn register_native_dynamic_unit(
             ));
         }
     }
-    let exported_classes = classes
-        .iter()
-        .map(|class| normalize_class_name(class))
-        .collect::<std::collections::BTreeSet<_>>();
-    let exported_class_indexes = compiled
-        .unit()
-        .classes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, class)| {
-            exported_classes
-                .contains(&class.name)
-                .then(|| (class.name.clone(), index))
-        })
+    let adds_by_reference_signature = functions.iter().any(|(_, function)| {
+        compiled
+            .unit()
+            .functions
+            .get(function.index())
+            .is_some_and(|function| function.params.iter().any(|parameter| parameter.by_ref))
+    });
+    if adds_by_reference_signature {
+        context.external_signature_epoch = context.external_signature_epoch.saturating_add(1);
+    }
+    let native_entry_signature_epochs = native_entries
+        .keys()
+        .copied()
+        .map(|function| (function, context.external_signature_epoch))
         .collect();
     let unit = context.dynamic_units.len();
     context.dynamic_units.push(NativeDynamicUnit {
         compiled,
         native_entries,
         native_entry_signature_hashes,
-        exported_class_indexes,
+        native_entry_signature_epochs,
     });
     for (name, function) in functions {
         context.external_functions.insert(
@@ -124,6 +142,7 @@ pub(super) fn register_native_dynamic_unit(
     }
     context.publish_function_names(published_function_names);
     for class in classes {
+        context.external_class_units.insert(class.clone(), unit);
         context.dynamic_classes.insert(class);
     }
     for (name, value) in constants {
@@ -196,7 +215,7 @@ pub(super) fn register_native_dynamic_unit(
     Ok(())
 }
 
-pub(super) fn native_entries_from_records(
+pub(in crate::vm) fn native_entries_from_records(
     records: &[php_jit::JitUnitCompileRecord],
 ) -> Result<std::collections::BTreeMap<php_ir::FunctionId, php_jit::JitFunctionHandle>, String> {
     if let Some(rejected) = records
@@ -230,19 +249,47 @@ pub(super) fn ensure_native_entry(
     context: &mut NativeExecutionContext<'_>,
     function: php_ir::FunctionId,
 ) -> Result<php_jit::JitFunctionHandle, String> {
+    let external_signatures =
+        visible_external_function_signatures(context, &context.compiled, function);
+
+    if context.options.native_optimization == super::super::NativeOptimizationPolicy::Optimizing
+        && context.options.tiering.enabled
+        && !context.options.tiering.native_eager
+    {
+        if let Some(handle) = context.worker_state.resolved_native_function(
+            &context.compiled,
+            function,
+            context.options,
+            &external_signatures,
+        ) {
+            std::sync::Arc::make_mut(&mut context.native_entries).insert(function, handle.clone());
+            return Ok(handle);
+        }
+
+        let handle = if let Some(handle) = context.native_entries.get(&function) {
+            handle.clone()
+        } else {
+            ensure_native_baseline_entry(context, function)?
+        };
+        context.worker_state.schedule_on_demand_optimization(
+            context.compiled.clone(),
+            function,
+            external_signatures,
+        );
+        std::sync::Arc::make_mut(&mut context.native_entries).insert(function, handle.clone());
+        return Ok(handle);
+    }
+
     if let Some(handle) = context.native_entries.get(&function) {
         return Ok(handle.clone());
     }
-    let external_signatures =
-        visible_external_function_signatures(context, &context.compiled, function);
-    let (records, _) = context.worker_state.compile_native(
+    let handle = context.worker_state.resolve_native_function(
         &context.compiled,
         function,
         context.options,
         &external_signatures,
     )?;
-    std::sync::Arc::make_mut(&mut context.native_entries)
-        .extend(native_entries_from_records(&records)?);
+    std::sync::Arc::make_mut(&mut context.native_entries).insert(function, handle);
     context
         .native_entries
         .get(&function)
@@ -250,50 +297,75 @@ pub(super) fn ensure_native_entry(
         .ok_or_else(|| format!("native function entry {} was not published", function.raw()))
 }
 
-pub(super) fn ensure_dynamic_native_entry(
+pub(super) fn ensure_native_baseline_entry(
+    context: &mut NativeExecutionContext<'_>,
+    function: php_ir::FunctionId,
+) -> Result<php_jit::JitFunctionHandle, String> {
+    let external_signatures =
+        visible_external_function_signatures(context, &context.compiled, function);
+    let mut options = context.options.clone();
+    options.native_optimization = super::super::NativeOptimizationPolicy::Baseline;
+    options.tiering.enabled = false;
+    context.worker_state.resolve_native_function(
+        &context.compiled,
+        function,
+        &options,
+        &external_signatures,
+    )
+}
+
+/// Ensure that a dynamic-unit entry is current without cloning its owning
+/// code handle. Cross-unit dispatch immediately swaps the unit's publication
+/// map into the active context, where the actual invocation acquires its one
+/// required handle. Returning a clone here as well made every warm external
+/// call perform two generation-owner reference-count operations.
+pub(super) fn prepare_dynamic_native_entry(
     context: &mut NativeExecutionContext<'_>,
     unit: usize,
     function: php_ir::FunctionId,
-) -> Result<php_jit::JitFunctionHandle, String> {
+) -> Result<(), String> {
+    let signature_epoch = context.external_signature_epoch;
     let package = context
         .dynamic_units
         .get(unit)
         .ok_or_else(|| "dynamic native unit is missing".to_owned())?;
+    if package.native_entry_signature_epochs.get(&function) == Some(&signature_epoch)
+        && package.native_entries.contains_key(&function)
+    {
+        return Ok(());
+    }
     let compiled = package.compiled.clone();
     let external_signatures = visible_external_function_signatures(context, &compiled, function);
     let signature_hash = super::super::external_function_signatures_hash(&external_signatures);
     if package.native_entry_signature_hashes.get(&function) == Some(&signature_hash)
-        && let Some(handle) = package.native_entries.get(&function)
+        && package.native_entries.contains_key(&function)
     {
-        return Ok(handle.clone());
+        context
+            .dynamic_units
+            .get_mut(unit)
+            .expect("dynamic native unit was already validated")
+            .native_entry_signature_epochs
+            .insert(function, signature_epoch);
+        return Ok(());
     }
-    let (records, _) = context.worker_state.compile_native(
+    let handle = context.worker_state.resolve_native_function(
         &compiled,
         function,
         context.options,
         &external_signatures,
     )?;
-    let entries = native_entries_from_records(&records)?;
     let package = context
         .dynamic_units
         .get_mut(unit)
         .ok_or_else(|| "dynamic native unit disappeared during compilation".to_owned())?;
-    for compiled_function in entries.keys() {
-        package
-            .native_entry_signature_hashes
-            .insert(*compiled_function, signature_hash);
-    }
-    std::sync::Arc::make_mut(&mut package.native_entries).extend(entries);
     package
-        .native_entries
-        .get(&function)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "dynamic native function entry {} was not published",
-                function.raw()
-            )
-        })
+        .native_entry_signature_hashes
+        .insert(function, signature_hash);
+    package
+        .native_entry_signature_epochs
+        .insert(function, signature_epoch);
+    std::sync::Arc::make_mut(&mut package.native_entries).insert(function, handle);
+    Ok(())
 }
 
 pub(super) fn visible_external_function_signatures(
@@ -301,7 +373,10 @@ pub(super) fn visible_external_function_signatures(
     compiled: &crate::compiled_unit::CompiledUnit,
     root: php_ir::FunctionId,
 ) -> Vec<php_jit::JitExternalFunctionSignature> {
-    collect_visible_external_function_signatures(context, compiled, [root])
+    collect_visible_external_function_signatures(
+        context,
+        compiled.prepared_external_function_calls(root),
+    )
 }
 
 pub(super) fn visible_external_function_signatures_for_unit(
@@ -310,83 +385,20 @@ pub(super) fn visible_external_function_signatures_for_unit(
 ) -> Vec<php_jit::JitExternalFunctionSignature> {
     collect_visible_external_function_signatures(
         context,
-        compiled,
-        (0..compiled.unit().functions.len())
-            .filter_map(|index| u32::try_from(index).ok())
-            .map(php_ir::FunctionId::new),
+        compiled.prepared_unit_external_function_calls(),
     )
 }
 
 pub(super) fn collect_visible_external_function_signatures(
     context: &NativeExecutionContext<'_>,
-    compiled: &crate::compiled_unit::CompiledUnit,
-    roots: impl IntoIterator<Item = php_ir::FunctionId>,
+    calls: &[crate::compiled_unit::PreparedExternalFunctionCall],
 ) -> Vec<php_jit::JitExternalFunctionSignature> {
-    let local_functions = compiled
-        .unit()
-        .function_table
+    calls
         .iter()
-        .map(|entry| (entry.name.to_ascii_lowercase(), entry.function))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let mut local_methods = std::collections::BTreeMap::<String, Vec<php_ir::FunctionId>>::new();
-    for method in compiled
-        .unit()
-        .classes
-        .iter()
-        .flat_map(|class| &class.methods)
-    {
-        local_methods
-            .entry(method.name.to_ascii_lowercase())
-            .or_default()
-            .push(method.function);
-    }
-    let mut reachable = std::collections::BTreeSet::new();
-    let mut pending = roots
-        .into_iter()
-        .filter(|function| reachable.insert(*function))
-        .collect::<Vec<_>>();
-    let mut called_external_functions = std::collections::BTreeMap::new();
-    while let Some(function_id) = pending.pop() {
-        let Some(function) = compiled.unit().functions.get(function_id.index()) else {
-            continue;
-        };
-        for instruction in function.blocks.iter().flat_map(|block| &block.instructions) {
-            match &instruction.kind {
-                php_ir::InstructionKind::CallFunction { name, .. }
-                | php_ir::InstructionKind::BindReferenceFromCall { name, .. } => {
-                    let normalized = name.to_ascii_lowercase();
-                    if let Some(callee) = local_functions.get(&normalized) {
-                        if reachable.insert(*callee) {
-                            pending.push(*callee);
-                        }
-                    } else {
-                        called_external_functions.insert(normalized, name.clone());
-                    }
-                }
-                php_ir::InstructionKind::CallMethod { method, .. }
-                | php_ir::InstructionKind::CallStaticMethod { method, .. }
-                | php_ir::InstructionKind::BindReferenceFromMethodCall { method, .. } => {
-                    // Native lowering can turn a same-unit method invocation
-                    // into a direct call. Follow every same-named local method
-                    // conservatively because the IR receiver may be dynamic;
-                    // this keeps late external by-reference signatures in the
-                    // cache identity of the actual entry-point call graph.
-                    if let Some(callees) = local_methods.get(&method.to_ascii_lowercase()) {
-                        for callee in callees {
-                            if reachable.insert(*callee) {
-                                pending.push(*callee);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    called_external_functions
-        .into_iter()
-        .filter_map(|(normalized, call_name)| {
-            let target = context.external_functions.get(&normalized)?;
+        .filter_map(|call| {
+            let target = context
+                .external_functions
+                .get(call.normalized_name.as_ref())?;
             let function = context
                 .dynamic_units
                 .get(target.unit)?
@@ -394,17 +406,10 @@ pub(super) fn collect_visible_external_function_signatures(
                 .unit()
                 .functions
                 .get(target.function.index())?;
-            // Ordinary by-value calls need no compile-time cross-unit
-            // contract: the runtime binder clears speculative local flags and
-            // dimension/property locations remain values. Only a by-reference
-            // parameter changes the generated caller's lvalue preparation.
-            if !function.params.iter().any(|parameter| parameter.by_ref) {
-                return None;
-            }
             Some(php_jit::JitExternalFunctionSignature {
                 // Match the source unit's call target. The lowering lookup is
                 // intentionally independent of the publishing unit's spelling.
-                name: call_name,
+                name: call.source_name.to_string(),
                 params: function
                     .params
                     .iter()
@@ -437,59 +442,47 @@ pub(super) fn native_include_uses_implicit_return(unit: &php_ir::IrUnit) -> bool
     })
 }
 
-fn native_external_class_location(
+pub(super) fn native_external_class_handle(
     context: &NativeExecutionContext<'_>,
     name: &str,
-) -> Option<(usize, usize)> {
-    let requested = normalize_class_name(name);
+) -> Option<(usize, crate::compiled_unit::CompiledClass)> {
+    let (unit, class_entry) = native_external_class_ref(context, name)?;
+    let package = &context.dynamic_units[unit];
+    let class = package
+        .compiled
+        .lookup_unit_class_handle(&class_entry.name)?;
+    Some((unit, class))
+}
+
+pub(super) fn native_external_class_ref<'a>(
+    context: &'a NativeExecutionContext<'_>,
+    name: &str,
+) -> Option<(usize, &'a php_ir::module::ClassEntry)> {
+    let requested = normalized_class_name(name);
     let normalized = context
         .class_aliases
-        .get(&requested)
-        .map_or(requested.as_str(), String::as_str);
-    context
-        .dynamic_units
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(unit, package)| {
-            if context.current_dynamic_unit == Some(unit) {
-                return None;
-            }
-            package
-                .exported_class_indexes
-                .get(normalized)
-                .copied()
-                .map(|class| (unit, class))
-        })
+        .get(requested.as_ref())
+        .map_or(requested.as_ref(), String::as_str);
+    let unit = context
+        .external_class_units
+        .get(normalized)
+        .copied()
+        .or_else(|| context.deployment_classes.contains(normalized).then_some(0))?;
+    if context.current_dynamic_unit == Some(unit) {
+        return None;
+    }
+    let package = context.dynamic_units.get(unit)?;
+    package
+        .compiled
+        .lookup_unit_class(normalized)
+        .map(|class| (unit, class))
 }
 
 pub(super) fn native_external_class_exists(
     context: &NativeExecutionContext<'_>,
     name: &str,
 ) -> bool {
-    native_external_class_location(context, name).is_some()
-}
-
-pub(super) fn native_external_class_ref<'context>(
-    context: &'context NativeExecutionContext<'_>,
-    name: &str,
-) -> Option<(usize, &'context php_ir::module::ClassEntry)> {
-    let (unit, class) = native_external_class_location(context, name)?;
-    context
-        .dynamic_units
-        .get(unit)?
-        .compiled
-        .unit()
-        .classes
-        .get(class)
-        .map(|class| (unit, class))
-}
-
-pub(super) fn native_external_class(
-    context: &NativeExecutionContext<'_>,
-    name: &str,
-) -> Option<(usize, php_ir::module::ClassEntry)> {
-    native_external_class_ref(context, name).map(|(unit, class)| (unit, class.clone()))
+    native_external_class_ref(context, name).is_some()
 }
 
 pub(super) fn native_autoload_class(
@@ -539,15 +532,13 @@ pub(super) fn native_autoload_class(
                 }
             }
         }
-        if let Some((_, class)) = native_external_class_ref(context, name) {
+        if let Some((_, class)) = native_external_class_handle(context, name) {
             let dependencies = class
                 .parent_display_name
-                .as_ref()
-                .or(class.parent.as_ref())
-                .cloned()
+                .clone()
+                .or_else(|| class.parent.clone())
                 .into_iter()
-                .chain(class.interfaces.iter().cloned())
-                .collect::<Vec<_>>();
+                .chain(class.interfaces.iter().cloned());
             for dependency in dependencies {
                 native_autoload_class(context, &dependency, source)?;
             }

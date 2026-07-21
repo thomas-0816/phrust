@@ -1,4 +1,8 @@
 use super::*;
+use crate::region_ir::{
+    SsaOwnership, analyze_baseline_value_ownership, analyze_executable_value_flow,
+};
+use php_ir::instruction::IrCallPropertyTarget;
 use php_ir::{
     ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags, FunctionFlags, IrBuilder,
     IrCapture, IrParam, IrSpan, UnitId,
@@ -32,6 +36,63 @@ fn builtin_call_with_local_arguments(name: &str, argument_count: usize) -> Regio
         returns_by_reference: false,
         caller_strict_types: false,
     }
+}
+
+#[test]
+fn native_call_liveness_includes_by_reference_property_object() {
+    let mut builder = IrBuilder::new(UnitId::new(96));
+    let file = builder.add_file("call-property.php");
+    let span = IrSpan::new(file, 0, 20);
+    let function = builder.start_function("call_property", FunctionFlags::default(), span);
+    let block = builder.append_block(function);
+    let constant = builder.intern_constant(IrConstant::Int(1));
+    let object = builder.alloc_register(function);
+    let value = builder.alloc_register(function);
+    for register in [object, value] {
+        builder.emit(
+            function,
+            block,
+            InstructionKind::LoadConst {
+                dst: register,
+                constant,
+            },
+            span,
+        );
+    }
+    let result = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::CallFunction {
+            dst: result,
+            name: "mysqli_query".to_owned(),
+            args: vec![IrCallArg {
+                name: None,
+                value: Operand::Register(value),
+                unpack: false,
+                value_kind: IrCallArgValueKind::Direct,
+                by_ref_local: None,
+                by_ref_dim: None,
+                by_ref_property: Some(IrCallPropertyTarget {
+                    object: Operand::Register(object),
+                    property: "dbh".to_owned(),
+                }),
+                by_ref_property_dim: None,
+            }],
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, function).expect("native call region");
+    let call = region
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find(|instruction| matches!(instruction.kind, RegionInstructionKind::NativeCall(_)))
+        .expect("native call instruction");
+    assert!(call.register_uses().contains(&object));
 }
 
 #[test]
@@ -565,6 +626,127 @@ fn exact_receiver_links_public_non_final_method() {
         } if function == method
     ));
     assert_eq!(call.argument_operand_offset, 1);
+}
+
+#[test]
+fn property_assignment_borrows_implicit_method_receiver() {
+    let mut builder = IrBuilder::new(UnitId::new(4_212));
+    let file = builder.add_file("method-property-borrow.php");
+    let span = IrSpan::new(file, 0, 40);
+    let method = builder.start_function(
+        "Widget::__construct",
+        FunctionFlags {
+            is_method: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    let this = builder.intern_local(method, "this");
+    let argument = builder.intern_local(method, "value");
+    builder.push_param(
+        method,
+        IrParam {
+            name: "value".to_owned(),
+            local: argument,
+            required: true,
+            default: None,
+            type_: None,
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+    );
+    let block = builder.append_block(method);
+    let receiver = builder.alloc_register(method);
+    builder.emit(
+        method,
+        block,
+        InstructionKind::LoadLocal {
+            dst: receiver,
+            local: this,
+        },
+        span,
+    );
+    let value = builder.alloc_register(method);
+    builder.emit(
+        method,
+        block,
+        InstructionKind::LoadLocal {
+            dst: value,
+            local: argument,
+        },
+        span,
+    );
+    let result = builder.alloc_register(method);
+    builder.emit(
+        method,
+        block,
+        InstructionKind::AssignProperty {
+            dst: result,
+            object: Operand::Register(receiver),
+            property: "value".to_owned(),
+            value: Operand::Register(value),
+        },
+        span,
+    );
+    builder.emit(
+        method,
+        block,
+        InstructionKind::Discard {
+            src: Operand::Register(result),
+        },
+        span,
+    );
+    builder.terminate_return(method, block, None, span);
+    builder.push_class(ClassEntry {
+        id: ClassId::new(0),
+        name: "widget".to_owned(),
+        display_name: "Widget".to_owned(),
+        parent: None,
+        parent_display_name: None,
+        interfaces: Vec::new(),
+        methods: vec![ClassMethodEntry {
+            name: "__construct".to_owned(),
+            origin_class: "widget".to_owned(),
+            function: method,
+            flags: ClassMethodFlags {
+                has_body: true,
+                ..ClassMethodFlags::default()
+            },
+            attributes: Vec::new(),
+        }],
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor: Some(method),
+        flags: ClassFlags::default(),
+        span,
+    });
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, method).expect("constructor region");
+    let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+    assert_eq!(region.parameter_locals, vec![this, argument]);
+    assert!(flow.can_borrow_local_load(region.blocks[0].instructions[0].continuation_id));
+    assert_eq!(
+        flow.register_fact(receiver).ownership,
+        SsaOwnership::Borrowed
+    );
+    flow.verify_ownership(&region)
+        .expect("property receiver borrow should verify");
+
+    let baseline = analyze_baseline_value_ownership(&region);
+    assert!(baseline.can_borrow_local_load(region.blocks[0].instructions[0].continuation_id));
+    assert_eq!(
+        baseline.register_fact(receiver).ownership,
+        SsaOwnership::Borrowed
+    );
+    assert_eq!(baseline.ssa().phi_count(), 0);
+    baseline
+        .verify_ownership(&region)
+        .expect("streaming baseline borrow should verify without SSA");
 }
 
 #[test]

@@ -187,8 +187,11 @@ def main() -> int:
         },
         "native_cache": {
             "writer": "PNA2",
-            "metadata": "PRM4 graph bundle with compact root indices",
-            "read_compatibility": ["PNA2/PRM4", "PNA1/PRM3 (one migration window)"],
+            "metadata": "PRM5 binary graph bundle with compact root indices",
+            "read_compatibility": [
+                "PNA2/PRM4",
+                "PNA1/PRM3 (one migration window)",
+            ],
             "function_entry_abi_identity": "stored once per bundle section",
         },
         "integration": {

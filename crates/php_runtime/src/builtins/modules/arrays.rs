@@ -332,12 +332,60 @@ pub(in crate::builtins::modules) fn builtin_count(
 }
 
 pub(in crate::builtins::modules) fn builtin_array_key_exists(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("array_key_exists", &args, 2)?;
-    let key = array_key_arg("array_key_exists", &args[0])?;
+    let key = deref_value(&args[0]);
+    match &key {
+        Value::Null | Value::Uninitialized => context.php_deprecation(
+            "E_PHP_RUNTIME_ARRAY_KEY_EXISTS_NULL_KEY",
+            "Using null as the key parameter for array_key_exists() is deprecated, use an empty string instead",
+            span.clone(),
+        ),
+        Value::Float(value) => {
+            let value = value.to_f64();
+            let label = if value.is_nan() {
+                "NAN".to_owned()
+            } else if value == f64::INFINITY {
+                "INF".to_owned()
+            } else if value == f64::NEG_INFINITY {
+                "-INF".to_owned()
+            } else {
+                value.to_string()
+            };
+            if !value.is_finite() {
+                context.php_warning(
+                    "E_PHP_RUNTIME_ARRAY_KEY_EXISTS_NONFINITE_KEY",
+                    format!("The float {label} is not representable as an int, cast occurred"),
+                    span.clone(),
+                );
+            }
+            if value.is_nan() || value.fract() != 0.0 {
+                context.php_deprecation(
+                    "E_PHP_RUNTIME_ARRAY_KEY_EXISTS_FLOAT_KEY",
+                    format!("Implicit conversion from float {label} to int loses precision"),
+                    span.clone(),
+                );
+            }
+        }
+        _ => {}
+    }
+    let key = ArrayKey::from_value(&key).ok_or_else(|| {
+        let actual = match &key {
+            Value::Array(_) => "array".to_owned(),
+            Value::Object(object) => object.class_name(),
+            Value::Callable(_) => "Closure".to_owned(),
+            Value::Fiber(_) => "Fiber".to_owned(),
+            Value::Generator(_) => "Generator".to_owned(),
+            value => runtime_type_name(value).to_owned(),
+        };
+        BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!("Cannot access offset of type {actual} on array"),
+        )
+    })?;
     let Value::Array(array) = deref_value(&args[1]) else {
         return Err(type_error("array_key_exists", "array", &args[1]));
     };

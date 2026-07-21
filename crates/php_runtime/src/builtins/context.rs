@@ -97,9 +97,9 @@ pub(in crate::builtins) struct BuiltinFilesystemContext<'a> {
     include_path: Arc<Vec<PathBuf>>,
     filesystem: FilesystemCapabilities,
     resources: Option<&'a mut ResourceTable>,
-    filesystem_state: FilesystemRuntimeState,
+    filesystem_state: Option<FilesystemRuntimeState>,
     filesystem_state_slot: Option<&'a mut FilesystemRuntimeState>,
-    stream_context_state: StreamContextState,
+    stream_context_state: Option<StreamContextState>,
     stream_context_state_slot: Option<&'a mut StreamContextState>,
 }
 
@@ -115,63 +115,107 @@ impl<'a> BuiltinFilesystemContext<'a> {
             include_path: Arc::new(vec![PathBuf::from(".")]),
             filesystem,
             resources,
-            filesystem_state: FilesystemRuntimeState::default(),
+            filesystem_state: Some(FilesystemRuntimeState::default()),
             filesystem_state_slot: None,
-            stream_context_state: StreamContextState::default(),
+            stream_context_state: Some(StreamContextState::default()),
+            stream_context_state_slot: None,
+        }
+    }
+
+    fn borrowed(
+        cwd: &'a mut PathBuf,
+        include_path: Arc<Vec<PathBuf>>,
+        filesystem: FilesystemCapabilities,
+        resources: Option<&'a mut ResourceTable>,
+    ) -> Self {
+        Self {
+            cwd: PathBuf::new(),
+            cwd_slot: Some(cwd),
+            include_path,
+            filesystem,
+            resources,
+            filesystem_state: None,
+            filesystem_state_slot: None,
+            stream_context_state: None,
             stream_context_state_slot: None,
         }
     }
 }
 
-#[derive(Default)]
 pub(in crate::builtins) struct BuiltinHttpContext<'a> {
     http_response: RuntimeHttpResponseState,
     http_response_state: Option<&'a mut RuntimeHttpResponseState>,
-    filter_inputs: Rc<BTreeMap<i64, crate::PhpArray>>,
+    filter_inputs: Option<Rc<BTreeMap<i64, crate::PhpArray>>>,
     upload_registry: Option<&'a mut UploadRegistry>,
+}
+
+impl Default for BuiltinHttpContext<'_> {
+    fn default() -> Self {
+        Self {
+            http_response: RuntimeHttpResponseState::default(),
+            http_response_state: None,
+            filter_inputs: Some(Rc::new(BTreeMap::new())),
+            upload_registry: None,
+        }
+    }
+}
+
+impl BuiltinHttpContext<'_> {
+    fn borrowed() -> Self {
+        Self {
+            http_response: RuntimeHttpResponseState::default(),
+            http_response_state: None,
+            filter_inputs: None,
+            upload_registry: None,
+        }
+    }
 }
 
 pub(in crate::builtins) struct BuiltinExtensionState<'a> {
     bcmath_scale: usize,
     strtok_state: Option<&'a mut StrtokState>,
-    iconv_state: IconvEncodingState,
+    iconv_state: Option<IconvEncodingState>,
     iconv_state_slot: Option<&'a mut IconvEncodingState>,
     extension_request_state: Option<&'a mut RequestState>,
     apcu_state_slot: Option<ExtensionStateSlot<ApcuState>>,
-    opcache_state: OpcacheState,
+    opcache_state: Option<OpcacheState>,
     opcache_state_slot: Option<&'a mut OpcacheState>,
-    soap_state: SoapState,
+    soap_state: Option<SoapState>,
     soap_state_slot: Option<&'a mut SoapState>,
-    openssl_error_state: OpenSslErrorState,
+    openssl_error_state: Option<OpenSslErrorState>,
     openssl_error_state_slot: Option<&'a mut OpenSslErrorState>,
-    gettext_state: GettextState,
+    gettext_state: Option<GettextState>,
     gettext_state_slot: Option<&'a mut GettextState>,
-    shmop_state: ShmopState,
+    shmop_state: Option<ShmopState>,
     shmop_state_slot: Option<&'a mut ShmopState>,
-    readline_state: ReadlineState,
+    // Readline's pristine state owns a populated metadata BTreeMap. Most PHP
+    // requests never call readline, and VM-backed contexts immediately bind
+    // the request-owned state, so construct the fallback lazily instead of
+    // allocating and dropping it at every unrelated builtin boundary.
+    readline_state: Option<ReadlineState>,
     readline_state_slot: Option<&'a mut ReadlineState>,
-    sysvmsg_state: SysvMessageQueueState,
+    sysvmsg_state: Option<SysvMessageQueueState>,
     sysvmsg_state_slot: Option<&'a mut SysvMessageQueueState>,
-    sysvsem_state: SysvSemaphoreState,
+    sysvsem_state: Option<SysvSemaphoreState>,
     sysvsem_state_slot: Option<&'a mut SysvSemaphoreState>,
-    sysvshm_state: SysvSharedMemoryState,
+    sysvshm_state: Option<SysvSharedMemoryState>,
     sysvshm_state_slot: Option<&'a mut SysvSharedMemoryState>,
-    pcntl_state: PcntlState,
+    pcntl_state: Option<PcntlState>,
     pcntl_state_slot: Option<&'a mut PcntlState>,
-    ftp_state: FtpState,
+    ftp_state: Option<FtpState>,
     ftp_state_slot: Option<&'a mut FtpState>,
-    imap_state: ImapState,
+    imap_state: Option<ImapState>,
     imap_state_slot: Option<&'a mut ImapState>,
-    ldap_state: LdapState,
+    ldap_state: Option<LdapState>,
     ldap_state_slot: Option<&'a mut LdapState>,
-    ssh2_state: Ssh2State,
+    ssh2_state: Option<Ssh2State>,
     ssh2_state_slot: Option<&'a mut Ssh2State>,
-    socket_state: SocketState,
+    socket_state: Option<SocketState>,
     socket_state_slot: Option<&'a mut SocketState>,
     posix_last_error: i32,
-    mb_internal_encoding: String,
+    mb_internal_encoding: Option<String>,
     mb_internal_encoding_slot: Option<&'a mut String>,
-    mb_substitute_character: MbSubstituteCharacter,
+    mb_substitute_character: Option<MbSubstituteCharacter>,
     mb_substitute_character_slot: Option<&'a mut MbSubstituteCharacter>,
     mysql_state: Option<&'a mut MysqlState>,
     postgres_state: Option<&'a mut PostgresState>,
@@ -194,44 +238,94 @@ impl<'a> Default for BuiltinExtensionState<'a> {
         Self {
             bcmath_scale: 0,
             strtok_state: None,
-            iconv_state: IconvEncodingState::default(),
+            iconv_state: Some(IconvEncodingState::default()),
             iconv_state_slot: None,
             extension_request_state: None,
             apcu_state_slot: None,
-            opcache_state: OpcacheState::default(),
+            opcache_state: Some(OpcacheState::default()),
             opcache_state_slot: None,
-            soap_state: SoapState::default(),
+            soap_state: Some(SoapState::default()),
             soap_state_slot: None,
-            openssl_error_state: OpenSslErrorState::default(),
+            openssl_error_state: Some(OpenSslErrorState::default()),
             openssl_error_state_slot: None,
-            gettext_state: GettextState::default(),
+            gettext_state: Some(GettextState::default()),
             gettext_state_slot: None,
-            shmop_state: ShmopState::default(),
+            shmop_state: Some(ShmopState::default()),
             shmop_state_slot: None,
-            readline_state: ReadlineState::default(),
+            readline_state: None,
             readline_state_slot: None,
-            sysvmsg_state: SysvMessageQueueState::default(),
+            sysvmsg_state: Some(SysvMessageQueueState::default()),
             sysvmsg_state_slot: None,
-            sysvsem_state: SysvSemaphoreState::default(),
+            sysvsem_state: Some(SysvSemaphoreState::default()),
             sysvsem_state_slot: None,
-            sysvshm_state: SysvSharedMemoryState::default(),
+            sysvshm_state: Some(SysvSharedMemoryState::default()),
             sysvshm_state_slot: None,
-            pcntl_state: PcntlState::default(),
+            pcntl_state: Some(PcntlState::default()),
             pcntl_state_slot: None,
-            ftp_state: FtpState::default(),
+            ftp_state: Some(FtpState::default()),
             ftp_state_slot: None,
-            imap_state: ImapState::default(),
+            imap_state: Some(ImapState::default()),
             imap_state_slot: None,
-            ldap_state: LdapState::default(),
+            ldap_state: Some(LdapState::default()),
             ldap_state_slot: None,
-            ssh2_state: Ssh2State::default(),
+            ssh2_state: Some(Ssh2State::default()),
             ssh2_state_slot: None,
-            socket_state: SocketState::default(),
+            socket_state: Some(SocketState::default()),
             socket_state_slot: None,
             posix_last_error: 0,
-            mb_internal_encoding: "UTF-8".to_owned(),
+            mb_internal_encoding: Some("UTF-8".to_owned()),
             mb_internal_encoding_slot: None,
-            mb_substitute_character: MbSubstituteCharacter::Codepoint(63),
+            mb_substitute_character: Some(MbSubstituteCharacter::Codepoint(63)),
+            mb_substitute_character_slot: None,
+            mysql_state: None,
+            postgres_state: None,
+        }
+    }
+}
+
+impl BuiltinExtensionState<'_> {
+    fn borrowed() -> Self {
+        Self {
+            bcmath_scale: 0,
+            strtok_state: None,
+            iconv_state: None,
+            iconv_state_slot: None,
+            extension_request_state: None,
+            apcu_state_slot: None,
+            opcache_state: None,
+            opcache_state_slot: None,
+            soap_state: None,
+            soap_state_slot: None,
+            openssl_error_state: None,
+            openssl_error_state_slot: None,
+            gettext_state: None,
+            gettext_state_slot: None,
+            shmop_state: None,
+            shmop_state_slot: None,
+            readline_state: None,
+            readline_state_slot: None,
+            sysvmsg_state: None,
+            sysvmsg_state_slot: None,
+            sysvsem_state: None,
+            sysvsem_state_slot: None,
+            sysvshm_state: None,
+            sysvshm_state_slot: None,
+            pcntl_state: None,
+            pcntl_state_slot: None,
+            ftp_state: None,
+            ftp_state_slot: None,
+            imap_state: None,
+            imap_state_slot: None,
+            ldap_state: None,
+            ldap_state_slot: None,
+            ssh2_state: None,
+            ssh2_state_slot: None,
+            socket_state: None,
+            socket_state_slot: None,
+            posix_last_error: 0,
+            mb_internal_encoding: None,
+            mb_internal_encoding_slot: None,
+            mb_substitute_character: None,
             mb_substitute_character_slot: None,
             mysql_state: None,
             postgres_state: None,
@@ -372,6 +466,44 @@ impl<'a> BuiltinContext<'a> {
         }
     }
 
+    /// Creates a builtin call view that borrows the VM's request-owned core
+    /// state directly. Unlike the general constructors this does not clone a
+    /// cwd/include-path or allocate fallback timezone and environment values
+    /// that are immediately shadowed by request slots.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_borrowed_runtime_request_state(
+        output: &'a mut OutputBuffer,
+        cwd: &'a mut PathBuf,
+        include_path: Arc<Vec<PathBuf>>,
+        filesystem: FilesystemCapabilities,
+        resources: Option<&'a mut ResourceTable>,
+        request_state: &'a mut BuiltinRequestState,
+        ini: &'a mut IniRegistry,
+        default_timezone: &'a mut String,
+        env: Arc<Vec<(String, String)>>,
+    ) -> Self {
+        Self {
+            io: BuiltinIoContext::new(output),
+            filesystem: BuiltinFilesystemContext::borrowed(
+                cwd,
+                include_path,
+                filesystem,
+                resources,
+            ),
+            http: BuiltinHttpContext::borrowed(),
+            request_state: BuiltinRequestStateAccess::Borrowed(request_state),
+            extensions: BuiltinExtensionState::borrowed(),
+            sessions: BuiltinSessionContext::default(),
+            ini: IniRegistry::default(),
+            ini_slot: Some(ini),
+            default_timezone: String::new(),
+            default_timezone_slot: Some(default_timezone),
+            env,
+            network_requests_enabled: false,
+        }
+    }
+
     /// Sets deterministic request-local environment entries. Pre-sorted
     /// tables (the common case: the VM keeps its request env sorted) are
     /// shared without copying.
@@ -385,6 +517,16 @@ impl<'a> BuiltinContext<'a> {
         let mut owned = env.as_ref().clone();
         owned.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
         self.env = Arc::new(owned);
+    }
+
+    /// Sets environment entries whose owner already maintains the stable
+    /// `(name, value)` order. This avoids revalidating the complete table at
+    /// every builtin boundary while retaining the same shared representation.
+    pub fn set_sorted_env_entries(&mut self, env: Arc<Vec<(String, String)>>) {
+        debug_assert!(env.windows(2).all(|pair| {
+            pair[0].0 <= pair[1].0 && !(pair[0].0 == pair[1].0 && pair[0].1 > pair[1].1)
+        }));
+        self.env = env;
     }
 
     /// Reads a deterministic request-local environment value.
@@ -640,30 +782,39 @@ impl<'a> BuiltinContext<'a> {
 
     /// Sets a deterministic request-input array for `filter_input`.
     pub fn set_filter_input_array(&mut self, source: i64, array: crate::PhpArray) {
-        Rc::make_mut(&mut self.http.filter_inputs).insert(source, array);
+        Rc::make_mut(
+            self.http
+                .filter_inputs
+                .get_or_insert_with(|| Rc::new(BTreeMap::new())),
+        )
+        .insert(source, array);
     }
 
     /// Shares request-input arrays materialized once during request setup.
     pub fn set_filter_input_arrays_shared(&mut self, arrays: Rc<BTreeMap<i64, crate::PhpArray>>) {
-        self.http.filter_inputs = arrays;
+        self.http.filter_inputs = Some(arrays);
     }
 
     /// Looks up a top-level request-input value for `filter_input`.
     #[must_use]
     pub fn filter_input_value(&self, source: i64, name: &str) -> Option<Value> {
-        self.http.filter_inputs.get(&source).and_then(|array| {
-            array
-                .get(&crate::ArrayKey::String(crate::PhpString::from_test_str(
-                    name,
-                )))
-                .cloned()
-        })
+        self.http
+            .filter_inputs
+            .as_ref()?
+            .get(&source)
+            .and_then(|array| {
+                array
+                    .get(&crate::ArrayKey::String(crate::PhpString::from_test_str(
+                        name,
+                    )))
+                    .cloned()
+            })
     }
 
     /// Returns a request-input array snapshot for `filter_input_array`.
     #[must_use]
     pub fn filter_input_array(&self, source: i64) -> Option<crate::PhpArray> {
-        self.http.filter_inputs.get(&source).cloned()
+        self.http.filter_inputs.as_ref()?.get(&source).cloned()
     }
 
     /// Sets request-local upload registry state.
@@ -700,7 +851,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn iconv_state(&mut self) -> &mut IconvEncodingState {
         match self.extensions.iconv_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.iconv_state,
+            None => self
+                .extensions
+                .iconv_state
+                .get_or_insert_with(IconvEncodingState::default),
         }
     }
 
@@ -732,7 +886,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn opcache_state(&mut self) -> &mut OpcacheState {
         match self.extensions.opcache_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.opcache_state,
+            None => self
+                .extensions
+                .opcache_state
+                .get_or_insert_with(OpcacheState::default),
         }
     }
 
@@ -745,7 +902,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn soap_state(&mut self) -> &mut SoapState {
         match self.extensions.soap_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.soap_state,
+            None => self
+                .extensions
+                .soap_state
+                .get_or_insert_with(SoapState::default),
         }
     }
 
@@ -758,7 +918,11 @@ impl<'a> BuiltinContext<'a> {
     pub fn push_openssl_error(&mut self, error: impl Into<String>) {
         match self.extensions.openssl_error_state_slot.as_deref_mut() {
             Some(state) => state.push(error),
-            None => self.extensions.openssl_error_state.push(error),
+            None => self
+                .extensions
+                .openssl_error_state
+                .get_or_insert_with(OpenSslErrorState::default)
+                .push(error),
         }
     }
 
@@ -766,7 +930,11 @@ impl<'a> BuiltinContext<'a> {
     pub fn pop_openssl_error(&mut self) -> Option<String> {
         match self.extensions.openssl_error_state_slot.as_deref_mut() {
             Some(state) => state.pop(),
-            None => self.extensions.openssl_error_state.pop(),
+            None => self
+                .extensions
+                .openssl_error_state
+                .as_mut()
+                .and_then(OpenSslErrorState::pop),
         }
     }
 
@@ -779,7 +947,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn gettext_state(&mut self) -> &mut GettextState {
         match self.extensions.gettext_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.gettext_state,
+            None => self
+                .extensions
+                .gettext_state
+                .get_or_insert_with(GettextState::default),
         }
     }
 
@@ -789,7 +960,8 @@ impl<'a> BuiltinContext<'a> {
         self.extensions
             .gettext_state_slot
             .as_deref()
-            .unwrap_or(&self.extensions.gettext_state)
+            .or(self.extensions.gettext_state.as_ref())
+            .expect("standalone builtin context owns gettext state")
     }
 
     /// Uses VM-owned shmop state for request-local shmop builtins.
@@ -801,7 +973,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn shmop_state(&mut self) -> &mut ShmopState {
         match self.extensions.shmop_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.shmop_state,
+            None => self
+                .extensions
+                .shmop_state
+                .get_or_insert_with(ShmopState::default),
         }
     }
 
@@ -814,7 +989,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn readline_state(&mut self) -> &mut ReadlineState {
         match self.extensions.readline_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.readline_state,
+            None => self
+                .extensions
+                .readline_state
+                .get_or_insert_with(ReadlineState::default),
         }
     }
 
@@ -827,7 +1005,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn sysvmsg_state(&mut self) -> &mut SysvMessageQueueState {
         match self.extensions.sysvmsg_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.sysvmsg_state,
+            None => self
+                .extensions
+                .sysvmsg_state
+                .get_or_insert_with(SysvMessageQueueState::default),
         }
     }
 
@@ -840,7 +1021,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn sysvsem_state(&mut self) -> &mut SysvSemaphoreState {
         match self.extensions.sysvsem_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.sysvsem_state,
+            None => self
+                .extensions
+                .sysvsem_state
+                .get_or_insert_with(SysvSemaphoreState::default),
         }
     }
 
@@ -853,7 +1037,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn sysvshm_state(&mut self) -> &mut SysvSharedMemoryState {
         match self.extensions.sysvshm_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.sysvshm_state,
+            None => self
+                .extensions
+                .sysvshm_state
+                .get_or_insert_with(SysvSharedMemoryState::default),
         }
     }
 
@@ -866,7 +1053,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn pcntl_state(&mut self) -> &mut PcntlState {
         match self.extensions.pcntl_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.pcntl_state,
+            None => self
+                .extensions
+                .pcntl_state
+                .get_or_insert_with(PcntlState::default),
         }
     }
 
@@ -879,7 +1069,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn ftp_state(&mut self) -> &mut FtpState {
         match self.extensions.ftp_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.ftp_state,
+            None => self
+                .extensions
+                .ftp_state
+                .get_or_insert_with(FtpState::default),
         }
     }
 
@@ -892,7 +1085,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn imap_state(&mut self) -> &mut ImapState {
         match self.extensions.imap_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.imap_state,
+            None => self
+                .extensions
+                .imap_state
+                .get_or_insert_with(ImapState::default),
         }
     }
 
@@ -905,7 +1101,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn ldap_state(&mut self) -> &mut LdapState {
         match self.extensions.ldap_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.ldap_state,
+            None => self
+                .extensions
+                .ldap_state
+                .get_or_insert_with(LdapState::default),
         }
     }
 
@@ -918,7 +1117,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn ssh2_state(&mut self) -> &mut Ssh2State {
         match self.extensions.ssh2_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.ssh2_state,
+            None => self
+                .extensions
+                .ssh2_state
+                .get_or_insert_with(Ssh2State::default),
         }
     }
 
@@ -931,7 +1133,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn socket_state(&mut self) -> &mut SocketState {
         match self.extensions.socket_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.extensions.socket_state,
+            None => self
+                .extensions
+                .socket_state
+                .get_or_insert_with(SocketState::default),
         }
     }
 
@@ -968,7 +1173,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn filesystem_state(&mut self) -> &mut FilesystemRuntimeState {
         match self.filesystem.filesystem_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.filesystem.filesystem_state,
+            None => self
+                .filesystem
+                .filesystem_state
+                .get_or_insert_with(FilesystemRuntimeState::default),
         }
     }
 
@@ -981,7 +1189,10 @@ impl<'a> BuiltinContext<'a> {
     pub fn stream_context_state(&mut self) -> &mut StreamContextState {
         match self.filesystem.stream_context_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.filesystem.stream_context_state,
+            None => self
+                .filesystem
+                .stream_context_state
+                .get_or_insert_with(StreamContextState::default),
         }
     }
 
@@ -992,7 +1203,8 @@ impl<'a> BuiltinContext<'a> {
             .mb_internal_encoding_slot
             .as_deref()
             .map(String::as_str)
-            .unwrap_or(&self.extensions.mb_internal_encoding)
+            .or_else(|| self.extensions.mb_internal_encoding.as_deref())
+            .unwrap_or("UTF-8")
     }
 
     /// Updates the request-local mbstring internal encoding.
@@ -1000,7 +1212,7 @@ impl<'a> BuiltinContext<'a> {
         let encoding = encoding.into();
         match self.extensions.mb_internal_encoding_slot.as_deref_mut() {
             Some(slot) => *slot = encoding,
-            None => self.extensions.mb_internal_encoding = encoding,
+            None => self.extensions.mb_internal_encoding = Some(encoding),
         }
     }
 
@@ -1015,14 +1227,15 @@ impl<'a> BuiltinContext<'a> {
         self.extensions
             .mb_substitute_character_slot
             .as_deref()
-            .unwrap_or(&self.extensions.mb_substitute_character)
+            .or(self.extensions.mb_substitute_character.as_ref())
+            .expect("standalone builtin context owns mb substitute state")
     }
 
     /// Updates the request-local mbstring substitute-character mode.
     pub fn set_mb_substitute_character(&mut self, substitute: MbSubstituteCharacter) {
         match self.extensions.mb_substitute_character_slot.as_deref_mut() {
             Some(slot) => *slot = substitute,
-            None => self.extensions.mb_substitute_character = substitute,
+            None => self.extensions.mb_substitute_character = Some(substitute),
         }
     }
 
@@ -1171,6 +1384,22 @@ mod tests {
     };
     use crate::pcre;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[test]
+    fn pre_sorted_environment_is_shared_without_revalidation_or_copy() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let env = Arc::new(vec![
+            ("ALPHA".to_owned(), "first".to_owned()),
+            ("ZED".to_owned(), "last".to_owned()),
+        ]);
+
+        context.set_sorted_env_entries(Arc::clone(&env));
+
+        assert!(Arc::ptr_eq(&context.env, &env));
+        assert_eq!(context.env_value("ZED"), Some("last"));
+    }
 
     #[test]
     fn json_last_error_state_updates_and_reads_from_extension_state() {

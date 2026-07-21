@@ -1210,12 +1210,17 @@ fn format_instruction(kind: &InstructionKind) -> String {
             array,
             key,
             quiet,
+            mode,
         } => format!(
-            "fetch_dim r{} {} {} quiet={}",
+            "fetch_dim r{} {} {} quiet={} mode={}",
             dst.raw(),
             format_operand(array),
             format_operand(key),
-            quiet
+            quiet,
+            match mode {
+                crate::instruction::DimFetchMode::Read => "read",
+                crate::instruction::DimFetchMode::Lvalue => "lvalue",
+            }
         ),
         InstructionKind::AssignDim {
             dst,

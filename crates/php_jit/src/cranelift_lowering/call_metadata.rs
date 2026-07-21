@@ -68,6 +68,23 @@ pub(super) fn stable_builtin_helper_id(target: &RegionCallTarget) -> Option<u32>
         .filter(|helper_id| *helper_id != 0)
 }
 
+pub(super) fn stable_builtin_dense_id(target: &RegionCallTarget) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\').to_ascii_lowercase();
+    if normalized.contains('\\') {
+        return None;
+    }
+    php_runtime::api::BuiltinRegistry::new()
+        .get(&normalized)
+        .map(php_runtime::api::BuiltinEntry::dense_id)
+}
+
 pub(super) fn stable_builtin_type_predicate(target: &RegionCallTarget) -> Option<u32> {
     let RegionCallTarget::Function {
         name,
@@ -83,11 +100,13 @@ pub(super) fn stable_builtin_type_predicate(target: &RegionCallTarget) -> Option
     match normalized.as_str() {
         "is_null" => Some(0),
         "is_bool" => Some(1),
+        "is_int" | "is_integer" | "is_long" => Some(2),
         "is_float" | "is_double" | "is_real" => Some(3),
         "is_string" => Some(4),
         "is_array" => Some(5),
         "is_object" => Some(6),
         "is_resource" => Some(7),
+        "is_scalar" => Some(8),
         _ => None,
     }
 }
@@ -107,6 +126,62 @@ pub(super) fn stable_builtin_length(target: &RegionCallTarget) -> Option<u32> {
     match normalized.as_str() {
         "strlen" => Some(0),
         "count" => Some(1),
+        _ => None,
+    }
+}
+
+pub(super) fn stable_builtin_array_key_exists(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\')
+        && (normalized.eq_ignore_ascii_case("array_key_exists")
+            || normalized.eq_ignore_ascii_case("key_exists"))
+}
+
+pub(super) fn stable_builtin_string_predicate(target: &RegionCallTarget) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "str_contains" => Some(0),
+        "str_starts_with" => Some(1),
+        "str_ends_with" => Some(2),
+        _ => None,
+    }
+}
+
+/// ASCII-only case conversion builtins whose PHP 8 semantics can be emitted
+/// directly over the request-owned native string arena.  The numeric value is
+/// an internal lowering selector, never a runtime helper operation ID.
+pub(super) fn stable_builtin_ascii_case(target: &RegionCallTarget) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = target
+    else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "strtolower" => Some(0),
+        "strtoupper" => Some(1),
         _ => None,
     }
 }
@@ -143,9 +218,53 @@ pub(super) fn known_user_argument_requires_reference(
     call: &RegionNativeCall,
     index: usize,
     function_params: &BTreeMap<FunctionId, NativeFunctionMetadata>,
+    external_function_signatures: &[crate::JitExternalFunctionSignature],
     caller: FunctionId,
 ) -> Option<bool> {
     let argument = call.args.get(index)?;
+    if let RegionCallTarget::Function {
+        name,
+        function: None,
+    } = &call.target
+    {
+        let normalized = name.trim_start_matches('\\');
+        let has_local_metadata = function_params.values().any(|(candidate, ..)| {
+            candidate
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case(normalized)
+        });
+        if !has_local_metadata {
+            let signature = external_function_signatures.iter().find(|signature| {
+                signature
+                    .name
+                    .trim_start_matches('\\')
+                    .eq_ignore_ascii_case(normalized)
+            })?;
+            let parameter = argument.name.as_deref().map_or_else(
+                || {
+                    signature.params.get(index).or_else(|| {
+                        signature
+                            .params
+                            .last()
+                            .filter(|parameter| parameter.variadic)
+                    })
+                },
+                |name| {
+                    signature
+                        .params
+                        .iter()
+                        .find(|parameter| parameter.name.eq_ignore_ascii_case(name))
+                        .or_else(|| {
+                            signature
+                                .params
+                                .last()
+                                .filter(|parameter| parameter.variadic)
+                        })
+                },
+            );
+            return Some(parameter.is_some_and(|parameter| parameter.by_ref));
+        }
+    }
     let method_matches = |candidate: &str, method: &str| {
         candidate
             .rsplit_once("::")

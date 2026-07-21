@@ -38,6 +38,17 @@ pub(super) struct StaticLocalSpec {
 
 const MIN_COMPACT_CONSTANT_ARRAY_ENTRIES: usize = 128;
 
+fn constant_array_entry_count(constant: &IrConstant) -> usize {
+    let IrConstant::Array(entries) = constant else {
+        return 0;
+    };
+    entries.iter().fold(entries.len(), |count, entry| {
+        count
+            .saturating_add(entry.key.as_ref().map_or(0, constant_array_entry_count))
+            .saturating_add(constant_array_entry_count(&entry.value))
+    })
+}
+
 fn constant_array_matches_expression(
     module: &HirModule,
     expr_id: ExprId,
@@ -1969,6 +1980,7 @@ impl LoweringContext<'_> {
                 array: Operand::Register(array.register),
                 key: Operand::Register(index.register),
                 quiet: false,
+                mode: DimFetchMode::Read,
             },
             site.span,
         );
@@ -1999,11 +2011,8 @@ impl LoweringContext<'_> {
         if let Some(constant) =
             constant_from_expr_with_names(module, site.expr, self.global_constant_initializer_map())
         {
-            let is_large_array = matches!(
-                &constant,
-                IrConstant::Array(entries)
-                    if entries.len() >= MIN_COMPACT_CONSTANT_ARRAY_ENTRIES
-            );
+            let is_large_array =
+                constant_array_entry_count(&constant) >= MIN_COMPACT_CONSTANT_ARRAY_ENTRIES;
             if is_large_array && constant_array_matches_expression(module, site.expr, &constant) {
                 let dst = builder.alloc_register(site.function);
                 let constant = builder.intern_constant(constant);
@@ -2406,6 +2415,7 @@ impl LoweringContext<'_> {
                                 array,
                                 key: *dim,
                                 quiet: false,
+                                mode: DimFetchMode::Lvalue,
                             },
                             site.span,
                         );
@@ -2479,6 +2489,7 @@ impl LoweringContext<'_> {
                                 array,
                                 key: *dim,
                                 quiet: false,
+                                mode: DimFetchMode::Lvalue,
                             },
                             site.span,
                         );
@@ -4812,6 +4823,7 @@ impl LoweringContext<'_> {
                                 array: Operand::Register(base_register),
                                 key: Operand::Register(key_register),
                                 quiet: false,
+                                mode: DimFetchMode::Read,
                             },
                             site.span,
                         );
@@ -4877,6 +4889,7 @@ impl LoweringContext<'_> {
                                     array: Operand::Register(register),
                                     key: Operand::Register(key_register),
                                     quiet: false,
+                                    mode: DimFetchMode::Read,
                                 },
                                 site.span,
                             );
@@ -5057,6 +5070,7 @@ impl LoweringContext<'_> {
                                 array: Operand::Register(register),
                                 key: Operand::Register(key_register),
                                 quiet: false,
+                                mode: DimFetchMode::Read,
                             },
                             site.span,
                         );
@@ -5795,6 +5809,7 @@ impl LoweringContext<'_> {
                     array: Operand::Register(value),
                     key: dim,
                     quiet: true,
+                    mode: DimFetchMode::Read,
                 },
                 span,
             );
@@ -5847,6 +5862,7 @@ impl LoweringContext<'_> {
                     array: Operand::Register(value),
                     key: dim,
                     quiet: true,
+                    mode: DimFetchMode::Read,
                 },
                 span,
             );
@@ -5892,6 +5908,7 @@ impl LoweringContext<'_> {
                     array: Operand::Register(value),
                     key: dim,
                     quiet: true,
+                    mode: DimFetchMode::Read,
                 },
                 span,
             );
@@ -8294,6 +8311,7 @@ impl LoweringContext<'_> {
                     array: Operand::Register(old),
                     key: *dim,
                     quiet: false,
+                    mode: DimFetchMode::Read,
                 },
                 site.span,
             );
@@ -8889,6 +8907,7 @@ impl LoweringContext<'_> {
                     array: Operand::Register(fetched),
                     key: dim,
                     quiet: false,
+                    mode: DimFetchMode::Read,
                 },
                 site.span,
             );

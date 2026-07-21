@@ -94,7 +94,11 @@ Always use the exact same binary for both runs: the artifact identity includes
 the build ID, Cranelift settings, target CPU, runtime/helper ABI, IR schema, and
 semantic configuration. Rebuilding intentionally causes a miss rather than
 loading stale machine code. Cache artifacts are bounded and validated; do not
-raise the limits to hide unexpectedly large metadata.
+raise the limits to hide unexpectedly large metadata. Current PNA2 writers use
+compact PRM5 binary Region metadata on the hot load path; the reader retains
+PRM4 JSON compatibility for an existing validated-cache migration. Both forms
+receive the same address, range, relocation, and state-metadata validation
+before publication.
 
 Run `db-install` alone until it passes. After the first successful install,
 save a deterministic database snapshot and restore it for login, frontpage,
@@ -149,6 +153,32 @@ headline samples remain warm and instrumentation-free; lowering or compilation
 during a measured sample is a benchmark failure to investigate, not part of the
 reported application latency.
 
+Use `--cold-probe-concurrency` when the first page itself is the measurement.
+The probe runs before every warmup, correctness request, or headline sample and
+records both latency and process-tree peak RSS. For example, an empty-cache
+concurrency-1 recovery probe is:
+
+```bash
+rm -rf target/performance/wordpress-cold/native-cache
+PHRUST_WORDPRESS_DIR=/path/to/wordpress \
+PHRUST_WORDPRESS_HOST_HEADER=fixture.example \
+  nix develop -c just -- wordpress-root-benchmark \
+    --out-dir target/performance/wordpress-cold/c1 \
+    --engine-preset baseline \
+    --native-cache read-write \
+    --native-cache-dir target/performance/wordpress-cold/native-cache \
+    --cold-probe-concurrency 1 \
+    --concurrency 1
+```
+
+Run the concurrency-4 cold probe in a fresh process with a different empty
+cache directory; reusing the c1 directory would turn it into a cache-restart
+measurement. To measure restart behavior, deliberately reuse the populated c1
+directory with `--native-cache read`. A separate diagnostic run with
+`--require-zero-native-compiles` must then report zero compile attempts. Cold
+probe latency is never substituted for the warm headline curves in baseline
+comparisons; both remain explicit in `summary.json`.
+
 The clean report compares HTTP status, normalized headers, and body hashes. Add
 application-specific observable endpoints without changing the sampler:
 
@@ -186,6 +216,11 @@ profiles, and traces. Its JSON explicitly sets `timing_eligible` to `false`, so
 instrumented samples cannot be mistaken for clean latency evidence. Process CPU
 and peak RSS are collected from `/proc` for locally launched engines; remote
 targets record those fields as unsupported.
+
+The managed diagnostic runner enables `PHRUST_NATIVE_COMPILE_FUNCTION_LOG` for
+its server process so the server log contains per-function compile time and code
+size. Ordinary `--counters-json` runs do not enable this log: collecting
+counters must not add timing-dependent text to PHP-visible stderr.
 
 The manual CI workflow input `run_wordpress_performance=true` invokes strict
 mode. A runner selecting that input must provide the repository variables

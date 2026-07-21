@@ -5,7 +5,6 @@ use crate::convert::{
     to_int, to_number, to_object_php, to_string,
 };
 use crate::{OutputBuffer, PhpString, Value};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// ABI version for typed runtime operations.
 pub const NATIVE_OPERATION_ABI_VERSION: u32 = 1;
@@ -746,20 +745,12 @@ fn publish(
     }
 }
 
-fn publish_no_unwind(
+fn publish_operation(
     context: &mut NativeOperationContext,
-    operation: &'static str,
     compute: impl FnOnce() -> Result<Value, String>,
     out: &mut Value,
 ) -> NativeOperationStatus {
-    match catch_unwind(AssertUnwindSafe(compute)) {
-        Ok(result) => publish(context, result, out),
-        Err(_) => fail(
-            context,
-            "E_NATIVE_RUNTIME_PANIC",
-            format!("typed runtime operation {operation} panicked"),
-        ),
-    }
+    publish(context, compute(), out)
 }
 
 /// Executes one unary semantic operation into a caller-owned result slot.
@@ -769,9 +760,8 @@ pub fn native_unary(
     src: &Value,
     out: &mut Value,
 ) -> NativeOperationStatus {
-    publish_no_unwind(
+    publish_operation(
         context,
-        "scalar_unary",
         || match op {
             NativeUnaryOp::Plus => to_number(src).map(number_value),
             NativeUnaryOp::Minus => to_number(src).map(|number| match number {
@@ -807,9 +797,8 @@ pub fn native_binary(
     rhs: &Value,
     out: &mut Value,
 ) -> NativeOperationStatus {
-    publish_no_unwind(
+    publish_operation(
         context,
-        "scalar_binary",
         || match op {
             NativeBinaryOp::Concat => match (to_string(lhs), to_string(rhs)) {
                 (Ok(lhs), Ok(rhs)) => Ok(Value::String(PhpString::from_parts(&[
@@ -856,9 +845,8 @@ pub fn native_compare(
     rhs: &Value,
     out: &mut Value,
 ) -> NativeOperationStatus {
-    publish_no_unwind(
+    publish_operation(
         context,
-        "scalar_compare",
         || match op {
             NativeCompareOp::Identical => Ok(Value::Bool(identical(lhs, rhs))),
             NativeCompareOp::NotIdentical => Ok(Value::Bool(!identical(lhs, rhs))),
@@ -891,9 +879,8 @@ pub fn native_cast(
     src: &Value,
     out: &mut Value,
 ) -> NativeOperationStatus {
-    publish_no_unwind(
+    publish_operation(
         context,
-        "scalar_cast",
         || match op {
             NativeCastOp::Bool => to_bool(src).map(Value::Bool),
             NativeCastOp::Int => to_int(src).map(Value::Int),
@@ -914,18 +901,12 @@ pub fn native_echo(
     value: &Value,
 ) -> NativeOperationStatus {
     context.safepoints = context.safepoints.saturating_add(1);
-    match catch_unwind(AssertUnwindSafe(|| {
-        let value = to_string(value)?;
-        output.write_php_string(&value);
-        Ok::<(), String>(())
-    })) {
-        Ok(Ok(())) => NativeOperationStatus::Ok,
-        Ok(Err(message)) => fail(context, "E_NATIVE_ECHO", message),
-        Err(_) => fail(
-            context,
-            "E_NATIVE_RUNTIME_PANIC",
-            "typed runtime operation echo_value panicked".to_owned(),
-        ),
+    match to_string(value) {
+        Ok(value) => {
+            output.write_php_string(&value);
+            NativeOperationStatus::Ok
+        }
+        Err(message) => fail(context, "E_NATIVE_ECHO", message),
     }
 }
 
@@ -1108,21 +1089,6 @@ mod tests {
         );
         assert_eq!(out, Value::Int(42));
         assert_eq!(context.safepoints, 1);
-    }
-
-    #[test]
-    fn typed_operation_boundary_converts_panics_to_explicit_request_errors() {
-        let mut context = NativeOperationContext::default();
-        let mut out = Value::Int(7);
-        let status = publish_no_unwind(
-            &mut context,
-            "test",
-            || -> Result<Value, String> { panic!("must not cross helper boundary") },
-            &mut out,
-        );
-        assert_eq!(status, NativeOperationStatus::RuntimeError);
-        assert_eq!(context.diagnostic_id, Some("E_NATIVE_RUNTIME_PANIC"));
-        assert_eq!(out, Value::Int(7));
     }
 
     #[test]

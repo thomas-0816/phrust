@@ -52,8 +52,8 @@ current native artifact:
 - the requested PHP function entry and its future internal fragments;
 - code bytes and internal-symbol relocations;
 - stable helper IDs and names, never helper process addresses;
-- deterministic `PRM4` state metadata for exceptions, native continuations, OSR,
-  generators, and fibers.
+- deterministic compact `PRM5` binary state metadata for exceptions, native
+  continuations, OSR, generators, and fibers.
 
 Dormant functions and methods contribute no code, relocations, metadata, or
 cache bytes. Unit-level data is declaration metadata; it does not imply native
@@ -65,8 +65,9 @@ the next successful write replaces it with PNA2. Function graphs shared by
 multiple published entries are emitted once, while helper imports and internal
 relocations are deduplicated at bundle scope. PNA2 also stores the uniform
 packed-call ABI once for the function-entry section rather than repeating it in
-every function record. PNA1/PRM3 remains read-only compatibility data during
-the migration window.
+every function record. Existing PNA2/PRM4 JSON metadata and PNA1/PRM3 remain
+read-only compatibility data during the migration window; new writes use
+PNA2/PRM5.
 
 Diagnostic linkage and footprint collection is deliberately separate from
 clean timings. Use `just native-linkage-report COUNTERS`,

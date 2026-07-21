@@ -36,6 +36,7 @@ Implementation and profiling notes:
 - [Shared-cache research](research-shared-cache.md)
 - [SIMD byte kernels](simd-byte-kernels.md)
 - [Type-check fast paths](typecheck-fast-paths.md)
+- [WordPress warm-runtime profile, 2026-07-19](wordpress-warm-runtime-profile-2026-07-19.md)
 
 Generated counters, JSON, profiles, and benchmark reports stay under
 `target/performance/`. Every correctness comparison uses the `baseline` and

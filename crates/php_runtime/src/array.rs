@@ -9,11 +9,12 @@ use crate::{
     numeric_string::{
         NumericStringArrayKey, array_key_has_numeric_string_ambiguity, classify_array_key,
     },
+    runtime_memory::{Shared, WeakShared},
 };
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
-    rc::{Rc, Weak},
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -1115,10 +1116,14 @@ impl ArrayStorage {
         crate::layout_stats::record_record_storage_array();
         crate::layout_stats::record_record_shape_promotion();
         let storage_id = self.storage_id();
+        let reserved_values = match self {
+            Self::Packed(storage) => storage.values.capacity(),
+            Self::Record(_) | Self::Mixed(_) => 0,
+        };
         *self = Self::Record(RecordArrayStorage {
             storage_id,
             shape: record_shape_for(&[], None),
-            values: Vec::new(),
+            values: Vec::with_capacity(reserved_values),
             next_append_key: self.next_append_key(),
             internal_pointer: self.internal_pointer(),
             mutation_epoch: self.mutation_epoch(),
@@ -1414,7 +1419,7 @@ fn build_index(entries: &[ArrayEntry]) -> StableKeyMap<ArrayKey, usize> {
 /// owning slot/reference cell.
 #[derive(Debug)]
 pub struct PhpArray {
-    storage: Rc<ArrayStorage>,
+    storage: Shared<ArrayStorage>,
 }
 
 impl PartialEq for PhpArray {
@@ -1435,7 +1440,7 @@ impl Clone for PhpArray {
     fn clone(&self) -> Self {
         crate::layout_stats::record_array_handle_clone();
         Self {
-            storage: Rc::clone(&self.storage),
+            storage: self.storage.clone(),
         }
     }
 }
@@ -1444,7 +1449,7 @@ impl Clone for PhpArray {
 #[derive(Clone, Debug)]
 pub struct WeakArrayHandle {
     id: u64,
-    storage: Weak<ArrayStorage>,
+    storage: WeakShared<ArrayStorage>,
 }
 
 impl WeakArrayHandle {
@@ -1471,10 +1476,19 @@ impl PhpArray {
     /// Creates an empty array.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    /// Creates an empty array with storage reserved for at least `capacity`
+    /// values. The reservation survives promotion to string-key record
+    /// storage, which avoids repeated reallocations when a caller knows the
+    /// final associative-array size.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            storage: Rc::new(ArrayStorage::Packed(PackedArrayStorage {
+            storage: Shared::new(ArrayStorage::Packed(PackedArrayStorage {
                 storage_id: next_array_storage_id(),
-                values: Vec::new(),
+                values: Vec::with_capacity(capacity),
                 next_append_key: None,
                 internal_pointer: None,
                 mutation_epoch: 0,
@@ -1490,7 +1504,7 @@ impl PhpArray {
         crate::layout_stats::record_packed_values_storage_array();
         let cached_metadata = ArrayCachedMetadata::from_packed_values(&elements);
         Self {
-            storage: Rc::new(ArrayStorage::Packed(PackedArrayStorage {
+            storage: Shared::new(ArrayStorage::Packed(PackedArrayStorage {
                 storage_id: next_array_storage_id(),
                 values: elements,
                 next_append_key: (len > 0).then(|| i64::try_from(len).ok()).flatten(),
@@ -1516,7 +1530,7 @@ impl PhpArray {
     /// Returns true when this array shares storage with at least one clone.
     #[must_use]
     pub fn is_shared(&self) -> bool {
-        Rc::strong_count(&self.storage) > 1
+        self.storage.strong_count() > 1
     }
 
     /// Consumes the array into owned `(key, value)` pairs. A handle that
@@ -1524,7 +1538,7 @@ impl PhpArray {
     /// shared storage falls back to cloning each pair.
     #[must_use]
     pub fn into_pairs(self) -> Vec<(ArrayKey, Value)> {
-        match Rc::try_unwrap(self.storage) {
+        match Shared::try_unwrap(self.storage) {
             Ok(storage) => match storage {
                 ArrayStorage::Packed(storage) => storage
                     .values
@@ -1840,13 +1854,49 @@ impl PhpArray {
     /// and diagnostics.
     #[must_use]
     pub fn gc_debug_id(&self) -> u64 {
+        self.native_storage_id()
+    }
+
+    /// Returns the stable identity of the current copy-on-write storage.
+    ///
+    /// Native execution uses this identity to share one request handle for
+    /// multiple by-value facades over the same immutable storage. A write that
+    /// separates the storage receives a new identity before publication.
+    #[must_use]
+    pub fn native_storage_id(&self) -> u64 {
         self.storage.storage_id()
+    }
+
+    /// Stable address of the intrusive COW strong count used by published
+    /// native array descriptors.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_storage_refcount_address(&self) -> usize {
+        self.storage.strong_count_address()
+    }
+
+    /// Clones one array owner from a trusted native storage descriptor.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clone_from_native_storage_refcount(address: usize) -> Option<Self> {
+        Shared::clone_from_strong_count_address(address).map(|storage| Self { storage })
+    }
+
+    /// Releases one strong owner previously acquired by generated native code.
+    #[doc(hidden)]
+    pub fn release_native_storage_refcount(address: usize) -> bool {
+        let Some(storage) = Shared::<ArrayStorage>::from_retained_strong_count_address(address)
+        else {
+            return false;
+        };
+        drop(storage);
+        true
     }
 
     /// Returns the current `Rc` strong count for GC debug metadata.
     #[must_use]
     pub fn gc_refcount_estimate(&self) -> usize {
-        Rc::strong_count(&self.storage)
+        self.storage.strong_count()
     }
 
     /// Returns a weak debug handle for GC tests.
@@ -1854,7 +1904,7 @@ impl PhpArray {
     pub fn weak_handle(&self) -> WeakArrayHandle {
         WeakArrayHandle {
             id: self.gc_debug_id(),
-            storage: Rc::downgrade(&self.storage),
+            storage: self.storage.downgrade(),
         }
     }
 
@@ -2216,17 +2266,17 @@ impl PhpArray {
     fn storage_mut_for(&mut self, _intent: PhpArrayWriteIntent) -> &mut ArrayStorage {
         if self.is_shared() {
             crate::layout_stats::record_cow_separation();
-            crate::layout_stats::sample_cow_separation_backtrace(Rc::strong_count(&self.storage));
-            // Attribute the element deep-copy performed by `Rc::make_mut` to
+            crate::layout_stats::sample_cow_separation_backtrace(self.storage.strong_count());
+            // Attribute the element deep-copy performed by `Shared::make_mut` to
             // the separation itself instead of the outer operation family.
             let _source = crate::layout_stats::enter_layout_source_family(
                 crate::layout_stats::SOURCE_COW_SEPARATION_CONTENTS,
             );
-            let storage = Rc::make_mut(&mut self.storage);
+            let storage = Shared::make_mut(&mut self.storage);
             storage.set_storage_id(next_array_storage_id());
             return storage;
         }
-        Rc::make_mut(&mut self.storage)
+        Shared::make_mut(&mut self.storage)
     }
 }
 
