@@ -3618,6 +3618,7 @@ pub(super) fn compile_region_graph_native(
                 active_fragment_layout
                     .as_ref()
                     .map(|layout| &layout.register_liveness),
+                &value_flows,
                 emitted_production_lowering,
             );
             let mut handle = JitFunctionHandle::i64_status_out_native(
@@ -5356,14 +5357,6 @@ fn define_region_graph_function(
             .iter()
             .map(|target| (*target, builder.create_block()))
             .collect::<BTreeMap<_, _>>();
-        let suspension_resume_loaders = owned_blocks
-            .iter()
-            .flat_map(|block| &block.instructions)
-            .filter(|instruction| {
-                matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_))
-            })
-            .map(|instruction| (instruction.continuation_id, builder.create_block()))
-            .collect::<BTreeMap<_, _>>();
         let transition_resume_loaders = owned_blocks
             .iter()
             .flat_map(|block| {
@@ -5410,7 +5403,7 @@ fn define_region_graph_function(
             .map(|entry| (entry.id, builder.create_block()))
             .collect::<BTreeMap<_, _>>();
         let has_resume_entries = !handler_resume_loaders.is_empty()
-            || !suspension_resume_loaders.is_empty()
+            || !suspension_blocks.is_empty()
             || !transition_resume_loaders.is_empty()
             || !optimizing_block_resume_loaders.is_empty()
             || !osr_resume_loaders.is_empty();
@@ -5422,9 +5415,9 @@ fn define_region_graph_function(
             let resume = u128::from(crate::native_handler_resume_id(*target) as u32);
             resume_switch.set_entry(resume, *loader);
         }
-        for (continuation, loader) in &suspension_resume_loaders {
+        for (continuation, resume_block) in &suspension_blocks {
             let resume = u128::from(crate::native_suspension_resume_id(*continuation) as u32);
-            resume_switch.set_entry(resume, *loader);
+            resume_switch.set_entry(resume, *resume_block);
         }
         for (continuation, loader) in &transition_resume_loaders {
             let resume = u128::from(crate::native_transition_resume_id(*continuation) as u32);
@@ -5440,7 +5433,9 @@ fn define_region_graph_function(
             let resume = u128::from(*id);
             resume_switch.set_entry(resume, *loader);
         }
-        if let Some(resume_default) = resume_default {
+        let resume_dispatch = if let Some(resume_default) = resume_default {
+            let dispatch = builder.create_block();
+            builder.set_cold_block(dispatch);
             if let Some(restore) = streaming_resume_restore {
                 let is_normal_entry = builder.ins().icmp_imm(IntCC::Equal, resume_id, -1);
                 builder
@@ -5448,8 +5443,6 @@ fn define_region_graph_function(
                     .brif(is_normal_entry, resume_default, &[], restore, &[]);
                 builder.switch_to_block(restore);
                 builder.set_cold_block(restore);
-                let dispatch = builder.create_block();
-                builder.set_cold_block(dispatch);
                 let local_restore_done = builder.create_block();
                 builder.set_cold_block(local_restore_done);
                 emit_streaming_local_restore_loop(
@@ -5490,10 +5483,13 @@ fn define_region_graph_function(
                     layout.pending_value_offset(),
                 );
                 builder.ins().jump(dispatch, &[]);
-                builder.switch_to_block(dispatch);
+            } else {
+                builder.ins().jump(dispatch, &[]);
             }
-            resume_switch.emit(&mut builder, resume_id, resume_default);
-        }
+            Some(dispatch)
+        } else {
+            None
+        };
 
         for target in handler_resume_blocks {
             let loader = handler_resume_loaders[&target];
@@ -5540,62 +5536,6 @@ fn define_region_graph_function(
                 )?;
             }
             builder.ins().jump(cranelift_block(&blocks, target)?, &[]);
-        }
-        for region_block in &owned_blocks {
-            for instruction in &region_block.instructions {
-                if !matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_)) {
-                    continue;
-                }
-                let loader = suspension_resume_loaders[&instruction.continuation_id];
-                builder.switch_to_block(loader);
-                builder.set_cold_block(loader);
-                let control_status = builder.ins().load(
-                    types::I32,
-                    MemFlagsData::new(),
-                    resume_state,
-                    std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
-                );
-                let control_value = builder.ins().load(
-                    types::I64,
-                    MemFlagsData::new(),
-                    resume_state,
-                    std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
-                );
-                builder.def_var(pending_status, control_status);
-                builder.def_var(pending_value, control_value);
-                if let Some(frame) = streaming_state_frame {
-                    builder.ins().store(
-                        MemFlagsData::new(),
-                        control_status,
-                        frame,
-                        frame_layout
-                            .expect("streaming frame layout")
-                            .pending_status_offset(),
-                    );
-                    builder.ins().store(
-                        MemFlagsData::new(),
-                        control_value,
-                        frame,
-                        frame_layout
-                            .expect("streaming frame layout")
-                            .pending_value_offset(),
-                    );
-                }
-                if streaming_state_frame.is_none() {
-                    restore_native_local_state_values(
-                        &mut builder,
-                        resume_state,
-                        &locals,
-                        &instruction.live_locals,
-                    )?;
-                }
-                builder.ins().jump(
-                    *suspension_blocks
-                        .get(&instruction.continuation_id)
-                        .expect("suspension block was predeclared"),
-                    &[],
-                );
-            }
         }
         for region_block in &owned_blocks {
             for instruction in &region_block.instructions {
@@ -5982,9 +5922,8 @@ fn define_region_graph_function(
             }
             let mut terminated = false;
             for instruction in &region_block.instructions {
-                if let Some(transition_block) =
-                    transition_blocks.get(&instruction.continuation_id).copied()
-                {
+                let transition_block = transition_blocks.get(&instruction.continuation_id).copied();
+                if let Some(transition_block) = transition_block {
                     builder.ins().jump(transition_block, &[]);
                     builder.switch_to_block(transition_block);
                     // A resume loader may enter this instruction without
@@ -6350,6 +6289,10 @@ fn define_region_graph_function(
             );
             builder.switch_to_block(finished);
             builder.ins().return_(&[status]);
+        }
+        if let (Some(dispatch), Some(resume_default)) = (resume_dispatch, resume_default) {
+            builder.switch_to_block(dispatch);
+            resume_switch.emit(&mut builder, resume_id, resume_default);
         }
         builder.switch_to_block(terminal_exit);
         let terminal_status = builder.block_params(terminal_exit)[0];
@@ -7929,6 +7872,7 @@ fn region_graph_metadata<'a>(
     native_pc_ranges: Vec<crate::JitNativePcRange>,
     function_entries: Vec<crate::JitNativeFunctionEntryMetadata>,
     root_register_liveness: Option<&NativeRegisterLiveness>,
+    value_flows: &BTreeMap<FunctionId, ExecutableValueFlow>,
     mut emitted_production_lowering: Vec<crate::JitProductionLoweringMetadata>,
 ) -> crate::JitRegionStateMetadata {
     let regions = regions.collect::<Vec<_>>();
@@ -8077,6 +8021,8 @@ fn region_graph_metadata<'a>(
         suspensions: regions
             .iter()
             .flat_map(|region| {
+                let liveness = &transition_liveness[&region.function];
+                let value_flow = &value_flows[&region.function];
                 region.blocks.iter().flat_map(move |block| {
                     block.instructions.iter().filter_map(move |instruction| {
                         let RegionInstructionKind::NativeSuspend(suspend) = &instruction.kind
@@ -8094,6 +8040,27 @@ fn region_graph_metadata<'a>(
                                 crate::JitNativeSuspendKind::FIBER_SUSPEND
                             }
                         };
+                        let live_registers = liveness
+                            .get(&instruction.continuation_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let owned_locals = instruction
+                            .live_locals
+                            .iter()
+                            .copied()
+                            .filter(|local| {
+                                value_flow.local_storage(*local).is_native_frame_local()
+                            })
+                            .collect();
+                        let owned_registers = live_registers
+                            .iter()
+                            .copied()
+                            .filter(|register| {
+                                crate::region_ir::value_release_required(
+                                    value_flow.register_fact(*register),
+                                )
+                            })
+                            .collect();
                         Some(crate::JitNativeSuspensionMetadata {
                             function: region.function,
                             continuation_id: instruction.continuation_id,
@@ -8103,6 +8070,9 @@ fn region_graph_metadata<'a>(
                             kind,
                             span: instruction.span,
                             live_locals: instruction.live_locals.clone(),
+                            owned_locals,
+                            live_registers,
+                            owned_registers,
                             owning_generation_required: true,
                         })
                     })
@@ -8174,6 +8144,7 @@ fn region_graph_metadata<'a>(
             .iter()
             .flat_map(|region| {
                 let liveness = &transition_liveness[&region.function];
+                let value_flow = &value_flows[&region.function];
                 let mut transitions = region
                     .blocks
                     .iter()
@@ -8187,6 +8158,23 @@ fn region_graph_metadata<'a>(
                         }
                         let live_registers = liveness.get(&instruction.continuation_id)?;
                         (live_registers.len() <= crate::JIT_DEOPT_MAX_REGISTERS).then(|| {
+                            let owned_locals = instruction
+                                .live_locals
+                                .iter()
+                                .copied()
+                                .filter(|local| {
+                                    value_flow.local_storage(*local).is_native_frame_local()
+                                })
+                                .collect();
+                            let owned_registers = live_registers
+                                .iter()
+                                .copied()
+                                .filter(|register| {
+                                    crate::region_ir::value_release_required(
+                                        value_flow.register_fact(*register),
+                                    )
+                                })
+                                .collect();
                             crate::JitNativeTransitionMetadata {
                                 function: region.function,
                                 native_version: u32::from(
@@ -8199,6 +8187,8 @@ fn region_graph_metadata<'a>(
                                 span: instruction.span,
                                 live_locals: instruction.live_locals.clone(),
                                 live_registers: live_registers.clone(),
+                                owned_locals,
+                                owned_registers,
                                 result_register: region_instruction_result_register(
                                     &instruction.kind,
                                 ),
@@ -8214,6 +8204,23 @@ fn region_graph_metadata<'a>(
                     let continuation_id = block.terminator_continuation_id;
                     let live_registers = liveness.get(&continuation_id)?;
                     (live_registers.len() <= crate::JIT_DEOPT_MAX_REGISTERS).then(|| {
+                        let owned_locals = block
+                            .terminator_live_locals
+                            .iter()
+                            .copied()
+                            .filter(|local| {
+                                value_flow.local_storage(*local).is_native_frame_local()
+                            })
+                            .collect();
+                        let owned_registers = live_registers
+                            .iter()
+                            .copied()
+                            .filter(|register| {
+                                crate::region_ir::value_release_required(
+                                    value_flow.register_fact(*register),
+                                )
+                            })
+                            .collect();
                         crate::JitNativeTransitionMetadata {
                             function: region.function,
                             native_version: u32::from(
@@ -8224,6 +8231,8 @@ fn region_graph_metadata<'a>(
                             span: block.terminator_span,
                             live_locals: block.terminator_live_locals.clone(),
                             live_registers: live_registers.clone(),
+                            owned_locals,
+                            owned_registers,
                             result_register: None,
                         }
                     })

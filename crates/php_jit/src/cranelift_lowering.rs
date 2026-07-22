@@ -24930,6 +24930,8 @@ fn lower_native_suspension(
             )
         })?;
     builder.switch_to_block(resume_block);
+    builder.set_cold_block(resume_block);
+    restore_native_local_state_values(builder, resume_state, locals, &instruction.live_locals)?;
     let resume_status = builder.ins().load(
         types::I32,
         MemFlagsData::new(),

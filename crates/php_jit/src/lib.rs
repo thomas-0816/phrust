@@ -703,6 +703,18 @@ pub struct JitNativeSuspensionMetadata {
     pub kind: JitNativeSuspendKind,
     pub span: IrSpan,
     pub live_locals: Vec<LocalId>,
+    /// Frame-local owners that must be released if the suspended activation
+    /// is abandoned instead of resumed through its generated epilogue.
+    #[serde(default)]
+    pub owned_locals: Vec<LocalId>,
+    /// Sparse register snapshot order stored in `JitDeoptState::registers`.
+    #[serde(default)]
+    pub live_registers: Vec<php_ir::RegId>,
+    /// Snapshot registers that carry an independent runtime owner. Borrowed
+    /// local loads are deliberately excluded so abandon cannot double-release
+    /// the local owner holding the same encoded value.
+    #[serde(default)]
+    pub owned_registers: Vec<php_ir::RegId>,
     pub owning_generation_required: bool,
 }
 
@@ -729,6 +741,15 @@ pub struct JitNativeTransitionMetadata {
     pub span: IrSpan,
     pub live_locals: Vec<LocalId>,
     pub live_registers: Vec<php_ir::RegId>,
+    /// Frame-local owners captured by this transition. These are normally
+    /// consumed by the generated continuation; a discarded suspended caller
+    /// uses this list to run the same ownership cleanup without decoding.
+    #[serde(default)]
+    pub owned_locals: Vec<LocalId>,
+    /// Independently owned sparse register snapshots. Borrowed register
+    /// aliases are excluded by executable value-flow analysis.
+    #[serde(default)]
+    pub owned_registers: Vec<php_ir::RegId>,
     pub result_register: Option<php_ir::RegId>,
 }
 

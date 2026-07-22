@@ -2149,6 +2149,86 @@ impl<'a> NativeRequestColdState<'a> {
         self.fast_state.cast()
     }
 
+    /// Releases the owners captured in a suspended native activation when no
+    /// generated continuation will ever resume it. Normal return/unwind runs
+    /// the generated epilogue and must not pass through this path.
+    fn abandon_native_fiber_execution(
+        &mut self,
+        execution: NativeFiberExecution,
+    ) -> Result<(), String> {
+        let NativeFiberExecution {
+            handle,
+            arguments: _,
+            state,
+            nested,
+        } = execution;
+        if let Some(nested) = nested {
+            self.abandon_native_fiber_execution(*nested)?;
+        }
+
+        let metadata = handle
+            .region_state_metadata()
+            .ok_or_else(|| "suspended native Fiber has no state metadata".to_owned())?;
+        let (owned_locals, owned_registers) = metadata
+            .suspensions
+            .iter()
+            .find(|entry| {
+                entry.function.raw() == state.function_id
+                    && entry.continuation_id == state.continuation_id
+            })
+            .map(|entry| (&entry.owned_locals, &entry.owned_registers))
+            .or_else(|| {
+                metadata
+                    .native_transitions
+                    .iter()
+                    .find(|entry| {
+                        entry.function.raw() == state.function_id
+                            && entry.continuation_id == state.continuation_id
+                    })
+                    .map(|entry| (&entry.owned_locals, &entry.owned_registers))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "suspended native Fiber state {}:{} has no ownership metadata",
+                    state.function_id, state.continuation_id
+                )
+            })?;
+
+        let mut owners = owned_locals
+            .iter()
+            .filter(|local| state.local_initialized(**local))
+            .map(|local| state.slots[local.index()])
+            .collect::<Vec<_>>();
+        for snapshot in 0..php_jit::JIT_DEOPT_MAX_REGISTERS {
+            let initialized = state.initialized_register_mask
+                & 1_u64
+                    .checked_shl(u32::try_from(snapshot).unwrap_or(u32::MAX))
+                    .unwrap_or(0)
+                != 0;
+            if initialized
+                && owned_registers
+                    .iter()
+                    .any(|register| register.raw() == state.register_ids[snapshot])
+            {
+                owners.push(state.registers[snapshot]);
+            }
+        }
+        if self
+            .completed_nested_fiber_call
+            .as_ref()
+            .is_some_and(|(function, continuation, _)| {
+                *function == state.function_id && *continuation == state.continuation_id
+            })
+            && let Some((_, _, value)) = self.completed_nested_fiber_call.take()
+        {
+            owners.push(value);
+        }
+        for owner in owners {
+            self.release_if_live(owner)?;
+        }
+        Ok(())
+    }
+
     fn mark_roots_dirty(&mut self, reason: RootMutationReason) {
         self.root_index.mark_dirty(reason);
     }
@@ -3263,6 +3343,20 @@ impl<'a> NativeRequestColdState<'a> {
         self.clear_trusted_request_locals();
         self.clear_trusted_global_references();
         self.clear_trusted_static_locals();
+        let suspended_fibers = std::mem::take(&mut self.fiber_executions);
+        for (_, execution) in suspended_fibers {
+            let _ = self.abandon_native_fiber_execution(execution);
+        }
+        if let Some(execution) = self.pending_nested_fiber_execution.take() {
+            let _ = self.abandon_native_fiber_execution(execution);
+        }
+        if let Some(value) = self.pending_fiber_suspension_value.take() {
+            let _ = self.release_if_live(value);
+        }
+        if let Some((_, _, value)) = self.completed_nested_fiber_call.take() {
+            let _ = self.release_if_live(value);
+        }
+        self.active_fiber = None;
         // ObjectRef identities may escape an include/nested VM through
         // globals or returned symbols. Their native property cells point into
         // this request arena, so restore every such object before the arena is
@@ -4352,7 +4446,10 @@ impl<'a> NativeRequestColdState<'a> {
             NativeFiberReceiver::Direct(encoded) => Self::direct_value_index(*encoded)
                 .map(|index| index as u64)
                 .ok_or_else(|| "native Fiber identity is missing".to_owned()),
-            NativeFiberReceiver::Materialized(fiber) => Ok(fiber.id()),
+            NativeFiberReceiver::Materialized(fiber) => Ok(self
+                .direct_fiber_handles
+                .get(&fiber.id())
+                .map_or_else(|| fiber.id(), |index| u64::from(*index))),
         }
     }
 
@@ -7656,6 +7753,9 @@ impl<'a> NativeRequestColdState<'a> {
         } else {
             None
         };
+        let released_fiber_execution = released_fiber
+            .as_ref()
+            .and_then(|_| self.fiber_executions.remove(&(index as u64)));
         if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
             && !php_runtime::api::PhpArray::release_native_storage_refcount(slot.payload as usize)
         {
@@ -7741,6 +7841,9 @@ impl<'a> NativeRequestColdState<'a> {
         }
         for child in children {
             self.release(child)?;
+        }
+        if let Some(execution) = released_fiber_execution {
+            self.abandon_native_fiber_execution(execution)?;
         }
         if let Some(object) = released_object {
             let class_name = object.class_name();
