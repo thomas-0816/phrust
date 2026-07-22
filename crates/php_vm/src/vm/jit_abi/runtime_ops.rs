@@ -3080,15 +3080,15 @@ fn invoke_native_property_method(
     strict: bool,
 ) -> Result<i64, String> {
     if let Some(unit) = owner_unit {
-        invoke_native_external_function(
+        Ok(invoke_native_external_function(
             context,
             NativeDynamicFunction { unit, function },
             arguments,
             Some(class.name.clone()),
             strict,
-        )
+        )?)
     } else {
-        invoke_native_method(context, function, arguments)
+        Ok(invoke_native_method(context, function, arguments)?)
     }
 }
 
@@ -3740,7 +3740,7 @@ pub(in crate::vm) extern "C" fn jit_native_property_assign_abi(
                 .encode_native_object_owner(object.clone())
                 .and_then(|receiver| context.encode(value.clone()).map(|value| (receiver, value)))
                 .and_then(|(receiver, value)| {
-                    invoke_native_method(context, hook, &[receiver, value])
+                    Ok(invoke_native_method(context, hook, &[receiver, value])?)
                 });
             return match result {
                 Ok(_) if can_reuse_input => {
@@ -3781,7 +3781,11 @@ pub(in crate::vm) extern "C" fn jit_native_property_assign_abi(
                         .map(|value| (receiver, name, value))
                 })
                 .and_then(|(receiver, name, value)| {
-                    invoke_native_method(context, method.function, &[receiver, name, value])
+                    Ok(invoke_native_method(
+                        context,
+                        method.function,
+                        &[receiver, name, value],
+                    )?)
                 });
             return match result {
                 Ok(_) if can_reuse_input => {
@@ -4503,6 +4507,7 @@ pub(in crate::vm) extern "C" fn jit_native_array_fetch_abi(
                 let value = match invoked {
                     Ok(value) => value,
                     Err(error) => {
+                        let error = String::from(error);
                         record_native_helper_failure(
                             context,
                             format!("array fetch on {class_name} failed in offsetGet(): {error}"),

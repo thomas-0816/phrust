@@ -1478,12 +1478,12 @@ exact_native_path_abi!(jit_native_file_exists_abi, 3);
 
 fn exact_callback_control_result(
     context: &mut NativeRequestColdState<'_>,
-    outcome: Result<i64, String>,
+    outcome: NativeCallResult,
     span: php_ir::IrSpan,
 ) -> php_jit::JitNativeControlResult {
     match outcome {
         Ok(value) => php_jit::JitNativeControlResult::returning(value),
-        Err(message) if message == "E_PHP_RETHROW" => {
+        Err(NativeCallControl::Rethrow) => {
             let Some(throwable) = context.take_pending_throwable() else {
                 return exact_builtin_runtime_error(
                     context,
@@ -1500,10 +1500,8 @@ fn exact_callback_control_result(
                 Err(error) => exact_builtin_runtime_error(context, error),
             }
         }
-        Err(message) if message.starts_with("E_PHP_THROW:") => {
-            let payload = message.trim_start_matches("E_PHP_THROW:");
-            let (class, message) = payload.split_once(':').unwrap_or(("Error", payload));
-            match encode_native_throwable_at(context, class, message, span) {
+        Err(NativeCallControl::Throw { class, message }) => {
+            match encode_native_throwable_at(context, &class, &message, span) {
                 Ok(value) => php_jit::JitNativeControlResult::control(
                     php_jit::JitCallStatus::THROW,
                     0,
@@ -1512,7 +1510,7 @@ fn exact_callback_control_result(
                 Err(error) => exact_builtin_runtime_error(context, error),
             }
         }
-        Err(message) if message == "E_PHP_SUSPEND_FIBER" => {
+        Err(NativeCallControl::SuspendFiber) => {
             let value = context
                 .pending_fiber_suspension_value
                 .take()
@@ -1523,21 +1521,18 @@ fn exact_callback_control_result(
                 value,
             )
         }
-        Err(message) if message.starts_with("E_PHP_EXIT:") => {
-            let value = message
-                .trim_start_matches("E_PHP_EXIT:")
-                .parse::<i64>()
-                .unwrap_or_else(|_| php_jit::jit_encode_constant(u32::MAX));
+        Err(NativeCallControl::Exit(value)) => {
             php_jit::JitNativeControlResult::control(php_jit::JitCallStatus::EXIT, 0, value)
         }
-        Err(message) if message == NATIVE_RUNTIME_ERROR_MARKER => {
-            php_jit::JitNativeControlResult::control(
-                php_jit::JitCallStatus::RUNTIME_ERROR,
-                0,
-                php_jit::jit_encode_constant(u32::MAX),
-            )
+        Err(NativeCallControl::PublishedRuntimeError) => php_jit::JitNativeControlResult::control(
+            php_jit::JitCallStatus::RUNTIME_ERROR,
+            0,
+            php_jit::jit_encode_constant(u32::MAX),
+        ),
+        Err(NativeCallControl::RuntimeError(message)) => {
+            exact_builtin_runtime_error(context, message)
         }
-        Err(message) => exact_builtin_runtime_error(context, message),
+        Err(NativeCallControl::BaselineRequired) => exact_query_baseline(),
     }
 }
 
@@ -1575,6 +1570,7 @@ fn exact_native_callback<const ARRAY_ARGUMENTS: bool>(
                 arguments[1],
                 &instruction,
                 Some(caller_function),
+                NativeCallableBuiltinPolicy::RequireBaseline,
             ) else {
                 return exact_query_baseline();
             };
@@ -1585,6 +1581,7 @@ fn exact_native_callback<const ARRAY_ARGUMENTS: bool>(
                 &arguments[..argument_count as usize],
                 &instruction,
                 Some(caller_function),
+                NativeCallableBuiltinPolicy::RequireBaseline,
             )
         };
         exact_callback_control_result(context, outcome, span)
@@ -1813,6 +1810,7 @@ unsafe fn jit_baseline_native_builtin_dispatch_impl<const DIAGNOSTIC: bool>(
         result
     });
 
+    let outcome = outcome.map(|result| result.map_err(NativeCallControl::from_baseline_error));
     finish_native_dispatch_outcome(runtime, outcome, Some(callsite_span), out)
 }
 
@@ -1823,14 +1821,14 @@ unsafe fn jit_baseline_native_builtin_dispatch_impl<const DIAGNOSTIC: bool>(
 #[allow(unsafe_code)]
 pub(super) fn finish_native_dispatch_outcome(
     runtime: *mut NativeRequestFastState,
-    outcome: Option<Result<i64, String>>,
+    outcome: Option<NativeCallResult>,
     callsite_span: Option<php_ir::IrSpan>,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     debug_assert!(!out.is_null());
     let (status, value) = match outcome {
         Some(Ok(value)) => (php_jit::JitCallStatus::RETURN, Some(value)),
-        Some(Err(message)) if message == "E_PHP_RETHROW" => {
+        Some(Err(NativeCallControl::Rethrow)) => {
             let value = with_native_context_for(runtime, "call_dispatch", |context| {
                 let mut throwable = context.take_pending_throwable()?;
                 if let Some(span) = callsite_span {
@@ -1841,39 +1839,36 @@ pub(super) fn finish_native_dispatch_outcome(
             .flatten();
             (php_jit::JitCallStatus::THROW, value)
         }
-        Some(Err(message)) if message.starts_with("E_PHP_THROW:") => {
-            let payload = message.trim_start_matches("E_PHP_THROW:");
-            let (class, message) = payload.split_once(':').unwrap_or(("Error", payload));
+        Some(Err(NativeCallControl::Throw { class, message })) => {
             let value = with_native_context_for(runtime, "call_dispatch", |context| {
                 callsite_span
-                    .and_then(|span| encode_native_throwable_at(context, class, message, span).ok())
-                    .or_else(|| encode_native_throwable(context, class, message).ok())
+                    .and_then(|span| {
+                        encode_native_throwable_at(context, &class, &message, span).ok()
+                    })
+                    .or_else(|| encode_native_throwable(context, &class, &message).ok())
             })
             .flatten();
             (php_jit::JitCallStatus::THROW, value)
         }
-        Some(Err(message)) if message == "E_PHP_SUSPEND_FIBER" => {
+        Some(Err(NativeCallControl::SuspendFiber)) => {
             let value = with_native_context_for(runtime, "call_dispatch", |context| {
                 context.pending_fiber_suspension_value.take()
             })
             .flatten();
             (php_jit::JitCallStatus::SUSPEND_FIBER, value)
         }
-        Some(Err(message)) if message.starts_with("E_PHP_EXIT:") => (
-            php_jit::JitCallStatus::EXIT,
-            message
-                .trim_start_matches("E_PHP_EXIT:")
-                .parse::<i64>()
-                .ok(),
-        ),
-        Some(Err(message)) if message == NATIVE_RUNTIME_ERROR_MARKER => {
+        Some(Err(NativeCallControl::Exit(value))) => (php_jit::JitCallStatus::EXIT, Some(value)),
+        Some(Err(NativeCallControl::PublishedRuntimeError)) => {
             (php_jit::JitCallStatus::RUNTIME_ERROR, None)
         }
-        Some(Err(message)) => {
+        Some(Err(NativeCallControl::RuntimeError(message))) => {
             let _ = with_native_context_for(runtime, "call_dispatch", |context| {
                 publish_native_call_diagnostic(context, message)
             });
             (php_jit::JitCallStatus::RUNTIME_ERROR, None)
+        }
+        Some(Err(NativeCallControl::BaselineRequired)) => {
+            (php_jit::JitCallStatus::RECOMPILE_REQUESTED, None)
         }
         None => (php_jit::JitCallStatus::COMPILE_REQUIRED, None),
     };
@@ -1968,146 +1963,155 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                 }
             };
         let mut callsite_span = None;
-        let outcome = with_native_context_for(runtime, "call_dispatch", |context| {
-            let descriptor =
-                context.prepared_native_callsite(frame.function_id, frame.continuation_id);
-            let Some(descriptor) = descriptor else {
-                return Err(format!(
-                    "E_PHP_VM_UNRESOLVED_CALLABLE: native call site is unavailable at function={} block={} instruction={}",
-                    frame.function_id, frame.source_block_id, frame.source_instruction_id,
-                ));
-            };
-            // SAFETY: the descriptor is owned by the active compiled unit.
-            // Unit storage remains alive and immutable for the synchronous
-            // native dispatch, while the raw pointer avoids an atomic Arc
-            // clone/drop on every warm callsite invocation.
-            let descriptor = unsafe { &*descriptor };
-            callsite_span = Some(descriptor.span);
-            let instruction = descriptor.semantic_instruction();
-            let direct_builtin =
-                frame.flags & php_jit::JitNativeCallFrame::FLAG_DIRECT_BUILTIN != 0;
-            let direct_external =
-                frame.flags & php_jit::JitNativeCallFrame::FLAG_DIRECT_EXTERNAL != 0;
-            let semantic_operation = if direct_builtin {
-                None
-            } else {
-                semantic_operation_from_frame(frame)?
-            };
-            let direct_external_in_place = !direct_builtin
-                && matches!(
-                    descriptor.kind,
-                    crate::compiled_unit::NativeCallSiteKind::Function
-                )
-                && descriptor
-                    .target_symbol
-                    .as_deref()
-                    .and_then(|name| context.external_function(name))
-                    .is_some_and(|target| context.can_invoke_external_in_place(target));
-            let (mut encoded, encoded_capacity_before) = if compact_arguments && direct_builtin {
-                // Compact direct calls already expose the exact payload
-                // slice consumed by the builtin. Borrow it in place instead
-                // of copying every argument through the runtime scratch Vec.
-                (std::borrow::Cow::Borrowed(compact_argument_values), 0)
-            } else {
-                let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
-                let encoded_capacity_before = encoded.capacity();
-                encoded.clear();
-                if compact_arguments {
-                    encoded.extend_from_slice(compact_argument_values);
-                } else {
-                    encoded.extend(
-                        arguments
-                            .iter()
-                            .map(|argument| argument.value.payload as i64),
-                    );
-                }
-                (std::borrow::Cow::Owned(encoded), encoded_capacity_before)
-            };
-            let empty_local_values = [];
-            let local_values: &[php_jit::JitAbiSlot] = if frame.local_count == 0 {
-                &empty_local_values
-            } else {
-                // SAFETY: ABI validation above proves a non-null caller-owned
-                // local table with `local_count` live entries. The generated
-                // caller stays suspended for this synchronous dispatch.
-                unsafe {
-                    std::slice::from_raw_parts(
-                        frame.local_slots as *const php_jit::JitAbiSlot,
-                        frame.local_count as usize,
+        let outcome = with_native_context_for(
+            runtime,
+            "call_dispatch",
+            |context| -> NativeCallResult {
+                let descriptor =
+                    context.prepared_native_callsite(frame.function_id, frame.continuation_id);
+                let Some(descriptor) = descriptor else {
+                    return Err(format!(
+                        "E_PHP_VM_UNRESOLVED_CALLABLE: native call site is unavailable at function={} block={} instruction={}",
+                        frame.function_id, frame.source_block_id, frame.source_instruction_id,
                     )
-                }
-            };
-            if DIAGNOSTIC {
-                let allocated_bytes = match &encoded {
-                    std::borrow::Cow::Borrowed(_) => 0,
-                    std::borrow::Cow::Owned(encoded) => encoded
-                        .capacity()
-                        .saturating_sub(encoded_capacity_before)
-                        .saturating_mul(std::mem::size_of::<i64>()),
+                    .into());
                 };
-                let mut telemetry = context.runtime_telemetry.borrow_mut();
-                if direct_builtin {
-                    telemetry.counters.native_call_direct =
-                        telemetry.counters.native_call_direct.saturating_add(1);
-                    telemetry.counters.native_builtin_direct_eligible = telemetry
-                        .counters
-                        .native_builtin_direct_eligible
-                        .saturating_add(1);
-                    telemetry.counters.native_builtin_direct_executed = telemetry
-                        .counters
-                        .native_builtin_direct_executed
-                        .saturating_add(1);
-                    if let Some(entry) = descriptor.direct_builtin {
-                        let count = telemetry
-                            .counters
-                            .native_builtin_calls_by_name
-                            .entry(entry.entry.name().to_owned())
-                            .or_default();
-                        *count = count.saturating_add(1);
-                    }
-                } else if direct_external_in_place {
-                    telemetry.counters.native_call_direct =
-                        telemetry.counters.native_call_direct.saturating_add(1);
-                    telemetry.counters.native_cross_unit_direct_eligible = telemetry
-                        .counters
-                        .native_cross_unit_direct_eligible
-                        .saturating_add(1);
-                    telemetry.counters.native_cross_unit_direct_executed = telemetry
-                        .counters
-                        .native_cross_unit_direct_executed
-                        .saturating_add(1);
-                } else if direct_external {
-                    telemetry.counters.native_call_dynamic =
-                        telemetry.counters.native_call_dynamic.saturating_add(1);
-                    telemetry.counters.native_cross_unit_direct_eligible = telemetry
-                        .counters
-                        .native_cross_unit_direct_eligible
-                        .saturating_add(1);
+                // SAFETY: the descriptor is owned by the active compiled unit.
+                // Unit storage remains alive and immutable for the synchronous
+                // native dispatch, while the raw pointer avoids an atomic Arc
+                // clone/drop on every warm callsite invocation.
+                let descriptor = unsafe { &*descriptor };
+                callsite_span = Some(descriptor.span);
+                let instruction = descriptor.semantic_instruction();
+                let direct_builtin =
+                    frame.flags & php_jit::JitNativeCallFrame::FLAG_DIRECT_BUILTIN != 0;
+                let direct_external =
+                    frame.flags & php_jit::JitNativeCallFrame::FLAG_DIRECT_EXTERNAL != 0;
+                let semantic_operation = if direct_builtin {
+                    None
                 } else {
-                    telemetry.counters.native_call_dynamic =
-                        telemetry.counters.native_call_dynamic.saturating_add(1);
-                }
-                telemetry.counters.native_callsite_total =
-                    telemetry.counters.native_callsite_total.saturating_add(1);
-                telemetry.counters.native_call_argument_allocation_bytes = telemetry
-                    .counters
-                    .native_call_argument_allocation_bytes
-                    .saturating_add(allocated_bytes as u64);
-                telemetry.counters.native_call_frame_bytes =
-                    telemetry.counters.native_call_frame_bytes.saturating_add(
-                        (std::mem::size_of::<php_jit::JitNativeCallFrame>()
-                            + if compact_arguments {
-                                std::mem::size_of_val(compact_argument_values)
-                            } else {
-                                std::mem::size_of_val(arguments)
-                            }) as u64,
-                    );
-                drop(telemetry);
-                if !direct_builtin && !direct_external_in_place {
-                    let dynamic_reason =
-                        native_dynamic_call_reason(context, frame, descriptor, arguments);
-                    let dynamic_target = descriptor.target_symbol.as_deref().unwrap_or_else(|| {
-                        match descriptor.kind {
+                    semantic_operation_from_frame(frame)?
+                };
+                let direct_external_in_place = !direct_builtin
+                    && matches!(
+                        descriptor.kind,
+                        crate::compiled_unit::NativeCallSiteKind::Function
+                    )
+                    && descriptor
+                        .target_symbol
+                        .as_deref()
+                        .and_then(|name| context.external_function(name))
+                        .is_some_and(|target| context.can_invoke_external_in_place(target));
+                let (mut encoded, encoded_capacity_before) = if compact_arguments && direct_builtin
+                {
+                    // Compact direct calls already expose the exact payload
+                    // slice consumed by the builtin. Borrow it in place instead
+                    // of copying every argument through the runtime scratch Vec.
+                    (std::borrow::Cow::Borrowed(compact_argument_values), 0)
+                } else {
+                    let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
+                    let encoded_capacity_before = encoded.capacity();
+                    encoded.clear();
+                    if compact_arguments {
+                        encoded.extend_from_slice(compact_argument_values);
+                    } else {
+                        encoded.extend(
+                            arguments
+                                .iter()
+                                .map(|argument| argument.value.payload as i64),
+                        );
+                    }
+                    (std::borrow::Cow::Owned(encoded), encoded_capacity_before)
+                };
+                let empty_local_values = [];
+                let local_values: &[php_jit::JitAbiSlot] = if frame.local_count == 0 {
+                    &empty_local_values
+                } else {
+                    // SAFETY: ABI validation above proves a non-null caller-owned
+                    // local table with `local_count` live entries. The generated
+                    // caller stays suspended for this synchronous dispatch.
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            frame.local_slots as *const php_jit::JitAbiSlot,
+                            frame.local_count as usize,
+                        )
+                    }
+                };
+                if DIAGNOSTIC {
+                    let allocated_bytes = match &encoded {
+                        std::borrow::Cow::Borrowed(_) => 0,
+                        std::borrow::Cow::Owned(encoded) => encoded
+                            .capacity()
+                            .saturating_sub(encoded_capacity_before)
+                            .saturating_mul(std::mem::size_of::<i64>()),
+                    };
+                    let mut telemetry = context.runtime_telemetry.borrow_mut();
+                    if direct_builtin {
+                        telemetry.counters.native_call_direct =
+                            telemetry.counters.native_call_direct.saturating_add(1);
+                        telemetry.counters.native_builtin_direct_eligible = telemetry
+                            .counters
+                            .native_builtin_direct_eligible
+                            .saturating_add(1);
+                        telemetry.counters.native_builtin_direct_executed = telemetry
+                            .counters
+                            .native_builtin_direct_executed
+                            .saturating_add(1);
+                        if let Some(entry) = descriptor.direct_builtin {
+                            let count = telemetry
+                                .counters
+                                .native_builtin_calls_by_name
+                                .entry(entry.entry.name().to_owned())
+                                .or_default();
+                            *count = count.saturating_add(1);
+                        }
+                    } else if direct_external_in_place {
+                        telemetry.counters.native_call_direct =
+                            telemetry.counters.native_call_direct.saturating_add(1);
+                        telemetry.counters.native_cross_unit_direct_eligible = telemetry
+                            .counters
+                            .native_cross_unit_direct_eligible
+                            .saturating_add(1);
+                        telemetry.counters.native_cross_unit_direct_executed = telemetry
+                            .counters
+                            .native_cross_unit_direct_executed
+                            .saturating_add(1);
+                    } else if direct_external {
+                        telemetry.counters.native_call_dynamic =
+                            telemetry.counters.native_call_dynamic.saturating_add(1);
+                        telemetry.counters.native_cross_unit_direct_eligible = telemetry
+                            .counters
+                            .native_cross_unit_direct_eligible
+                            .saturating_add(1);
+                    } else {
+                        telemetry.counters.native_call_dynamic =
+                            telemetry.counters.native_call_dynamic.saturating_add(1);
+                    }
+                    telemetry.counters.native_callsite_total =
+                        telemetry.counters.native_callsite_total.saturating_add(1);
+                    telemetry.counters.native_call_argument_allocation_bytes = telemetry
+                        .counters
+                        .native_call_argument_allocation_bytes
+                        .saturating_add(allocated_bytes as u64);
+                    telemetry.counters.native_call_frame_bytes =
+                        telemetry.counters.native_call_frame_bytes.saturating_add(
+                            (std::mem::size_of::<php_jit::JitNativeCallFrame>()
+                                + if compact_arguments {
+                                    std::mem::size_of_val(compact_argument_values)
+                                } else {
+                                    std::mem::size_of_val(arguments)
+                                }) as u64,
+                        );
+                    drop(telemetry);
+                    if !direct_builtin && !direct_external_in_place {
+                        let dynamic_reason =
+                            native_dynamic_call_reason(context, frame, descriptor, arguments);
+                        let dynamic_target =
+                            descriptor
+                                .target_symbol
+                                .as_deref()
+                                .unwrap_or_else(|| {
+                                    match descriptor.kind {
                             crate::compiled_unit::NativeCallSiteKind::Closure => "<closure>",
                             crate::compiled_unit::NativeCallSiteKind::Callable => "<callable>",
                             crate::compiled_unit::NativeCallSiteKind::Pipe => "<pipe>",
@@ -2120,34 +2124,34 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             | crate::compiled_unit::NativeCallSiteKind::StaticMethod
                             | crate::compiled_unit::NativeCallSiteKind::Constructor => "<unknown>",
                         }
-                    });
-                    let mut telemetry = context.runtime_telemetry.borrow_mut();
-                    let count = telemetry
-                        .counters
-                        .native_call_dynamic_by_reason
-                        .entry(dynamic_reason.to_owned())
-                        .or_default();
-                    *count = count.saturating_add(1);
-                    let target_count = telemetry
-                        .counters
-                        .native_call_dynamic_by_target
-                        .entry(format!("{dynamic_reason}: {dynamic_target}"))
-                        .or_default();
-                    *target_count = target_count.saturating_add(1);
+                                });
+                        let mut telemetry = context.runtime_telemetry.borrow_mut();
+                        let count = telemetry
+                            .counters
+                            .native_call_dynamic_by_reason
+                            .entry(dynamic_reason.to_owned())
+                            .or_default();
+                        *count = count.saturating_add(1);
+                        let target_count = telemetry
+                            .counters
+                            .native_call_dynamic_by_target
+                            .entry(format!("{dynamic_reason}: {dynamic_target}"))
+                            .or_default();
+                        *target_count = target_count.saturating_add(1);
+                    }
                 }
-            }
-            let helper_id = if direct_builtin {
-                "call_builtin_direct"
-            } else if let Some(operation) = semantic_operation {
-                semantic_operation_helper_id(operation)
-            } else {
-                call_dispatch_helper_id(descriptor)
-            };
-            if DIAGNOSTIC {
-                context.enter_runtime_helper(helper_id);
-            }
-            let callsite_started_at = DIAGNOSTIC.then(std::time::Instant::now);
-            let outcome = (|| {
+                let helper_id = if direct_builtin {
+                    "call_builtin_direct"
+                } else if let Some(operation) = semantic_operation {
+                    semantic_operation_helper_id(operation)
+                } else {
+                    call_dispatch_helper_id(descriptor)
+                };
+                if DIAGNOSTIC {
+                    context.enter_runtime_helper(helper_id);
+                }
+                let callsite_started_at = DIAGNOSTIC.then(std::time::Instant::now);
+                let outcome = (|| -> NativeCallResult {
             let completed_nested_fiber_matches = context
                 .completed_nested_fiber_call
                 .as_ref()
@@ -2182,7 +2186,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     encoded.to_mut(),
                     metadata,
                 )?;
-                return invoke_native_external_function_with_metadata(
+                return Ok(invoke_native_external_function_with_metadata(
                     context,
                     target,
                     &encoded,
@@ -2191,7 +2195,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     context
                         .unit
                         .strict_types_for_span(descriptor.span),
-                );
+                )?);
             }
             if direct_builtin {
                 let entry = descriptor
@@ -2208,44 +2212,44 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     &encoded,
                     Some(descriptor.arguments.as_ref()),
                 )?;
-                return execute_baseline_native_builtin(
+                return Ok(execute_baseline_native_builtin(
                     context,
                     entry.entry.name(),
                     &expanded,
                     instruction,
                     Some((frame.function_id, local_values)),
                     Some(entry),
-                );
+                )?);
             }
             if let Some(operation) = semantic_operation {
-                return execute_native_semantic_operation(
+                return Ok(execute_native_semantic_operation(
                     context,
                     operation,
                     instruction,
                     &encoded,
                     frame.function_id,
                     frame.continuation_id,
-                );
+                )?);
             }
             if let Some(result) =
                 execute_native_static_property(context, instruction, &encoded, frame.function_id)
             {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_fiber_suspend(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_instanceof(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_resolve_callable(context, instruction) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_acquire_callable(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_bind_global(context, instruction) {
-                return result;
+                return Ok(result?);
             }
             if matches!(
                 instruction.kind,
@@ -2272,10 +2276,10 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         .iter()
                         .map(|value| context.decode(*value))
                         .collect::<Result<Vec<_>, _>>()?;
-                    return context.encode(Value::Generator(php_runtime::api::GeneratorRef::new(
+                    return Ok(context.encode(Value::Generator(php_runtime::api::GeneratorRef::new(
                         function.raw(),
                         arguments,
-                    )));
+                    )))?);
                 }
                 let metadata = match instruction.kind {
                     php_ir::InstructionKind::CallCallable { .. }
@@ -2285,18 +2289,18 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     php_ir::InstructionKind::Pipe { .. } => None,
                     _ => None,
                 };
-                return invoke_native_function_with_metadata_strict(
+                return Ok(invoke_native_function_with_metadata_strict(
                     context,
                     function,
                     invocation_arguments,
                     metadata,
                     context.unit.strict_types_for_span(descriptor.span),
-                );
+                )?);
             }
             if let Some(result) =
                 execute_native_dynamic_constructor(context, instruction, &encoded)
             {
-                return result;
+                return Ok(result?);
             }
             if frame.target.function_id == u32::MAX
                 && frame.target.kind != php_jit::JitNativeCallKind::FUNCTION
@@ -2308,9 +2312,10 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         Some(frame.function_id),
                         None,
                         false,
+                        NativeCallableBuiltinPolicy::ExecuteBaseline,
                     )
             {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_property_instruction(
                 context,
@@ -2319,28 +2324,28 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                 frame.function_id,
                 None,
             ) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) =
                 execute_native_class_constant(context, instruction, frame.function_id)
             {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_internal_class(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_array_object(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_enum_static_method(context, instruction, &encoded)
             {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_generator_method(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let Some(result) = execute_native_fiber_method(context, instruction, &encoded) {
-                return result;
+                return Ok(result?);
             }
             if let php_ir::InstructionKind::NewObject {
                 display_class_name, ..
@@ -2355,10 +2360,10 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                 if !matches!(callback, Value::Callable(_)) {
                     return Err(
                         "Fiber::__construct(): Argument #1 ($callback) must be of type callable"
-                            .to_owned(),
+                            .into(),
                     );
                 }
-                return context.encode(Value::Fiber(php_runtime::api::FiberRef::new(callback)));
+                return Ok(context.encode(Value::Fiber(php_runtime::api::FiberRef::new(callback)))?);
             }
             if let php_ir::InstructionKind::NewObject {
                 display_class_name, ..
@@ -2422,12 +2427,12 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             .map_or_else(String::new, |message| {
                                 String::from_utf8_lossy(&message).into_owned()
                             });
-                        return encode_native_throwable_at(
+                        return Ok(encode_native_throwable_at(
                             context,
                             &class.display_name,
                             &message,
                             instruction.span,
-                        );
+                        )?);
                     }
                     native_prepare_runtime_class_constants(
                         context,
@@ -2436,7 +2441,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         instruction,
                     )?;
                     let object = new_native_object(context, None, &class)?;
-                    return context.encode_native_object_owner(object);
+                    return Ok(context.encode_native_object_owner(object)?);
                 }
                 if !native_external_class_exists(context, &display_class_name)
                     && context.autoload_in_progress.insert(normalized.clone())
@@ -2468,12 +2473,12 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     {
                         native_autoload_class(context, &parent, instruction)?;
                     }
-                    return create_native_external_object(
+                    return Ok(create_native_external_object(
                         context,
                         &display_class_name,
                         &encoded,
                         instruction,
-                    );
+                    )?);
                 }
             }
             if let php_ir::InstructionKind::CallMethod { method, .. } = &instruction.kind
@@ -2520,10 +2525,11 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         return Err(format!(
                             "Call to a member function {method}() on {} at {path}:{line}",
                             native_value_type_name(&value),
-                        ));
+                        )
+                        .into());
                     }
                 };
-                return context.encode(value);
+                return Ok(context.encode(value)?);
             }
             if let php_ir::InstructionKind::CallMethod { method, args, .. } = &instruction.kind
                 && let Some(receiver) = encoded.first()
@@ -2551,7 +2557,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         return Err(format!(
                             "Call to a member function {method}() on {} at {path}:{line}",
                             native_value_type_name(&receiver_value),
-                        ));
+                        )
+                        .into());
                     };
                     object
                 };
@@ -2580,14 +2587,14 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             if is_static {
                                 context.called_classes.pop();
                             }
-                            return result;
+                            return Ok(result?);
                         }
                         NativeMethodPicTarget::DynamicUnit {
                             function,
                             is_static,
                         } => {
                             let call_arguments = if is_static { &encoded[1..] } else { &encoded };
-                            return invoke_native_external_function_with_metadata(
+                            return Ok(invoke_native_external_function_with_metadata(
                                 context,
                                 function,
                                 call_arguments,
@@ -2596,7 +2603,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                                 context.unit.strict_types_for_function(php_ir::FunctionId::new(
                                     frame.function_id,
                                 )),
-                            );
+                            )?);
                         }
                     }
                 }
@@ -2624,13 +2631,13 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             )?;
                             let call_arguments =
                                 encode_native_call_arguments_array(context, &encoded[1..])?;
-                            return invoke_native_function(
+                            return Ok(invoke_native_function(
                                 context,
                                 magic,
                                 &[*receiver, method_name, call_arguments],
-                            );
+                            )?);
                         }
-                        return Err(format!("E_PHP_THROW:Error:{error}"));
+                        return Err(format!("E_PHP_THROW:Error:{error}").into());
                     }
                     let is_static_method = context.unit.classes.iter().any(|class| {
                         class
@@ -2648,9 +2655,9 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             .iter()
                             .map(|value| context.decode(*value))
                             .collect::<Result<Vec<_>, _>>()?;
-                        return context.encode(Value::Generator(
+                        return Ok(context.encode(Value::Generator(
                             php_runtime::api::GeneratorRef::new(function.raw(), arguments),
-                        ));
+                        ))?);
                     }
                     if context.install_native_method_pic(
                         descriptor,
@@ -2676,7 +2683,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     if is_static_method {
                         context.called_classes.pop();
                     }
-                    return result;
+                    return Ok(result?);
                 }
                 if let Some((function, entry)) =
                     native_external_method(context, &class_name, method)
@@ -2687,7 +2694,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         frame.function_id,
                         false,
                     ) {
-                        return Err(format!("E_PHP_THROW:Error:{error}"));
+                        return Err(format!("E_PHP_THROW:Error:{error}").into());
                     }
                     let call_arguments = if entry.flags.is_static {
                         &encoded[1..]
@@ -2705,7 +2712,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     ) {
                         context.record_native_method_pic(false);
                     }
-                    return invoke_native_external_function_with_metadata(
+                    return Ok(invoke_native_external_function_with_metadata(
                         context,
                         function,
                         call_arguments,
@@ -2714,7 +2721,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         context
                             .unit
                             .strict_types_for_function(php_ir::FunctionId::new(frame.function_id)),
-                    );
+                    )?);
                 }
                 if let Some(function) = native_method_in_hierarchy(context, &class_name, "__call") {
                     let method_name = context.encode_native_string_owner(PhpString::from_bytes(
@@ -2722,11 +2729,11 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     ))?;
                     let call_arguments =
                         encode_native_call_arguments_array(context, &encoded[1..])?;
-                    return invoke_native_function(
+                    return Ok(invoke_native_function(
                         context,
                         function,
                         &[*receiver, method_name, call_arguments],
-                    );
+                    )?);
                 }
                 if let Some((function, _entry)) =
                     native_external_method(context, &class_name, "__call")
@@ -2737,20 +2744,20 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         frame.function_id,
                         false,
                     ) {
-                        return Err(format!("E_PHP_THROW:Error:{error}"));
+                        return Err(format!("E_PHP_THROW:Error:{error}").into());
                     }
                     let method_name = context.encode_native_string_owner(PhpString::from_bytes(
                         method.as_bytes().to_vec(),
                     ))?;
                     let call_arguments =
                         encode_native_call_arguments_array(context, &encoded[1..])?;
-                    return invoke_native_external_function(
+                    return Ok(invoke_native_external_function(
                         context,
                         function,
                         &[*receiver, method_name, call_arguments],
                         Some(class_name),
                         context.unit.strict_types_for_span(instruction.span),
-                    );
+                    )?);
                 }
             }
             if let php_ir::InstructionKind::CallStaticMethod {
@@ -2767,11 +2774,11 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         .ok_or_else(|| "Closure::bind() expects a closure".to_owned())?;
                     let closure = context.decode(closure)?;
                     let Value::Callable(callable) = closure else {
-                        return Err("Closure::bind() expects a closure".to_owned());
+                        return Err("Closure::bind() expects a closure".into());
                     };
                     let php_runtime::api::CallableValue::Closure(closure) = callable.as_ref()
                     else {
-                        return Err("Closure::bind() expects a closure".to_owned());
+                        return Err("Closure::bind() expects a closure".into());
                     };
                     let rebound = native_rebind_closure(
                         closure,
@@ -2786,7 +2793,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             .map(|value| context.decode(value))
                             .transpose()?,
                     )?;
-                    return context.encode(rebound);
+                    return Ok(context.encode(rebound)?);
                 }
                 let resolved_class = match class_name.to_ascii_lowercase().as_str() {
                     "self" => native_calling_class(context, frame.function_id)
@@ -2809,7 +2816,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                 if let Some(result) = resolved_class.as_deref().and_then(|class| {
                     initialize_native_throwable_parent(context, class, method, &encoded)
                 }) {
-                    return result;
+                    return Ok(result?);
                 }
                 if let Some(class) = resolved_class.as_deref()
                     && let Some(target) =
@@ -2849,13 +2856,13 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             if pushed_called_class {
                                 context.called_classes.pop();
                             }
-                            return result;
+                            return Ok(result?);
                         }
                         NativeMethodPicTarget::DynamicUnit {
                             function,
                             is_static: true,
                         } => {
-                            return invoke_native_external_function_with_metadata(
+                            return Ok(invoke_native_external_function_with_metadata(
                                 context,
                                 function,
                                 &encoded,
@@ -2864,7 +2871,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                                 context.unit.strict_types_for_function(php_ir::FunctionId::new(
                                     frame.function_id,
                                 )),
-                            );
+                            )?);
                         }
                         NativeMethodPicTarget::CurrentUnit {
                             is_static: false, ..
@@ -2894,13 +2901,13 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             )?;
                             let call_arguments =
                                 encode_native_call_arguments_array(context, &encoded)?;
-                            return invoke_native_function(
+                            return Ok(invoke_native_function(
                                 context,
                                 magic,
                                 &[method_name, call_arguments],
-                            );
+                            )?);
                         }
-                        return Err(format!("E_PHP_THROW:Error:{error}"));
+                        return Err(format!("E_PHP_THROW:Error:{error}").into());
                     }
                     let is_instance_method = context.unit.classes.iter().any(|class| {
                         class
@@ -2913,7 +2920,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             "Non-static method {}::{}() cannot be called statically",
                             resolved_class.as_deref().unwrap_or(class_name),
                             method
-                        ));
+                        )
+                        .into());
                     }
                     let forwarding = matches!(
                         class_name.to_ascii_lowercase().as_str(),
@@ -2969,7 +2977,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     if pushed_called_class {
                         context.called_classes.pop();
                     }
-                    return result;
+                    return Ok(result?);
                 }
                 if let Some(class) = resolved_class.as_deref()
                     && let Some((function, entry)) = native_external_method(context, class, method)
@@ -2980,12 +2988,13 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         frame.function_id,
                         class_name.eq_ignore_ascii_case("static"),
                     ) {
-                        return Err(format!("E_PHP_THROW:Error:{error}"));
+                        return Err(format!("E_PHP_THROW:Error:{error}").into());
                     }
                     if !entry.flags.is_static && frame.receiver_handle == 0 {
                         return Err(format!(
                             "Non-static method {class}::{method}() cannot be called statically"
-                        ));
+                        )
+                        .into());
                     }
                     let result = if !entry.flags.is_static {
                         let mut call_arguments =
@@ -3025,7 +3034,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             )),
                         )
                     };
-                    return result;
+                    return Ok(result?);
                 }
                 if let Some(class) = resolved_class {
                     let method_name = context.encode_native_string_owner(PhpString::from_bytes(
@@ -3042,7 +3051,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             &[method_name, call_arguments],
                         );
                         context.called_classes.pop();
-                        return result;
+                        return Ok(result?);
                     }
                     if let Some((function, _entry)) =
                         native_external_method(context, &class, "__callStatic")
@@ -3053,15 +3062,15 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             frame.function_id,
                             false,
                         ) {
-                            return Err(format!("E_PHP_THROW:Error:{error}"));
+                            return Err(format!("E_PHP_THROW:Error:{error}").into());
                         }
-                        return invoke_native_external_function(
+                        return Ok(invoke_native_external_function(
                             context,
                             function,
                             &[method_name, call_arguments],
                             Some(class),
                             context.unit.strict_types_for_span(instruction.span),
-                        );
+                        )?);
                     }
                 }
             }
@@ -3077,15 +3086,15 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     let error = error
                         .replace("private method ", "private ")
                         .replace("protected method ", "protected ");
-                    return Err(format!("E_PHP_THROW:Error:{error}"));
+                    return Err(format!("E_PHP_THROW:Error:{error}").into());
                 }
-                return invoke_native_function_with_metadata_strict(
+                return Ok(invoke_native_function_with_metadata_strict(
                     context,
                     constructor,
                     &encoded,
                     Some(args),
                     context.unit.strict_types_for_span(instruction.span),
-                );
+                )?);
             }
             let name = match &instruction.kind {
                 php_ir::InstructionKind::CallFunction { name, .. }
@@ -3104,7 +3113,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     )?;
                     return Err(format!(
                         "E_PHP_VM_UNKNOWN_CLASS: Class {display_class_name} not found"
-                    ));
+                    )
+                    .into());
                 }
                 php_ir::InstructionKind::Pipe {
                     callable: php_ir::Operand::Register(callable),
@@ -3146,7 +3156,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         return Err(format!(
                             "{} is not callable",
                             value.as_ref().map_or("value", native_value_type_name)
-                        ));
+                        )
+                        .into());
                     }
                     resolved.map(std::borrow::Cow::Owned)
                 }
@@ -3162,7 +3173,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     return Err(format!(
                         "{} is not callable",
                         value.as_ref().map_or("value", native_value_type_name)
-                    ));
+                    )
+                    .into());
                 }
                 php_ir::InstructionKind::CallCallable {
                     callee: php_ir::Operand::Register(callable),
@@ -3201,7 +3213,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         .unwrap_or_else(|| "object".to_owned());
                     return Err(format!(
                         "E_PHP_VM_UNKNOWN_METHOD: method {class_name}::{method} is not implemented"
-                    ));
+                    )
+                    .into());
                 }
                 php_ir::InstructionKind::CallStaticMethod {
                     class_name, method, ..
@@ -3213,12 +3226,14 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     )?;
                     return Err(format!(
                         "E_PHP_VM_UNKNOWN_METHOD: static method {class_name}::{method} is not implemented"
-                    ));
+                    )
+                    .into());
                 }
                 php_ir::InstructionKind::BindReferenceFromMethodCall { method, .. } => {
                     return Err(format!(
                         "E_PHP_VM_UNKNOWN_METHOD: by-reference method call {method}() is not implemented"
-                    ));
+                    )
+                    .into());
                 }
                 _ => None,
             };
@@ -3231,7 +3246,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     frame.source_instruction_id,
                     frame.target.kind.0,
                     frame.target.function_id,
-                ));
+                )
+                .into());
             };
             if matches!(
                 instruction.kind,
@@ -3240,7 +3256,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
             {
                 return Err(format!(
                     "E_PHP_THROW:Error:Call to undefined function {name}()"
-                ));
+                )
+                .into());
             }
             if !direct_builtin
                 && let Some(function_id) = context.function_id(name.as_ref())
@@ -3287,7 +3304,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                             path,
                             line,
                             required
-                        ));
+                        )
+                        .into());
                     }
                 }
                 if context
@@ -3313,10 +3331,10 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         .iter()
                         .map(|value| context.decode(*value))
                         .collect::<Result<Vec<_>, _>>()?;
-                    return context.encode(Value::Generator(php_runtime::api::GeneratorRef::new(
+                    return Ok(context.encode(Value::Generator(php_runtime::api::GeneratorRef::new(
                         function_id.raw(),
                         visible_arguments,
-                    )));
+                    )))?);
                 }
                 let metadata = Some(descriptor.arguments.as_ref());
                 if let Some(parameters) = context
@@ -3337,13 +3355,13 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     encoded.to_mut(),
                     metadata,
                 )?;
-                return invoke_native_function_with_metadata_strict(
+                return Ok(invoke_native_function_with_metadata_strict(
                     context,
                     function_id,
                     &encoded,
                     metadata,
                     context.unit.strict_types_for_span(descriptor.span),
-                );
+                )?);
             }
             let metadata = matches!(
                 descriptor.kind,
@@ -3365,19 +3383,20 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     encoded.to_mut(),
                     metadata,
                 )?;
-                return invoke_native_external_function_with_metadata(
+                return Ok(invoke_native_external_function_with_metadata(
                     context,
                     function,
                     &encoded,
                     metadata,
                     None,
                     context.unit.strict_types_for_span(descriptor.span),
-                );
+                )?);
             }
             if direct_external {
                 return Err(format!(
                     "E_PHP_VM_UNRESOLVED_CALLABLE: published cross-unit target {name} is unavailable"
-                ));
+                )
+                .into());
             }
             let builtin_name = if php_std::arginfo::function_metadata_indexed(name.as_ref())
                 .is_some()
@@ -3388,52 +3407,57 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
             };
             let expanded =
                 bind_native_builtin_arguments(context, builtin_name, &encoded, metadata)?;
-            execute_baseline_native_builtin(
+            Ok(execute_baseline_native_builtin(
                 context,
                 builtin_name,
                 &expanded,
                 instruction,
                 Some((frame.function_id, local_values)),
                 None,
-            )
+            )?)
             })()
-            .map_err(|message| {
-                if message.starts_with("native runtime value ") {
-                    format!("{message} while executing {:?}", instruction.kind)
-                } else {
-                    message
+            .map_err(|control| match control {
+                NativeCallControl::RuntimeError(message)
+                    if message.starts_with("native runtime value ") =>
+                {
+                    NativeCallControl::RuntimeError(format!(
+                        "{message} while executing {:?}",
+                        instruction.kind
+                    ))
                 }
+                control => control,
             });
-            if DIAGNOSTIC {
-                let inclusive_nanos = callsite_started_at
-                    .map(|started_at| {
-                        started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
-                    })
-                    .unwrap_or(0);
-                if direct_builtin && let Some(entry) = descriptor.direct_builtin {
-                    let mut telemetry = context.runtime_telemetry.borrow_mut();
-                    let elapsed = telemetry
-                        .counters
-                        .native_builtin_time_nanos_by_name
-                        .entry(entry.entry.name().to_owned())
-                        .or_default();
-                    *elapsed = elapsed.saturating_add(inclusive_nanos);
+                if DIAGNOSTIC {
+                    let inclusive_nanos = callsite_started_at
+                        .map(|started_at| {
+                            started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+                        })
+                        .unwrap_or(0);
+                    if direct_builtin && let Some(entry) = descriptor.direct_builtin {
+                        let mut telemetry = context.runtime_telemetry.borrow_mut();
+                        let elapsed = telemetry
+                            .counters
+                            .native_builtin_time_nanos_by_name
+                            .entry(entry.entry.name().to_owned())
+                            .or_default();
+                        *elapsed = elapsed.saturating_add(inclusive_nanos);
+                    }
+                    context.record_native_callsite_timing(
+                        frame.function_id,
+                        frame.source_block_id,
+                        frame.source_instruction_id,
+                        inclusive_nanos,
+                        context.active_helper_child_time_nanos(),
+                    );
+                    context.exit_runtime_helper(helper_id);
                 }
-                context.record_native_callsite_timing(
-                    frame.function_id,
-                    frame.source_block_id,
-                    frame.source_instruction_id,
-                    inclusive_nanos,
-                    context.active_helper_child_time_nanos(),
-                );
-                context.exit_runtime_helper(helper_id);
-            }
-            if let std::borrow::Cow::Owned(mut encoded) = encoded {
-                encoded.clear();
-                context.native_call_encoded_scratch = encoded;
-            }
-            outcome
-        });
+                if let std::borrow::Cow::Owned(mut encoded) = encoded {
+                    encoded.clear();
+                    context.native_call_encoded_scratch = encoded;
+                }
+                outcome
+            },
+        );
         match outcome {
             Some(Ok(value)) => {
                 let status = if frame.flags & (1 << 1) != 0 {
@@ -3443,7 +3467,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                 };
                 (status.0 as i32, status, Some(value))
             }
-            Some(Err(message)) if message == "E_PHP_RETHROW" => {
+            Some(Err(NativeCallControl::Rethrow)) => {
                 let source_span = callsite_span;
                 let value = with_native_context_for(runtime, "call_dispatch", |context| {
                     let mut throwable = context.take_pending_throwable()?;
@@ -3460,9 +3484,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     value,
                 )
             }
-            Some(Err(message)) if message.starts_with("E_PHP_THROW:") => {
-                let payload = message.trim_start_matches("E_PHP_THROW:");
-                let (class, message) = payload.split_once(':').unwrap_or(("Error", payload));
+            Some(Err(NativeCallControl::Throw { class, message })) => {
                 let source_span = callsite_span;
                 let value = with_native_context_for(runtime, "call_dispatch", |context| {
                     let target = (!compact_arguments
@@ -3476,7 +3498,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         && let Some((target_span, target_name)) = target
                     {
                         let encoded =
-                            encode_native_throwable_at(context, class, message, target_span)
+                            encode_native_throwable_at(context, &class, &message, target_span)
                                 .ok()?;
                         let throwable = context.decode(encoded).ok()?;
                         let arguments = arguments
@@ -3494,9 +3516,9 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     }
                     source_span
                         .and_then(|span| {
-                            encode_native_throwable_at(context, class, message, span).ok()
+                            encode_native_throwable_at(context, &class, &message, span).ok()
                         })
-                        .or_else(|| encode_native_throwable(context, class, message).ok())
+                        .or_else(|| encode_native_throwable(context, &class, &message).ok())
                 })
                 .flatten();
                 (
@@ -3505,7 +3527,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     value,
                 )
             }
-            Some(Err(message)) if message == "E_PHP_SUSPEND_FIBER" => {
+            Some(Err(NativeCallControl::SuspendFiber)) => {
                 let value = with_native_context_for(runtime, "call_dispatch", |context| {
                     context.pending_fiber_suspension_value.take()
                 })
@@ -3516,23 +3538,17 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     value,
                 )
             }
-            Some(Err(message)) if message.starts_with("E_PHP_EXIT:") => {
-                let value = message
-                    .trim_start_matches("E_PHP_EXIT:")
-                    .parse::<i64>()
-                    .ok();
-                (
-                    php_jit::JitCallStatus::EXIT.0 as i32,
-                    php_jit::JitCallStatus::EXIT,
-                    value,
-                )
-            }
-            Some(Err(message)) if message == NATIVE_RUNTIME_ERROR_MARKER => (
+            Some(Err(NativeCallControl::Exit(value))) => (
+                php_jit::JitCallStatus::EXIT.0 as i32,
+                php_jit::JitCallStatus::EXIT,
+                Some(value),
+            ),
+            Some(Err(NativeCallControl::PublishedRuntimeError)) => (
                 php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
                 php_jit::JitCallStatus::RUNTIME_ERROR,
                 None,
             ),
-            Some(Err(message)) => {
+            Some(Err(NativeCallControl::RuntimeError(message))) => {
                 let _ = with_native_context_for(runtime, "call_dispatch", |context| {
                     publish_native_call_diagnostic(context, message)
                 });
@@ -3542,6 +3558,11 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     None,
                 )
             }
+            Some(Err(NativeCallControl::BaselineRequired)) => (
+                php_jit::JitCallStatus::RECOMPILE_REQUESTED.0 as i32,
+                php_jit::JitCallStatus::RECOMPILE_REQUESTED,
+                None,
+            ),
             None => (
                 php_jit::JitCallStatus::COMPILE_REQUIRED.0 as i32,
                 php_jit::JitCallStatus::COMPILE_REQUIRED,

@@ -2176,17 +2176,23 @@ pub(super) fn execute_native_call_user_func_encoded(
     arguments: &[i64],
     source: &php_ir::Instruction,
     caller_function: Option<u32>,
-) -> Result<i64, String> {
+    builtin_policy: NativeCallableBuiltinPolicy,
+) -> NativeCallResult {
     let [callback, call_arguments @ ..] = arguments else {
-        return Err("call_user_func() expects a callback".to_owned());
+        return Err("call_user_func() expects a callback".into());
     };
     let callback = *callback;
+    if builtin_policy == NativeCallableBuiltinPolicy::RequireBaseline
+        && exact_native_callable_requires_baseline(context, callback)
+    {
+        return Err(NativeCallControl::BaselineRequired);
+    }
     let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
     encoded.clear();
     encoded.reserve(arguments.len());
     encoded.extend_from_slice(arguments);
     let mut temporary_references = Vec::new();
-    let result = (|| {
+    let result = (|| -> NativeCallResult {
         for (index, value) in call_arguments.iter().copied().enumerate() {
             let Some((callable_name, parameter_name)) =
                 native_encoded_callable_by_ref_parameter_at(context, callback, index)
@@ -2211,13 +2217,20 @@ pub(super) fn execute_native_call_user_func_encoded(
                 Ok(reference) => reference,
                 Err(error) => {
                     context.release(payload)?;
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             encoded[index + 1] = reference;
             temporary_references.push(reference);
         }
-        invoke_native_encoded_callable_value_from(context, &encoded, source, None, caller_function)
+        invoke_native_encoded_callable_value_from(
+            context,
+            &encoded,
+            source,
+            None,
+            caller_function,
+            builtin_policy,
+        )
     })();
     let mut release_error = None;
     for reference in temporary_references {
@@ -2228,7 +2241,8 @@ pub(super) fn execute_native_call_user_func_encoded(
     encoded.clear();
     context.native_call_encoded_scratch = encoded;
     match (result, release_error) {
-        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
+        (Err(control), _) => Err(control),
+        (Ok(_), Some(error)) => Err(error.into()),
         (Ok(value), None) => Ok(value),
     }
 }
@@ -2239,14 +2253,20 @@ pub(super) fn execute_native_call_user_func_array_direct(
     arguments: i64,
     source: &php_ir::Instruction,
     caller_function: Option<u32>,
-) -> Option<Result<i64, String>> {
+    builtin_policy: NativeCallableBuiltinPolicy,
+) -> Option<NativeCallResult> {
+    if builtin_policy == NativeCallableBuiltinPolicy::RequireBaseline
+        && exact_native_callable_requires_baseline(context, callback)
+    {
+        return Some(Err(NativeCallControl::BaselineRequired));
+    }
     let entries = context.direct_array_entries_for(arguments)?.to_vec();
     let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
     encoded.clear();
     encoded.reserve(entries.len() + 1);
     encoded.push(callback);
     let mut temporary_references = Vec::new();
-    let result = (|| {
+    let result = (|| -> NativeCallResult {
         let mut metadata: Option<Vec<php_ir::instruction::IrCallArg>> = None;
         for (index, entry) in entries.into_iter().enumerate() {
             let mut encoded_value = entry.value;
@@ -2269,7 +2289,7 @@ pub(super) fn execute_native_call_user_func_array_direct(
                     Ok(reference) => reference,
                     Err(error) => {
                         context.release(payload)?;
-                        return Err(error);
+                        return Err(error.into());
                     }
                 };
                 temporary_references.push(encoded_value);
@@ -2282,14 +2302,17 @@ pub(super) fn execute_native_call_user_func_array_direct(
                         .native_string_name_bytes(entry.key)
                         .map(|name| String::from_utf8_lossy(&name).into_owned())
                         .ok_or_else(|| {
-                            "call_user_func_array(): string key has no byte storage".to_owned()
+                            NativeCallControl::from(
+                                "call_user_func_array(): string key has no byte storage",
+                            )
                         })?,
                 ),
                 _ => {
                     return Err(format!(
                         "call_user_func_array(): array key must be int or string, {} given",
                         context.native_encoded_type_name(entry.key)
-                    ));
+                    )
+                    .into());
                 }
             };
             if name.is_some() && metadata.is_none() {
@@ -2311,6 +2334,7 @@ pub(super) fn execute_native_call_user_func_array_direct(
             source,
             metadata,
             caller_function,
+            builtin_policy,
         )
     })();
     let mut release_error = None;
@@ -2322,7 +2346,8 @@ pub(super) fn execute_native_call_user_func_array_direct(
     encoded.clear();
     context.native_call_encoded_scratch = encoded;
     Some(match (result, release_error) {
-        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
+        (Err(control), _) => Err(control),
+        (Ok(_), Some(error)) => Err(error.into()),
         (Ok(value), None) => Ok(value),
     })
 }
@@ -3156,7 +3181,12 @@ pub(super) fn execute_baseline_native_builtin(
                     "count(): argument must be of type Countable|array".to_owned()
                 })?;
                 let receiver = context.encode_native_object_owner(object)?;
-                return invoke_native_function_with_metadata(context, function, &[receiver], None);
+                return Ok(invoke_native_function_with_metadata(
+                    context,
+                    function,
+                    &[receiver],
+                    None,
+                )?);
             }
             let Value::Array(array) = value else {
                 return Err("count(): argument must be an array".to_owned());
@@ -3678,7 +3708,9 @@ pub(super) fn execute_baseline_native_builtin(
             arguments,
             source,
             caller_locals.map(|(function, _)| function),
-        ),
+            NativeCallableBuiltinPolicy::ExecuteBaseline,
+        )
+        .map_err(String::from),
         "spl_autoload_register" => {
             let Some(callback) = arguments.first() else {
                 return Err("spl_autoload_register() expects a callback".to_owned());
@@ -4003,8 +4035,9 @@ pub(super) fn execute_baseline_native_builtin(
                 *arguments,
                 source,
                 caller_locals.map(|(function, _)| function),
+                NativeCallableBuiltinPolicy::ExecuteBaseline,
             ) {
-                return result;
+                return result.map_err(String::from);
             }
             let callback = match context.decode(*callback)? {
                 Value::Reference(reference) => reference.get(),
@@ -4051,11 +4084,12 @@ pub(super) fn execute_baseline_native_builtin(
                         source,
                         metadata,
                         caller_locals.map(|(function, _)| function),
+                        NativeCallableBuiltinPolicy::ExecuteBaseline,
                     )
                 })();
                 encoded.clear();
                 context.native_call_encoded_scratch = encoded;
-                return result;
+                return Ok(result?);
             }
             let mut values = Vec::with_capacity(arguments.len());
             let mut metadata = Vec::with_capacity(arguments.len());
@@ -4140,7 +4174,9 @@ pub(super) fn execute_baseline_native_builtin(
                 source,
                 Some(metadata),
                 caller_locals.map(|(function, _)| function),
+                NativeCallableBuiltinPolicy::ExecuteBaseline,
             )
+            .map_err(String::from)
             .map_err(|error| {
                 if error.starts_with("native runtime value ") {
                     format!("native callback {callback_label} failed: {error}")

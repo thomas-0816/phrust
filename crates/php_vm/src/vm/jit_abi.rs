@@ -1700,6 +1700,95 @@ enum NativeEncodedValueKind {
     Reference,
 }
 
+/// Structured control leaving one native PHP call. Successful calls carry the
+/// authoritative native encoding unchanged; exceptional control is kept
+/// typed until the ABI boundary instead of being serialized into `E_PHP_*`
+/// marker strings and parsed again by the caller.
+#[derive(Debug)]
+enum NativeCallControl {
+    Rethrow,
+    Throw { class: String, message: String },
+    SuspendFiber,
+    Exit(i64),
+    PublishedRuntimeError,
+    RuntimeError(String),
+    BaselineRequired,
+}
+
+type NativeCallResult = Result<i64, NativeCallControl>;
+
+impl NativeCallControl {
+    fn throw(class: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Throw {
+            class: class.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Compatibility serialization for baseline-only callers that still use
+    /// the legacy Rust semantic result. Optimizing exact handlers never call
+    /// this function.
+    fn into_baseline_error(self) -> String {
+        match self {
+            Self::Rethrow => "E_PHP_RETHROW".to_owned(),
+            Self::Throw { class, message } => format!("E_PHP_THROW:{class}:{message}"),
+            Self::SuspendFiber => "E_PHP_SUSPEND_FIBER".to_owned(),
+            Self::Exit(value) => format!("E_PHP_EXIT:{value}"),
+            Self::PublishedRuntimeError => NATIVE_RUNTIME_ERROR_MARKER.to_owned(),
+            Self::RuntimeError(message) => message,
+            Self::BaselineRequired => {
+                "native call requested its baseline continuation before effects".to_owned()
+            }
+        }
+    }
+
+    /// Parses the legacy baseline semantic envelope at the baseline ABI
+    /// boundary. Exact optimizing handlers construct typed control directly
+    /// and never enter this compatibility conversion.
+    fn from_baseline_error(message: String) -> Self {
+        if message == "E_PHP_RETHROW" {
+            return Self::Rethrow;
+        }
+        if let Some(payload) = message.strip_prefix("E_PHP_THROW:") {
+            let (class, message) = payload.split_once(':').unwrap_or(("Error", payload));
+            return Self::throw(class, message);
+        }
+        if message == "E_PHP_SUSPEND_FIBER" {
+            return Self::SuspendFiber;
+        }
+        if let Some(value) = message.strip_prefix("E_PHP_EXIT:")
+            && let Ok(value) = value.parse::<i64>()
+        {
+            return Self::Exit(value);
+        }
+        if message == NATIVE_RUNTIME_ERROR_MARKER {
+            return Self::PublishedRuntimeError;
+        }
+        Self::RuntimeError(message)
+    }
+}
+
+impl From<String> for NativeCallControl {
+    fn from(message: String) -> Self {
+        Self::from_baseline_error(message)
+    }
+}
+
+impl From<&str> for NativeCallControl {
+    fn from(message: &str) -> Self {
+        Self::RuntimeError(message.to_owned())
+    }
+}
+
+/// Baseline/cold callers still expose the legacy semantic error envelope.
+/// This conversion is intentionally one-way: typed native call control is
+/// never reconstructed by parsing these strings in optimizing exact code.
+impl From<NativeCallControl> for String {
+    fn from(control: NativeCallControl) -> Self {
+        control.into_baseline_error()
+    }
+}
+
 struct NativePreparedClosure {
     callable: Box<php_runtime::api::CallableValue>,
     implicit_this: Option<i64>,
@@ -10983,7 +11072,7 @@ fn invoke_native_external_function(
     arguments: &[i64],
     called_class: Option<String>,
     strict: bool,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     invoke_native_external_function_with_metadata(
         context,
         target,
@@ -11000,7 +11089,7 @@ fn invoke_native_resolved_external_function(
     arguments: &[i64],
     called_class: Option<String>,
     strict: bool,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     invoke_native_resolved_external_function_with_metadata(
         context,
         target,
@@ -11018,7 +11107,7 @@ fn invoke_native_external_function_with_metadata(
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
     called_class: Option<String>,
     strict: bool,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     invoke_native_external_function_with_metadata_at_tier(
         context,
         target,
@@ -11037,7 +11126,7 @@ fn invoke_native_resolved_external_function_with_metadata(
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
     called_class: Option<String>,
     strict: bool,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     invoke_native_external_function_with_metadata_at_tier(
         context,
         target,
@@ -11057,7 +11146,7 @@ fn invoke_native_external_function_with_metadata_at_tier(
     called_class: Option<String>,
     strict: bool,
     baseline_continuation: bool,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     prepare_dynamic_native_entry(context, target.unit, target.function)?;
     let transferred_arguments = arguments
         .iter()
@@ -11124,16 +11213,12 @@ fn invoke_native_external_function_with_metadata_at_tier(
             context.called_classes.pop();
         }
         match result {
-            Ok(encoded) => context.transfer_external_return(encoded, target.unit),
-            Err(error) if error.starts_with("E_PHP_EXIT:") => {
-                let encoded = error
-                    .trim_start_matches("E_PHP_EXIT:")
-                    .parse::<i64>()
-                    .map_err(|_| "external native exit value is invalid".to_owned())?;
+            Ok(encoded) => Ok(context.transfer_external_return(encoded, target.unit)?),
+            Err(NativeCallControl::Exit(encoded)) => {
                 let encoded = context.transfer_external_return(encoded, target.unit)?;
-                Err(format!("E_PHP_EXIT:{encoded}"))
+                Err(NativeCallControl::Exit(encoded))
             }
-            Err(error) => Err(error),
+            Err(control) => Err(control),
         }
     })?
 }
@@ -11174,7 +11259,7 @@ fn invoke_native_method(
     context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
-) -> Result<i64, String> {
+) -> NativeCallResult {
     invoke_native_method_with_trace_arguments(context, function, arguments, None)
 }
 
@@ -11183,7 +11268,7 @@ fn invoke_native_method_with_trace_arguments(
     function: php_ir::FunctionId,
     arguments: &[i64],
     trace_arguments: Option<request_state::NativeTraceArguments>,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     let metadata = NativeFunctionMetadataPtr::from_compiled(&context.compiled, function);
     invoke_native_method_with_prepared_trace_arguments(
         context,
@@ -11202,14 +11287,15 @@ fn invoke_native_method_with_prepared_trace_arguments(
     trace_arguments: Option<request_state::NativeTraceArguments>,
     metadata: Option<NativeFunctionMetadataPtr>,
     baseline_only: bool,
-) -> Result<i64, String> {
+) -> NativeCallResult {
     let function_name = metadata
         .as_ref()
         .map_or("<unknown>", |metadata| metadata.name.as_ref());
     if context.call_frames.len() >= NATIVE_CALL_DEPTH_LIMIT {
         return Err(format!(
             "E_PHP_NATIVE_CALL_DEPTH: maximum native call depth of {NATIVE_CALL_DEPTH_LIMIT} exceeded in {function_name}()"
-        ));
+        )
+        .into());
     }
     let handle = if baseline_only {
         // Runtime-resolved targets are the dynamic call boundary. Enter their
@@ -11347,8 +11433,8 @@ fn invoke_native_method_with_prepared_trace_arguments(
                     "\nNotice: Only variable references should be returned by reference in {path} on line {line}\n"
                 ));
                 let value = context.decode(value)?;
-                return context
-                    .encode_native_reference_owner(php_runtime::api::ReferenceCell::new(value));
+                return Ok(context
+                    .encode_native_reference_owner(php_runtime::api::ReferenceCell::new(value))?);
             }
             Ok(value)
         }
@@ -11387,12 +11473,12 @@ fn invoke_native_method_with_prepared_trace_arguments(
                 arguments,
             ));
             context.mark_roots_dirty(RootMutationReason::PendingThrowable);
-            Err("E_PHP_RETHROW".to_owned())
+            Err(NativeCallControl::Rethrow)
         }
         Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
             if status == php_jit::JitCallStatus::EXIT.0 as i32 =>
         {
-            Err(format!("E_PHP_EXIT:{value}"))
+            Err(NativeCallControl::Exit(value))
         }
         Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. })
             if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
@@ -11401,7 +11487,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
                 // The callee has already published the PHP diagnostic in the
                 // shared execution context. Preserve that diagnostic and
                 // carry the status through the call trampoline unchanged.
-                Err(NATIVE_RUNTIME_ERROR_MARKER.to_owned())
+                Err(NativeCallControl::PublishedRuntimeError)
             } else {
                 let continuation = context
                     .instruction_for_continuation(state.function_id, state.continuation_id)
@@ -11412,7 +11498,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
                             state.function_id, state.continuation_id
                         )
                     });
-                Err(format!(
+                Err(NativeCallControl::RuntimeError(format!(
                     "native method {function_name} returned a runtime error{continuation} (control_reserved={:#x}, control_value={}, native_version={}, direct_values={}/{}, direct_array_entries={}/{}, direct_string_bytes={}/{})",
                     state.control_reserved,
                     state.control_value,
@@ -11423,7 +11509,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
                     context.direct_array_entries.len(),
                     *context.direct_string_next,
                     context.direct_string_bytes.len(),
-                ))
+                )))
             }
         }
         Ok(php_jit::JitI64InvokeOutcome::SideExit {
@@ -11440,7 +11526,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
                 nested: None,
             });
             context.pending_fiber_suspension_value = Some(value);
-            Err("E_PHP_SUSPEND_FIBER".to_owned())
+            Err(NativeCallControl::SuspendFiber)
         }
         Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. }) => {
             let continuation = context
@@ -11457,11 +11543,13 @@ fn invoke_native_method_with_prepared_trace_arguments(
                 .as_ref()
                 .map(|diagnostic| format!(": {}", diagnostic.message()))
                 .unwrap_or_default();
-            Err(format!(
+            Err(NativeCallControl::RuntimeError(format!(
                 "native method {function_name} returned status {status}{continuation}{diagnostic}"
-            ))
+            )))
         }
-        Err(error) => Err(format!("native method invocation failed: {error:?}")),
+        Err(error) => Err(NativeCallControl::RuntimeError(format!(
+            "native method invocation failed: {error:?}"
+        ))),
     }
 }
 
@@ -11943,7 +12031,7 @@ fn execute_native_property_instruction(
                             php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED,
                         )
                     {
-                        return Some(Err(error));
+                        return Some(Err(error.into()));
                     }
                     return Some(context.encode(Value::Bool(result)));
                 }
@@ -12246,7 +12334,7 @@ fn execute_native_property_instruction(
                         method.function,
                         &[object_encoded, name, arguments[2]],
                     ) {
-                        return Some(Err(error));
+                        return Some(Err(error.into()));
                     }
                     return Some(context.encode(value));
                 }
@@ -12278,7 +12366,7 @@ fn execute_native_property_instruction(
                     if let Err(error) =
                         invoke_native_method(context, method.function, &[object_encoded, name])
                     {
-                        return Some(Err(error));
+                        return Some(Err(error.into()));
                     }
                     return Some(context.encode(Value::Null));
                 }
@@ -12429,7 +12517,7 @@ fn execute_native_property_instruction(
                 if let Err(error) =
                     invoke_native_method(context, offset_set, &[receiver, key, replacement_encoded])
                 {
-                    return Some(Err(error));
+                    return Some(Err(error.into()));
                 }
                 return Some(context.encode(replacement));
             }

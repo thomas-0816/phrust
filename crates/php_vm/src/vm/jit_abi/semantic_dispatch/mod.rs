@@ -134,7 +134,7 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
     }
     super::call_dispatch::finish_native_dispatch_outcome(
         runtime,
-        Some(outcome),
+        Some(outcome.map_err(NativeCallControl::from_baseline_error)),
         Some(descriptor.span),
         out,
     )

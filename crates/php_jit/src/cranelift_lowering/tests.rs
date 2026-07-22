@@ -3257,6 +3257,29 @@ fn throw_uses_explicit_native_status_and_publishes_unwind_metadata() {
 
 #[test]
 fn native_unwind_resumes_compiled_catch_without_interpreter_frame() {
+    extern "C" fn throwing_trampoline(
+        _runtime: *mut std::ffi::c_void,
+        _vm_context: u64,
+        frame: *mut crate::JitNativeCallFrame,
+        out: *mut crate::JitCallResult,
+    ) -> i32 {
+        assert!(!frame.is_null());
+        assert!(!out.is_null());
+        // SAFETY: The generated call owns this synchronous result record.
+        unsafe {
+            out.write(crate::JitCallResult {
+                status: crate::JitCallStatus::THROW,
+                detail: 0,
+                value: crate::JitAbiSlot {
+                    tag: 3,
+                    flags: 0,
+                    payload: 33,
+                },
+            });
+        }
+        crate::JitCallStatus::THROW.0 as i32
+    }
+
     let mut builder = IrBuilder::new(UnitId::new(708));
     let file = builder.add_file("native-catch.php");
     let span = IrSpan::new(file, 0, 30);
@@ -3278,18 +3301,29 @@ fn native_unwind_resumes_compiled_catch_without_interpreter_frame() {
         },
         span,
     );
-    let thrown = builder.intern_constant(IrConstant::Int(33));
+    let thrown = builder.alloc_register(function);
     builder.emit(
         function,
         entry,
-        InstructionKind::Throw {
-            value: Operand::Constant(thrown),
+        InstructionKind::CallFunction {
+            dst: thrown,
+            name: "runtime_throw".to_owned(),
+            args: Vec::new(),
         },
         span,
     );
     builder.terminate_jump(function, entry, after, span);
-    let caught = builder.intern_constant(IrConstant::Int(77));
-    builder.terminate_return(function, catch, Some(Operand::Constant(caught)), span);
+    let caught = builder.alloc_register(function);
+    builder.emit(
+        function,
+        catch,
+        InstructionKind::LoadLocal {
+            dst: caught,
+            local: exception_local,
+        },
+        span,
+    );
+    builder.terminate_return(function, catch, Some(Operand::Register(caught)), span);
     let fallback = builder.intern_constant(IrConstant::Int(0));
     builder.terminate_return(function, after, Some(Operand::Constant(fallback)), span);
     let unit = builder.finish();
@@ -3298,7 +3332,10 @@ fn native_unwind_resumes_compiled_catch_without_interpreter_frame() {
         compile: &JitCompileRequest::new("cl.native-catch"),
         unit: Some(&unit),
         function: Some(function),
-        runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_call_dispatch: throwing_trampoline as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
     });
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     let native = outcome
@@ -3308,7 +3345,7 @@ fn native_unwind_resumes_compiled_catch_without_interpreter_frame() {
             value == 33 && types == ["runtimeexception"]
         })
         .expect("explicit native unwind");
-    assert_eq!(native, crate::JitI64InvokeOutcome::Returned(77));
+    assert_eq!(native, crate::JitI64InvokeOutcome::Returned(33));
 }
 
 #[test]
@@ -3415,8 +3452,17 @@ fn native_unwind_catches_throw_from_direct_compiled_callee() {
     );
     builder.emit(caller, entry, InstructionKind::LeaveTry, span);
     builder.terminate_jump(caller, entry, after, span);
-    let caught = builder.intern_constant(IrConstant::Int(77));
-    builder.terminate_return(caller, catch, Some(Operand::Constant(caught)), span);
+    let caught = builder.alloc_register(caller);
+    builder.emit(
+        caller,
+        catch,
+        InstructionKind::LoadLocal {
+            dst: caught,
+            local: exception_local,
+        },
+        span,
+    );
+    builder.terminate_return(caller, catch, Some(Operand::Register(caught)), span);
     let fallback = builder.intern_constant(IrConstant::Int(0));
     builder.terminate_return(caller, after, Some(Operand::Constant(fallback)), span);
 
@@ -3442,7 +3488,7 @@ fn native_unwind_catches_throw_from_direct_compiled_callee() {
             value == 33 && types == ["runtimeexception"]
         })
         .expect("direct callee throw should unwind through caller catch");
-    assert_eq!(native, crate::JitI64InvokeOutcome::Returned(77));
+    assert_eq!(native, crate::JitI64InvokeOutcome::Returned(33));
 }
 
 #[test]
