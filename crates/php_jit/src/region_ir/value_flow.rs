@@ -1438,7 +1438,14 @@ mod tests {
             LocalStorageClass::MemoryReference
         );
         assert_eq!(flow.local_fact(local), SsaValueFact::UNKNOWN);
-        assert_eq!(flow.register_fact(loaded), SsaValueFact::UNKNOWN);
+        assert_eq!(
+            flow.register_fact(loaded),
+            SsaValueFact {
+                class: SsaValueClass::MixedHandle,
+                certainty: crate::region_ir::SsaCertainty::Unknown,
+                ownership: SsaOwnership::Owned,
+            }
+        );
     }
 
     #[test]

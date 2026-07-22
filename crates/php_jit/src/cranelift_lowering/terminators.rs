@@ -775,15 +775,28 @@ pub(super) fn lower_optimizing_region_terminator(
                     return_type,
                 )
             });
-            if return_check_required {
-                transition.emit(builder)?;
-                return Ok(EmittedOptimizingInstruction {
-                    class: crate::JitProductionLoweringClass::BaselineFragmentTransition,
-                    operation_local_transition: false,
-                });
-            }
             let fact = lowering_operand_fact(value_flow, constants, *value);
             let value = lower_region_operand(builder, locals, registers, *value)?;
+            if return_check_required {
+                let Some(matches_return_type) = return_type
+                    .and_then(|type_| lower_optimizing_type_guard(builder, value, type_))
+                else {
+                    transition.emit(builder)?;
+                    return Ok(EmittedOptimizingInstruction {
+                        class: crate::JitProductionLoweringClass::BaselineFragmentTransition,
+                        operation_local_transition: false,
+                    });
+                };
+                let admitted = builder.create_block();
+                let rejected = builder.create_block();
+                builder
+                    .ins()
+                    .brif(matches_return_type, admitted, &[], rejected, &[]);
+                builder.switch_to_block(rejected);
+                transition.emit(builder)?;
+                builder.ins().jump(admitted, &[]);
+                builder.switch_to_block(admitted);
+            }
             if fact.ownership == SsaOwnership::Borrowed {
                 lower_optimizing_retain(builder, value, deopt_out);
             }

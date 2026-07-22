@@ -7667,8 +7667,17 @@ fn lower_optimizing_value_slot(
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let accepted = builder.create_block();
     let rejected = builder.create_block();
-    let matches = lower_value_has_tag(builder, value, expected_tag);
-    builder.ins().brif(matches, accepted, &[], rejected, &[]);
+    let matches_tag = lower_value_has_tag(builder, value, expected_tag);
+    let encoded_index = builder.ins().ireduce(types::I32, value);
+    let direct_index = builder.ins().icmp_imm(
+        IntCC::UnsignedGreaterThanOrEqual,
+        encoded_index,
+        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+    );
+    let direct_value = builder.ins().band(matches_tag, direct_index);
+    builder
+        .ins()
+        .brif(direct_value, accepted, &[], rejected, &[]);
 
     builder.switch_to_block(rejected);
     let _ = transition.emit_value(builder)?;
@@ -17154,9 +17163,9 @@ fn optimizing_type_has_direct_guard(type_: &php_ir::IrReturnType) -> bool {
 }
 
 /// Emit the exact native-tag test for the subset of `type_` admitted by the
-/// optimizing compiled-call ABI.  This contains no runtime helper, name
-/// lookup, operation ID, or Rust `Value` conversion.
-fn lower_optimizing_call_argument_type_guard(
+/// optimizing ABI. This contains no runtime helper, name lookup, operation
+/// ID, or Rust `Value` conversion.
+fn lower_optimizing_type_guard(
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
     type_: &php_ir::IrReturnType,
@@ -17216,11 +17225,11 @@ fn lower_optimizing_call_argument_type_guard(
         php_ir::IrReturnType::Mixed => Some(builder.ins().iconst(types::I8, 1)),
         php_ir::IrReturnType::Nullable { inner } => {
             let null = equals_constant(builder, crate::jit_encode_constant(u32::MAX));
-            let inner = lower_optimizing_call_argument_type_guard(builder, value, inner);
+            let inner = lower_optimizing_type_guard(builder, value, inner);
             Some(inner.map_or(null, |inner| builder.ins().bor(null, inner)))
         }
         php_ir::IrReturnType::Union { members } => members.iter().fold(None, |accepted, member| {
-            let member = lower_optimizing_call_argument_type_guard(builder, value, member);
+            let member = lower_optimizing_type_guard(builder, value, member);
             match (accepted, member) {
                 (None, member) => member,
                 (accepted, None) => accepted,
@@ -19483,9 +19492,8 @@ fn lower_optimizing_region_instruction(
                     } else {
                         call_args[operand_index]
                     };
-                    let matched =
-                        lower_optimizing_call_argument_type_guard(builder, guarded, type_)
-                            .expect("compiled-call parameter type has an admitted native guard");
+                    let matched = lower_optimizing_type_guard(builder, guarded, type_)
+                        .expect("compiled-call parameter type has an admitted native guard");
                     arguments_match = Some(
                         arguments_match
                             .map_or(matched, |accepted| builder.ins().band(accepted, matched)),

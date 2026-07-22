@@ -48,7 +48,7 @@ def main() -> int:
     else:
         checks = (
             (
-                "analyze_executable_value_flow(region, constants)",
+                "crate::region_ir::analyze_executable_value_flow(candidate, &unit.constants)",
                 executable,
                 "optimizing lowering does not consume executable value-flow facts",
             ),
@@ -123,7 +123,7 @@ def main() -> int:
                 "promoted array mutation can regress to local fetch/store helpers",
             ),
             (
-                "verify_ownership(region)",
+                "flow.verify_ownership(candidate)",
                 executable,
                 "native code generation does not run the ownership verifier",
             ),

@@ -1370,14 +1370,17 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
 
     let previous_bytes = b"old";
     let replacement_bytes = b"replacement";
+    let mut string_bytes = vec![0_u8; 16];
+    string_bytes[..previous_bytes.len()].copy_from_slice(previous_bytes);
     let mut direct_slots =
         vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
     direct_slots[1] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+        reserved: crate::jit_native_direct_string_reserved(4, false),
         payload: previous_bytes.len() as u64,
-        aux: previous_bytes.as_ptr() as usize as u64,
+        aux: string_bytes.as_mut_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
     direct_slots[2] = crate::JitNativeValueSlot {
@@ -1406,12 +1409,18 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
     };
     let mut direct_next = 3_u32;
     let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+    let mut string_next = 4_u32;
+    let mut string_free =
+        [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS];
     let mut roots_dirty = 0_u32;
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
         direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
+        direct_string_bytes: string_bytes.as_mut_ptr() as usize as u64,
+        direct_string_next: std::ptr::from_mut(&mut string_next) as usize as u64,
+        direct_string_free_heads: string_free.as_mut_ptr() as usize as u64,
         root_mutation_pending: std::ptr::from_mut(&mut roots_dirty) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
@@ -1971,10 +1980,9 @@ fn optimizing_direct_array_matches_distinct_equal_string_key_handles() {
         crate::JitNativeDirectArrayEntry::default();
         crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
     ];
-    let mut value_slots = vec![crate::JitNativeValueSlot::default(); 2];
     let left = b"key";
     let right = b"key";
-    for (slot, bytes) in value_slots
+    for (slot, bytes) in direct_slots[..2]
         .iter_mut()
         .zip([left.as_slice(), right.as_slice()])
     {
@@ -1987,19 +1995,23 @@ fn optimizing_direct_array_matches_distinct_equal_string_key_handles() {
             ..crate::JitNativeValueSlot::default()
         };
     }
-    let (mut next_slot, mut next_entry) = (0, 0);
+    let (mut next_slot, mut next_entry) = (2, 0);
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: value_slots.len() as u32,
-        value_slots: value_slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut next_slot) as usize as u64,
         direct_array_entries: direct_entries.as_mut_ptr() as usize as u64,
         direct_array_next: std::ptr::from_mut(&mut next_entry) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let first = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let second = crate::jit_encode_typed_runtime_value(1, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let first = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let second = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     assert_eq!(
         handle
             .invoke_i64(&[first, second], JIT_RUNTIME_ABI_HASH)
@@ -2008,7 +2020,7 @@ fn optimizing_direct_array_matches_distinct_equal_string_key_handles() {
     );
     assert_eq!(ARRAY_FETCH_FALLBACK_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
-    assert_eq!(direct_slots[0].payload, 1);
+    assert_eq!(direct_slots[2].payload, 1);
     assert_eq!(direct_entries[0].key, first);
 }
 
@@ -2119,10 +2131,8 @@ fn optimizing_constant_key_transition_preserves_array_register_identity() {
         crate::JitNativeDirectArrayEntry::default();
         crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
     ];
-    let (mut next_slot, mut next_entry) = (0, 0);
     let key_bytes = b"path";
-    let mut value_slots = vec![crate::JitNativeValueSlot::default(); 1];
-    value_slots[0] = crate::JitNativeValueSlot {
+    direct_slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -2130,17 +2140,19 @@ fn optimizing_constant_key_transition_preserves_array_register_identity() {
         aux: key_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
+    let (mut next_slot, mut next_entry) = (1, 0);
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: value_slots.len() as u32,
-        value_slots: value_slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut next_slot) as usize as u64,
         direct_array_entries: direct_entries.as_mut_ptr() as usize as u64,
         direct_array_next: std::ptr::from_mut(&mut next_entry) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let first_key = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let first_key = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let outcome = handle
         .invoke_i64_with_deopt(&[first_key], JIT_RUNTIME_ABI_HASH)
         .expect("constant string key must exit to baseline");
@@ -2168,7 +2180,8 @@ fn optimizing_constant_key_transition_preserves_array_register_identity() {
     );
     assert_eq!(
         state.registers[slot] as u64,
-        crate::JIT_VALUE_RUNTIME_ARRAY_TAG | u64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+        crate::JIT_VALUE_RUNTIME_ARRAY_TAG
+            | u64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1),
         "the outer array register must not alias the nested direct array"
     );
 }
@@ -4179,6 +4192,17 @@ fn optimizing_overflow_materializes_precise_region_continuation() {
         .expect("executable regions publish state metadata");
     assert!(!metadata.continuations.is_empty());
     assert!(!metadata.native_pc_ranges.is_empty());
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    let mut direct_next = crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY as u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+    let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
+        abi_version: crate::JIT_RUNTIME_ABI_VERSION,
+        direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
+        ..crate::JitNativeRuntimeView::default()
+    });
     let crate::JitI64InvokeOutcome::SideExit { status, state, .. } = handle
         .invoke_i64_with_deopt(&[i64::MAX], JIT_RUNTIME_ABI_HASH)
         .expect("native invocation")
@@ -4255,9 +4279,21 @@ fn native_side_exit_bounds_published_registers_to_abi_capacity() {
         runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
     });
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
-    let crate::JitI64InvokeOutcome::SideExit { status, state, .. } = outcome
+    let handle = outcome
         .handle
-        .expect("large-register region should compile")
+        .expect("large-register region should compile");
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    let mut direct_next = crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY as u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+    let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
+        abi_version: crate::JIT_RUNTIME_ABI_VERSION,
+        direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
+        ..crate::JitNativeRuntimeView::default()
+    });
+    let crate::JitI64InvokeOutcome::SideExit { status, state, .. } = handle
         .invoke_i64_with_deopt(&[i64::MAX], JIT_RUNTIME_ABI_HASH)
         .expect("overflow should side-exit without corrupting the native frame")
     else {
@@ -5816,13 +5852,17 @@ fn optimizing_isset_dim_matches_literal_key_without_array_or_compare_helper() {
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     let handle = outcome.handle.expect("optimizing isset-dim handle");
     assert_optimizing_artifact(&handle);
-    let string = crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let array_index = crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
+    let string_index = array_index + 1;
+    let string =
+        crate::jit_encode_typed_runtime_value(string_index, crate::JIT_VALUE_RUNTIME_STRING_TAG);
     let mut cache = [crate::JitNativeDirectArrayEntry {
         key: string,
         value: 73,
     }];
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 8];
-    slots[3] = crate::JitNativeValueSlot {
+    let mut slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_ARRAY,
         flags: crate::JIT_NATIVE_ARRAY_VIEW_ABI_VERSION,
@@ -5830,7 +5870,7 @@ fn optimizing_isset_dim_matches_literal_key_without_array_or_compare_helper() {
         aux: cache.as_mut_ptr() as usize as u64,
         reserved: 0,
     };
-    slots[7] = crate::JitNativeValueSlot {
+    slots[1] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -5845,15 +5885,19 @@ fn optimizing_isset_dim_matches_literal_key_without_array_or_compare_helper() {
         length: "post_type".len() as u64,
         bytes: "post_type".as_ptr() as usize as u64,
     };
+    let mut direct_next = 2_u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         trusted_constant_views: constant_views.as_mut_ptr() as usize as u64,
         trusted_constant_view_count: constant_views.len() as u32,
         ..crate::JitNativeRuntimeView::default()
     });
-    let array = crate::jit_encode_typed_runtime_value(3, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
+    let array =
+        crate::jit_encode_typed_runtime_value(array_index, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
     assert_eq!(
         handle
             .invoke_i64(&[array], JIT_RUNTIME_ABI_HASH)
@@ -7394,8 +7438,9 @@ fn optimizing_string_predicate_bypasses_generic_builtin_dispatch() {
     assert_optimizing_artifact(&handle);
     let haystack_bytes = b"foobar";
     let needle_bytes = b"foo";
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 9];
-    slots[7] = crate::JitNativeValueSlot {
+    let mut slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -7403,7 +7448,7 @@ fn optimizing_string_predicate_bypasses_generic_builtin_dispatch() {
         aux: haystack_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    slots[8] = crate::JitNativeValueSlot {
+    slots[1] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -7411,18 +7456,27 @@ fn optimizing_string_predicate_bypasses_generic_builtin_dispatch() {
         aux: needle_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
+    let mut direct_next = 2_u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
     assert_eq!(
         handle
             .invoke_i64(
                 &[
-                    crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_STRING_TAG,),
-                    crate::jit_encode_typed_runtime_value(8, crate::JIT_VALUE_RUNTIME_STRING_TAG,),
+                    crate::jit_encode_typed_runtime_value(
+                        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+                        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+                    ),
+                    crate::jit_encode_typed_runtime_value(
+                        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+                        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+                    ),
                 ],
                 JIT_RUNTIME_ABI_HASH,
             )
@@ -7635,8 +7689,9 @@ fn optimizing_string_position_and_ord_bypass_generic_builtin_dispatch() {
 
     let haystack_bytes = b"abABab";
     let needle_bytes = b"AB";
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 9];
-    slots[7] = crate::JitNativeValueSlot {
+    let mut slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -7644,7 +7699,7 @@ fn optimizing_string_position_and_ord_bypass_generic_builtin_dispatch() {
         aux: haystack_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    slots[8] = crate::JitNativeValueSlot {
+    slots[1] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -7652,14 +7707,23 @@ fn optimizing_string_position_and_ord_bypass_generic_builtin_dispatch() {
         aux: needle_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
+    let mut direct_next = 2_u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let haystack = crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let needle = crate::jit_encode_typed_runtime_value(8, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let haystack = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let needle = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     assert_eq!(
         handle
             .invoke_i64(&[haystack, needle, -1], JIT_RUNTIME_ABI_HASH)
@@ -7727,8 +7791,9 @@ fn optimizing_ascii_case_builtin_has_no_builtin_or_operation_helper_import() {
     assert_optimizing_artifact(&handle);
 
     let input_bytes = b"WordPress-ABC-xyz-123-\xC4";
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 1];
-    slots[0] = crate::JitNativeValueSlot {
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    direct_slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -7736,34 +7801,36 @@ fn optimizing_ascii_case_builtin_has_no_builtin_or_operation_helper_import() {
         aux: input_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    let mut direct_slots =
-        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
-    let mut direct_slot_next = 0_u32;
+    let mut direct_slot_next = 1_u32;
     let mut string_bytes = vec![0_u8; crate::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY];
     let mut string_next = 0_u32;
+    let mut string_free =
+        [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_slot_next) as usize as u64,
         direct_string_bytes: string_bytes.as_mut_ptr() as usize as u64,
         direct_string_next: std::ptr::from_mut(&mut string_next) as usize as u64,
+        direct_string_free_heads: string_free.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let input = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let input = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let result = handle
         .invoke_i64(&[input], JIT_RUNTIME_ABI_HASH)
         .expect("direct ASCII case conversion");
     assert_eq!(
         crate::jit_decode_runtime_value(result),
-        Some(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)
+        Some(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1)
     );
     assert_eq!(
         &string_bytes[..input_bytes.len()],
         b"wordpress-abc-xyz-123-\xC4"
     );
-    assert_eq!(direct_slots[0].payload, input_bytes.len() as u64);
+    assert_eq!(direct_slots[1].payload, input_bytes.len() as u64);
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
 }
 
@@ -7878,8 +7945,9 @@ fn optimizing_native_string_transform_family_stays_on_direct_bytes() {
     assert_optimizing_artifact(&handle);
 
     let input_bytes = b"aBc";
-    let mut value_slots = vec![crate::JitNativeValueSlot::default(); 1];
-    value_slots[0] = crate::JitNativeValueSlot {
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    direct_slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -7887,24 +7955,26 @@ fn optimizing_native_string_transform_family_stays_on_direct_bytes() {
         aux: input_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    let mut direct_slots =
-        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
-    let mut direct_next = 0_u32;
+    let mut direct_next = 1_u32;
     let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let mut string_bytes = vec![0_u8; crate::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY];
     let mut string_next = 0_u32;
+    let mut string_free =
+        [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: value_slots.len() as u32,
-        value_slots: value_slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
         direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         direct_string_bytes: string_bytes.as_mut_ptr() as usize as u64,
         direct_string_next: std::ptr::from_mut(&mut string_next) as usize as u64,
+        direct_string_free_heads: string_free.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let input = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let input = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let result = handle
         .invoke_i64(&[input, 2], JIT_RUNTIME_ABI_HASH)
         .expect("direct native string transform execution");
@@ -8003,8 +8073,9 @@ fn optimizing_string_byte_analysis_keeps_native_input_and_result() {
 
     let input_bytes = b"a'b\"c\\d\0";
     let needle_bytes = b"\\";
-    let mut value_slots = vec![crate::JitNativeValueSlot::default(); 2];
-    for (slot, bytes) in value_slots
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    for (slot, bytes) in direct_slots[..2]
         .iter_mut()
         .zip([input_bytes.as_slice(), needle_bytes.as_slice()])
     {
@@ -8017,32 +8088,37 @@ fn optimizing_string_byte_analysis_keeps_native_input_and_result() {
             ..crate::JitNativeValueSlot::default()
         };
     }
-    let mut direct_slots =
-        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
-    let mut direct_next = 0_u32;
+    let mut direct_next = 2_u32;
     let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let mut string_bytes = vec![0_u8; crate::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY];
     let mut string_next = 0_u32;
+    let mut string_free =
+        [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: value_slots.len() as u32,
-        value_slots: value_slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
         direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         direct_string_bytes: string_bytes.as_mut_ptr() as usize as u64,
         direct_string_next: std::ptr::from_mut(&mut string_next) as usize as u64,
+        direct_string_free_heads: string_free.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let input = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let needle = crate::jit_encode_typed_runtime_value(1, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let input = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let needle = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     assert_eq!(
         handle
             .invoke_i64(&[input, needle], JIT_RUNTIME_ABI_HASH)
             .expect("direct native byte-analysis execution"),
         5
     );
-    let escaped = direct_slots[0];
+    let escaped = direct_slots[2];
     assert_eq!(escaped.kind, crate::JIT_NATIVE_VALUE_VIEW_STRING);
     let start = usize::try_from(escaped.aux)
         .expect("escaped address")
@@ -8173,8 +8249,9 @@ fn optimizing_native_string_compare_family_stays_on_direct_bytes() {
 
     let left = b"Alpha";
     let right = b"alphaZ";
-    let mut value_slots = vec![crate::JitNativeValueSlot::default(); 2];
-    for (slot, bytes) in value_slots
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    for (slot, bytes) in direct_slots[..2]
         .iter_mut()
         .zip([left.as_slice(), right.as_slice()])
     {
@@ -8187,14 +8264,23 @@ fn optimizing_native_string_compare_family_stays_on_direct_bytes() {
             ..crate::JitNativeValueSlot::default()
         };
     }
+    let mut direct_next = 2_u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: value_slots.len() as u32,
-        value_slots: value_slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let lhs = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let rhs = crate::jit_encode_typed_runtime_value(1, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let lhs = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let rhs = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     assert_eq!(
         handle
             .invoke_i64(&[lhs, rhs, 5], JIT_RUNTIME_ABI_HASH)
@@ -8386,8 +8472,9 @@ fn optimizing_string_array_materialization_bypasses_generic_builtins() {
 
     let input_bytes = b"  abcABC  ";
     let delimiter_bytes = b"A";
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 2];
-    slots[0] = crate::JitNativeValueSlot {
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    direct_slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -8395,7 +8482,7 @@ fn optimizing_string_array_materialization_bypasses_generic_builtins() {
         aux: input_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    slots[1] = crate::JitNativeValueSlot {
+    direct_slots[1] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -8403,12 +8490,12 @@ fn optimizing_string_array_materialization_bypasses_generic_builtins() {
         aux: delimiter_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    let mut direct_slots =
-        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
-    let mut direct_slot_next = 0_u32;
+    let mut direct_slot_next = 2_u32;
     let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let mut string_bytes = vec![0_u8; crate::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY];
     let mut string_next = 0_u32;
+    let mut string_free =
+        [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS];
     let mut array_entries = vec![
         crate::JitNativeDirectArrayEntry::default();
         crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
@@ -8418,20 +8505,25 @@ fn optimizing_string_array_materialization_bypasses_generic_builtins() {
         [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_slot_next) as usize as u64,
         direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         direct_string_bytes: string_bytes.as_mut_ptr() as usize as u64,
         direct_string_next: std::ptr::from_mut(&mut string_next) as usize as u64,
+        direct_string_free_heads: string_free.as_mut_ptr() as usize as u64,
         direct_array_entries: array_entries.as_mut_ptr() as usize as u64,
         direct_array_next: std::ptr::from_mut(&mut array_next) as usize as u64,
         direct_array_free_heads: array_free.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let input = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let delimiter = crate::jit_encode_typed_runtime_value(1, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let input = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let delimiter = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let result = handle
         .invoke_i64(&[input, delimiter, 1, -1, 33], JIT_RUNTIME_ABI_HASH)
         .expect("native string/array builtin pipeline");
@@ -8564,7 +8656,6 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
             args: vec![
                 arg(Operand::Register(needle)),
                 arg(Operand::Register(merged)),
-                arg(Operand::Constant(strict)),
             ],
         },
         span,
@@ -8579,6 +8670,7 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
             args: vec![
                 arg(Operand::Register(needle)),
                 arg(Operand::Register(merged)),
+                arg(Operand::Constant(strict)),
             ],
         },
         span,
@@ -8691,8 +8783,9 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
 
     let alpha = b"alpha";
     let needle_bytes = b"needle";
-    let mut value_slots = vec![crate::JitNativeValueSlot::default(); 2];
-    for (slot, bytes) in value_slots
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    for (slot, bytes) in direct_slots[..2]
         .iter_mut()
         .zip([alpha.as_slice(), needle_bytes.as_slice()])
     {
@@ -8705,11 +8798,14 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
             ..crate::JitNativeValueSlot::default()
         };
     }
-    let alpha_value = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let needle_value =
-        crate::jit_encode_typed_runtime_value(1, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let mut direct_slots =
-        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    let alpha_value = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let needle_value = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let mut entries = vec![
         crate::JitNativeDirectArrayEntry::default();
         crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
@@ -8722,7 +8818,7 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
         key: 7,
         value: needle_value,
     };
-    direct_slots[0] = crate::JitNativeValueSlot {
+    direct_slots[2] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
         flags: crate::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
@@ -8730,15 +8826,13 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
         payload: 2,
         aux: entries.as_mut_ptr() as usize as u64,
     };
-    let mut direct_next = 1_u32;
+    let mut direct_next = 3_u32;
     let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let mut entry_next = crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY;
     let mut entry_free =
         [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: value_slots.len() as u32,
-        value_slots: value_slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
         direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
@@ -8748,7 +8842,7 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
         ..crate::JitNativeRuntimeView::default()
     });
     let array = crate::jit_encode_typed_runtime_value(
-        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 2,
         crate::JIT_VALUE_RUNTIME_ARRAY_TAG,
     );
     assert_eq!(
@@ -8758,15 +8852,15 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
         2
     );
     assert_eq!(
-        direct_slots[1].kind,
+        direct_slots[3].kind,
         crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
     );
-    assert_eq!(direct_slots[1].payload, 2);
+    assert_eq!(direct_slots[3].payload, 2);
     assert_eq!(
-        direct_slots[2].kind,
+        direct_slots[4].kind,
         crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
     );
-    assert_eq!(direct_slots[2].payload, 2);
+    assert_eq!(direct_slots[4].payload, 2);
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
 }
 
@@ -8888,7 +8982,7 @@ fn optimizing_array_push_pop_use_authoritative_native_storage() {
         crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
     ];
     entries[0] = crate::JitNativeDirectArrayEntry { key: 5, value: 1 };
-    direct_slots[1] = crate::JitNativeValueSlot {
+    direct_slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
         flags: crate::jit_native_direct_array_flags(Some(0)),
@@ -9316,8 +9410,9 @@ fn optimizing_string_concat_allocates_direct_native_string_without_binary_helper
 
     let left_bytes = b"hello ";
     let right_bytes = b"world";
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 2];
-    for (slot, bytes) in slots
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    for (slot, bytes) in direct_slots[..2]
         .iter_mut()
         .zip([left_bytes.as_slice(), right_bytes.as_slice()])
     {
@@ -9330,32 +9425,39 @@ fn optimizing_string_concat_allocates_direct_native_string_without_binary_helper
             aux: bytes.as_ptr() as usize as u64,
         };
     }
-    let mut direct_slots =
-        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
-    let mut direct_slot_next = 0_u32;
+    let mut direct_slot_next = 2_u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let mut string_bytes = vec![0_u8; crate::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY];
     let mut string_next = 0_u32;
+    let mut string_free =
+        [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         direct_value_next: std::ptr::from_mut(&mut direct_slot_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         direct_string_bytes: string_bytes.as_mut_ptr() as usize as u64,
         direct_string_next: std::ptr::from_mut(&mut string_next) as usize as u64,
+        direct_string_free_heads: string_free.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let left = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let right = crate::jit_encode_typed_runtime_value(1, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let left = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
+    let right = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let result = handle
         .invoke_i64(&[left, right], JIT_RUNTIME_ABI_HASH)
         .expect("direct string concat");
     assert_eq!(
         crate::jit_decode_runtime_value(result),
-        Some(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)
+        Some(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 2)
     );
     assert_eq!(&string_bytes[..11], b"hello world");
-    assert_eq!(direct_slots[0].payload, 11);
+    assert_eq!(direct_slots[2].payload, 11);
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
 }
 
@@ -9952,8 +10054,9 @@ fn optimizing_builtin_length_uses_versioned_value_view() {
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     let handle = outcome.handle.expect("optimizing stable-length handle");
     assert_optimizing_artifact(&handle);
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 8];
-    slots[7] = crate::JitNativeValueSlot {
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    direct_slots[7] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
         flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -9962,11 +10065,13 @@ fn optimizing_builtin_length_uses_versioned_value_view() {
     };
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let input = crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let input = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 7,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     assert_eq!(
         handle
             .invoke_i64(&[input], JIT_RUNTIME_ABI_HASH)
@@ -10376,25 +10481,34 @@ fn optimizing_compiled_call_releases_its_borrowed_argument_owner() {
     entries[callee.index()].store(callee_address, std::sync::atomic::Ordering::Release);
     optimizing_entries[callee.index()].store(callee_address, std::sync::atomic::Ordering::Release);
     let bytes = b"owned once";
-    let mut slots = vec![crate::JitNativeValueSlot {
-        refcount: 1,
-        kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
-        flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
-        payload: bytes.len() as u64,
-        aux: bytes.as_ptr() as usize as u64,
-        ..crate::JitNativeValueSlot::default()
-    }];
+    let mut direct_slots = vec![
+        crate::JitNativeValueSlot {
+            refcount: 1,
+            kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
+            flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+            payload: bytes.len() as u64,
+            aux: bytes.as_ptr() as usize as u64,
+            ..crate::JitNativeValueSlot::default()
+        };
+        crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY
+    ];
+    let mut direct_next = 1_u32;
+    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
+        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
+        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         trusted_function_entries: entries.as_mut_ptr() as usize as u64,
         trusted_function_entry_count: entries.len() as u32,
         trusted_optimizing_function_entries: optimizing_entries.as_mut_ptr() as usize as u64,
         trusted_optimizing_function_entry_count: optimizing_entries.len() as u32,
         ..crate::JitNativeRuntimeView::default()
     });
-    let encoded = crate::jit_encode_typed_runtime_value(0, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let encoded = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     assert_eq!(
         caller_handle
             .invoke_i64(&[encoded], JIT_RUNTIME_ABI_HASH)
@@ -10402,7 +10516,7 @@ fn optimizing_compiled_call_releases_its_borrowed_argument_owner() {
         42
     );
     assert_eq!(
-        slots[0].refcount, 1,
+        direct_slots[0].refcount, 1,
         "compiled call leaked its argument owner"
     );
 }
