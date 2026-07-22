@@ -1835,7 +1835,12 @@ impl BaselineRegionBuilder {
                         if let Some(function) = function
                             && let Some(target) = unit.functions.get(function.index())
                         {
-                            for parameter in target.params.iter().skip(args.len()) {
+                            for parameter in target
+                                .params
+                                .iter()
+                                .skip(args.len())
+                                .filter(|parameter| !parameter.variadic)
+                            {
                                 let operand = parameter.default.as_ref().and_then(|default| {
                                     unit.constants
                                         .iter()
@@ -4406,7 +4411,12 @@ fn lower_direct_function_call(
         .last()
         .is_some_and(|parameter| parameter.variadic);
     let mut operands = lower_call_operands(unit, args);
-    for parameter in target.params.iter().skip(args.len()) {
+    for parameter in target
+        .params
+        .iter()
+        .skip(args.len())
+        .filter(|parameter| !parameter.variadic)
+    {
         let operand = parameter.default.as_ref().and_then(|default| {
             unit.constants
                 .iter()
@@ -4460,7 +4470,12 @@ fn lower_direct_method_call(
         vec![Some(lower_operand(unit, receiver))]
     };
     operands.extend(lower_call_operands(unit, args));
-    for parameter in target.params.iter().skip(args.len()) {
+    for parameter in target
+        .params
+        .iter()
+        .skip(args.len())
+        .filter(|parameter| !parameter.variadic)
+    {
         let operand = parameter.default.as_ref().and_then(|default| {
             unit.constants
                 .iter()
@@ -4544,7 +4559,12 @@ fn lower_direct_closure_call(
         .collect::<Vec<_>>();
     operands.extend(closure.captures.into_iter().map(Some));
     operands.extend(lower_call_operands(unit, args));
-    for parameter in target.params.iter().skip(args.len()) {
+    for parameter in target
+        .params
+        .iter()
+        .skip(args.len())
+        .filter(|parameter| !parameter.variadic)
+    {
         let operand = parameter.default.as_ref().and_then(|default| {
             unit.constants
                 .iter()

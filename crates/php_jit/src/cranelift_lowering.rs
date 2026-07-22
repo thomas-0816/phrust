@@ -2453,6 +2453,48 @@ fn lower_optimizing_direct_slot_address(
     builder.ins().iadd(direct_slots, offset)
 }
 
+fn lower_trusted_request_local_reference(
+    builder: &mut FunctionBuilder<'_>,
+    deopt_out: ir::Value,
+    function: FunctionId,
+    local: LocalId,
+) -> ir::Value {
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let view = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+    let offsets = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(
+            crate::JitNativeRuntimeView,
+            trusted_request_local_function_offsets,
+        ) as i32,
+    );
+    let function_offset = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        offsets,
+        i32::try_from(function.index().saturating_mul(4)).unwrap_or(i32::MAX),
+    );
+    let index = builder.ins().iadd_imm(function_offset, i64::from(local.raw()));
+    let index = builder.ins().uextend(pointer_type, index);
+    let slot_offset = builder.ins().ishl_imm(index, 4);
+    let slots = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_request_local_slots)
+            as i32,
+    );
+    let slot = builder.ins().iadd(slots, slot_offset);
+    builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded) as i32,
+    )
+}
+
 /// Reserve one request-owned direct value slot without entering Rust. Released
 /// slots form an intrusive single-linked list through `reserved`; only when
 /// that list is empty does allocation advance the stable arena high-water.
@@ -6022,6 +6064,87 @@ fn lower_optimizing_release_call_owner(
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(done);
+}
+
+/// Pack the complete positional variadic tail into the callee ABI's one
+/// authoritative native array. The returned array owns one retain of every
+/// element and itself has exactly one caller-side owner until the call
+/// completes. No runtime binder, value decoder, or array helper participates.
+fn lower_optimizing_pack_variadic_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    values: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let count = builder
+        .ins()
+        .iconst(types::I64, i64::try_from(values.len()).unwrap_or(i64::MAX));
+    let array = lower_optimizing_allocate_direct_array(builder, count, transition)?;
+    let slot = lower_optimizing_direct_slot_address(builder, array, transition.deopt_out);
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    for (index, value) in values.iter().copied().enumerate() {
+        lower_optimizing_retain(builder, value, transition.deopt_out);
+        let entry = builder.ins().iadd_imm(
+            entries,
+            i64::try_from(
+                index.saturating_mul(std::mem::size_of::<crate::JitNativeDirectArrayEntry>()),
+            )
+            .unwrap_or(i64::MAX),
+        );
+        let key = builder
+            .ins()
+            .iconst(types::I64, i64::try_from(index).unwrap_or(i64::MAX));
+        builder.ins().store(MemFlagsData::new(), key, entry, 0);
+        builder.ins().store(
+            MemFlagsData::new(),
+            value,
+            entry,
+            std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+        );
+    }
+    builder.ins().store(
+        MemFlagsData::new(),
+        count,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let state = lower_direct_array_state_address(builder, array, transition.deopt_out);
+    builder.ins().store(
+        MemFlagsData::new(),
+        count,
+        state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, next_append_key) as i32,
+    );
+    let has_next = builder
+        .ins()
+        .iconst(types::I32, i64::from(!values.is_empty()));
+    builder.ins().store(
+        MemFlagsData::new(),
+        has_next,
+        state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, has_next_append_key) as i32,
+    );
+    Ok(array)
+}
+
+/// Destroy a caller-created call-transport aggregate whose last owner is
+/// statically known. The exact native release entry is already part of the
+/// optimizing ABI; last-owner validation and a fallback transition would be
+/// redundant here and would incorrectly make the call operation-local.
+fn lower_optimizing_commit_owned_call_argument(
+    builder: &mut FunctionBuilder<'_>,
+    value: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) {
+    let _ = builder.ins().call(
+        transition.value_release_commit,
+        &[transition.deopt_out, value],
+    );
 }
 
 fn lower_mark_native_roots_dirty(builder: &mut FunctionBuilder<'_>, deopt_out: ir::Value) {
@@ -17499,7 +17622,7 @@ fn lower_optimizing_region_instruction(
             let retain_plain_value = value_copy_requires_retain(fact)
                 && !value_flow.can_borrow_local_load(instruction.continuation_id)
                 && !borrows_for_dimension;
-            let value = if storage == crate::region_ir::LocalStorageClass::MemoryReference {
+            let value = if storage.is_reference_slot() {
                 lower_optimizing_reference_scalar(builder, stored, retain_plain_value, transition)?
             } else {
                 stored
@@ -17517,9 +17640,7 @@ fn lower_optimizing_region_instruction(
             let retain_value =
                 value_copy_requires_retain(lowering_operand_fact(value_flow, constants, *src))
                     && !value_flow.moves_value_into_local(instruction.continuation_id);
-            let stored = if value_flow.local_storage(*local)
-                == crate::region_ir::LocalStorageClass::MemoryReference
-            {
+            let stored = if value_flow.local_storage(*local).is_reference_slot() {
                 lower_optimizing_store_reference_scalar(
                     builder,
                     current,
@@ -17547,9 +17668,7 @@ fn lower_optimizing_region_instruction(
                 && value_release_required(value_flow.local_fact(*local));
             let retain_value =
                 value_copy_requires_retain(lowering_operand_fact(value_flow, constants, operand));
-            let stored = if value_flow.local_storage(*local)
-                == crate::region_ir::LocalStorageClass::MemoryReference
-            {
+            let stored = if value_flow.local_storage(*local).is_reference_slot() {
                 lower_optimizing_store_reference_scalar(
                     builder,
                     current,
@@ -17585,9 +17704,7 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::IssetLocal { dst, local } => {
             let stored = use_local_variable(builder, locals, *local)?;
-            let value = if value_flow.local_storage(*local)
-                == crate::region_ir::LocalStorageClass::MemoryReference
-            {
+            let value = if value_flow.local_storage(*local).is_reference_slot() {
                 lower_optimizing_reference_scalar(builder, stored, false, transition)?
             } else {
                 stored
@@ -17608,9 +17725,7 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::EmptyLocal { dst, local } => {
             let stored = use_local_variable(builder, locals, *local)?;
-            let value = if value_flow.local_storage(*local)
-                == crate::region_ir::LocalStorageClass::MemoryReference
-            {
+            let value = if value_flow.local_storage(*local).is_reference_slot() {
                 lower_optimizing_reference_scalar(builder, stored, false, transition)?
             } else {
                 stored
@@ -17621,15 +17736,27 @@ fn lower_optimizing_region_instruction(
             define_region_register(builder, register_variables, registers, *dst, result)?;
         }
         RegionInstructionKind::UnsetLocal { local } => {
-            let value = use_local_variable(builder, locals, *local)?;
-            if value_release_required(value_flow.local_fact(*local)) {
-                lower_optimizing_release(builder, value, transition)?;
-            }
+            let current = use_local_variable(builder, locals, *local)?;
             let uninitialized = builder.ins().iconst(
                 types::I64,
                 crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
             );
-            define_local_variable(builder, locals, *local, uninitialized)?;
+            if value_flow.local_storage(*local).is_reference_slot() {
+                let reference = lower_optimizing_store_reference_scalar(
+                    builder,
+                    current,
+                    uninitialized,
+                    value_release_required(value_flow.local_fact(*local)),
+                    false,
+                    transition,
+                )?;
+                define_local_variable(builder, locals, *local, reference)?;
+            } else {
+                if value_release_required(value_flow.local_fact(*local)) {
+                    lower_optimizing_release(builder, current, transition)?;
+                }
+                define_local_variable(builder, locals, *local, uninitialized)?;
+            }
         }
         RegionInstructionKind::NewArray { dst } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
@@ -17837,8 +17964,7 @@ fn lower_optimizing_region_instruction(
             keys,
             value,
         } if !keys.is_empty()
-            && value_flow.local_storage(*local)
-                != crate::region_ir::LocalStorageClass::MemoryReference =>
+            && !value_flow.local_storage(*local).is_reference_slot() =>
         {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let lowered_keys = keys
@@ -17890,9 +18016,7 @@ fn lower_optimizing_region_instruction(
             let constant_string_key = array_key_is_string_constant(constants, keys[0]);
             let key = lower_array_key_operand(builder, locals, registers, constants, keys[0])?;
             let value = lower_region_operand(builder, locals, registers, *value)?;
-            let updated = if value_flow.local_storage(*local)
-                == crate::region_ir::LocalStorageClass::MemoryReference
-            {
+            let updated = if value_flow.local_storage(*local).is_reference_slot() {
                 lower_reference_array_assign(builder, current, key, value, transition)?
             } else {
                 lower_direct_array_require_supported_key(builder, key, transition)?;
@@ -17930,8 +18054,7 @@ fn lower_optimizing_region_instruction(
             keys,
             value,
         } if keys.len() > 1
-            && value_flow.local_storage(*local)
-                != crate::region_ir::LocalStorageClass::MemoryReference =>
+            && !value_flow.local_storage(*local).is_reference_slot() =>
         {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let lowered_keys = keys
@@ -17984,9 +18107,7 @@ fn lower_optimizing_region_instruction(
                 let key =
                     lower_array_key_operand(builder, locals, registers, constants, key_operand)?;
                 let current = use_local_variable(builder, locals, *local)?;
-                let value = if value_flow.local_storage(*local)
-                    == crate::region_ir::LocalStorageClass::MemoryReference
-                {
+                let value = if value_flow.local_storage(*local).is_reference_slot() {
                     let reference = builder.create_block();
                     let plain = builder.create_block();
                     let merge = builder.create_block();
@@ -18108,8 +18229,7 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::UnsetDim { local, keys }
             if keys.len() == 1
-                && value_flow.local_storage(*local)
-                    != crate::region_ir::LocalStorageClass::MemoryReference =>
+                && !value_flow.local_storage(*local).is_reference_slot() =>
         {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let current = use_local_variable(builder, locals, *local)?;
@@ -18135,8 +18255,7 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::UnsetDim { local, keys }
             if keys.len() > 1
-                && value_flow.local_storage(*local)
-                    != crate::region_ir::LocalStorageClass::MemoryReference =>
+                && !value_flow.local_storage(*local).is_reference_slot() =>
         {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let lowered_keys = keys
@@ -19548,32 +19667,49 @@ fn lower_optimizing_region_instruction(
             } else if let Some(target) = call.direct_compiled_target()
                 && !direct_builtin
                 && fixed_arguments
-                && !call.variadic
                 && (call.returns_by_reference
                     == matches!(call.result, RegionCallResult::ReferenceLocal(_)))
                 && function_params.get(&target).is_some_and(
                     |(_, params, requires_trampoline, arity, reference_only_trampoline)| {
+                        let visible_operands = call
+                            .operands
+                            .len()
+                            .saturating_sub(call.argument_operand_offset);
+                        let fixed_parameters =
+                            params.len().saturating_sub(usize::from(call.variadic));
                         (!*requires_trampoline
                             || (*reference_only_trampoline
-                                && params.iter().enumerate().all(|(index, parameter)| {
-                                    !parameter.by_ref
-                                        || call.args.get(index).is_some_and(|argument| {
+                                && call.args.iter().enumerate().all(|(index, argument)| {
+                                    let parameter = params.get(index).or_else(|| {
+                                        params.last().filter(|parameter| parameter.variadic)
+                                    });
+                                    parameter.is_none_or(|parameter| {
+                                        !parameter.by_ref || {
                                             argument.by_ref_local.is_some()
                                                 && argument.by_ref_dim.is_none()
                                                 && argument.by_ref_property.is_none()
                                                 && argument.by_ref_property_dim.is_none()
-                                        })
+                                        }
+                                    })
                                 })))
-                            && *arity == call.operands.len()
-                            && params.len()
-                                == call
-                                    .operands
-                                    .len()
-                                    .saturating_sub(call.argument_operand_offset)
-                            && params
+                            && if call.variadic {
+                                *arity == call.argument_operand_offset.saturating_add(params.len())
+                                    && visible_operands >= fixed_parameters
+                            } else {
+                                *arity == call.operands.len() && params.len() == visible_operands
+                            }
+                            && call
+                                .operands
                                 .iter()
-                                .zip(call.operands.iter().skip(call.argument_operand_offset))
-                                .all(|(parameter, operand)| {
+                                .skip(call.argument_operand_offset)
+                                .enumerate()
+                                .all(|(index, operand)| {
+                                    let parameter = params
+                                        .get(index)
+                                        .or_else(|| {
+                                            params.last().filter(|parameter| parameter.variadic)
+                                        })
+                                        .expect("admitted call operand has a parameter");
                                     parameter.type_.as_ref().is_none_or(|type_| {
                                         operand.is_some_and(|operand| {
                                             parameter.by_ref
@@ -19611,11 +19747,15 @@ fn lower_optimizing_region_instruction(
                     builder.ins().jump(admitted, &[]);
                     builder.switch_to_block(admitted);
                 }
-                let mut call_args = Vec::with_capacity(call.operands.len());
+                let mut call_args = Vec::with_capacity(call.operands.len().saturating_add(1));
                 for (index, operand) in call.operands.iter().enumerate() {
                     let operand = operand.expect("fixed optimizing call has every operand");
                     let visible_index = index.checked_sub(call.argument_operand_offset);
-                    let parameter = visible_index.and_then(|index| parameters.get(index));
+                    let parameter = visible_index.and_then(|index| {
+                        parameters
+                            .get(index)
+                            .or_else(|| parameters.last().filter(|parameter| parameter.variadic))
+                    });
                     if parameter.is_some_and(|parameter| parameter.by_ref) {
                         let local = visible_index
                             .and_then(|index| call.args.get(index))
@@ -19641,13 +19781,21 @@ fn lower_optimizing_region_instruction(
                 // permitted transition to the exact baseline continuation;
                 // it never calls the Rust dispatcher from optimized code.
                 let mut arguments_match = None;
-                for (index, parameter) in parameters.iter().enumerate() {
+                for (index, operand) in call
+                    .operands
+                    .iter()
+                    .skip(call.argument_operand_offset)
+                    .enumerate()
+                {
+                    let parameter = parameters
+                        .get(index)
+                        .or_else(|| parameters.last().filter(|parameter| parameter.variadic))
+                        .expect("admitted call operand has a parameter");
                     let Some(type_) = parameter.type_.as_ref() else {
                         continue;
                     };
                     let operand_index = call.argument_operand_offset.saturating_add(index);
-                    let operand = call.operands[operand_index]
-                        .expect("fixed optimizing call has every visible operand");
+                    let operand = operand.expect("fixed optimizing call has every visible operand");
                     if !parameter.by_ref
                         && optimizing_fact_satisfies_type(
                             lowering_operand_fact(value_flow, constants, operand),
@@ -19683,6 +19831,39 @@ fn lower_optimizing_region_instruction(
                     let _ = transition.emit_value_with_detail(builder, 0x1201)?;
                     builder.ins().jump(admitted, &[]);
                     builder.switch_to_block(admitted);
+                }
+
+                let owned_call_argument = if call.variadic {
+                    let fixed_parameters = parameters.len().saturating_sub(1);
+                    let variadic_start = call
+                        .argument_operand_offset
+                        .saturating_add(fixed_parameters);
+                    let variadic_values = call_args.split_off(variadic_start);
+                    let variadic_array = lower_optimizing_pack_variadic_arguments(
+                        builder,
+                        &variadic_values,
+                        transition,
+                    )?;
+                    let index = call_args.len();
+                    call_args.push(variadic_array);
+                    Some(index)
+                } else {
+                    None
+                };
+                let expected_arity = function_params
+                    .get(&target)
+                    .map(|(_, _, _, arity, _)| *arity)
+                    .expect("compiled-call target metadata was admitted above");
+                if call_args.len() != expected_arity {
+                    return Err(CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_NATIVE_CALL_ARITY",
+                        format!(
+                            "optimizing direct call to function {} packed {} arguments; expected {}",
+                            target.raw(),
+                            call_args.len(),
+                            expected_arity
+                        ),
+                    ));
                 }
 
                 let pointer_type = module.target_config().pointer_type();
@@ -19747,8 +19928,10 @@ fn lower_optimizing_region_instruction(
                 builder.ins().jump(invoke, &[]);
 
                 builder.switch_to_block(invoke);
-                for value in call_args.iter().copied() {
-                    lower_optimizing_retain(builder, value, deopt_out);
+                for (index, value) in call_args.iter().copied().enumerate() {
+                    if Some(index) != owned_call_argument {
+                        lower_optimizing_retain(builder, value, deopt_out);
+                    }
                 }
                 let packed_size =
                     u32::try_from(call_args.len().max(1).saturating_mul(8)).map_err(|_| {
@@ -19887,8 +20070,12 @@ fn lower_optimizing_region_instruction(
                 builder.switch_to_block(propagate);
                 let propagated_status = builder.block_params(propagate)[0];
                 let control = builder.ins().stack_load(types::I64, result_slot, 0);
-                for argument in call_args.iter().copied() {
-                    lower_optimizing_release_call_owner(builder, argument, deopt_out);
+                for (index, argument) in call_args.iter().copied().enumerate() {
+                    if Some(index) == owned_call_argument {
+                        lower_optimizing_commit_owned_call_argument(builder, argument, transition);
+                    } else {
+                        lower_optimizing_release_call_owner(builder, argument, deopt_out);
+                    }
                 }
                 builder
                     .ins()
@@ -19897,8 +20084,12 @@ fn lower_optimizing_region_instruction(
 
                 builder.switch_to_block(returned);
                 let result = builder.ins().stack_load(types::I64, result_slot, 0);
-                for argument in call_args.iter().copied() {
-                    lower_optimizing_release_call_owner(builder, argument, deopt_out);
+                for (index, argument) in call_args.iter().copied().enumerate() {
+                    if Some(index) == owned_call_argument {
+                        lower_optimizing_commit_owned_call_argument(builder, argument, transition);
+                    } else {
+                        lower_optimizing_release_call_owner(builder, argument, deopt_out);
+                    }
                 }
                 match call.result {
                     RegionCallResult::Register(destination) => define_region_register(

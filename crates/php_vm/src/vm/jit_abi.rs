@@ -1536,6 +1536,10 @@ pub(super) struct NativeRequestColdState<'a> {
     /// Stable request owner loaded directly for the special `$GLOBALS`
     /// local in optimizing functions.
     trusted_globals_proxy: i64,
+    /// Authoritative numeric lvalue slots for top-level/include locals and
+    /// superglobals, indexed by immutable `(FunctionId, LocalId)` offsets.
+    trusted_request_local_function_offsets: Vec<u32>,
+    trusted_request_local_slots: Vec<php_jit::JitNativeRequestLocalSlot>,
     continuation_instructions:
         std::sync::Arc<Vec<Vec<Option<std::sync::Arc<php_ir::Instruction>>>>>,
     trusted_property_function_offsets: Vec<u32>,
@@ -1602,6 +1606,7 @@ impl<'a> NativeRequestOwner<'a> {
             .encode_globals_proxy()
             .expect("request globals proxy must fit the native value arena");
         cold.prepare_trusted_constant_fetches();
+        cold.prepare_trusted_request_locals();
         cold.prepare_trusted_global_references();
         cold.prepare_trusted_static_locals();
         cold.prepare_trusted_static_properties();
@@ -1882,6 +1887,30 @@ fn trusted_property_storage(
         offsets,
         vec![php_jit::JitNativeTrustedPropertySlot::default(); count],
     )
+}
+
+fn trusted_request_local_storage(
+    unit: &php_ir::IrUnit,
+) -> (Vec<u32>, Vec<php_jit::JitNativeRequestLocalSlot>) {
+    let mut offsets = Vec::with_capacity(unit.functions.len());
+    let mut count = 0_usize;
+    for function in &unit.functions {
+        offsets.push(u32::try_from(count).unwrap_or(u32::MAX));
+        count = count.saturating_add(function.locals.len());
+    }
+    (
+        offsets,
+        vec![php_jit::JitNativeRequestLocalSlot::default(); count],
+    )
+}
+
+fn native_request_local_name(function: &php_ir::IrFunction, local: usize) -> Option<&str> {
+    const SUPERGLOBALS: &[&str] = &[
+        "_GET", "_POST", "_COOKIE", "_REQUEST", "_SERVER", "_ENV", "_FILES", "_SESSION",
+    ];
+    let name = function.locals.get(local)?.as_str();
+    ((function.flags.is_top_level && name != "GLOBALS") || SUPERGLOBALS.contains(&name))
+        .then_some(name)
 }
 
 fn stored_value_identity(value: &NativeStoredValue) -> Option<NativeValueIdentity> {
@@ -2175,6 +2204,8 @@ impl<'a> NativeRequestColdState<'a> {
         let continuation_instructions = compiled.prepared_continuation_instructions();
         let (trusted_property_function_offsets, trusted_property_slots) =
             trusted_property_storage(&continuation_instructions);
+        let (trusted_request_local_function_offsets, trusted_request_local_slots) =
+            trusted_request_local_storage(compiled.unit());
         let trusted_constant_slots =
             vec![php_jit::JitNativeTrustedConstantSlot::default(); trusted_property_slots.len()];
         let trusted_global_reference_slots = vec![
@@ -2314,6 +2345,8 @@ impl<'a> NativeRequestColdState<'a> {
             cwd: options.runtime_context.cwd.clone(),
             inherited_globals,
             trusted_globals_proxy: php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED),
+            trusted_request_local_function_offsets,
+            trusted_request_local_slots,
             continuation_instructions,
             trusted_property_function_offsets,
             trusted_property_slots,
@@ -3088,6 +3121,7 @@ impl<'a> NativeRequestColdState<'a> {
 
     pub(super) fn recycle_native_value_arena(&mut self) {
         self.clear_trusted_constant_fetches();
+        self.clear_trusted_request_locals();
         self.clear_trusted_global_references();
         self.clear_trusted_static_locals();
         // ObjectRef identities may escape an include/nested VM through
@@ -3324,6 +3358,84 @@ impl<'a> NativeRequestColdState<'a> {
             return Ok(None);
         };
         self.duplicate_dereferenced_native_value(encoded).map(Some)
+    }
+
+    fn prepare_trusted_request_locals(&mut self) {
+        self.ensure_native_global_references();
+        let sites = self
+            .unit
+            .functions
+            .iter()
+            .enumerate()
+            .flat_map(|(function, definition)| {
+                definition
+                    .locals
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(local, _)| {
+                        native_request_local_name(definition, local)
+                            .map(|name| (function, local, name.to_owned()))
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (function, local, name) in sites {
+            let missing = !self.inherited_globals.contains_key(&name)
+                || matches!(self.inherited_globals.get(&name), Some(Value::Uninitialized));
+            if missing {
+                self.inherited_globals.insert(
+                    name.clone(),
+                    Value::Reference(php_runtime::api::ReferenceCell::new(Value::Uninitialized)),
+                );
+            }
+            let Ok(Some(encoded)) = self.native_global_reference_handle(&name) else {
+                continue;
+            };
+            let Some(index) = self
+                .trusted_request_local_function_offsets
+                .get(function)
+                .copied()
+                .and_then(|base| usize::try_from(base).ok())
+                .and_then(|base| base.checked_add(local))
+            else {
+                continue;
+            };
+            let Some(previous) = self.trusted_request_local_slots.get(index).copied() else {
+                continue;
+            };
+            if previous.state == php_jit::JIT_NATIVE_REQUEST_LOCAL_PUBLISHED
+                && previous.encoded == encoded
+            {
+                continue;
+            }
+            if self.retain(encoded).is_err() {
+                continue;
+            }
+            self.trusted_request_local_slots[index] = php_jit::JitNativeRequestLocalSlot {
+                encoded,
+                state: php_jit::JIT_NATIVE_REQUEST_LOCAL_PUBLISHED,
+                reserved: 0,
+            };
+            if previous.state == php_jit::JIT_NATIVE_REQUEST_LOCAL_PUBLISHED {
+                let _ = self.release(previous.encoded);
+            }
+        }
+    }
+
+    fn clear_trusted_request_locals(&mut self) {
+        let values = self
+            .trusted_request_local_slots
+            .iter_mut()
+            .filter_map(|slot| {
+                (slot.state == php_jit::JIT_NATIVE_REQUEST_LOCAL_PUBLISHED).then(|| {
+                    let encoded = slot.encoded;
+                    *slot = php_jit::JitNativeRequestLocalSlot::default();
+                    encoded
+                })
+            })
+            .collect::<Vec<_>>();
+        for encoded in values {
+            let _ = self.release_if_live(encoded);
+        }
     }
 
     /// Publish references for globals that already exist at request entry.
@@ -7105,6 +7217,8 @@ impl<'a> NativeRequestColdState<'a> {
         let active_continuations = compiled.prepared_continuation_instructions();
         let (active_property_offsets, active_property_slots) =
             trusted_property_storage(&active_continuations);
+        let (active_request_local_offsets, active_request_local_slots) =
+            trusted_request_local_storage(compiled.unit());
         let active_constant_slots =
             vec![php_jit::JitNativeTrustedConstantSlot::default(); active_property_slots.len()];
         let active_global_reference_slots = vec![
@@ -7130,6 +7244,14 @@ impl<'a> NativeRequestColdState<'a> {
         );
         let previous_property_slots =
             std::mem::replace(&mut self.trusted_property_slots, active_property_slots);
+        let previous_request_local_offsets = std::mem::replace(
+            &mut self.trusted_request_local_function_offsets,
+            active_request_local_offsets,
+        );
+        let previous_request_local_slots = std::mem::replace(
+            &mut self.trusted_request_local_slots,
+            active_request_local_slots,
+        );
         let previous_constant_slots =
             std::mem::replace(&mut self.trusted_constant_slots, active_constant_slots);
         let previous_global_reference_slots = std::mem::replace(
@@ -7159,6 +7281,7 @@ impl<'a> NativeRequestColdState<'a> {
         let previous_dynamic_unit = self.current_dynamic_unit.replace(unit);
         self.prepare_trusted_static_properties();
         self.prepare_trusted_constant_fetches();
+        self.prepare_trusted_request_locals();
         self.prepare_trusted_global_references();
         self.prepare_trusted_static_locals();
         self.prepare_trusted_class_plans();
@@ -7180,6 +7303,7 @@ impl<'a> NativeRequestColdState<'a> {
             .expect("active dynamic native unit disappeared")
             .native_entries = active_entries;
         self.clear_trusted_constant_fetches();
+        self.clear_trusted_request_locals();
         self.clear_trusted_global_references();
         self.clear_trusted_static_locals();
         self.current_dynamic_unit = previous_dynamic_unit;
@@ -7187,6 +7311,8 @@ impl<'a> NativeRequestColdState<'a> {
         self.continuation_instructions = previous_continuations;
         self.trusted_property_function_offsets = previous_property_offsets;
         self.trusted_property_slots = previous_property_slots;
+        self.trusted_request_local_function_offsets = previous_request_local_offsets;
+        self.trusted_request_local_slots = previous_request_local_slots;
         self.trusted_constant_slots = previous_constant_slots;
         self.trusted_global_reference_slots = previous_global_reference_slots;
         self.trusted_global_reference_names = previous_global_reference_names;
@@ -8869,6 +8995,20 @@ pub(super) fn activate_native_context(
         direct_string_reused_bytes: std::ptr::from_mut(context.direct_string_reused_bytes.as_mut())
             as usize as u64,
         trusted_globals_proxy: context.trusted_globals_proxy,
+        trusted_request_local_function_offsets: context
+            .trusted_request_local_function_offsets
+            .as_ptr() as usize as u64,
+        trusted_request_local_function_count: u32::try_from(
+            context.trusted_request_local_function_offsets.len(),
+        )
+        .unwrap_or(u32::MAX),
+        trusted_request_local_reserved: 0,
+        trusted_request_local_slots: context.trusted_request_local_slots.as_ptr() as usize as u64,
+        trusted_request_local_slot_count: u32::try_from(
+            context.trusted_request_local_slots.len(),
+        )
+        .unwrap_or(u32::MAX),
+        trusted_request_local_slot_reserved: 0,
         trusted_constant_views: deployment.constant_views.as_ptr() as usize as u64,
         trusted_constant_view_count: u32::try_from(deployment.constant_views.len())
             .unwrap_or(u32::MAX),

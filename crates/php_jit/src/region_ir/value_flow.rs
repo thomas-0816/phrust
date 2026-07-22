@@ -38,6 +38,11 @@ impl LocalStorageClass {
             Self::RequestGlobal | Self::Superglobal | Self::Globals
         )
     }
+
+    #[must_use]
+    pub const fn is_reference_slot(self) -> bool {
+        matches!(self, Self::MemoryReference | Self::RequestGlobal | Self::Superglobal)
+    }
 }
 
 /// Facts that directly alter executable lowering decisions.

@@ -11,13 +11,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{FunctionId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 74;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 75;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a843_0000_006a;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a843_0000_006b;
 
 /// No stable length is published for this runtime value slot.
 pub const JIT_NATIVE_VALUE_VIEW_NONE: u32 = 0;
@@ -280,6 +280,20 @@ pub struct JitNativeStaticPropertySlot {
     pub reserved: u32,
 }
 
+/// One authoritative request/include-scope local. The encoded value is a
+/// direct native reference handle, so generated code preserves alias identity
+/// while the cold `ReferenceCell` remains only the include/export sidecar.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JitNativeRequestLocalSlot {
+    pub encoded: i64,
+    pub state: u32,
+    pub reserved: u32,
+}
+
+pub const JIT_NATIVE_REQUEST_LOCAL_EMPTY: u32 = 0;
+pub const JIT_NATIVE_REQUEST_LOCAL_PUBLISHED: u32 = 1;
+
 // SAFETY: this repr(C) record is plain integers and its all-zero state is an
 // unpublished cell.
 unsafe impl php_runtime::api::NativeZeroed for JitNativeStaticPropertySlot {}
@@ -454,6 +468,14 @@ pub struct JitNativeRuntimeView {
     /// this stable value directly instead of treating the special local as an
     /// uninitialized ordinary SSA slot.
     pub trusted_globals_proxy: i64,
+    /// Dense per-function offsets followed by authoritative numeric slots for
+    /// top-level/include-scope locals and superglobals.
+    pub trusted_request_local_function_offsets: u64,
+    pub trusted_request_local_function_count: u32,
+    pub trusted_request_local_reserved: u32,
+    pub trusted_request_local_slots: u64,
+    pub trusted_request_local_slot_count: u32,
+    pub trusted_request_local_slot_reserved: u32,
     /// Immutable constant descriptors for the currently active source unit.
     pub trusted_constant_views: u64,
     pub trusted_constant_view_count: u32,
@@ -523,7 +545,7 @@ pub struct JitNativeRuntimeView {
 
 thread_local! {
     static ACTIVE_NATIVE_RUNTIME_VIEW: Cell<JitNativeRuntimeView> =
-        const { Cell::new(JitNativeRuntimeView { abi_version: 0, value_slot_capacity: 0, value_slots: 0, direct_value_slots: 0, direct_value_next: 0, direct_value_free_head: 0, direct_value_reused_bytes: 0, direct_object_owners: 0, direct_array_states: 0, direct_array_entries: 0, direct_array_next: 0, direct_array_free_heads: 0, direct_array_reused_bytes: 0, direct_string_bytes: 0, direct_string_next: 0, direct_string_free_heads: 0, direct_string_reused_bytes: 0, trusted_globals_proxy: 0, trusted_constant_views: 0, trusted_constant_view_count: 0, trusted_constant_view_reserved: 0, trusted_constant_slots: 0, trusted_constant_slot_count: 0, trusted_constant_slot_reserved: 0, trusted_class_plans: 0, trusted_class_plan_count: 0, trusted_class_plan_reserved: 0, trusted_function_entries: 0, trusted_function_entry_count: 0, trusted_function_entry_reserved: 0, trusted_optimizing_function_entries: 0, trusted_optimizing_function_entry_count: 0, trusted_optimizing_function_entry_reserved: 0, poll_counter: 0, root_mutation_pending: 0, trusted_property_function_offsets: 0, trusted_property_function_count: 0, trusted_property_reserved: 0, trusted_property_slots: 0, trusted_property_slot_count: 0, trusted_property_slot_reserved: 0, trusted_global_reference_slots: 0, trusted_global_reference_slot_count: 0, trusted_global_reference_slot_reserved: 0, trusted_static_local_slots: 0, trusted_static_local_slot_count: 0, trusted_static_local_slot_reserved: 0, static_property_slots: 0, static_property_slot_count: 0, static_property_slot_reserved: 0, trusted_static_property_slots: 0, trusted_static_property_slot_count: 0, trusted_static_property_slot_reserved: 0, trusted_instanceof_plans: 0, trusted_instanceof_plan_count: 0, trusted_instanceof_plan_reserved: 0, trusted_instanceof_entries: 0, trusted_instanceof_entry_count: 0, trusted_instanceof_entry_reserved: 0, error_reporting: 0 }) };
+        const { Cell::new(JitNativeRuntimeView { abi_version: 0, value_slot_capacity: 0, value_slots: 0, direct_value_slots: 0, direct_value_next: 0, direct_value_free_head: 0, direct_value_reused_bytes: 0, direct_object_owners: 0, direct_array_states: 0, direct_array_entries: 0, direct_array_next: 0, direct_array_free_heads: 0, direct_array_reused_bytes: 0, direct_string_bytes: 0, direct_string_next: 0, direct_string_free_heads: 0, direct_string_reused_bytes: 0, trusted_globals_proxy: 0, trusted_request_local_function_offsets: 0, trusted_request_local_function_count: 0, trusted_request_local_reserved: 0, trusted_request_local_slots: 0, trusted_request_local_slot_count: 0, trusted_request_local_slot_reserved: 0, trusted_constant_views: 0, trusted_constant_view_count: 0, trusted_constant_view_reserved: 0, trusted_constant_slots: 0, trusted_constant_slot_count: 0, trusted_constant_slot_reserved: 0, trusted_class_plans: 0, trusted_class_plan_count: 0, trusted_class_plan_reserved: 0, trusted_function_entries: 0, trusted_function_entry_count: 0, trusted_function_entry_reserved: 0, trusted_optimizing_function_entries: 0, trusted_optimizing_function_entry_count: 0, trusted_optimizing_function_entry_reserved: 0, poll_counter: 0, root_mutation_pending: 0, trusted_property_function_offsets: 0, trusted_property_function_count: 0, trusted_property_reserved: 0, trusted_property_slots: 0, trusted_property_slot_count: 0, trusted_property_slot_reserved: 0, trusted_global_reference_slots: 0, trusted_global_reference_slot_count: 0, trusted_global_reference_slot_reserved: 0, trusted_static_local_slots: 0, trusted_static_local_slot_count: 0, trusted_static_local_slot_reserved: 0, static_property_slots: 0, static_property_slot_count: 0, static_property_slot_reserved: 0, trusted_static_property_slots: 0, trusted_static_property_slot_count: 0, trusted_static_property_slot_reserved: 0, trusted_instanceof_plans: 0, trusted_instanceof_plan_count: 0, trusted_instanceof_plan_reserved: 0, trusted_instanceof_entries: 0, trusted_instanceof_entry_count: 0, trusted_instanceof_entry_reserved: 0, error_reporting: 0 }) };
     // Standalone compiler tests may publish only the arena fields they
     // exercise. Production activation always supplies its request-owned head.
     static FALLBACK_DIRECT_VALUE_FREE_HEAD: Cell<u32> =
@@ -2090,7 +2112,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 74);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 75);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);

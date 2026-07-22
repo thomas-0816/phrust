@@ -5222,9 +5222,25 @@ fn define_region_graph_function(
             types::I64,
             crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
         );
-        for storage in locals.values().copied() {
-            if let NativeLocalStorage::Variable(variable) = storage {
-                builder.def_var(variable, uninitialized_value);
+        for (local, storage) in &locals {
+            if let NativeLocalStorage::Variable(variable) = *storage {
+                let initial = if region.compile_metadata.tier == NativeCompilerTier::Optimizing
+                    && matches!(
+                        value_flow.local_storage(*local),
+                        crate::region_ir::LocalStorageClass::RequestGlobal
+                            | crate::region_ir::LocalStorageClass::Superglobal
+                    )
+                {
+                    lower_trusted_request_local_reference(
+                        &mut builder,
+                        deopt_out,
+                        region.function,
+                        *local,
+                    )
+                } else {
+                    uninitialized_value
+                };
+                builder.def_var(variable, initial);
             }
         }
         if fragment.is_none() {

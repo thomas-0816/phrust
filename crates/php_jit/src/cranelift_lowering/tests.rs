@@ -10386,6 +10386,163 @@ fn optimizing_runtime_guarded_function_cell_calls_native_callee_without_dispatch
 }
 
 #[test]
+fn optimizing_variadic_call_packs_one_authoritative_native_array() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_244));
+    let file = builder.add_file("optimizing-variadic-native-call.php");
+    let span = IrSpan::new(file, 0, 1);
+
+    let callee = builder.start_function("native_variadic_pick", FunctionFlags::default(), span);
+    builder.set_return_type(callee, Some(IrReturnType::Int));
+    let rest = builder.intern_local(callee, "rest");
+    builder.push_param(
+        callee,
+        IrParam {
+            name: "rest".to_owned(),
+            local: rest,
+            required: false,
+            default: None,
+            type_: None,
+            by_ref: false,
+            variadic: true,
+            attributes: Vec::new(),
+        },
+    );
+    let callee_block = builder.append_block(callee);
+    let array = builder.alloc_register(callee);
+    builder.emit(
+        callee,
+        callee_block,
+        InstructionKind::LoadLocal {
+            dst: array,
+            local: rest,
+        },
+        span,
+    );
+    let picked = builder.alloc_register(callee);
+    let one = builder.intern_constant(IrConstant::Int(1));
+    builder.emit(
+        callee,
+        callee_block,
+        InstructionKind::FetchDim {
+            dst: picked,
+            array: Operand::Register(array),
+            key: Operand::Constant(one),
+            quiet: false,
+            mode: php_ir::instruction::DimFetchMode::Read,
+        },
+        span,
+    );
+    builder.terminate_return(callee, callee_block, Some(Operand::Register(picked)), span);
+    builder.register_function_name("native_variadic_pick", callee);
+
+    let caller = builder.start_function("native_variadic_caller", FunctionFlags::default(), span);
+    builder.set_entry(caller);
+    let caller_block = builder.append_block(caller);
+    let result = builder.alloc_register(caller);
+    let arguments = [10_i64, 20, 30]
+        .into_iter()
+        .map(|value| IrCallArg {
+            name: None,
+            value: Operand::Constant(builder.intern_constant(IrConstant::Int(value))),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: None,
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        })
+        .collect();
+    builder.emit(
+        caller,
+        caller_block,
+        InstructionKind::CallFunction {
+            dst: result,
+            name: "native_variadic_pick".to_owned(),
+            args: arguments,
+        },
+        span,
+    );
+    builder.terminate_return(caller, caller_block, Some(Operand::Register(result)), span);
+    let unit = builder.finish();
+
+    let mut backend = CraneliftNativeCompiler;
+    let callee_outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.variadic-callee").with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(callee),
+        runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+    });
+    let caller_outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.variadic-caller").with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(caller),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_call_dispatch: forbidden_call_dispatch as *const () as usize,
+            native_function_resolve: forbidden_call_dispatch as *const () as usize,
+            native_array_new: forbidden_array_insert as *const () as usize,
+            native_array_insert: forbidden_array_insert as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+    assert_eq!(
+        callee_outcome.status,
+        JitCompileStatus::Compiled,
+        "{callee_outcome:?}"
+    );
+    assert_eq!(
+        caller_outcome.status,
+        JitCompileStatus::Compiled,
+        "{caller_outcome:?}"
+    );
+    let callee_handle = callee_outcome.handle.expect("variadic callee handle");
+    let caller_handle = caller_outcome.handle.expect("variadic caller handle");
+    assert_optimizing_artifact(&callee_handle);
+    assert_optimizing_artifact(&caller_handle);
+
+    let mut entries = (0..unit.functions.len())
+        .map(|_| std::sync::atomic::AtomicUsize::new(0))
+        .collect::<Vec<_>>();
+    let mut optimizing_entries = (0..unit.functions.len())
+        .map(|_| std::sync::atomic::AtomicUsize::new(0))
+        .collect::<Vec<_>>();
+    let callee_address = callee_handle
+        .native_entry_address()
+        .expect("variadic callee executable address");
+    entries[callee.index()].store(callee_address, std::sync::atomic::Ordering::Release);
+    optimizing_entries[callee.index()].store(callee_address, std::sync::atomic::Ordering::Release);
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    let mut direct_entries = vec![
+        crate::JitNativeDirectArrayEntry::default();
+        crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
+    ];
+    let mut direct_next = 0_u32;
+    let mut entry_next = 0_u32;
+    let _arena = activate_direct_test_arena(
+        &mut direct_slots,
+        &mut direct_next,
+        &mut direct_entries,
+        &mut entry_next,
+    );
+    let _entries = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
+        abi_version: crate::JIT_RUNTIME_ABI_VERSION,
+        trusted_function_entries: entries.as_mut_ptr() as usize as u64,
+        trusted_function_entry_count: entries.len() as u32,
+        trusted_optimizing_function_entries: optimizing_entries.as_mut_ptr() as usize as u64,
+        trusted_optimizing_function_entry_count: optimizing_entries.len() as u32,
+        ..crate::abi::current_native_runtime_view()
+    });
+    assert_eq!(
+        caller_handle
+            .invoke_i64(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("compiled variadic call"),
+        20
+    );
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn optimizing_compiled_call_releases_its_borrowed_argument_owner() {
     let mut builder = IrBuilder::new(UnitId::new(4_239));
     let file = builder.add_file("optimizing-call-argument-owner.php");
