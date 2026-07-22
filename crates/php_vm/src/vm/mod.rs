@@ -12,23 +12,35 @@ pub use result::VmResult;
 
 use crate::compiled_unit::CompiledUnit;
 use jit_abi::{
-    NativeExecutionContext, activate_native_context, jit_native_argument_check_abi,
+    NativeRequestOwner, activate_native_context, jit_baseline_native_builtin_dispatch_abi,
+    jit_baseline_native_builtin_dispatch_diagnostic_abi, jit_native_argument_check_abi,
     jit_native_array_fetch_abi, jit_native_array_insert_abi, jit_native_array_insert_local_abi,
     jit_native_array_new_abi, jit_native_array_spread_abi, jit_native_array_unset_abi,
-    jit_native_binary_abi, jit_native_builtin_dispatch_abi,
-    jit_native_builtin_dispatch_diagnostic_abi, jit_native_call_dispatch_abi,
-    jit_native_call_dispatch_diagnostic_abi, jit_native_cast_abi, jit_native_compare_abi,
-    jit_native_constant_fetch_abi, jit_native_dynamic_code_abi, jit_native_echo_abi,
-    jit_native_exception_new_abi, jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi,
-    jit_native_foreach_init_abi, jit_native_foreach_next_abi, jit_native_frame_alloc_abi,
-    jit_native_frame_release_abi, jit_native_function_resolve_abi, jit_native_local_fetch_abi,
-    jit_native_local_store_abi, jit_native_object_clone_abi, jit_native_object_clone_with_abi,
-    jit_native_object_new_abi, jit_native_property_assign_abi, jit_native_property_fetch_abi,
+    jit_native_basename_abi, jit_native_binary_abi, jit_native_call_dispatch_abi,
+    jit_native_call_dispatch_diagnostic_abi, jit_native_cast_abi, jit_native_class_exists_abi,
+    jit_native_compare_abi, jit_native_constant_fetch_abi, jit_native_defined_abi,
+    jit_native_dirname_abi, jit_native_dynamic_code_abi, jit_native_echo_abi,
+    jit_native_echo_bytes_abi, jit_native_echo_float_abi, jit_native_echo_int_abi,
+    jit_native_enum_exists_abi, jit_native_exception_new_abi, jit_native_execution_poll_abi,
+    jit_native_file_exists_abi, jit_native_float_to_int_abi, jit_native_float_to_string_abi,
+    jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi, jit_native_foreach_next_abi,
+    jit_native_frame_alloc_abi, jit_native_frame_release_abi, jit_native_function_exists_abi,
+    jit_native_function_resolve_abi, jit_native_interface_exists_abi, jit_native_json_decode_abi,
+    jit_native_json_encode_abi, jit_native_json_last_error_abi, jit_native_json_last_error_msg_abi,
+    jit_native_json_validate_abi, jit_native_local_fetch_abi, jit_native_local_store_abi,
+    jit_native_method_exists_abi, jit_native_object_class_name_abi, jit_native_object_clone_abi,
+    jit_native_object_clone_with_abi, jit_native_object_new_abi, jit_native_plain_object_clone_abi,
+    jit_native_preg_filter_abi, jit_native_preg_grep_abi, jit_native_preg_last_error_abi,
+    jit_native_preg_last_error_msg_abi, jit_native_preg_match_abi, jit_native_preg_match_all_abi,
+    jit_native_preg_quote_abi, jit_native_preg_replace_abi, jit_native_preg_split_abi,
+    jit_native_prepared_object_new_abi, jit_native_printf_abi, jit_native_property_assign_abi,
+    jit_native_property_exists_abi, jit_native_property_fetch_abi, jit_native_realpath_abi,
     jit_native_reference_bind_abi, jit_native_return_check_abi, jit_native_runtime_fatal_abi,
     jit_native_semantic_dispatch_abi, jit_native_semantic_dispatch_diagnostic_abi,
-    jit_native_stable_length_abi, jit_native_string_predicate_abi, jit_native_truthy_abi,
-    jit_native_type_predicate_abi, jit_native_unary_abi, jit_native_value_release_abi,
-    resume_native_optimizing_exit,
+    jit_native_sprintf_abi, jit_native_stable_length_abi, jit_native_string_predicate_abi,
+    jit_native_trait_exists_abi, jit_native_truthy_abi, jit_native_type_predicate_abi,
+    jit_native_unary_abi, jit_native_value_release_abi, jit_native_vprintf_abi,
+    jit_native_vsprintf_abi, resume_native_optimizing_exit,
 };
 use php_runtime::api::{OutputBuffer, Value};
 use std::collections::{HashMap, HashSet};
@@ -1023,7 +1035,7 @@ impl Vm {
             })
             .collect();
         let native_entries = Arc::new(native_entries);
-        let mut context = NativeExecutionContext::new(
+        let mut context = NativeRequestOwner::new(
             &unit,
             unit.artifact_identity(),
             &self.options,
@@ -1036,7 +1048,7 @@ impl Vm {
             self.options.collect_counters.then(std::time::Instant::now);
         context.record_native_direct_calls(handle);
         let guard = activate_native_context(&mut context);
-        let runtime = std::ptr::from_mut(&mut context).cast::<std::ffi::c_void>();
+        let runtime = context.native_runtime_ptr();
         let outcome = handle.invoke_i64_with_native_unwind_runtime(
             &[],
             php_jit::JIT_RUNTIME_ABI_HASH,
@@ -1086,7 +1098,7 @@ impl Vm {
         });
         context.output.flush_all_buffers();
         drop(guard);
-        context.publish_include_globals();
+        let publish_error = context.publish_include_globals().err();
         let native_execution_time_nanos = native_execution_started_at.map_or(0, |started_at| {
             started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
         });
@@ -1103,7 +1115,7 @@ impl Vm {
         let process_exit_terminates_process = context.process_exit_terminates_process();
         let mut result = if let Some(throwable) = shutdown_throwable {
             native_uncaught_throwable_result(std::mem::take(&mut context.output), Some(throwable))
-        } else if let Some(error) = shutdown_error {
+        } else if let Some(error) = shutdown_error.or(publish_error) {
             VmResult::runtime_error(
                 std::mem::take(&mut context.output),
                 context.diagnostic.take(),
@@ -1677,9 +1689,39 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_call_dispatch_diagnostic_abi
         ),
         native_builtin_dispatch: helper_address!(
-            jit_native_builtin_dispatch_abi,
-            jit_native_builtin_dispatch_diagnostic_abi
+            jit_baseline_native_builtin_dispatch_abi,
+            jit_baseline_native_builtin_dispatch_diagnostic_abi
         ),
+        native_defined: jit_native_defined_abi as *const () as usize,
+        native_function_exists: jit_native_function_exists_abi as *const () as usize,
+        native_class_exists: jit_native_class_exists_abi as *const () as usize,
+        native_interface_exists: jit_native_interface_exists_abi as *const () as usize,
+        native_trait_exists: jit_native_trait_exists_abi as *const () as usize,
+        native_enum_exists: jit_native_enum_exists_abi as *const () as usize,
+        native_method_exists: jit_native_method_exists_abi as *const () as usize,
+        native_property_exists: jit_native_property_exists_abi as *const () as usize,
+        native_preg_match: jit_native_preg_match_abi as *const () as usize,
+        native_preg_match_all: jit_native_preg_match_all_abi as *const () as usize,
+        native_preg_replace: jit_native_preg_replace_abi as *const () as usize,
+        native_preg_filter: jit_native_preg_filter_abi as *const () as usize,
+        native_preg_split: jit_native_preg_split_abi as *const () as usize,
+        native_preg_grep: jit_native_preg_grep_abi as *const () as usize,
+        native_preg_quote: jit_native_preg_quote_abi as *const () as usize,
+        native_preg_last_error: jit_native_preg_last_error_abi as *const () as usize,
+        native_preg_last_error_msg: jit_native_preg_last_error_msg_abi as *const () as usize,
+        native_json_encode: jit_native_json_encode_abi as *const () as usize,
+        native_json_decode: jit_native_json_decode_abi as *const () as usize,
+        native_json_validate: jit_native_json_validate_abi as *const () as usize,
+        native_json_last_error: jit_native_json_last_error_abi as *const () as usize,
+        native_json_last_error_msg: jit_native_json_last_error_msg_abi as *const () as usize,
+        native_sprintf: jit_native_sprintf_abi as *const () as usize,
+        native_printf: jit_native_printf_abi as *const () as usize,
+        native_vsprintf: jit_native_vsprintf_abi as *const () as usize,
+        native_vprintf: jit_native_vprintf_abi as *const () as usize,
+        native_basename: jit_native_basename_abi as *const () as usize,
+        native_dirname: jit_native_dirname_abi as *const () as usize,
+        native_realpath: jit_native_realpath_abi as *const () as usize,
+        native_file_exists: jit_native_file_exists_abi as *const () as usize,
         native_semantic_dispatch: helper_address!(
             jit_native_semantic_dispatch_abi,
             jit_native_semantic_dispatch_diagnostic_abi
@@ -1714,6 +1756,14 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         ),
         native_cast: helper_address!(jit_native_cast_abi, jit_abi::jit_native_cast_diagnostic_abi),
         native_echo: helper_address!(jit_native_echo_abi, jit_abi::jit_native_echo_diagnostic_abi),
+        native_echo_bytes: jit_native_echo_bytes_abi as *const () as usize,
+        native_echo_int: jit_native_echo_int_abi as *const () as usize,
+        native_echo_float: jit_native_echo_float_abi as *const () as usize,
+        native_float_to_string: jit_native_float_to_string_abi as *const () as usize,
+        native_float_to_int: jit_native_float_to_int_abi as *const () as usize,
+        native_object_class_name: jit_native_object_class_name_abi as *const () as usize,
+        native_prepared_object_new: jit_native_prepared_object_new_abi as *const () as usize,
+        native_plain_object_clone: jit_native_plain_object_clone_abi as *const () as usize,
         native_local_fetch: helper_address!(
             jit_native_local_fetch_abi,
             jit_abi::jit_native_local_fetch_diagnostic_abi

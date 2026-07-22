@@ -2131,6 +2131,37 @@ impl PhpArray {
             .and_then(|index| self.storage.key_at(index))
     }
 
+    /// Returns the insertion-order position of the internal pointer for the
+    /// native execution boundary. This is deliberately positional: the
+    /// authoritative native array stores entries densely in insertion order.
+    #[must_use]
+    pub fn native_pointer_position(&self) -> Option<usize> {
+        let target = self.storage.internal_pointer()?;
+        let mut index = self.storage.first_index()?;
+        let mut position = 0_usize;
+        loop {
+            if index == target {
+                return Some(position);
+            }
+            index = self.storage.next_index(index)?;
+            position = position.checked_add(1)?;
+        }
+    }
+
+    /// Restores an insertion-order internal-pointer position after a cold
+    /// native/Rust representation transition.
+    pub fn set_native_pointer_position(&mut self, position: Option<usize>) {
+        let target = position.and_then(|position| {
+            let mut index = self.storage.first_index()?;
+            for _ in 0..position {
+                index = self.storage.next_index(index)?;
+            }
+            Some(index)
+        });
+        self.storage_mut_for(PhpArrayWriteIntent::PointerMutation)
+            .set_internal_pointer(target);
+    }
+
     /// Moves the internal pointer to the first element.
     pub fn reset_pointer(&mut self) -> Option<Value> {
         let storage = self.storage_mut_for(PhpArrayWriteIntent::PointerMutation);
@@ -2166,11 +2197,7 @@ impl PhpArray {
     /// Moves the internal pointer one element backwards.
     pub fn prev_pointer(&mut self) -> Option<Value> {
         let storage = self.storage_mut_for(PhpArrayWriteIntent::PointerMutation);
-        let Some(current) = storage.internal_pointer() else {
-            let last = storage.last_index()?;
-            storage.set_internal_pointer(Some(last));
-            return storage.get_value(last).cloned();
-        };
+        let current = storage.internal_pointer()?;
         let Some(previous) = storage.previous_index(current) else {
             storage.set_internal_pointer(None);
             return None;

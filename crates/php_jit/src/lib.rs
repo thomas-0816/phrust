@@ -25,26 +25,42 @@ pub mod region_ir;
 
 pub use abi::{
     JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS,
-    JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_CONSTANT_VIEW_NONE,
-    JIT_NATIVE_CONSTANT_VIEW_STRING, JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
-    JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY, JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS,
+    JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_CONSTANT_VIEW_BOOL,
+    JIT_NATIVE_CONSTANT_VIEW_FLOAT, JIT_NATIVE_CONSTANT_VIEW_INT, JIT_NATIVE_CONSTANT_VIEW_NONE,
+    JIT_NATIVE_CONSTANT_VIEW_NULL, JIT_NATIVE_CONSTANT_VIEW_STRING,
+    JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION, JIT_NATIVE_DIRECT_ARRAY_CURSOR_NONE,
+    JIT_NATIVE_DIRECT_ARRAY_CURSOR_SHIFT, JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY,
+    JIT_NATIVE_DIRECT_ARRAY_FLAGS_VERSION_MASK, JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS,
     JIT_NATIVE_DIRECT_ARRAY_FREE_NONE, JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY,
-    JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY, JIT_NATIVE_DIRECT_VALUE_CAPACITY,
-    JIT_NATIVE_DIRECT_VALUE_INDEX_BASE, JIT_NATIVE_FOREACH_VIEW_ABI_VERSION,
-    JIT_NATIVE_GLOBAL_REFERENCE_CACHE_SIZE, JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS,
-    JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE, JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION,
-    JIT_NATIVE_REFERENCE_ARRAY_KEY_INT, JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL, JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_TRUE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
-    JIT_NATIVE_REFERENCE_ARRAY_VIEW_EMPTY, JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
-    JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
+    JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY, JIT_NATIVE_DIRECT_STRING_CAPACITY_SHIFT,
+    JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS, JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY,
+    JIT_NATIVE_DIRECT_VALUE_CAPACITY, JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+    JIT_NATIVE_FOREACH_VIEW_ABI_VERSION, JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED,
+    JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION, JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE,
+    JIT_NATIVE_PREPARED_CLASS_EMPTY, JIT_NATIVE_REFERENCE_ARRAY_KEY_INT,
+    JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING, JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT, JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING, JIT_NATIVE_REFERENCE_ARRAY_VALUE_TRUE,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED, JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED,
+    JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_ARRAY_VIEW_EMPTY,
+    JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED, JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_FALSE, JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_INT,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_NULL, JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_TRUE,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_UNINITIALIZED, JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
     JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_SHARED_ARRAY_ABI_VERSION,
-    JIT_NATIVE_STRING_VALUE_ZERO, JIT_NATIVE_STRING_VIEW_ABI_VERSION, JIT_NATIVE_VALUE_VIEW_ARRAY,
-    JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
-    JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH, JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT,
-    JIT_NATIVE_VALUE_VIEW_NONE, JIT_NATIVE_VALUE_VIEW_OBJECT_PROPERTIES,
+    JIT_NATIVE_STATIC_PROPERTY_CAPACITY, JIT_NATIVE_STRING_VALUE_ZERO,
+    JIT_NATIVE_STRING_VIEW_ABI_VERSION, JIT_NATIVE_TRUSTED_CONSTANT_EMPTY,
+    JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED, JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_EMPTY,
+    JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED,
+    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_EMPTY,
+    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE,
+    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE, JIT_NATIVE_TRUSTED_STATIC_LOCAL_EMPTY,
+    JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_EMPTY,
+    JIT_NATIVE_TRUSTED_STATIC_PROPERTY_READABLE, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_WRITABLE,
+    JIT_NATIVE_VALUE_VIEW_ARRAY, JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT, JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+    JIT_NATIVE_VALUE_VIEW_FLOAT, JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT, JIT_NATIVE_VALUE_VIEW_NONE,
     JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR, JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY,
     JIT_NATIVE_VALUE_VIEW_STRING, JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED,
     JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED, JIT_OPTIMIZING_EXIT_ARRAY_VIEW_MISSING,
@@ -52,19 +68,23 @@ pub use abi::{
     JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue, JitCValueTag, JitCallResult,
     JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView,
     JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
-    JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord, JitNativeDestructorPoint,
-    JitNativeDirectArrayEntry, JitNativeDispatchTrampoline, JitNativeDynamicCodeKind,
-    JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
-    JitNativeFiberState, JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader,
-    JitNativeGeneratorState, JitNativeGlobalReferenceCacheRecord, JitNativeIndirectionEntry,
-    JitNativePcMetadata, JitNativePropertyCacheEntry, JitNativeReferenceArrayEntry,
+    JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord, JitNativeControlResult,
+    JitNativeDestructorPoint, JitNativeDirectArrayEntry, JitNativeDispatchTrampoline,
+    JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline,
+    JitNativeExceptionHandler, JitNativeFastStateHeader, JitNativeFiberState,
+    JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader, JitNativeGeneratorState,
+    JitNativeIndirectionEntry, JitNativeInstanceOfEntry, JitNativeInstanceOfPlan,
+    JitNativePcMetadata, JitNativePreparedClassPlan, JitNativeReferenceArrayEntry,
     JitNativeReferenceArrayView, JitNativeReferenceScalarView, JitNativeResumeInputKind,
     JitNativeRootEntry, JitNativeRootKind, JitNativeRuntimeView, JitNativeRuntimeViewGuard,
-    JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy, JitNativeTransitionState,
-    JitNativeValueSlot, JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
-    JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
-    activate_native_runtime_view, jit_native_global_reference_cache_index,
-    jit_native_property_name_hash,
+    JitNativeStaticPropertySlot, JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy,
+    JitNativeTransitionState, JitNativeTrustedConstantSlot, JitNativeTrustedGlobalReferenceSlot,
+    JitNativeTrustedPropertySlot, JitNativeTrustedStaticLocalSlot,
+    JitNativeTrustedStaticPropertySlot, JitNativeValueSlot, JitOpaqueHandle, JitOpaqueValueKind,
+    JitRegionResult, JitRuntimeCallout, JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle,
+    SideExitReason, activate_native_runtime_view, jit_native_direct_array_cursor,
+    jit_native_direct_array_flags, jit_native_direct_string_capacity,
+    jit_native_direct_string_reserved, jit_native_instanceof_index,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -144,6 +164,45 @@ pub struct JitRuntimeHelperAddresses {
     pub native_call_dispatch: usize,
     /// Direct statically identified builtin invocation over packed i64 arguments.
     pub native_builtin_dispatch: usize,
+    /// Exact prepared symbol/reflection query handlers. Each address names one
+    /// fixed builtin; optimizing code never supplies an operation or registry ID.
+    pub native_defined: usize,
+    pub native_function_exists: usize,
+    pub native_class_exists: usize,
+    pub native_interface_exists: usize,
+    pub native_trait_exists: usize,
+    pub native_enum_exists: usize,
+    pub native_method_exists: usize,
+    pub native_property_exists: usize,
+    /// Exact prepared PCRE handlers. Each address names one fixed builtin;
+    /// optimizing code never supplies an operation or registry ID.
+    pub native_preg_match: usize,
+    pub native_preg_match_all: usize,
+    pub native_preg_replace: usize,
+    pub native_preg_filter: usize,
+    pub native_preg_split: usize,
+    pub native_preg_grep: usize,
+    pub native_preg_quote: usize,
+    pub native_preg_last_error: usize,
+    pub native_preg_last_error_msg: usize,
+    /// Exact prepared JSON handlers.
+    pub native_json_encode: usize,
+    pub native_json_decode: usize,
+    pub native_json_validate: usize,
+    pub native_json_last_error: usize,
+    pub native_json_last_error_msg: usize,
+    /// Exact prepared formatting handlers.
+    pub native_sprintf: usize,
+    pub native_printf: usize,
+    pub native_vsprintf: usize,
+    pub native_vprintf: usize,
+    /// Exact prepared path/filesystem handlers. Pure path handlers use only
+    /// native values; filesystem queries receive the request's narrow
+    /// cwd/capability view through FastState.
+    pub native_basename: usize,
+    pub native_dirname: usize,
+    pub native_realpath: usize,
+    pub native_file_exists: usize,
     /// Direct typed PHP semantic operation over packed i64 operands.
     pub native_semantic_dispatch: usize,
     /// Resolves or compiles one statically known PHP callee without invoking it.
@@ -164,6 +223,22 @@ pub struct JitRuntimeHelperAddresses {
     pub native_cast: usize,
     /// Typed PHP echo operation.
     pub native_echo: usize,
+    /// Exact direct-string output append without Rust `Value` materialization.
+    pub native_echo_bytes: usize,
+    /// Exact SSA-integer output append without Rust `Value` materialization.
+    pub native_echo_int: usize,
+    /// Exact SSA-float output append without Rust `Value` materialization.
+    pub native_echo_float: usize,
+    /// Exact SSA-float to direct-string conversion without `Value` materialization.
+    pub native_float_to_string: usize,
+    /// Exact exceptional SSA-float to integer conversion and warning path.
+    pub native_float_to_int: usize,
+    /// Exact direct-object class-name read without generic property dispatch.
+    pub native_object_class_name: usize,
+    /// Exact allocation from a request-published immutable class plan.
+    pub native_prepared_object_new: usize,
+    /// Exact shallow clone for an SSA-exact class without `__clone`.
+    pub native_plain_object_clone: usize,
     /// Resolves one local load, including superglobal seeding and warnings.
     pub native_local_fetch: usize,
     /// Stores through a PHP reference cell or replaces a plain local value.
@@ -2028,7 +2103,7 @@ impl JitNativeEntry {
         // buffer. Do not clear the 256 local and 64 register slots for every
         // warm call; complete the sparse state only when native code actually
         // reports a side exit.
-        let mut deopt = prepare_native_deopt_out();
+        let mut deopt = prepare_native_deopt_out(runtime);
         let deopt_ptr = deopt.as_mut_ptr();
         // SAFETY: Handles are created only after Cranelift defines the matching
         // packed status/out signature. `args.as_ptr()` remains valid for the
@@ -2069,7 +2144,9 @@ impl JitNativeEntry {
     }
 }
 
-fn prepare_native_deopt_out() -> std::mem::MaybeUninit<JitDeoptState> {
+fn prepare_native_deopt_out(
+    runtime: *mut std::ffi::c_void,
+) -> std::mem::MaybeUninit<JitDeoptState> {
     let mut state = std::mem::MaybeUninit::<JitDeoptState>::uninit();
     let pointer = state.as_mut_ptr();
     // SAFETY: each write targets a distinct scalar/metadata field. The large
@@ -2091,7 +2168,7 @@ fn prepare_native_deopt_out() -> std::mem::MaybeUninit<JitDeoptState> {
         std::ptr::addr_of_mut!((*pointer).delegation_handle).write(0);
         std::ptr::addr_of_mut!((*pointer).initialized_register_mask).write(0);
         std::ptr::addr_of_mut!((*pointer).register_ids).write([u32::MAX; JIT_DEOPT_MAX_REGISTERS]);
-        std::ptr::addr_of_mut!((*pointer).runtime_view).write(abi::current_native_runtime_view());
+        std::ptr::addr_of_mut!((*pointer).runtime_view).write(abi::native_runtime_view(runtime));
     }
     state
 }

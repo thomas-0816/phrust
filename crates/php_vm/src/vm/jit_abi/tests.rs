@@ -2,6 +2,47 @@ use super::native_builtins::format_native_php_diagnostic;
 use super::{dereference_native_callable_value, native_backtrace_frame};
 
 #[test]
+fn nested_native_activation_restores_the_outer_fast_state_view() {
+    let outer_view = php_jit::JitNativeRuntimeView {
+        trusted_function_entries: 0x1110,
+        trusted_function_entry_count: 30,
+        ..php_jit::JitNativeRuntimeView::default()
+    };
+    let inner_view = php_jit::JitNativeRuntimeView {
+        trusted_function_entries: 0x2220,
+        trusted_function_entry_count: 64,
+        ..php_jit::JitNativeRuntimeView::default()
+    };
+    let outer_header = php_jit::JitNativeFastStateHeader {
+        abi_version: php_jit::JIT_RUNTIME_ABI_VERSION,
+        flags: 0,
+        runtime_view: outer_view,
+    };
+    let mut fast_state = super::NativeRequestFastState {
+        header: outer_header,
+        ..super::NativeRequestFastState::default()
+    };
+    let _outer_runtime_view = php_jit::activate_native_runtime_view(outer_view);
+    fast_state.header.runtime_view = inner_view;
+
+    let inner = super::NativeRequestActivationGuard {
+        _runtime_view: php_jit::activate_native_runtime_view(inner_view),
+        fast_state: std::ptr::from_mut(&mut fast_state),
+        previous_header: outer_header,
+    };
+    drop(inner);
+
+    assert_eq!(
+        fast_state.header.runtime_view.trusted_function_entries,
+        outer_view.trusted_function_entries
+    );
+    assert_eq!(
+        fast_state.header.runtime_view.trusted_function_entry_count,
+        outer_view.trusted_function_entry_count
+    );
+}
+
+#[test]
 fn positional_builtin_arguments_do_not_require_rebinding() {
     use php_ir::instruction::{IrCallArg, IrCallArgValueKind};
 

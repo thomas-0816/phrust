@@ -280,6 +280,14 @@ pub(crate) struct PreparedNativeFunctionMetadata {
 struct PreparedNativeIndexes {
     continuation_instructions: Arc<Vec<Vec<Option<Arc<php_ir::Instruction>>>>>,
     callsites: Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>>,
+    property_sites: Arc<Vec<Vec<Option<PreparedNativePropertySite>>>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedNativePropertySite {
+    pub class_index: u32,
+    pub property: Arc<str>,
+    pub required_state: u32,
 }
 
 /// Typed operation selected by one native callsite descriptor.
@@ -620,6 +628,25 @@ impl CompiledUnit {
                     .constants
                     .iter()
                     .map(|constant| match constant {
+                        php_ir::IrConstant::Null => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_NULL,
+                            ..php_jit::JitNativeConstantView::default()
+                        },
+                        php_ir::IrConstant::Bool(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_BOOL,
+                            length: u64::from(*value),
+                            ..php_jit::JitNativeConstantView::default()
+                        },
+                        php_ir::IrConstant::Int(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_INT,
+                            length: *value as u64,
+                            ..php_jit::JitNativeConstantView::default()
+                        },
+                        php_ir::IrConstant::Float(value) => php_jit::JitNativeConstantView {
+                            kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_FLOAT,
+                            length: value.to_bits(),
+                            ..php_jit::JitNativeConstantView::default()
+                        },
                         php_ir::IrConstant::String(value) => php_jit::JitNativeConstantView {
                             kind: php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING,
                             reserved: 0,
@@ -865,11 +892,13 @@ impl CompiledUnit {
                 .fetch_add(1, Ordering::Relaxed);
             let mut instructions = Vec::with_capacity(self.inner.unit.functions.len());
             let mut callsites = Vec::with_capacity(self.inner.unit.functions.len());
+            let mut property_sites = Vec::with_capacity(self.inner.unit.functions.len());
             let metadata = php_jit::region_ir::CompileMetadata::default();
             for function_index in 0..self.inner.unit.functions.len() {
                 let function = FunctionId::new(function_index as u32);
                 let mut function_instructions = Vec::new();
                 let mut function_callsites = Vec::new();
+                let mut function_property_sites = Vec::new();
                 if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
                     &self.inner.unit,
                     function,
@@ -888,6 +917,70 @@ impl CompiledUnit {
                             }
                             function_instructions[continuation] =
                                 Some(Arc::clone(&semantic_instruction));
+                            let property_site = match &instruction.kind {
+                                php_jit::region_ir::RegionInstructionKind::FetchProperty {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                } => Some(PreparedNativePropertySite {
+                                    class_index: *class_index,
+                                    property: Arc::from(property.as_str()),
+                                    required_state:
+                                        php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED,
+                                }),
+                                php_jit::region_ir::RegionInstructionKind::AssignProperty {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                } => Some(PreparedNativePropertySite {
+                                    class_index: *class_index,
+                                    property: Arc::from(property.as_str()),
+                                    required_state:
+                                        php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE,
+                                }),
+                                php_jit::region_ir::RegionInstructionKind::BindReferenceProperty {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                }
+                                | php_jit::region_ir::RegionInstructionKind::BindReferenceFromProperty {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                }
+                                | php_jit::region_ir::RegionInstructionKind::BindReferenceDimFromProperty {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                } => Some(PreparedNativePropertySite {
+                                    class_index: *class_index,
+                                    property: Arc::from(property.as_str()),
+                                    required_state:
+                                        php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE,
+                                }),
+                                php_jit::region_ir::RegionInstructionKind::BindReferenceIntoPropertyDim {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                }
+                                | php_jit::region_ir::RegionInstructionKind::BindReferenceFromPropertyDim {
+                                    property,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                } => Some(PreparedNativePropertySite {
+                                    class_index: *class_index,
+                                    property: Arc::from(property.as_str()),
+                                    required_state:
+                                        php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE,
+                                }),
+                                _ => None,
+                            };
+                            if let Some(property_site) = property_site {
+                                if function_property_sites.len() <= continuation {
+                                    function_property_sites.resize_with(continuation + 1, || None);
+                                }
+                                function_property_sites[continuation] = Some(property_site);
+                            }
                             if let php_jit::region_ir::RegionInstructionKind::NativeCall(call) =
                                 &instruction.kind
                             {
@@ -943,10 +1036,12 @@ impl CompiledUnit {
                 }
                 instructions.push(function_instructions);
                 callsites.push(function_callsites);
+                property_sites.push(function_property_sites);
             }
             PreparedNativeIndexes {
                 continuation_instructions: Arc::new(instructions),
                 callsites: Arc::new(callsites),
+                property_sites: Arc::new(property_sites),
             }
         })
     }
@@ -961,6 +1056,12 @@ impl CompiledUnit {
         &self,
     ) -> Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>> {
         Arc::clone(&self.prepared_native_indexes().callsites)
+    }
+
+    pub(crate) fn prepared_native_property_sites(
+        &self,
+    ) -> Arc<Vec<Vec<Option<PreparedNativePropertySite>>>> {
+        Arc::clone(&self.prepared_native_indexes().property_sites)
     }
 
     fn prepared_external_function_call_index(&self) -> &PreparedExternalFunctionCalls {

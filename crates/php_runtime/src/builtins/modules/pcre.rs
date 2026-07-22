@@ -13,32 +13,28 @@ use std::sync::Arc;
 type PregReplaceSpec = (Arc<pcre::CompiledPattern>, Vec<u8>);
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
-    BuiltinEntry::new(
-        "preg_filter",
-        builtin_preg_filter,
-        BuiltinCompatibility::Php,
-    ),
-    BuiltinEntry::new("preg_grep", builtin_preg_grep, BuiltinCompatibility::Php),
+    BuiltinEntry::new("preg_filter", exact_preg_filter, BuiltinCompatibility::Php),
+    BuiltinEntry::new("preg_grep", exact_preg_grep, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "preg_last_error",
-        builtin_preg_last_error,
+        exact_preg_last_error,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "preg_last_error_msg",
-        builtin_preg_last_error_msg,
+        exact_preg_last_error_msg,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("preg_match", builtin_preg_match, BuiltinCompatibility::Php),
+    BuiltinEntry::new("preg_match", exact_preg_match, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "preg_match_all",
-        builtin_preg_match_all,
+        exact_preg_match_all,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("preg_quote", builtin_preg_quote, BuiltinCompatibility::Php),
+    BuiltinEntry::new("preg_quote", exact_preg_quote, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "preg_replace",
-        builtin_preg_replace,
+        exact_preg_replace,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -51,12 +47,13 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_preg_replace_callback_array,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("preg_split", builtin_preg_split, BuiltinCompatibility::Php),
+    BuiltinEntry::new("preg_split", exact_preg_split, BuiltinCompatibility::Php),
 ];
 
-macro_rules! pcre_builtin_adapter {
+macro_rules! exact_pcre_builtin {
     ($entry:ident => $implementation:ident) => {
-        pub(in crate::builtins::modules) fn $entry(
+        #[doc(hidden)]
+        pub fn $entry(
             context: &mut BuiltinContext<'_>,
             args: Vec<Value>,
             span: RuntimeSourceSpan,
@@ -67,14 +64,405 @@ macro_rules! pcre_builtin_adapter {
     };
 }
 
-pcre_builtin_adapter!(builtin_preg_match => preg_match);
-pcre_builtin_adapter!(builtin_preg_match_all => preg_match_all);
-pcre_builtin_adapter!(builtin_preg_replace => preg_replace);
-pcre_builtin_adapter!(builtin_preg_filter => preg_filter);
-pcre_builtin_adapter!(builtin_preg_split => preg_split);
-pcre_builtin_adapter!(builtin_preg_grep => preg_grep);
-pcre_builtin_adapter!(builtin_preg_last_error => preg_last_error);
-pcre_builtin_adapter!(builtin_preg_last_error_msg => preg_last_error_msg);
+exact_pcre_builtin!(exact_preg_match => preg_match);
+exact_pcre_builtin!(exact_preg_match_all => preg_match_all);
+exact_pcre_builtin!(exact_preg_replace => preg_replace);
+exact_pcre_builtin!(exact_preg_filter => preg_filter);
+exact_pcre_builtin!(exact_preg_split => preg_split);
+exact_pcre_builtin!(exact_preg_grep => preg_grep);
+exact_pcre_builtin!(exact_preg_last_error => preg_last_error);
+exact_pcre_builtin!(exact_preg_last_error_msg => preg_last_error_msg);
+
+#[derive(Debug)]
+pub struct NativePregMatchResult {
+    pub matched: bool,
+    pub captures: super::json::NativeJsonDecodedValue,
+}
+
+#[derive(Debug)]
+pub struct NativePregMatchAllResult {
+    pub count: i64,
+    pub captures: super::json::NativeJsonDecodedValue,
+}
+
+#[derive(Debug)]
+pub struct NativePregReplaceResult {
+    pub bytes: Option<Vec<u8>>,
+    pub count: i64,
+}
+
+#[derive(Debug)]
+pub struct NativePregReplaceManyResult {
+    pub values: Vec<Option<Vec<u8>>>,
+    pub count: i64,
+}
+
+/// Runs `preg_match` over native bytes and returns a typed capture tree.
+/// Mixed named/MARK capture maps remain on the exact baseline continuation.
+#[doc(hidden)]
+pub fn native_preg_match(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    subject: &[u8],
+    flags: i64,
+    offset: i64,
+) -> Result<Option<NativePregMatchResult>, BuiltinError> {
+    validate_preg_offset_min("preg_match", offset)?;
+    validate_preg_match_flags("preg_match", "#4 ($flags)", flags)?;
+    let Some(start) = preg_match_offset(subject.len(), offset) else {
+        return Ok(None);
+    };
+    let compiled = match state.cache_mut().compile_bytes_with_limits(pattern, limits) {
+        Ok(compiled) => compiled,
+        Err(_) => return Ok(None),
+    };
+    if compiled.capture_names().iter().any(Option::is_some) {
+        return Ok(None);
+    }
+    let options = match state
+        .cache_mut()
+        .match_options_for_subject_bytes_at_offset(&compiled, subject, start)
+    {
+        Ok(options) => options,
+        Err(_) => return Ok(None),
+    };
+    let captures = match compiled.captures_at_with_options(subject, start, options) {
+        Ok(captures) => captures,
+        Err(_) => return Ok(None),
+    };
+    let Some(captures) = captures else {
+        state.last_error_mut().clear();
+        return Ok(Some(NativePregMatchResult {
+            matched: false,
+            captures: super::json::NativeJsonDecodedValue::Array(Vec::new()),
+        }));
+    };
+    if captures.mark().is_some() {
+        return Ok(None);
+    }
+    let count = if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
+        captures.len()
+    } else {
+        (0..captures.len())
+            .rev()
+            .find(|index| captures.get(*index).is_some())
+            .map_or(0, |index| index + 1)
+    };
+    let mut output = Vec::with_capacity(count);
+    for index in 0..count {
+        let value = match captures.get(index) {
+            Some(capture) if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
+                super::json::NativeJsonDecodedValue::Array(vec![
+                    super::json::NativeJsonDecodedValue::String(capture.as_bytes().to_vec()),
+                    super::json::NativeJsonDecodedValue::Int(capture.start() as i64),
+                ])
+            }
+            Some(capture) => {
+                super::json::NativeJsonDecodedValue::String(capture.as_bytes().to_vec())
+            }
+            None if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
+                super::json::NativeJsonDecodedValue::Array(vec![
+                    if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
+                        super::json::NativeJsonDecodedValue::Null
+                    } else {
+                        super::json::NativeJsonDecodedValue::String(Vec::new())
+                    },
+                    super::json::NativeJsonDecodedValue::Int(-1),
+                ])
+            }
+            None if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 => {
+                super::json::NativeJsonDecodedValue::Null
+            }
+            None => super::json::NativeJsonDecodedValue::String(Vec::new()),
+        };
+        output.push(value);
+    }
+    state.last_error_mut().clear();
+    Ok(Some(NativePregMatchResult {
+        matched: true,
+        captures: super::json::NativeJsonDecodedValue::Array(output),
+    }))
+}
+
+#[doc(hidden)]
+pub fn native_preg_match_all(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    subject: &[u8],
+    flags: i64,
+    offset: i64,
+) -> Result<Option<NativePregMatchAllResult>, BuiltinError> {
+    validate_preg_match_all_flags(flags)?;
+    validate_preg_offset_min("preg_match_all", offset)?;
+    let Some(start) = preg_match_offset(subject.len(), offset) else {
+        return Ok(None);
+    };
+    let compiled = match state.cache_mut().compile_bytes_with_limits(pattern, limits) {
+        Ok(compiled) => compiled,
+        Err(_) => return Ok(None),
+    };
+    if compiled.capture_names().iter().any(Option::is_some) {
+        return Ok(None);
+    }
+    let options = match state
+        .cache_mut()
+        .match_options_for_subject_bytes_at_offset(&compiled, subject, start)
+    {
+        Ok(options) => options,
+        Err(_) => return Ok(None),
+    };
+    let set_order = flags & pcre::PREG_SET_ORDER != 0;
+    let mut matches = Vec::new();
+    let mut unsupported = false;
+    if compiled
+        .for_each_php_match_with_options(
+            subject,
+            start,
+            options,
+            |captures| {
+                if captures.mark().is_some() {
+                    unsupported = true;
+                    return Ok(false);
+                }
+                let count = if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 || !set_order {
+                    captures.len()
+                } else {
+                    (0..captures.len())
+                        .rev()
+                        .find(|index| captures.get(*index).is_some())
+                        .map_or(0, |index| index + 1)
+                };
+                let mut row = Vec::with_capacity(count);
+                for index in 0..count {
+                    let value = match captures.get(index) {
+                        Some(capture) if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
+                            super::json::NativeJsonDecodedValue::Array(vec![
+                                super::json::NativeJsonDecodedValue::String(
+                                    capture.as_bytes().to_vec(),
+                                ),
+                                super::json::NativeJsonDecodedValue::Int(capture.start() as i64),
+                            ])
+                        }
+                        Some(capture) => {
+                            super::json::NativeJsonDecodedValue::String(capture.as_bytes().to_vec())
+                        }
+                        None if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
+                            super::json::NativeJsonDecodedValue::Array(vec![
+                                if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
+                                    super::json::NativeJsonDecodedValue::Null
+                                } else {
+                                    super::json::NativeJsonDecodedValue::String(Vec::new())
+                                },
+                                super::json::NativeJsonDecodedValue::Int(-1),
+                            ])
+                        }
+                        None if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 => {
+                            super::json::NativeJsonDecodedValue::Null
+                        }
+                        None => super::json::NativeJsonDecodedValue::String(Vec::new()),
+                    };
+                    row.push(value);
+                }
+                matches.push(row);
+                Ok(true)
+            },
+            std::convert::identity,
+        )
+        .is_err()
+    {
+        return Ok(None);
+    }
+    if unsupported {
+        return Ok(None);
+    }
+    let count = matches.len() as i64;
+    let captures = if set_order {
+        super::json::NativeJsonDecodedValue::Array(
+            matches
+                .into_iter()
+                .map(super::json::NativeJsonDecodedValue::Array)
+                .collect(),
+        )
+    } else {
+        let groups = compiled.capture_names().len();
+        let mut columns = (0..groups).map(|_| Vec::new()).collect::<Vec<_>>();
+        for row in matches {
+            for (index, value) in row.into_iter().enumerate() {
+                columns[index].push(value);
+            }
+        }
+        super::json::NativeJsonDecodedValue::Array(
+            columns
+                .into_iter()
+                .map(super::json::NativeJsonDecodedValue::Array)
+                .collect(),
+        )
+    };
+    state.last_error_mut().clear();
+    Ok(Some(NativePregMatchAllResult { count, captures }))
+}
+
+/// Executes the scalar form shared by `preg_replace` and `preg_filter`
+/// directly over native bytes, including capture expansion.
+#[doc(hidden)]
+pub fn native_preg_replace_scalar(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    replacement: &[u8],
+    subject: &[u8],
+    limit: i64,
+    filter: bool,
+) -> Option<NativePregReplaceResult> {
+    let compiled = state
+        .cache_mut()
+        .compile_bytes_with_limits(pattern, limits)
+        .ok()?;
+    let mut count = 0;
+    let bytes = preg_replace_bytes(&compiled, replacement, subject, limit, &mut count).ok()?;
+    state.last_error_mut().clear();
+    Some(NativePregReplaceResult {
+        bytes: (!filter || count != 0).then_some(bytes),
+        count,
+    })
+}
+
+/// Executes one prepared scalar pattern/replacement over a direct array's
+/// string subjects. Keys remain authoritative in the caller; this returns
+/// only replacement bytes and the aggregate replacement count.
+#[doc(hidden)]
+pub fn native_preg_replace_many(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    replacement: &[u8],
+    subjects: &[&[u8]],
+    limit: i64,
+    filter: bool,
+) -> Option<NativePregReplaceManyResult> {
+    let compiled = state
+        .cache_mut()
+        .compile_bytes_with_limits(pattern, limits)
+        .ok()?;
+    let mut count = 0;
+    let mut values = Vec::with_capacity(subjects.len());
+    for subject in subjects {
+        let before = count;
+        let replaced =
+            preg_replace_bytes(&compiled, replacement, subject, limit, &mut count).ok()?;
+        values.push((!filter || count != before).then_some(replaced));
+    }
+    state.last_error_mut().clear();
+    Some(NativePregReplaceManyResult { values, count })
+}
+
+#[doc(hidden)]
+pub fn native_preg_split(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    subject: &[u8],
+    limit: i64,
+    flags: i64,
+) -> Option<super::json::NativeJsonDecodedValue> {
+    let compiled = state
+        .cache_mut()
+        .compile_bytes_with_limits(pattern, limits)
+        .ok()?;
+    let options = state
+        .cache_mut()
+        .match_options_for_subject_bytes_at_offset(&compiled, subject, 0)
+        .ok()?;
+    let mut pieces = Vec::new();
+    let mut last_end = 0usize;
+    let mut emitted = 0i64;
+    let append =
+        |pieces: &mut Vec<super::json::NativeJsonDecodedValue>, bytes: &[u8], offset: usize| {
+            if flags & pcre::PREG_SPLIT_NO_EMPTY != 0 && bytes.is_empty() {
+                return;
+            }
+            let value = super::json::NativeJsonDecodedValue::String(bytes.to_vec());
+            pieces.push(if flags & pcre::PREG_SPLIT_OFFSET_CAPTURE != 0 {
+                super::json::NativeJsonDecodedValue::Array(vec![
+                    value,
+                    super::json::NativeJsonDecodedValue::Int(offset as i64),
+                ])
+            } else {
+                value
+            });
+        };
+    let walked = compiled.for_each_php_match_with_options(
+        subject,
+        0,
+        options,
+        |captures| {
+            let Some(full) = captures.get(0) else {
+                return Ok(true);
+            };
+            if limit > 0 && emitted >= limit - 1 {
+                return Ok(false);
+            }
+            if full.start() < last_end {
+                return Err(pcre::PcreFailure::new(
+                    pcre::PREG_INTERNAL_ERROR,
+                    "PCRE split match moved before the previous delimiter",
+                ));
+            }
+            append(&mut pieces, &subject[last_end..full.start()], last_end);
+            emitted += 1;
+            if flags & pcre::PREG_SPLIT_DELIM_CAPTURE != 0 {
+                for index in 1..captures.len() {
+                    if let Some(capture) = captures.get(index) {
+                        append(&mut pieces, capture.as_bytes(), capture.start());
+                    }
+                }
+            }
+            last_end = full.end();
+            Ok(true)
+        },
+        std::convert::identity,
+    );
+    if walked.is_err() {
+        return None;
+    }
+    append(&mut pieces, &subject[last_end..], last_end);
+    state.last_error_mut().clear();
+    Some(super::json::NativeJsonDecodedValue::Array(pieces))
+}
+
+/// Selects the input strings matched by `preg_grep` without constructing a
+/// PHP array or PHP string representation. The caller keeps the authoritative
+/// keys and values and uses this mask to publish the result array directly.
+#[doc(hidden)]
+pub fn native_preg_grep(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    subjects: &[&[u8]],
+    flags: i64,
+) -> Option<Vec<bool>> {
+    let compiled = state
+        .cache_mut()
+        .compile_bytes_with_limits(pattern, limits)
+        .ok()?;
+    let invert = flags & pcre::PREG_GREP_INVERT != 0;
+    let mut selected = Vec::with_capacity(subjects.len());
+    for subject in subjects {
+        let options = state
+            .cache_mut()
+            .match_options_for_subject_bytes_at_offset(&compiled, subject, 0)
+            .ok()?;
+        let is_match = compiled
+            .captures_at_with_options(subject, 0, options)
+            .ok()?
+            .is_some();
+        selected.push(is_match != invert);
+    }
+    state.last_error_mut().clear();
+    Some(selected)
+}
 
 pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
     context: &mut BuiltinContext<'_>,
@@ -908,7 +1296,8 @@ fn preg_grep(
     context.clear_preg_last_error();
     Ok(Value::Array(output))
 }
-pub(in crate::builtins::modules) fn builtin_preg_quote(
+#[doc(hidden)]
+pub fn exact_preg_quote(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,

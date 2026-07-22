@@ -50,7 +50,6 @@ pub struct ExecutableValueFlow {
     reference_dimension_loads: BTreeMap<u32, RegId>,
     moved_local_stores: BTreeSet<u32>,
     moved_register_copies: BTreeSet<u32>,
-    moved_call_operands: BTreeMap<u32, BTreeSet<usize>>,
     elided_discards: BTreeSet<u32>,
     frame_cleanup_locals: BTreeSet<LocalId>,
     ssa: ExecutableSsaGraph,
@@ -138,15 +137,6 @@ impl ExecutableValueFlow {
         self.moved_register_copies.contains(&continuation_id)
     }
 
-    /// Whether a direct compiled call consumes the source owner's final
-    /// reference for this packed operand instead of retaining a duplicate.
-    #[must_use]
-    pub fn moves_value_into_call(&self, continuation_id: u32, operand: usize) -> bool {
-        self.moved_call_operands
-            .get(&continuation_id)
-            .is_some_and(|operands| operands.contains(&operand))
-    }
-
     #[must_use]
     pub fn elides_discard(&self, continuation_id: u32) -> bool {
         self.elided_discards.contains(&continuation_id)
@@ -162,12 +152,6 @@ impl ExecutableValueFlow {
         self.moved_local_stores
             .len()
             .saturating_add(self.moved_register_copies.len())
-            .saturating_add(
-                self.moved_call_operands
-                    .values()
-                    .map(BTreeSet::len)
-                    .sum::<usize>(),
-            )
     }
 
     #[must_use]
@@ -267,43 +251,6 @@ impl ExecutableValueFlow {
                                 src.raw(),
                                 continuation
                             ));
-                        }
-                    }
-                    RegionInstructionKind::NativeCall(ref call)
-                        if self
-                            .moved_call_operands
-                            .contains_key(&instruction.continuation_id) =>
-                    {
-                        for operand_index in &self.moved_call_operands[&instruction.continuation_id]
-                        {
-                            let Some(RegionOperand::Register(src)) =
-                                call.operands.get(*operand_index).copied().flatten()
-                            else {
-                                return Err(format!(
-                                    "moved call operand {} at continuation {} is not a register",
-                                    operand_index, instruction.continuation_id
-                                ));
-                            };
-                            if terminator_uses.contains(&src) {
-                                return Err(format!(
-                                    "call-moved r{} is used by a terminator",
-                                    src.raw()
-                                ));
-                            }
-                            let invalid_use =
-                                instruction_uses.get(&src).into_iter().flatten().find(
-                                    |&&(use_block, use_index, continuation)| {
-                                        (use_block, use_index) != (block_index, instruction_index)
-                                            && !self.elided_discards.contains(&continuation)
-                                    },
-                                );
-                            if let Some(&(_, _, continuation)) = invalid_use {
-                                return Err(format!(
-                                    "call-moved r{} is reused at continuation {}",
-                                    src.raw(),
-                                    continuation
-                                ));
-                            }
                         }
                     }
                     _ => {}
@@ -430,10 +377,12 @@ pub fn analyze_executable_value_flow(
             let RegionInstructionKind::LoadLocal { dst, .. } = instruction.kind else {
                 continue;
             };
-            if borrowed_local_loads.contains(&instruction.continuation_id)
-                && let Some(fact) = register_facts.get_mut(&dst)
-            {
-                fact.ownership = SsaOwnership::Borrowed;
+            if let Some(fact) = register_facts.get_mut(&dst) {
+                if borrowed_local_loads.contains(&instruction.continuation_id) {
+                    fact.ownership = SsaOwnership::Borrowed;
+                } else if fact.has_runtime_lifecycle() {
+                    fact.ownership = SsaOwnership::Owned;
+                }
             }
         }
     }
@@ -442,9 +391,10 @@ pub fn analyze_executable_value_flow(
     let (moved_register_copies, moved_copy_discards) =
         find_moved_register_copies(region, &register_facts);
     elided_discards.extend(moved_copy_discards);
-    let (moved_call_operands, moved_call_discards) =
-        find_moved_call_operands(region, &register_facts);
-    elided_discards.extend(moved_call_discards);
+    // Compiled call inputs are borrowed for the duration of the callee. Keep
+    // an explicit boundary owner instead of moving an SSA owner into the
+    // call: the caller can then release that boundary owner on every returned
+    // status without needing a post-effect last-owner transition.
     let frame_cleanup_locals =
         find_frame_cleanup_locals(region, &moved_local_stores, &local_storage);
 
@@ -456,7 +406,6 @@ pub fn analyze_executable_value_flow(
         reference_dimension_loads,
         moved_local_stores,
         moved_register_copies,
-        moved_call_operands,
         elided_discards,
         frame_cleanup_locals,
         ssa,
@@ -477,6 +426,29 @@ pub fn analyze_baseline_value_ownership(region: &RegionGraph) -> ExecutableValue
     let local_storage = classify_locals(region);
     let borrowed_local_loads = find_borrowed_local_loads(region, &local_storage);
     let reference_dimension_loads = find_reference_dimension_loads(region, &local_storage);
+    // Native entry arguments are borrowed for the duration of the callee.
+    // Recording that contract lets the return boundary retain only when a
+    // result aliases one of those borrowed frame values.
+    let local_facts = region
+        .parameter_locals
+        .iter()
+        .copied()
+        .filter(|local| {
+            local_storage
+                .get(local)
+                .is_some_and(|storage| storage.is_native_frame_local())
+        })
+        .map(|local| {
+            (
+                local,
+                SsaValueFact {
+                    class: SsaValueClass::MixedHandle,
+                    certainty: super::SsaCertainty::Unknown,
+                    ownership: SsaOwnership::Borrowed,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut register_facts = BTreeMap::new();
     for block in &region.blocks {
         for instruction in &block.instructions {
@@ -498,6 +470,7 @@ pub fn analyze_baseline_value_ownership(region: &RegionGraph) -> ExecutableValue
 
     ExecutableValueFlow {
         local_storage,
+        local_facts,
         register_facts,
         borrowed_local_loads,
         reference_dimension_loads,
@@ -514,14 +487,24 @@ fn find_frame_cleanup_locals(
         .blocks
         .iter()
         .flat_map(|block| &block.instructions)
-        .filter_map(|instruction| match instruction.kind {
+        .flat_map(|instruction| match instruction.kind {
             RegionInstructionKind::StoreLocal { local, .. }
                 if moved_stores.contains(&instruction.continuation_id)
                     && storage.get(&local).is_some_and(|class| class.is_promoted()) =>
             {
-                Some(local)
+                vec![local]
             }
-            _ => None,
+            RegionInstructionKind::BindReference { target, source } => vec![target, source],
+            RegionInstructionKind::BindReferenceProperty { source, .. }
+            | RegionInstructionKind::BindReferenceIntoPropertyDim { source, .. } => vec![source],
+            RegionInstructionKind::BindReferenceFromProperty { target, .. }
+            | RegionInstructionKind::BindReferenceFromPropertyDim { target, .. } => vec![target],
+            _ => Vec::new(),
+        })
+        .filter(|local| {
+            storage
+                .get(local)
+                .is_some_and(|class| class.is_native_frame_local())
         })
         .collect::<BTreeSet<_>>();
 
@@ -698,85 +681,6 @@ fn find_moved_register_copies(
     (moved, elided_discards)
 }
 
-fn find_moved_call_operands(
-    region: &RegionGraph,
-    register_facts: &BTreeMap<RegId, SsaValueFact>,
-) -> (BTreeMap<u32, BTreeSet<usize>>, BTreeSet<u32>) {
-    let mut uses = BTreeMap::<RegId, Vec<(usize, usize, bool, u32)>>::new();
-    let mut terminator_uses = BTreeSet::new();
-    for (block_index, block) in region.blocks.iter().enumerate() {
-        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
-            let discarded = matches!(instruction.kind, RegionInstructionKind::Discard { .. });
-            for register in instruction.register_uses() {
-                uses.entry(register).or_default().push((
-                    block_index,
-                    instruction_index,
-                    discarded,
-                    instruction.continuation_id,
-                ));
-            }
-        }
-        terminator_uses.extend(block.terminator.register_uses());
-    }
-
-    let mut moved = BTreeMap::<u32, BTreeSet<usize>>::new();
-    let mut elided_discards = BTreeSet::new();
-    for (block_index, block) in region.blocks.iter().enumerate() {
-        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
-            let RegionInstructionKind::NativeCall(call) = &instruction.kind else {
-                continue;
-            };
-            if call.direct_compiled_target().is_none() {
-                continue;
-            }
-            let mut transferred_registers = BTreeSet::new();
-            for (operand_index, operand) in call.operands.iter().enumerate().rev() {
-                let Some(RegionOperand::Register(source)) = operand else {
-                    continue;
-                };
-                if transferred_registers.contains(source)
-                    || register_facts.get(source).is_none_or(|fact| {
-                        fact.ownership != SsaOwnership::Owned || !fact.has_runtime_lifecycle()
-                    })
-                    || terminator_uses.contains(source)
-                {
-                    continue;
-                }
-                let remaining = uses
-                    .get(source)
-                    .into_iter()
-                    .flatten()
-                    .filter(|&&(use_block, use_index, _, _)| {
-                        (use_block, use_index) != (block_index, instruction_index)
-                    })
-                    .copied()
-                    .collect::<Vec<_>>();
-                match remaining.as_slice() {
-                    [] => {
-                        moved
-                            .entry(instruction.continuation_id)
-                            .or_default()
-                            .insert(operand_index);
-                        transferred_registers.insert(*source);
-                    }
-                    [(use_block, use_index, true, discard_continuation)]
-                        if *use_block == block_index && *use_index > instruction_index =>
-                    {
-                        moved
-                            .entry(instruction.continuation_id)
-                            .or_default()
-                            .insert(operand_index);
-                        transferred_registers.insert(*source);
-                        elided_discards.insert(*discard_continuation);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    (moved, elided_discards)
-}
-
 fn find_borrowed_local_loads(
     region: &RegionGraph,
     storage: &BTreeMap<LocalId, LocalStorageClass>,
@@ -825,7 +729,6 @@ fn find_borrowed_local_loads(
             if !storage
                 .get(&local)
                 .is_some_and(|storage| storage.is_promoted())
-                || !instruction.live_locals.contains(&local)
                 || terminator_uses.contains(&dst)
             {
                 continue;
@@ -1089,6 +992,11 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
                     if let RegionCallResult::ReferenceLocal(local) = call.result {
                         references.insert(local);
                     }
+                    references.extend(
+                        call.args
+                            .iter()
+                            .filter_map(|argument| argument.by_ref_local),
+                    );
                 }
                 RegionInstructionKind::NativeSuspend(_) => {
                     suspension.extend(instruction.live_locals.iter().copied());
@@ -1159,10 +1067,14 @@ fn initial_fact_for_local(
         .iter()
         .find(|parameter| parameter.local == local)
     {
-        return parameter
-            .type_
-            .as_ref()
-            .map_or(SsaValueFact::UNKNOWN, type_fact);
+        return parameter.type_.as_ref().map_or(
+            SsaValueFact {
+                class: SsaValueClass::MixedHandle,
+                certainty: super::SsaCertainty::Unknown,
+                ownership: SsaOwnership::Borrowed,
+            },
+            type_fact,
+        );
     }
     SsaValueFact::exact(SsaValueClass::Uninitialized, SsaOwnership::ImmortalConstant)
 }
@@ -1210,23 +1122,48 @@ fn instruction_result_fact(
         RegionInstructionKind::Binary { dst, op, lhs, rhs } => {
             let lhs = fact(*lhs);
             let rhs = fact(*rhs);
-            let output = if lhs.class == SsaValueClass::Int && rhs.class == SsaValueClass::Int {
+            let both_integer = lhs.class == SsaValueClass::Int && rhs.class == SsaValueClass::Int;
+            let both_numeric = matches!(lhs.class, SsaValueClass::Int | SsaValueClass::Float)
+                && matches!(rhs.class, SsaValueClass::Int | SsaValueClass::Float);
+            let has_float = lhs.class == SsaValueClass::Float || rhs.class == SsaValueClass::Float;
+            let output = if both_numeric {
                 match op {
-                    RegionBinaryOp::Add
-                    | RegionBinaryOp::Sub
-                    | RegionBinaryOp::Mul
+                    RegionBinaryOp::Mod
+                    | RegionBinaryOp::BitAnd
+                    | RegionBinaryOp::BitOr
+                    | RegionBinaryOp::BitXor
+                    | RegionBinaryOp::ShiftLeft
+                    | RegionBinaryOp::ShiftRight
+                        if both_integer =>
+                    {
+                        SsaValueFact::known(SsaValueClass::Int, SsaOwnership::Owned)
+                    }
+                    RegionBinaryOp::Add | RegionBinaryOp::Sub | RegionBinaryOp::Mul
+                        if has_float =>
+                    {
+                        SsaValueFact::known(SsaValueClass::Float, SsaOwnership::Owned)
+                    }
+                    RegionBinaryOp::Add | RegionBinaryOp::Sub | RegionBinaryOp::Mul
+                        if both_integer =>
+                    {
+                        SsaValueFact::UNKNOWN
+                    }
+                    RegionBinaryOp::Div => {
+                        SsaValueFact::known(SsaValueClass::Float, SsaOwnership::Owned)
+                    }
+                    RegionBinaryOp::Concat => {
+                        SsaValueFact::known(SsaValueClass::StringHandle, SsaOwnership::Owned)
+                    }
+                    RegionBinaryOp::Pow
                     | RegionBinaryOp::Mod
                     | RegionBinaryOp::BitAnd
                     | RegionBinaryOp::BitOr
                     | RegionBinaryOp::BitXor
                     | RegionBinaryOp::ShiftLeft
-                    | RegionBinaryOp::ShiftRight => {
-                        SsaValueFact::known(SsaValueClass::Int, SsaOwnership::Owned)
-                    }
-                    RegionBinaryOp::Div | RegionBinaryOp::Pow => SsaValueFact::UNKNOWN,
-                    RegionBinaryOp::Concat => {
-                        SsaValueFact::known(SsaValueClass::StringHandle, SsaOwnership::Owned)
-                    }
+                    | RegionBinaryOp::ShiftRight
+                    | RegionBinaryOp::Add
+                    | RegionBinaryOp::Sub
+                    | RegionBinaryOp::Mul => SsaValueFact::UNKNOWN,
                 }
             } else {
                 SsaValueFact::UNKNOWN
@@ -1237,11 +1174,23 @@ fn instruction_result_fact(
             let input = fact(*src);
             let output = match op {
                 RegionUnaryOp::Not => SsaValueFact::known(SsaValueClass::Bool, SsaOwnership::Owned),
-                RegionUnaryOp::Plus | RegionUnaryOp::Minus | RegionUnaryOp::BitNot
+                RegionUnaryOp::Plus | RegionUnaryOp::BitNot
                     if input.class == SsaValueClass::Int =>
                 {
                     SsaValueFact::known(SsaValueClass::Int, SsaOwnership::Owned)
                 }
+                RegionUnaryOp::Plus | RegionUnaryOp::Minus
+                    if input.class == SsaValueClass::Float =>
+                {
+                    SsaValueFact::known(SsaValueClass::Float, SsaOwnership::Owned)
+                }
+                RegionUnaryOp::BitNot if input.class == SsaValueClass::StringHandle => {
+                    SsaValueFact::known(SsaValueClass::StringHandle, SsaOwnership::Owned)
+                }
+                RegionUnaryOp::BitNot if input.class == SsaValueClass::Float => {
+                    SsaValueFact::known(SsaValueClass::Int, SsaOwnership::Owned)
+                }
+                RegionUnaryOp::Minus if input.class == SsaValueClass::Int => SsaValueFact::UNKNOWN,
                 _ => SsaValueFact::UNKNOWN,
             };
             Some((*dst, output))
@@ -1489,7 +1438,14 @@ mod tests {
             LocalStorageClass::MemoryReference
         );
         assert_eq!(flow.local_fact(local), SsaValueFact::UNKNOWN);
-        assert_eq!(flow.register_fact(loaded), SsaValueFact::UNKNOWN);
+        assert_eq!(
+            flow.register_fact(loaded),
+            SsaValueFact {
+                class: SsaValueClass::MixedHandle,
+                certainty: crate::region_ir::SsaCertainty::Unknown,
+                ownership: SsaOwnership::Owned,
+            }
+        );
     }
 
     #[test]
@@ -1614,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn speculative_call_binding_does_not_turn_by_value_local_into_reference_storage() {
+    fn by_reference_call_location_uses_reference_capable_local_storage() {
         let mut builder = IrBuilder::new(UnitId::new(4_209));
         let file = builder.add_file("speculative-call-reference.php");
         let span = IrSpan::new(file, 0, 1);
@@ -1659,10 +1615,10 @@ mod tests {
         let region = build_baseline_region(&unit, function).expect("region");
         let flow = analyze_executable_value_flow(&region, &unit.constants);
 
-        assert_ne!(
+        assert_eq!(
             flow.local_storage(local),
             LocalStorageClass::MemoryReference,
-            "temporary signature-aware call binding is not persistent PHP reference storage"
+            "a by-reference call can publish a cell into the caller local and therefore cannot use SSA-plain storage"
         );
     }
 
@@ -1822,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn final_direct_call_operand_transfers_owner_without_argument_retain() {
+    fn direct_call_keeps_explicit_argument_boundary_owner() {
         let mut builder = IrBuilder::new(UnitId::new(4_213));
         let file = builder.add_file("ssa-call-move.php");
         let span = IrSpan::new(file, 0, 1);
@@ -1855,7 +1811,7 @@ mod tests {
             span,
         );
         let result = builder.alloc_register(caller);
-        let call = builder.emit(
+        builder.emit(
             caller,
             block,
             InstructionKind::CallFunction {
@@ -1886,13 +1842,10 @@ mod tests {
         let unit = builder.finish();
         let region = build_baseline_region(&unit, caller).expect("region");
         let flow = analyze_executable_value_flow(&region, &unit.constants);
-        let call_continuation = region.blocks[0].instructions[call.index()].continuation_id;
-
-        assert!(flow.moves_value_into_call(call_continuation, 0));
         assert!(
-            flow.elides_discard(region.blocks[0].instructions[discarded.index()].continuation_id)
+            !flow.elides_discard(region.blocks[0].instructions[discarded.index()].continuation_id)
         );
         flow.verify_ownership(&region)
-            .expect("last-use direct-call operand move should verify");
+            .expect("explicit direct-call boundary ownership should verify");
     }
 }

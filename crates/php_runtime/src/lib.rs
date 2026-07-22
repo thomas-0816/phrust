@@ -87,6 +87,8 @@ mod xml_backend;
 /// PHP-visible status/output types. It intentionally excludes debug GC handles,
 /// JIT ABI helpers, and measurement-only counters.
 pub mod api {
+    pub use crate::runtime_memory::{NativeZeroed, StableNativeArena, StableNativeArenaUsage};
+
     /// Stable date/time runtime operations consumed by the VM.
     pub mod datetime {
         pub use crate::datetime::*;
@@ -133,14 +135,24 @@ pub mod api {
         ImapMailboxSnapshot, ImapState, InternalFunction, JSON_ERROR_RECURSION,
         JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, JsonRequestState, LdapSearchScope,
         LdapState, MbSubstituteCharacter, NORMALIZER_FORM_C, NORMALIZER_FORM_D, NORMALIZER_FORM_KC,
-        NORMALIZER_FORM_KD, OpcacheState, OpenSslErrorState, PcntlState, PcreRequestState,
+        NORMALIZER_FORM_KD, NativeJsonDecodedValue, NativePregMatchAllResult,
+        NativePregMatchResult, NativePregReplaceManyResult, NativePregReplaceResult,
+        NativePrintfScalar, OpcacheState, OpenSslErrorState, PcntlState, PcreRequestState,
         ReadlineState, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState,
         SoapParsedBody, SoapState, SocketState, Ssh2FingerprintHash, Ssh2State, StreamContextState,
         StrtokState, SysvMessageQueueState, SysvSemaphoreError, SysvSemaphoreState,
-        SysvSharedMemoryState, build_soap_envelope, hash_algorithm_exists,
-        igbinary_serialize_value, igbinary_unserialize_value, is_normalized_string, load_wsdl,
-        msgpack_pack_value, msgpack_unpack_value, normalize_string, parse_soap_response,
-        parse_wsdl, soap_http_post, validate_fileinfo_options,
+        SysvSharedMemoryState, append_json_default_string, build_soap_envelope,
+        decode_native_json_associative, exact_json_decode, exact_json_encode,
+        exact_json_last_error, exact_json_last_error_msg, exact_json_validate, exact_preg_filter,
+        exact_preg_grep, exact_preg_last_error, exact_preg_last_error_msg, exact_preg_match,
+        exact_preg_match_all, exact_preg_quote, exact_preg_replace, exact_preg_split, exact_printf,
+        exact_sprintf, exact_vprintf, exact_vsprintf, format_native_printf_scalars,
+        hash_algorithm_exists, igbinary_serialize_value, igbinary_unserialize_value,
+        is_normalized_string, load_wsdl, msgpack_pack_value, msgpack_unpack_value, native_basename,
+        native_dirname, native_file_exists, native_preg_grep, native_preg_match,
+        native_preg_match_all, native_preg_replace_many, native_preg_replace_scalar,
+        native_preg_split, native_realpath, normalize_string, parse_soap_response, parse_wsdl,
+        soap_http_post, validate_fileinfo_options, validate_native_json,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -155,10 +167,10 @@ pub mod api {
     };
     pub use crate::convert::{
         ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, float_fits_int,
-        identical, identical_php, php_float_to_int, reset_float_string_precision,
-        set_float_string_precision, to_arithmetic_number, to_arithmetic_number_php, to_array_php,
-        to_bool, to_bool_php, to_float, to_float_php, to_int, to_int_php, to_number, to_number_php,
-        to_object_php, to_string, to_string_php,
+        float_to_php_string, identical, identical_php, php_float_to_int,
+        reset_float_string_precision, set_float_string_precision, to_arithmetic_number,
+        to_arithmetic_number_php, to_array_php, to_bool, to_bool_php, to_float, to_float_php,
+        to_int, to_int_php, to_number, to_number_php, to_object_php, to_string, to_string_php,
     };
     #[cfg(feature = "full-runtime")]
     pub use crate::db::mysql::{
@@ -211,8 +223,8 @@ pub mod api {
     pub use crate::object::{
         AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
         ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
-        ClassPropertyFlags, ClassPropertyHooks, ObjectRef, RuntimeType, display_class_name,
-        normalize_class_name,
+        ClassPropertyFlags, ClassPropertyHooks, NativeDeclaredPropertySlot, ObjectRef, RuntimeType,
+        display_class_name, normalize_class_name,
     };
     pub use crate::output::{OutputBuffer, OutputStats};
     #[cfg(feature = "full-runtime")]
@@ -221,7 +233,7 @@ pub mod api {
         PREG_GREP_INVERT, PREG_INTERNAL_ERROR, PREG_JIT_STACKLIMIT_ERROR, PREG_NO_ERROR,
         PREG_OFFSET_CAPTURE, PREG_PATTERN_ORDER, PREG_RECURSION_LIMIT_ERROR, PREG_SET_ORDER,
         PREG_SPLIT_DELIM_CAPTURE, PREG_SPLIT_NO_EMPTY, PREG_SPLIT_OFFSET_CAPTURE,
-        PREG_UNMATCHED_AS_NULL,
+        PREG_UNMATCHED_AS_NULL, PcreMatchLimits, preg_quote,
     };
     #[cfg(feature = "full-runtime")]
     pub use crate::phar::{PharArchive, PharEntry, PharError, PharUri};
@@ -326,7 +338,10 @@ pub mod experimental {
             NATIVE_REFERENCE_ARRAY_VALUE_TRUE, NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED,
             NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
             NATIVE_REFERENCE_ARRAY_VIEW_EMPTY, NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
-            NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
+            NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_FALSE,
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_INT, NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_NULL,
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_TRUE,
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_UNINITIALIZED, NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
             NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, NativeReferenceArrayEntry,
             NativeReferenceArrayView, NativeReferenceScalarView,
         };

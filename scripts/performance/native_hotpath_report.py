@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--base-commit", default="be91339047d931d4c364d4ce6a16ddbd9786be96")
     parser.add_argument("--runtime-abi-before", type=int, default=20)
-    parser.add_argument("--runtime-abi-after", type=int, default=24)
+    parser.add_argument("--runtime-abi-after", type=int, default=73)
     return parser.parse_args()
 
 
@@ -104,6 +104,39 @@ def direct_ratio(counters: dict[str, Any]) -> tuple[int, int, float]:
     return eligible, executed, ratio
 
 
+def production_lowering(counters: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for site, operation_local_transition in counter_map(
+        counters,
+        "production_lowering_by_site",
+        "native_production_lowering_by_site",
+    ).items():
+        parts = site.split("|", 5)
+        if len(parts) != 6:
+            continue
+        unit, region, function, continuation, operation, lowering_class = parts
+        rows.append(
+            {
+                "unit": unit,
+                "region": region,
+                "function": int(function),
+                "continuation": int(continuation),
+                "operation": operation,
+                "class": lowering_class,
+                "operation_local_transition": operation_local_transition != 0,
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["unit"],
+            row["region"],
+            row["function"],
+            row["continuation"],
+        ),
+    )
+
+
 def curve(clean: dict[str, Any], engine: str, concurrency: int) -> dict[str, Any] | None:
     engines = clean.get("engines")
     if not isinstance(engines, dict) or not isinstance(engines.get(engine), dict):
@@ -155,6 +188,126 @@ def main() -> int:
     write_json(args.out_dir / "before.json", before_document)
     write_json(args.out_dir / "after.json", after_document)
     write_json(args.out_dir / "clean-c1-c4-c8.json", clean_document)
+
+    lowering_rows = production_lowering(after)
+    transition_by_reason = counter_map(
+        after, "transition_by_reason", "native_transition_by_reason"
+    )
+    transition_time_by_reason = counter_map(
+        after,
+        "transition_time_nanos_by_reason",
+        "native_transition_time_nanos_by_reason",
+    )
+    operation_transition_executions = sum(
+        count for reason, count in transition_by_reason.items() if reason.startswith("optimizer_")
+    )
+    operation_transition_time = sum(
+        nanos
+        for reason, nanos in transition_time_by_reason.items()
+        if reason.startswith("optimizer_")
+    )
+    execution_time = number(after, "execution_time_nanos", "native_execution_time_nanos")
+    optimizing_entry_executions = number(
+        after, "optimizing_entry_executions", "native_optimizing_entry_executions"
+    )
+    baseline_hot_time_share_pct = (
+        0.0
+        if execution_time == 0
+        else 100.0
+        if optimizing_entry_executions == 0
+        else operation_transition_time * 100.0 / execution_time
+    )
+    write_json(
+        args.out_dir / "lowering-coverage.json",
+        {
+            "schema_version": 1,
+            "production_lowering": lowering_rows,
+            "operation_local_transition_metadata_count": sum(
+                1 for row in lowering_rows if row["operation_local_transition"]
+            ),
+            "operation_local_transition_executions": operation_transition_executions,
+            "baseline_hot_time_share_pct": baseline_hot_time_share_pct,
+            "baseline_entry_executions": number(
+                after, "baseline_entry_executions", "native_baseline_entry_executions"
+            ),
+            "optimizing_entry_executions": optimizing_entry_executions,
+        },
+    )
+    write_json(
+        args.out_dir / "transition-by-operation.json",
+        {
+            "schema_version": 1,
+            "count_by_reason": transition_by_reason,
+            "time_nanos_by_reason": transition_time_by_reason,
+            "operation_local_transition_executions": operation_transition_executions,
+            "operation_local_transition_time_nanos": operation_transition_time,
+        },
+    )
+    write_json(
+        args.out_dir / "value-plane.json",
+        {
+            "schema_version": 1,
+            "direct_to_rust_conversions": number(
+                after, "value_decodes", "native_value_decodes"
+            ),
+            "rust_to_direct_conversions": number(
+                after, "value_encodes", "native_value_encodes"
+            ),
+            "old_value_table_allocations": number(
+                after, "value_table_allocations", "native_value_table_allocations"
+            ),
+            "old_value_table_high_water": number(
+                after, "value_table_high_water", "native_value_table_high_water"
+            ),
+            "materializations_by_kind_and_origin": counter_map(
+                after,
+                "value_table_materializations_by_kind_and_origin",
+                "native_value_table_materializations_by_kind_and_origin",
+            ),
+            "arena_high_water_bytes": counter_map(
+                after, "arena_high_water_bytes", "native_arena_high_water_bytes"
+            ),
+            "arena_reused_bytes": counter_map(
+                after, "arena_reused_bytes", "native_arena_reused_bytes"
+            ),
+        },
+    )
+    write_json(
+        args.out_dir / "memory-map.json",
+        {
+            "schema_version": 1,
+            "arena_reserved_bytes": counter_map(
+                after, "arena_reserved_bytes", "native_arena_reserved_bytes"
+            ),
+            "arena_high_water_bytes": counter_map(
+                after, "arena_high_water_bytes", "native_arena_high_water_bytes"
+            ),
+            "arena_resident_bytes": counter_map(
+                after, "arena_resident_bytes", "native_arena_resident_bytes"
+            ),
+            "arena_reused_bytes": counter_map(
+                after, "arena_reused_bytes", "native_arena_reused_bytes"
+            ),
+            "arena_reset_bytes": counter_map(
+                after, "arena_reset_bytes", "native_arena_reset_bytes"
+            ),
+        },
+    )
+    write_json(
+        args.out_dir / "code-size.json",
+        {
+            "schema_version": 1,
+            "mapped_executable_bytes": number(
+                after, "mapped_executable_bytes", "native_mapped_executable_bytes"
+            ),
+            "code_bytes_by_function": counter_map(
+                after, "code_bytes_by_function", "native_code_bytes_by_function"
+            ),
+            "code_bytes_by_unit": counter_map(
+                after, "code_bytes_by_unit", "native_code_bytes_by_unit"
+            ),
+        },
+    )
 
     before_helpers = counter_map(before, "runtime_helper_calls_by_id")
     after_helpers = counter_map(after, "runtime_helper_calls_by_id")
@@ -285,23 +438,68 @@ def main() -> int:
     helper_calls = number(after, "runtime_helper_calls")
     reads = sum_map(after, "runtime_helper_local_read_by_reason")
     stores = sum_map(after, "runtime_helper_local_store_by_reason")
-    truthy = sum_map(after, "runtime_helper_truthy_by_value_class")
-    lifecycle = sum_map(after, "runtime_helper_retain_by_reason") + sum_map(
-        after, "runtime_helper_release_by_reason"
-    )
     roots = number(after, "runtime_helper_object_release_root_scans")
     dynamic = number(after, "call_dynamic", "native_call_dynamic")
+    helper_ids = counter_map(after, "runtime_helper_calls_by_id")
+    array_foreach = sum(
+        helper_ids.get(name, 0)
+        for name in (
+            "array_new",
+            "array_insert",
+            "array_fetch",
+            "array_unset",
+            "array_spread",
+            "foreach_init",
+            "foreach_next",
+            "foreach_cleanup",
+        )
+    )
+    properties = sum(
+        helper_ids.get(name, 0)
+        for name in (
+            "property_fetch",
+            "property_assign",
+            "semantic_property",
+            "semantic_static_property",
+        )
+    )
+    scalar_local_reference = sum(
+        helper_ids.get(name, 0)
+        for name in (
+            "unary",
+            "binary",
+            "compare",
+            "cast",
+            "local_fetch",
+            "local_store",
+            "reference_bind",
+            "truthy",
+        )
+    )
+    generic_builtins = helper_ids.get("call_builtin_direct", 0)
+    releases = sum_map(after, "runtime_helper_release_by_reason")
+    value_allocations = number(
+        after, "value_table_allocations", "native_value_table_allocations"
+    )
     helper_nanos = number(after, "runtime_helper_time_nanos")
     execution_nanos = number(after, "execution_time_nanos", "native_execution_time_nanos")
     helper_share = helper_nanos / execution_nanos if execution_nanos else 0.0
     rows = (
-        ("runtime helper calls", helper_calls, 750_000, helper_calls <= 750_000),
-        ("local reads", reads, 50_000, reads <= 50_000),
-        ("local stores", stores, 25_000, stores <= 25_000),
-        ("truthiness", truthy, 25_000, truthy <= 25_000),
-        ("retain + release", lifecycle, 150_000, lifecycle <= 150_000),
+        ("runtime helper calls", helper_calls, 100_000, helper_calls <= 100_000),
+        ("local reads + stores", reads + stores, 20_000, reads + stores <= 20_000),
+        ("array + foreach helpers", array_foreach, 20_000, array_foreach <= 20_000),
+        ("property helpers", properties, 5_000, properties <= 5_000),
+        (
+            "scalar + local + reference helpers",
+            scalar_local_reference,
+            20_000,
+            scalar_local_reference <= 20_000,
+        ),
+        ("generic prepared builtins", generic_builtins, 5_000, generic_builtins <= 5_000),
+        ("release helpers", releases, 5_000, releases <= 5_000),
+        ("old value allocations", value_allocations, 10_000, value_allocations <= 10_000),
         ("root scans", roots, 250, roots <= 250),
-        ("dynamic calls", dynamic, 50_000, dynamic <= 50_000),
+        ("dynamic calls", dynamic, 250, dynamic <= 250),
     )
     lines = [
         "# Hot Native Execution Report",
@@ -317,7 +515,7 @@ def main() -> int:
     )
     lines.extend(
         [
-            f"| stable direct ratio | {ratio:.3%} | 90.000% | {'pass' if ratio >= .9 else 'fail'} |",
+            f"| stable direct ratio | {ratio:.3%} | 95.000% | {'pass' if ratio >= .95 else 'fail'} |",
             f"| helper-exclusive CPU share | {helper_share:.3%} | 30.000% | {'pass' if execution_nanos and helper_share <= .3 else 'fail'} |",
             "",
             "## Clean timing",

@@ -112,7 +112,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("pack", builtin_pack, BuiltinCompatibility::Php),
     BuiltinEntry::new("parse_str", builtin_parse_str, BuiltinCompatibility::Php),
     BuiltinEntry::new("parse_url", builtin_parse_url, BuiltinCompatibility::Php),
-    BuiltinEntry::new("printf", builtin_printf, BuiltinCompatibility::Php),
+    BuiltinEntry::new("printf", exact_printf, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "rawurldecode",
         builtin_rawurldecode,
@@ -125,7 +125,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new("rtrim", builtin_rtrim, BuiltinCompatibility::Php),
     BuiltinEntry::new("sha1", builtin_sha1, BuiltinCompatibility::Php),
-    BuiltinEntry::new("sprintf", builtin_sprintf, BuiltinCompatibility::Php),
+    BuiltinEntry::new("sprintf", exact_sprintf, BuiltinCompatibility::Php),
     BuiltinEntry::new("substr", builtin_substr, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "str_contains",
@@ -219,8 +219,8 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_version_compare,
         BuiltinCompatibility::Php,
     ),
-    BuiltinEntry::new("vprintf", builtin_vprintf, BuiltinCompatibility::Php),
-    BuiltinEntry::new("vsprintf", builtin_vsprintf, BuiltinCompatibility::Php),
+    BuiltinEntry::new("vprintf", exact_vprintf, BuiltinCompatibility::Php),
+    BuiltinEntry::new("vsprintf", exact_vsprintf, BuiltinCompatibility::Php),
     BuiltinEntry::new("wordwrap", builtin_wordwrap, BuiltinCompatibility::Php),
 ];
 
@@ -2456,7 +2456,8 @@ pub(in crate::builtins::modules) fn version_operator_matches(
     }
 }
 
-pub(in crate::builtins::modules) fn builtin_printf(
+#[doc(hidden)]
+pub fn exact_printf(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
@@ -2471,7 +2472,8 @@ pub(in crate::builtins::modules) fn builtin_printf(
     Ok(Value::Int(length))
 }
 
-pub(in crate::builtins::modules) fn builtin_sprintf(
+#[doc(hidden)]
+pub fn exact_sprintf(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
@@ -2489,7 +2491,8 @@ pub(in crate::builtins::modules) fn builtin_sprintf(
     )?))
 }
 
-pub(in crate::builtins::modules) fn builtin_vprintf(
+#[doc(hidden)]
+pub fn exact_vprintf(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,
@@ -2503,7 +2506,8 @@ pub(in crate::builtins::modules) fn builtin_vprintf(
     Ok(Value::Int(length))
 }
 
-pub(in crate::builtins::modules) fn builtin_vsprintf(
+#[doc(hidden)]
+pub fn exact_vsprintf(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     span: RuntimeSourceSpan,

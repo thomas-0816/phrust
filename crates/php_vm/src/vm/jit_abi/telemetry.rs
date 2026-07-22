@@ -1,4 +1,4 @@
-use super::NativeExecutionContext;
+use super::NativeRequestColdState;
 
 const HELPER_OTHER: usize = 49;
 const HELPER_NAMES: [&str; 50] = [
@@ -273,7 +273,7 @@ impl NativeRuntimeTelemetry {
     }
 }
 
-impl NativeExecutionContext<'_> {
+impl NativeRequestColdState<'_> {
     pub(in crate::vm) fn runtime_counters(&self) -> crate::counters::VmCounters {
         debug_assert!(
             self.options.collect_counters,
@@ -351,6 +351,57 @@ impl NativeExecutionContext<'_> {
             self.native_frame_arena.capacity_bytes() as u64;
         counters.native_frame_arena_high_water_bytes =
             self.native_frame_arena.high_water_bytes() as u64;
+        let cold_values = self.value_slots.usage(self.values.len());
+        let direct_values = self
+            .direct_value_slots
+            .usage(*self.direct_value_next as usize);
+        let direct_object_owners = self
+            .direct_object_owners
+            .usage(*self.direct_value_next as usize);
+        let direct_arrays = self
+            .direct_array_entries
+            .usage(*self.direct_array_next as usize);
+        let direct_strings = self
+            .direct_string_bytes
+            .usage(*self.direct_string_next as usize);
+        let static_properties = self
+            .static_property_slots
+            .usage(*self.static_property_next as usize);
+        for (name, usage) in [
+            ("cold_value_slots", cold_values),
+            ("direct_value_slots", direct_values),
+            ("direct_object_owners", direct_object_owners),
+            ("direct_array_entries", direct_arrays),
+            ("direct_string_bytes", direct_strings),
+            ("static_property_slots", static_properties),
+        ] {
+            counters
+                .native_arena_reserved_bytes
+                .insert(name.to_owned(), usage.reserved_bytes as u64);
+            counters
+                .native_arena_high_water_bytes
+                .insert(name.to_owned(), usage.high_water_bytes as u64);
+            counters
+                .native_arena_resident_bytes
+                .insert(name.to_owned(), usage.resident_bytes as u64);
+            // Request recycling discards exactly the initialized prefix of
+            // each stable arena; this is the byte range reset at teardown.
+            counters
+                .native_arena_reset_bytes
+                .insert(name.to_owned(), usage.high_water_bytes as u64);
+        }
+        counters.native_arena_reused_bytes.insert(
+            "direct_value_slots".to_owned(),
+            *self.direct_value_reused_bytes,
+        );
+        counters.native_arena_reused_bytes.insert(
+            "direct_array_entries".to_owned(),
+            *self.direct_array_reused_bytes,
+        );
+        counters.native_arena_reused_bytes.insert(
+            "direct_string_bytes".to_owned(),
+            *self.direct_string_reused_bytes,
+        );
         let (stack_virtual, stack_committed) = current_php_worker_stack_bytes();
         counters.native_worker_stack_virtual_bytes = stack_virtual;
         counters.native_worker_stack_committed_bytes = stack_committed;
@@ -432,6 +483,45 @@ impl NativeExecutionContext<'_> {
         let stable_calls = calls.saturating_add(inlined_calls);
         let mut telemetry = self.runtime_telemetry.borrow_mut();
         if let Some(metadata) = handle.region_state_metadata() {
+            match metadata.compiler_tier {
+                php_jit::region_ir::NativeCompilerTier::Baseline => {
+                    telemetry.counters.native_baseline_entry_executions = telemetry
+                        .counters
+                        .native_baseline_entry_executions
+                        .saturating_add(1);
+                }
+                php_jit::region_ir::NativeCompilerTier::Optimizing => {
+                    telemetry.counters.native_optimizing_entry_executions = telemetry
+                        .counters
+                        .native_optimizing_entry_executions
+                        .saturating_add(1);
+                }
+            }
+            for lowering in &metadata.production_lowering {
+                let class = match lowering.class {
+                    php_jit::JitProductionLoweringClass::DirectClif => "DirectClif",
+                    php_jit::JitProductionLoweringClass::DirectNativeData => "DirectNativeData",
+                    php_jit::JitProductionLoweringClass::CompiledNativeCall => "CompiledNativeCall",
+                    php_jit::JitProductionLoweringClass::BaselineFragmentTransition => {
+                        "BaselineFragmentTransition"
+                    }
+                };
+                telemetry
+                    .counters
+                    .native_production_lowering_by_site
+                    .insert(
+                        format!(
+                            "{}|{}|{}|{}|{}|{}",
+                            self.unit_identity,
+                            handle.region_id,
+                            lowering.function.raw(),
+                            lowering.continuation_id,
+                            lowering.operation,
+                            class,
+                        ),
+                        u64::from(lowering.operation_local_transition),
+                    );
+            }
             let mut unit_code_bytes = 0_u64;
             for entry in &metadata.function_entries {
                 let key = format!("{}:{}", self.unit_identity, entry.function.raw());
@@ -537,6 +627,12 @@ impl NativeExecutionContext<'_> {
         counters.native_execution_entries = counters
             .native_execution_entries
             .saturating_add(nested.native_execution_entries);
+        counters.native_baseline_entry_executions = counters
+            .native_baseline_entry_executions
+            .saturating_add(nested.native_baseline_entry_executions);
+        counters.native_optimizing_entry_executions = counters
+            .native_optimizing_entry_executions
+            .saturating_add(nested.native_optimizing_entry_executions);
         counters.native_region_entries = counters
             .native_region_entries
             .saturating_add(nested.native_region_entries);
@@ -652,6 +748,10 @@ impl NativeExecutionContext<'_> {
         merge_counter_map(
             &mut counters.native_region_side_exits_by_reason,
             &nested.native_region_side_exits_by_reason,
+        );
+        merge_gauge_map_max(
+            &mut counters.native_production_lowering_by_site,
+            &nested.native_production_lowering_by_site,
         );
         merge_counter_map(
             &mut counters.native_transition_by_reason,

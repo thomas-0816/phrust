@@ -54,7 +54,7 @@ fn collect_recursive_directory_paths(
 }
 
 pub(in crate::vm::jit_abi) fn construct_native_spl_iterator(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

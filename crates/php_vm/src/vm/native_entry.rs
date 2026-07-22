@@ -1,6 +1,6 @@
 //! Shared native entry execution boundaries.
 
-use super::{NativeExecutionContext, Vm, VmResult, activate_native_context};
+use super::{NativeRequestOwner, Vm, VmResult, activate_native_context};
 use crate::compiled_unit::CompiledUnit;
 use php_runtime::api::OutputBuffer;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ impl Vm {
                 ),
             );
         };
-        let mut context = NativeExecutionContext::new(
+        let mut context = NativeRequestOwner::new(
             unit,
             unit.cache_identity(),
             &self.options,
@@ -38,7 +38,7 @@ impl Vm {
             self.options.collect_counters.then(std::time::Instant::now);
         context.record_native_direct_calls(&handle);
         let guard = activate_native_context(&mut context);
-        let runtime = std::ptr::from_mut(&mut context).cast::<std::ffi::c_void>();
+        let runtime = context.native_runtime_ptr();
         let outcome = handle.invoke_i64_with_native_unwind_runtime(
             &[],
             php_jit::JIT_RUNTIME_ABI_HASH,
@@ -88,7 +88,7 @@ impl Vm {
         });
         context.output.flush_all_buffers();
         drop(guard);
-        context.publish_include_globals();
+        let publish_error = context.publish_include_globals().err();
         let native_execution_time_nanos = native_execution_started_at.map_or(0, |started_at| {
             started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
         });
@@ -109,7 +109,7 @@ impl Vm {
                 std::mem::take(&mut context.output),
                 Some(throwable),
             )
-        } else if let Some(error) = shutdown_error {
+        } else if let Some(error) = shutdown_error.or(publish_error) {
             VmResult::runtime_error(
                 std::mem::take(&mut context.output),
                 context.diagnostic.take(),

@@ -11,7 +11,7 @@ fn new_memory_writer() -> php_runtime::api::ObjectRef {
 }
 
 fn open_uri_writer(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     uri: &str,
 ) -> Option<php_runtime::api::ObjectRef> {
     let path = normalize_runtime_path(context, uri);
@@ -29,7 +29,7 @@ fn open_uri_writer(
 }
 
 pub(in crate::vm::jit_abi) fn construct_native_xml_writer(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -46,7 +46,7 @@ pub(in crate::vm::jit_abi) fn construct_native_xml_writer(
 }
 
 fn flush_writer(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     empty: bool,
 ) -> Value {
@@ -73,7 +73,7 @@ fn flush_writer(
 }
 
 fn call_xml_writer_method(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     method: &str,
     arguments: Vec<Value>,
@@ -184,7 +184,7 @@ fn call_xml_writer_method(
 }
 
 fn execute_static_factory(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     method: &str,
     arguments: &[i64],
 ) -> Result<i64, String> {
@@ -206,7 +206,7 @@ fn execute_static_factory(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_xml_writer_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -240,7 +240,7 @@ pub(in crate::vm::jit_abi) fn execute_native_xml_writer_instruction(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_xml_writer_builtin(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

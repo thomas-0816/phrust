@@ -5,7 +5,7 @@ fn is_xml_reader(class_name: &str) -> bool {
 }
 
 pub(in crate::vm::jit_abi) fn construct_native_xml_reader(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -22,7 +22,7 @@ pub(in crate::vm::jit_abi) fn construct_native_xml_reader(
 }
 
 fn call_xml_reader_method(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     method: &str,
     arguments: Vec<Value>,
@@ -135,7 +135,7 @@ fn call_xml_reader_method(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_xml_reader_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

@@ -13,7 +13,7 @@ pub use member::{
     ClassConstantEntry, ClassConstantFlags, ClassEnumBackingType, ClassEnumCaseEntry,
     ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks,
 };
-pub use storage::{ObjectRef, WeakObjectHandle};
+pub use storage::{NativeDeclaredPropertySlot, ObjectRef, WeakObjectHandle};
 pub use types::RuntimeType;
 
 use std::cell::{Cell, RefCell};

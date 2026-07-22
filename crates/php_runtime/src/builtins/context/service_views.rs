@@ -18,6 +18,10 @@ impl JsonBuiltinServices<'_> {
     pub fn json_last_error(&self) -> (i64, &str) {
         self.state.value()
     }
+
+    pub(in crate::builtins) fn request_state(&mut self) -> &mut JsonRequestState {
+        self.state
+    }
 }
 
 /// PCRE's request state plus the two core services used by pattern compilation.

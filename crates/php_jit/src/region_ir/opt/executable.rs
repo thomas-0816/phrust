@@ -472,6 +472,10 @@ fn instruction_is_pure_scalar(
                         RegionUnaryOp::Plus | RegionUnaryOp::Minus | RegionUnaryOp::BitNot,
                         Some(super::super::SsaValueClass::Int)
                     )
+                    | (
+                        RegionUnaryOp::BitNot,
+                        Some(super::super::SsaValueClass::StringHandle)
+                    )
             )
         }
         RegionInstructionKind::Compare { lhs, rhs, .. } => {
@@ -485,6 +489,7 @@ fn instruction_is_pure_scalar(
                         super::super::SsaValueClass::Null
                             | super::super::SsaValueClass::Bool
                             | super::super::SsaValueClass::Int
+                            | super::super::SsaValueClass::Float
                     )
                 })
                 && rhs.is_some_and(|class| {
@@ -493,18 +498,56 @@ fn instruction_is_pure_scalar(
                         super::super::SsaValueClass::Null
                             | super::super::SsaValueClass::Bool
                             | super::super::SsaValueClass::Int
+                            | super::super::SsaValueClass::Float
                     )
                 })
+                || (lhs == Some(super::super::SsaValueClass::StringHandle)
+                    && rhs == Some(super::super::SsaValueClass::StringHandle))
         }
         RegionInstructionKind::Cast { op, src, .. } => {
+            let class = operand_class(*src, classes);
             matches!(
-                (op, operand_class(*src, classes)),
+                (op, class),
                 (
-                    RegionCastOp::Bool | RegionCastOp::Int | RegionCastOp::Void,
+                    RegionCastOp::Bool,
                     Some(
                         super::super::SsaValueClass::Null
                             | super::super::SsaValueClass::Bool
                             | super::super::SsaValueClass::Int
+                            | super::super::SsaValueClass::Float
+                    )
+                ) | (
+                    RegionCastOp::Int | RegionCastOp::Void,
+                    Some(
+                        super::super::SsaValueClass::Null
+                            | super::super::SsaValueClass::Bool
+                            | super::super::SsaValueClass::Int
+                    )
+                ) | (
+                    RegionCastOp::Float,
+                    Some(
+                        super::super::SsaValueClass::Null
+                            | super::super::SsaValueClass::Bool
+                            | super::super::SsaValueClass::Int
+                            | super::super::SsaValueClass::Float
+                    )
+                ) | (
+                    RegionCastOp::Array,
+                    Some(
+                        super::super::SsaValueClass::Null
+                            | super::super::SsaValueClass::Bool
+                            | super::super::SsaValueClass::Int
+                            | super::super::SsaValueClass::Float
+                            | super::super::SsaValueClass::StringHandle
+                            | super::super::SsaValueClass::ArrayHandle
+                    )
+                ) | (
+                    RegionCastOp::String,
+                    Some(
+                        super::super::SsaValueClass::Null
+                            | super::super::SsaValueClass::Bool
+                            | super::super::SsaValueClass::Int
+                            | super::super::SsaValueClass::StringHandle
                     )
                 )
             )
@@ -527,6 +570,12 @@ fn instruction_result_class(
         }
         RegionInstructionKind::Unary { dst, op, src } => match op {
             RegionUnaryOp::Not => (*dst, super::super::SsaValueClass::Bool),
+            RegionUnaryOp::BitNot
+                if operand_class(*src, classes)
+                    == Some(super::super::SsaValueClass::StringHandle) =>
+            {
+                (*dst, super::super::SsaValueClass::StringHandle)
+            }
             _ if operand_class(*src, classes) == Some(super::super::SsaValueClass::Int) => {
                 (*dst, super::super::SsaValueClass::Int)
             }
@@ -545,6 +594,9 @@ fn instruction_result_class(
             match op {
                 RegionCastOp::Bool => super::super::SsaValueClass::Bool,
                 RegionCastOp::Int => super::super::SsaValueClass::Int,
+                RegionCastOp::Float => super::super::SsaValueClass::Float,
+                RegionCastOp::Array => super::super::SsaValueClass::ArrayHandle,
+                RegionCastOp::String => super::super::SsaValueClass::StringHandle,
                 RegionCastOp::Void => super::super::SsaValueClass::Null,
                 _ => return None,
             },

@@ -134,6 +134,25 @@ pub(in crate::builtins::modules) fn builtin_basename(
     Ok(Value::string(base.into_bytes()))
 }
 
+/// Exact native `basename` implementation over stable string bytes.
+///
+/// This is intentionally independent of `BuiltinContext` and `Value`: an
+/// optimizing callsite has already fixed the arity and supplies only native
+/// string views. The returned bytes are the sole result allocation.
+pub fn native_basename(path: &[u8], suffix: Option<&[u8]>) -> Vec<u8> {
+    let path = String::from_utf8_lossy(path);
+    let suffix = suffix.map(String::from_utf8_lossy);
+    let mut base = php_basename(&path);
+    if let Some(suffix) = suffix
+        && !suffix.is_empty()
+        && base.len() > suffix.len()
+        && base.ends_with(suffix.as_ref())
+    {
+        base.truncate(base.len() - suffix.len());
+    }
+    base.into_bytes()
+}
+
 pub(in crate::builtins::modules) fn builtin_dirname(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -153,6 +172,15 @@ pub(in crate::builtins::modules) fn builtin_dirname(
         path = php_dirname_once(&path);
     }
     Ok(Value::string(path.into_bytes()))
+}
+
+/// Exact native `dirname` implementation over a stable string view.
+pub fn native_dirname(path: &[u8], levels: i64) -> Vec<u8> {
+    let mut path = String::from_utf8_lossy(path).into_owned();
+    for _ in 0..levels.max(1) {
+        path = php_dirname_once(&path);
+    }
+    path.into_bytes()
 }
 
 pub(in crate::builtins::modules) fn builtin_pathinfo(
@@ -224,6 +252,31 @@ pub(in crate::builtins::modules) fn builtin_realpath(
     )
 }
 
+/// Exact native `realpath` capability operation.
+///
+/// `None` is the PHP-visible `false` result. Unsupported argument shapes are
+/// rejected by the caller before this function is entered.
+pub fn native_realpath(
+    cwd: &Path,
+    filesystem: &crate::FilesystemCapabilities,
+    path: &[u8],
+) -> Option<Vec<u8>> {
+    let path = String::from_utf8_lossy(path);
+    let raw = Path::new(path.as_ref());
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
+    let resolved = normalize_runtime_path(&joined);
+    if !filesystem.allows_path(&resolved) {
+        return None;
+    }
+    fs::canonicalize(resolved)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned().into_bytes())
+}
+
 pub(in crate::builtins::modules) fn builtin_file_exists(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -239,6 +292,30 @@ pub(in crate::builtins::modules) fn builtin_file_exists(
     Ok(Value::Bool(
         metadata_for_arg(context, "file_exists", &args[0], true)?.is_some(),
     ))
+}
+
+/// Exact native local-filesystem `file_exists` capability operation.
+///
+/// Phar URIs require archive/request coordination and therefore return
+/// `None` so the optimizing caller can take its one baseline continuation
+/// before any filesystem-visible effect. Local paths return `Some(result)`.
+pub fn native_file_exists(
+    cwd: &Path,
+    filesystem: &crate::FilesystemCapabilities,
+    path: &[u8],
+) -> Option<bool> {
+    let path = String::from_utf8_lossy(path);
+    if crate::phar::is_phar_uri(&path) {
+        return None;
+    }
+    let raw = Path::new(path.as_ref());
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
+    let resolved = normalize_runtime_path(&joined);
+    Some(filesystem.allows_path(&resolved) && fs::metadata(resolved).is_ok())
 }
 
 pub(in crate::builtins::modules) fn builtin_is_file(

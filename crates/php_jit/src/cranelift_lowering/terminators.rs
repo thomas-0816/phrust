@@ -12,6 +12,8 @@ struct NativeOptimizingTerminatorTransition<'a> {
     registers: &'a NativeRegisterMap,
     live_registers: &'a [RegId],
     native_version: u32,
+    value_release_validate: ir::FuncRef,
+    value_release_commit: ir::FuncRef,
     emitted_transition: &'a Cell<bool>,
 }
 
@@ -50,6 +52,41 @@ impl NativeOptimizingTerminatorTransition<'_> {
         builder.seal_block(unreachable);
         Ok(())
     }
+}
+
+fn lower_optimizing_frame_cleanup(
+    builder: &mut FunctionBuilder<'_>,
+    cleanup: &[(LocalId, ir::Value)],
+    transition: NativeOptimizingTerminatorTransition<'_>,
+) -> Result<(), CraneliftLoweringError> {
+    if cleanup.is_empty() {
+        return Ok(());
+    }
+    let mut safe = builder.ins().iconst(types::I8, 1);
+    for (_, value) in cleanup {
+        let validate = builder.ins().call(
+            transition.value_release_validate,
+            &[transition.deopt_out, *value],
+        );
+        let releasable = builder.inst_results(validate)[0];
+        safe = builder.ins().band(safe, releasable);
+    }
+    let release = builder.create_block();
+    let rejected = builder.create_block();
+    builder.ins().brif(safe, release, &[], rejected, &[]);
+
+    builder.switch_to_block(rejected);
+    transition.emit(builder)?;
+    builder.ins().jump(release, &[]);
+
+    builder.switch_to_block(release);
+    for (_, value) in cleanup {
+        let _ = builder.ins().call(
+            transition.value_release_commit,
+            &[transition.deopt_out, *value],
+        );
+    }
+    Ok(())
 }
 
 fn lower_optimizing_condition(
@@ -150,11 +187,11 @@ fn lower_optimizing_condition(
         std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
     );
     let non_empty = builder.ins().icmp_imm(IntCC::NotEqual, length, 0);
-    let zero_string = builder.ins().icmp_imm(
-        IntCC::Equal,
+    let zero_flag = builder.ins().band_imm(
         reserved_value,
         i64::from(crate::JIT_NATIVE_STRING_VALUE_ZERO),
     );
+    let zero_string = builder.ins().icmp_imm(IntCC::NotEqual, zero_flag, 0);
     let not_zero_string = builder.ins().icmp_imm(IntCC::Equal, zero_string, 0);
     let string_truthy = builder.ins().band(non_empty, not_zero_string);
     let runtime_truthy = builder.ins().select(is_string, string_truthy, non_empty);
@@ -371,11 +408,10 @@ pub(super) fn lower_guarded_unknown_condition(
     let string_ok = builder.ins().band(is_string, string_descriptor);
     let descriptor_ok = builder.ins().bor(array_ok, string_ok);
     let non_empty = builder.ins().icmp_imm(IntCC::NotEqual, length, 0);
-    let is_zero_string = builder.ins().icmp_imm(
-        IntCC::Equal,
-        reserved,
-        i64::from(crate::JIT_NATIVE_STRING_VALUE_ZERO),
-    );
+    let zero_flag = builder
+        .ins()
+        .band_imm(reserved, i64::from(crate::JIT_NATIVE_STRING_VALUE_ZERO));
+    let is_zero_string = builder.ins().icmp_imm(IntCC::NotEqual, zero_flag, 0);
     let not_zero_string = builder.ins().icmp_imm(IntCC::Equal, is_zero_string, 0);
     let string_truthy = builder.ins().band(non_empty, not_zero_string);
     let runtime_truthy = builder.ins().select(is_string, string_truthy, non_empty);
@@ -494,7 +530,8 @@ pub(super) fn lower_region_terminator(
             );
         }
         RegionTerminator::Return { value, finally } => {
-            let value = lower_region_operand(builder, locals, registers, *value)?;
+            let operand = *value;
+            let value = lower_region_operand(builder, locals, registers, operand)?;
             let value = if return_check_required {
                 let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
                 lower_native_value_operation(
@@ -506,7 +543,20 @@ pub(super) fn lower_region_terminator(
                     result_out,
                 )?
             } else {
-                value
+                let fact = lowering_operand_fact(value_flow, constants, operand);
+                if fact.ownership == SsaOwnership::Borrowed {
+                    lower_guarded_value_release(
+                        module,
+                        builder,
+                        native_operations.value_release,
+                        native_dim_operation(0, function, 0),
+                        value,
+                        result_out,
+                        deopt_out,
+                    )?
+                } else {
+                    value
+                }
             };
             let status = builder
                 .ins()
@@ -529,7 +579,18 @@ pub(super) fn lower_region_terminator(
             )?;
         }
         RegionTerminator::ReturnReference { local, finally } => {
-            let value = use_local_variable(builder, locals, *local)?;
+            let mut value = use_local_variable(builder, locals, *local)?;
+            if value_flow.local_fact(*local).ownership == SsaOwnership::Borrowed {
+                value = lower_guarded_value_release(
+                    module,
+                    builder,
+                    native_operations.value_release,
+                    native_dim_operation(0, function, 0),
+                    value,
+                    result_out,
+                    deopt_out,
+                )?;
+            }
             let status = builder.ins().iconst(
                 types::I32,
                 i64::from(crate::JitCallStatus::RETURN_REFERENCE.0),
@@ -552,10 +613,25 @@ pub(super) fn lower_region_terminator(
             )?;
         }
         RegionTerminator::Exit { value, finally } => {
-            let value = value
-                .map(|value| lower_region_operand(builder, locals, registers, value))
-                .transpose()?
-                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+            let value = if let Some(operand) = *value {
+                let value = lower_region_operand(builder, locals, registers, operand)?;
+                let fact = lowering_operand_fact(value_flow, constants, operand);
+                if fact.ownership == SsaOwnership::Borrowed {
+                    lower_guarded_value_release(
+                        module,
+                        builder,
+                        native_operations.value_release,
+                        native_dim_operation(0, function, 0),
+                        value,
+                        result_out,
+                        deopt_out,
+                    )?
+                } else {
+                    value
+                }
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            };
             let status = builder
                 .ins()
                 .iconst(types::I32, i64::from(crate::JitCallStatus::EXIT.0));
@@ -598,6 +674,8 @@ pub(super) fn lower_optimizing_region_terminator(
     live_locals: &[LocalId],
     live_registers: &[RegId],
     native_version: u32,
+    value_release_validate: ir::FuncRef,
+    value_release_commit: ir::FuncRef,
     return_type: Option<&php_ir::IrReturnType>,
     terminator: &RegionTerminator,
     constants: &[IrConstant],
@@ -616,6 +694,8 @@ pub(super) fn lower_optimizing_region_terminator(
         registers,
         live_registers,
         native_version,
+        value_release_validate,
+        value_release_commit,
         emitted_transition: &emitted_transition,
     };
     let direct_condition = |builder: &mut FunctionBuilder<'_>, condition: RegionOperand| {
@@ -627,13 +707,18 @@ pub(super) fn lower_optimizing_region_terminator(
         }
         Ok(condition)
     };
-    let frame_cleanup_required = locals.keys().any(|local| {
-        let fact = value_flow.local_fact(*local);
-        value_flow.releases_local_at_frame_exit(*local)
-            && fact.has_runtime_lifecycle()
-            && fact.ownership == SsaOwnership::Owned
-            && fact.class != SsaValueClass::ArrayHandle
-    });
+    let frame_cleanup_locals = locals
+        .keys()
+        .copied()
+        .filter(|local| {
+            let fact = value_flow.local_fact(*local);
+            let bound_reference_owner = value_flow.local_storage(*local)
+                == crate::region_ir::LocalStorageClass::MemoryReference;
+            value_flow.releases_local_at_frame_exit(*local)
+                && (bound_reference_owner
+                    || (fact.has_runtime_lifecycle() && fact.ownership == SsaOwnership::Owned))
+        })
+        .collect::<Vec<_>>();
     match terminator {
         RegionTerminator::Jump { target } => {
             builder.ins().jump(cranelift_block(blocks, *target)?, &[]);
@@ -690,14 +775,37 @@ pub(super) fn lower_optimizing_region_terminator(
                     return_type,
                 )
             });
-            if return_check_required || frame_cleanup_required {
-                transition.emit(builder)?;
-                return Ok(EmittedOptimizingInstruction {
-                    class: crate::JitProductionLoweringClass::BaselineFragmentTransition,
-                    operation_local_transition: false,
-                });
-            }
+            let fact = lowering_operand_fact(value_flow, constants, *value);
             let value = lower_region_operand(builder, locals, registers, *value)?;
+            if return_check_required {
+                let Some(matches_return_type) = return_type
+                    .and_then(|type_| lower_optimizing_type_guard(builder, value, type_))
+                else {
+                    transition.emit(builder)?;
+                    return Ok(EmittedOptimizingInstruction {
+                        class: crate::JitProductionLoweringClass::BaselineFragmentTransition,
+                        operation_local_transition: false,
+                    });
+                };
+                let admitted = builder.create_block();
+                let rejected = builder.create_block();
+                builder
+                    .ins()
+                    .brif(matches_return_type, admitted, &[], rejected, &[]);
+                builder.switch_to_block(rejected);
+                transition.emit(builder)?;
+                builder.ins().jump(admitted, &[]);
+                builder.switch_to_block(admitted);
+            }
+            if fact.ownership == SsaOwnership::Borrowed {
+                lower_optimizing_retain(builder, value, deopt_out);
+            }
+            let cleanup = frame_cleanup_locals
+                .iter()
+                .copied()
+                .map(|local| Ok((local, use_local_variable(builder, locals, local)?)))
+                .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+            lower_optimizing_frame_cleanup(builder, &cleanup, transition)?;
             builder
                 .ins()
                 .store(MemFlagsData::new(), value, result_out, 0);
@@ -706,21 +814,46 @@ pub(super) fn lower_optimizing_region_terminator(
                 .iconst(types::I32, i64::from(crate::JitCallStatus::RETURN.0));
             builder.ins().return_(&[status]);
         }
+        RegionTerminator::ReturnReference {
+            local,
+            finally: None,
+        } => {
+            // A reference result is an independently owned ABI value. The
+            // local may only borrow a caller argument, or frame cleanup may
+            // release its owner below, so retain before leaving the frame in
+            // both cases. Direct compiled callers consume this owner when
+            // they install the returned alias.
+            let value = use_local_variable(builder, locals, *local)?;
+            lower_optimizing_retain(builder, value, deopt_out);
+            let cleanup = frame_cleanup_locals
+                .iter()
+                .copied()
+                .map(|local| Ok((local, use_local_variable(builder, locals, local)?)))
+                .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+            lower_optimizing_frame_cleanup(builder, &cleanup, transition)?;
+            builder
+                .ins()
+                .store(MemFlagsData::new(), value, result_out, 0);
+            let status = builder.ins().iconst(
+                types::I32,
+                i64::from(crate::JitCallStatus::RETURN_REFERENCE.0),
+            );
+            builder.ins().return_(&[status]);
+        }
         RegionTerminator::Exit {
             value,
             finally: None,
         } => {
-            if frame_cleanup_required {
-                transition.emit(builder)?;
-                return Ok(EmittedOptimizingInstruction {
-                    class: crate::JitProductionLoweringClass::BaselineFragmentTransition,
-                    operation_local_transition: false,
-                });
-            }
             let value = value
                 .map(|value| lower_region_operand(builder, locals, registers, value))
                 .transpose()?
                 .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+            let cleanup = frame_cleanup_locals
+                .iter()
+                .copied()
+                .map(|local| Ok((local, use_local_variable(builder, locals, local)?)))
+                .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+            lower_optimizing_frame_cleanup(builder, &cleanup, transition)?;
             builder
                 .ins()
                 .store(MemFlagsData::new(), value, result_out, 0);
@@ -732,7 +865,9 @@ pub(super) fn lower_optimizing_region_terminator(
         RegionTerminator::Return {
             finally: Some(_), ..
         }
-        | RegionTerminator::ReturnReference { .. }
+        | RegionTerminator::ReturnReference {
+            finally: Some(_), ..
+        }
         | RegionTerminator::Exit {
             finally: Some(_), ..
         } => {
@@ -801,9 +936,11 @@ pub(super) fn lower_owned_frame_locals(
 ) -> Result<(), CraneliftLoweringError> {
     for local in locals.keys() {
         let fact = value_flow.local_fact(*local);
+        let bound_reference_owner = value_flow.local_storage(*local)
+            == crate::region_ir::LocalStorageClass::MemoryReference;
         if value_flow.releases_local_at_frame_exit(*local)
-            && fact.has_runtime_lifecycle()
-            && fact.ownership == SsaOwnership::Owned
+            && (bound_reference_owner
+                || (fact.has_runtime_lifecycle() && fact.ownership == SsaOwnership::Owned))
         {
             let value = use_local_variable(builder, locals, *local)?;
             let _ = lower_guarded_value_release(

@@ -8,7 +8,7 @@ enum NativeDynamicCodeOutcome {
 // SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
 #[allow(unsafe_code)]
 fn execute_native_include(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     request: &php_jit::JitNativeDynamicCodeRequest,
 ) -> Result<NativeDynamicCodeOutcome, String> {
     let path = String::from_utf8_lossy(&native_string(
@@ -177,8 +177,9 @@ fn execute_native_include(
     });
     let external_signatures = visible_external_function_signatures_for_unit(context, &compiled);
     NATIVE_INCLUDE_SYMBOLS.with(|symbols| {
-        symbols.replace(Some(context.take_include_symbols()));
-    });
+        symbols.replace(Some(context.take_include_symbols()?));
+        Ok::<(), String>(())
+    })?;
     NATIVE_INCLUDE_EXPORTS.with(|exports| {
         exports.take();
     });
@@ -199,6 +200,7 @@ fn execute_native_include(
         NATIVE_INCLUDE_GLOBALS.with(|globals| globals.borrow_mut().take().unwrap_or_default());
     context.dynamic_constants = NATIVE_INCLUDE_CONSTANTS
         .with(|constants| constants.borrow_mut().take().unwrap_or_default());
+    context.prepare_trusted_constant_fetches();
     if let Some(returned_ini) = NATIVE_INCLUDE_INI.with(|ini| ini.borrow_mut().take()) {
         context.ini_registry = returned_ini;
     }
@@ -223,7 +225,7 @@ fn execute_native_include(
     context.restore_include_symbols(returned_symbols);
     let exports = NATIVE_INCLUDE_EXPORTS.with(|exports| exports.borrow_mut().take());
     context.inherited_globals = returned_globals;
-    context.reconcile_native_global_reference_cache()?;
+    context.reconcile_trusted_global_references()?;
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *mut i64;
         for (index, name) in caller_locals.iter().enumerate() {
@@ -270,7 +272,7 @@ fn execute_native_include(
 // SAFETY: audited native ABI pointer boundary; see the function-local safety notes.
 #[allow(unsafe_code)]
 fn execute_native_eval(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     request: &php_jit::JitNativeDynamicCodeRequest,
 ) -> Result<NativeDynamicCodeOutcome, String> {
     let source = String::from_utf8_lossy(&native_string(
@@ -357,8 +359,9 @@ fn execute_native_eval(
     });
     let external_signatures = visible_external_function_signatures_for_unit(context, &compiled);
     NATIVE_INCLUDE_SYMBOLS.with(|symbols| {
-        symbols.replace(Some(context.take_include_symbols()));
-    });
+        symbols.replace(Some(context.take_include_symbols()?));
+        Ok::<(), String>(())
+    })?;
     NATIVE_INCLUDE_EXPORTS.with(|exports| {
         exports.take();
     });
@@ -379,6 +382,7 @@ fn execute_native_eval(
         NATIVE_INCLUDE_GLOBALS.with(|globals| globals.borrow_mut().take().unwrap_or_default());
     context.dynamic_constants = NATIVE_INCLUDE_CONSTANTS
         .with(|constants| constants.borrow_mut().take().unwrap_or_default());
+    context.prepare_trusted_constant_fetches();
     if let Some(returned_ini) = NATIVE_INCLUDE_INI.with(|ini| ini.borrow_mut().take()) {
         context.ini_registry = returned_ini;
     }
@@ -403,7 +407,7 @@ fn execute_native_eval(
     context.restore_include_symbols(returned_symbols);
     let exports = NATIVE_INCLUDE_EXPORTS.with(|exports| exports.borrow_mut().take());
     context.inherited_globals = returned_globals;
-    context.reconcile_native_global_reference_cache()?;
+    context.reconcile_trusted_global_references()?;
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *mut i64;
         for (index, name) in caller_locals.iter().enumerate() {
@@ -433,7 +437,7 @@ fn execute_native_eval(
 }
 
 fn render_native_include_failure(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     request: &php_jit::JitNativeDynamicCodeRequest,
     _message: &str,
 ) -> Result<i64, String> {
@@ -621,7 +625,7 @@ pub(in crate::vm) extern "C" fn jit_native_dynamic_code_abi(
                         "\nWarning: Constant {name} already defined, this will be an error in PHP 9 in {path} on line {line}\n"
                     ));
                 } else {
-                    context.dynamic_constants.insert(name.clone(), value);
+                    context.insert_dynamic_constant(name.clone(), value);
                 }
                 match context.encode(Value::Null) {
                     Ok(value) => (php_jit::JitCallStatus::RETURN, Some(value)),

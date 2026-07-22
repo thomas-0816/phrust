@@ -108,7 +108,7 @@ fn construct_dom_object(
 }
 
 pub(in crate::vm::jit_abi) fn construct_native_dom_class(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -122,7 +122,7 @@ pub(in crate::vm::jit_abi) fn construct_native_dom_class(
 }
 
 fn dom_load_file(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     path: &str,
 ) -> Result<Value, String> {
@@ -143,7 +143,7 @@ fn dom_load_file(
 }
 
 fn dom_save_file(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     path: &str,
 ) -> Result<Value, String> {
@@ -166,7 +166,7 @@ fn dom_save_file(
 }
 
 fn call_dom_method(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     method: &str,
     arguments: Vec<Value>,
@@ -373,7 +373,7 @@ fn call_dom_method(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_dom_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

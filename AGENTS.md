@@ -47,6 +47,24 @@ Engine-integrity checks happen at compilation/publication, not per invocation.
 
 Source-level fast-path counters are insufficient.
 
+### Sequencing rule
+
+Do not run ratchets, broad gates, benchmarks, profiles, or report generation
+while the native replacement is still being implemented. During the active
+cutover, validation is limited to focused formatting/type-checking/builds,
+native-compile probes without execution, and one semantic fixture for a
+completed vertical boundary.
+
+Collect the acceptance evidence below only after the native architecture is
+integrated and the superseded production warm paths have been deleted. The
+absence of fresh measurements during the incomplete cutover is not a blocker
+and must not trigger an early ratchet or benchmark run.
+
+The `PHRUST_NATIVE_CUTOVER_ACCEPTANCE=1` override exists only for that final
+post-cutover acceptance run. Do not set it to bypass the implementation-time
+guard. The same prohibition applies to invoking the guarded scripts directly
+or reaching them through a nested `just` target; neither is a valid bypass.
+
 Every tranche must provide:
 
 - emitted CLIF or relocation evidence;

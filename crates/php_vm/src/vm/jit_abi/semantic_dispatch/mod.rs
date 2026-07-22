@@ -68,7 +68,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_diagnostic_abi(
 #[allow(unsafe_code)]
 unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
     runtime: *mut NativeRequestFastState,
-    unit_identity: u64,
+    _unit_identity: u64,
     function: u32,
     continuation: u32,
     operation: u32,
@@ -88,7 +88,7 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
     };
     // SAFETY: every native entry receives the live request state directly and
     // helpers cannot outlive the synchronous request invocation.
-    let context = unsafe { &mut *runtime };
+    let context = unsafe { native_cold_context(runtime) };
     // SAFETY: function/continuation are constants emitted together with this
     // immutable callsite table. Artifact publication rejects mismatched code.
     let descriptor = unsafe {
@@ -110,21 +110,21 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
         context.enter_runtime_helper(helper_id);
     }
     let instruction = descriptor.semantic_instruction();
-    let outcome =
-        execute_native_semantic_operation(context, operation, instruction, operands, function);
+    let outcome = execute_native_semantic_operation(
+        context,
+        operation,
+        instruction,
+        operands,
+        function,
+        continuation,
+    );
     let outcome = match outcome {
         Ok(encoded) if operation == php_jit::region_ir::RegionSemanticOperationId::BindGlobal => {
             let php_ir::InstructionKind::BindGlobal { name, .. } = &instruction.kind else {
                 unreachable!("validated BindGlobal callsite must retain its source name")
             };
             context
-                .publish_native_global_reference(
-                    unit_identity,
-                    function,
-                    continuation,
-                    name,
-                    encoded,
-                )
+                .publish_native_global_reference(function, continuation, name, encoded)
                 .map(|()| encoded)
         }
         outcome => outcome,
@@ -189,21 +189,14 @@ pub(super) fn semantic_operation_helper_id(
 }
 
 pub(super) fn execute_native_semantic_operation(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     operation: php_jit::region_ir::RegionSemanticOperationId,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
     caller_function: u32,
+    continuation: u32,
 ) -> Result<i64, String> {
     use php_jit::region_ir::RegionSemanticOperationId as Id;
-
-    if matches!(
-        operation,
-        Id::PropertyAssign | Id::PropertyUnset | Id::PropertyDimAssign | Id::PropertyDimUnset
-    ) && let Some(object) = arguments.first().copied()
-    {
-        context.invalidate_object_property_cache_for_encoded(object)?;
-    }
 
     let outcome = match operation {
         Id::StaticPropertyFetch
@@ -232,9 +225,13 @@ pub(super) fn execute_native_semantic_operation(
         | Id::PropertyDimAssign
         | Id::PropertyDimIsset
         | Id::PropertyDimEmpty
-        | Id::PropertyDimUnset => {
-            execute_native_property_instruction(context, instruction, arguments, caller_function)
-        }
+        | Id::PropertyDimUnset => execute_native_property_instruction(
+            context,
+            instruction,
+            arguments,
+            caller_function,
+            Some(continuation),
+        ),
         Id::BindGlobal => execute_native_bind_global(context, instruction),
         Id::BoundClosureClass => return execute_bound_closure_class(context, arguments),
         Id::ObjectClassName => None,
@@ -251,7 +248,7 @@ pub(super) fn execute_native_semantic_operation(
 }
 
 fn execute_bound_closure_class(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
 ) -> Result<i64, String> {
     let [bound_object] = arguments else {

@@ -44,7 +44,7 @@ fn interval_seconds(value: &Value) -> Result<i64, String> {
 }
 
 pub(in crate::vm::jit_abi) fn construct_native_date_time(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -255,7 +255,7 @@ fn call_interval_method(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_date_time_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

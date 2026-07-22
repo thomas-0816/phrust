@@ -743,6 +743,13 @@ fn property_assignment_borrows_implicit_method_receiver() {
         baseline.register_fact(receiver).ownership,
         SsaOwnership::Borrowed
     );
+    assert_eq!(baseline.local_fact(this).ownership, SsaOwnership::Borrowed);
+    assert_eq!(
+        baseline.local_fact(argument).ownership,
+        SsaOwnership::Borrowed
+    );
+    assert!(!baseline.releases_local_at_frame_exit(this));
+    assert!(!baseline.releases_local_at_frame_exit(argument));
     assert_eq!(baseline.ssa().phi_count(), 0);
     baseline
         .verify_ownership(&region)

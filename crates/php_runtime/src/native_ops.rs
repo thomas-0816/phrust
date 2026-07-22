@@ -1,8 +1,8 @@
 //! Backend-neutral typed operations shared by native compiler tiers.
 
 use crate::convert::{
-    NumericValue, compare, equal, identical, php_float_to_int, to_array_php, to_bool, to_float,
-    to_int, to_number, to_object_php, to_string,
+    NumericValue, compare, equal, identical, numeric_comparison_is_unordered, php_float_to_int,
+    to_array_php, to_bool, to_float, to_int, to_number, to_object_php, to_string,
 };
 use crate::{OutputBuffer, PhpString, Value};
 
@@ -856,9 +856,19 @@ pub fn native_compare(
             NativeCompareOp::LessEqual => {
                 compare(lhs, rhs).map(|order| Value::Bool(!order.is_gt()))
             }
-            NativeCompareOp::Greater => compare(lhs, rhs).map(|order| Value::Bool(order.is_gt())),
+            NativeCompareOp::Greater => {
+                if numeric_comparison_is_unordered(lhs, rhs) {
+                    Ok(Value::Bool(false))
+                } else {
+                    compare(lhs, rhs).map(|order| Value::Bool(order.is_gt()))
+                }
+            }
             NativeCompareOp::GreaterEqual => {
-                compare(lhs, rhs).map(|order| Value::Bool(!order.is_lt()))
+                if numeric_comparison_is_unordered(lhs, rhs) {
+                    Ok(Value::Bool(false))
+                } else {
+                    compare(lhs, rhs).map(|order| Value::Bool(!order.is_lt()))
+                }
             }
             NativeCompareOp::Spaceship => compare(lhs, rhs).map(|order| {
                 Value::Int(match order {

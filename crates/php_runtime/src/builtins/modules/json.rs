@@ -16,36 +16,29 @@ use crate::{ArrayKey, PhpString, Value, to_bool};
 use serde_json::Value as JsonValue;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
-    BuiltinEntry::new(
-        "json_decode",
-        builtin_json_decode,
-        BuiltinCompatibility::Php,
-    ),
-    BuiltinEntry::new(
-        "json_encode",
-        builtin_json_encode,
-        BuiltinCompatibility::Php,
-    ),
+    BuiltinEntry::new("json_decode", exact_json_decode, BuiltinCompatibility::Php),
+    BuiltinEntry::new("json_encode", exact_json_encode, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "json_last_error",
-        builtin_json_last_error,
+        exact_json_last_error,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "json_last_error_msg",
-        builtin_json_last_error_msg,
+        exact_json_last_error_msg,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "json_validate",
-        builtin_json_validate,
+        exact_json_validate,
         BuiltinCompatibility::Php,
     ),
 ];
 
-macro_rules! json_builtin_adapter {
+macro_rules! exact_json_builtin {
     ($entry:ident => $implementation:ident) => {
-        pub(in crate::builtins::modules) fn $entry(
+        #[doc(hidden)]
+        pub fn $entry(
             context: &mut BuiltinContext<'_>,
             args: Vec<Value>,
             span: RuntimeSourceSpan,
@@ -56,11 +49,11 @@ macro_rules! json_builtin_adapter {
     };
 }
 
-json_builtin_adapter!(builtin_json_encode => json_encode);
-json_builtin_adapter!(builtin_json_decode => json_decode);
-json_builtin_adapter!(builtin_json_validate => json_validate);
-json_builtin_adapter!(builtin_json_last_error => json_last_error);
-json_builtin_adapter!(builtin_json_last_error_msg => json_last_error_msg);
+exact_json_builtin!(exact_json_encode => json_encode);
+exact_json_builtin!(exact_json_decode => json_decode);
+exact_json_builtin!(exact_json_validate => json_validate);
+exact_json_builtin!(exact_json_last_error => json_last_error);
+exact_json_builtin!(exact_json_last_error_msg => json_last_error_msg);
 
 fn json_encode(
     context: &mut JsonBuiltinServices<'_>,
@@ -198,6 +191,93 @@ fn json_decode_failure(
     } else {
         context.set_json_last_error(code);
         Ok(Value::Null)
+    }
+}
+
+/// Temporary typed parse tree returned by the exact associative JSON decoder.
+/// It contains JSON data only and is consumed immediately into authoritative
+/// native slots; it is not a second PHP value representation.
+#[derive(Debug)]
+pub enum NativeJsonDecodedValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(Vec<u8>),
+    Array(Vec<Self>),
+    Object(Vec<(Vec<u8>, Self)>),
+}
+
+fn native_json_decoded_value(value: JsonValue) -> NativeJsonDecodedValue {
+    match value {
+        JsonValue::Null => NativeJsonDecodedValue::Null,
+        JsonValue::Bool(value) => NativeJsonDecodedValue::Bool(value),
+        JsonValue::Number(value) => value.as_i64().map_or_else(
+            || {
+                NativeJsonDecodedValue::Float(
+                    value
+                        .as_f64()
+                        .or_else(|| value.to_string().parse().ok())
+                        .unwrap_or(0.0),
+                )
+            },
+            NativeJsonDecodedValue::Int,
+        ),
+        JsonValue::String(value) => NativeJsonDecodedValue::String(value.into_bytes()),
+        JsonValue::Array(values) => NativeJsonDecodedValue::Array(
+            values.into_iter().map(native_json_decoded_value).collect(),
+        ),
+        JsonValue::Object(values) => NativeJsonDecodedValue::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key.into_bytes(), native_json_decoded_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+/// Parses the exact `json_decode($bytes, true, $depth, 0)` capability without
+/// constructing `PhpArray`, `ObjectRef`, or PHP `Value` instances.
+#[doc(hidden)]
+pub fn decode_native_json_associative(
+    state: &mut crate::builtins::JsonRequestState,
+    input: &[u8],
+    depth: i64,
+) -> Result<NativeJsonDecodedValue, BuiltinError> {
+    if depth <= 0 {
+        return Err(argument_value_error(
+            "json_decode",
+            "#3 ($depth)",
+            "must be greater than 0",
+        ));
+    }
+    if depth > i32::MAX as i64 {
+        return Err(argument_value_error(
+            "json_decode",
+            "#3 ($depth)",
+            &format!("must be less than {}", i32::MAX),
+        ));
+    }
+    let input = match json_decode_input(input, 0) {
+        Ok(input) => input,
+        Err(code) => {
+            state.set(code);
+            return Ok(NativeJsonDecodedValue::Null);
+        }
+    };
+    match serde_json::from_str::<JsonValue>(&input) {
+        Ok(json) if json_depth(&json) <= depth as usize => {
+            state.set(JSON_ERROR_NONE);
+            Ok(native_json_decoded_value(json))
+        }
+        Ok(_) => {
+            state.set(JSON_ERROR_DEPTH);
+            Ok(NativeJsonDecodedValue::Null)
+        }
+        Err(error) => {
+            state.set(classify_json_decode_error(&input, &error));
+            Ok(NativeJsonDecodedValue::Null)
+        }
     }
 }
 
@@ -405,9 +485,22 @@ fn json_validate(
         .map(|value| int_arg("json_validate", value))
         .transpose()?
         .unwrap_or(0);
-    if input.as_bytes().is_empty() {
-        context.set_json_last_error(JSON_ERROR_SYNTAX);
-        return Ok(Value::Bool(false));
+    validate_native_json(context.request_state(), input.as_bytes(), depth, flags).map(Value::Bool)
+}
+
+/// Exact JSON validation over native string bytes and the dedicated
+/// request-local JSON capability. No PHP `Value` or generic builtin context
+/// crosses this boundary.
+#[doc(hidden)]
+pub fn validate_native_json(
+    state: &mut crate::builtins::JsonRequestState,
+    input: &[u8],
+    depth: i64,
+    flags: i64,
+) -> Result<bool, BuiltinError> {
+    if input.is_empty() {
+        state.set(JSON_ERROR_SYNTAX);
+        return Ok(false);
     }
     if depth <= 0 {
         return Err(argument_value_error(
@@ -430,30 +523,30 @@ fn json_validate(
             "must be a valid flag (allowed flags: JSON_INVALID_UTF8_IGNORE)",
         ));
     }
-    let input = match std::str::from_utf8(input.as_bytes()) {
+    let input = match std::str::from_utf8(input) {
         Ok(input) => input.to_string(),
-        Err(_) if flags & JSON_INVALID_UTF8_IGNORE != 0 => utf8_ignore_invalid(input.as_bytes()),
+        Err(_) if flags & JSON_INVALID_UTF8_IGNORE != 0 => utf8_ignore_invalid(input),
         Err(_) => {
-            context.set_json_last_error(JSON_ERROR_UTF8);
-            return Ok(Value::Bool(false));
+            state.set(JSON_ERROR_UTF8);
+            return Ok(false);
         }
     };
     match serde_json::from_str::<JsonValue>(&input) {
         Ok(json) if json_depth(&json) <= depth as usize => {
-            context.set_json_last_error(JSON_ERROR_NONE);
-            Ok(Value::Bool(true))
+            state.set(JSON_ERROR_NONE);
+            Ok(true)
         }
         Ok(_) => {
-            context.set_json_last_error(JSON_ERROR_DEPTH);
-            Ok(Value::Bool(false))
+            state.set(JSON_ERROR_DEPTH);
+            Ok(false)
         }
         Err(_) if flags & JSON_THROW_ON_ERROR != 0 => Err(BuiltinError::new(
             "E_PHP_RUNTIME_JSON_EXCEPTION",
             json_error_message(JSON_ERROR_SYNTAX),
         )),
         Err(_) => {
-            context.set_json_last_error(JSON_ERROR_SYNTAX);
-            Ok(Value::Bool(false))
+            state.set(JSON_ERROR_SYNTAX);
+            Ok(false)
         }
     }
 }

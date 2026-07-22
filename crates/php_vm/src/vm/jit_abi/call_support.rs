@@ -21,7 +21,7 @@ pub(super) fn stable_native_symbol_hash(name: &str) -> u64 {
 }
 
 pub(super) fn native_catch_matches(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     types: &[String],
     value: i64,
 ) -> bool {
@@ -42,7 +42,7 @@ pub(super) fn native_catch_matches(
 }
 
 pub(super) fn invoke_native_function(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
 ) -> Result<i64, String> {
@@ -50,7 +50,7 @@ pub(super) fn invoke_native_function(
 }
 
 pub(super) fn invoke_native_function_with_metadata(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
@@ -65,7 +65,7 @@ pub(super) fn invoke_native_function_with_metadata(
 }
 
 pub(super) fn invoke_native_function_with_metadata_strict(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
@@ -129,7 +129,7 @@ pub(super) fn invoke_native_function_with_metadata_strict(
             .iter()
             .copied()
             .collect::<request_state::NativeTraceArguments>();
-        return invoke_native_method_with_prepared_trace_arguments(
+        return invoke_native_with_owned_bound_arguments(
             context,
             function,
             &bound,
@@ -325,7 +325,7 @@ pub(super) fn invoke_native_function_with_metadata_strict(
         .chain(&visible_extra)
         .copied()
         .collect::<request_state::NativeTraceArguments>();
-    invoke_native_method_with_prepared_trace_arguments(
+    invoke_native_with_owned_bound_arguments(
         context,
         function,
         &bound,
@@ -334,8 +334,27 @@ pub(super) fn invoke_native_function_with_metadata_strict(
     )
 }
 
+fn invoke_native_with_owned_bound_arguments(
+    context: &mut NativeRequestColdState<'_>,
+    function: php_ir::FunctionId,
+    bound: &[i64],
+    trace_arguments: Option<request_state::NativeTraceArguments>,
+    metadata: Option<NativeFunctionMetadataPtr>,
+) -> Result<i64, String> {
+    // Bound handles are transferred into the callee frame. Native epilogues
+    // release parameter locals on every return/unwind edge; releasing them a
+    // second time here recycled live array/object slots during callbacks.
+    invoke_native_method_with_prepared_trace_arguments(
+        context,
+        function,
+        bound,
+        trace_arguments,
+        metadata,
+    )
+}
+
 pub(super) fn materialize_native_property_reference_arguments(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &mut [php_jit::JitNativeCallArgument],
     encoded: &mut [i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
@@ -397,7 +416,7 @@ pub(super) fn materialize_native_property_reference_arguments(
 }
 
 pub(super) fn invoke_native_named_callable(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
     instruction: &php_ir::Instruction,
@@ -438,11 +457,11 @@ pub(super) fn invoke_native_named_callable(
         name.rsplit('\\').next().unwrap_or(name)
     };
     let expanded = bind_native_builtin_arguments(context, builtin_name, arguments, metadata)?;
-    execute_native_builtin(context, builtin_name, &expanded, instruction, None, None)
+    execute_baseline_native_builtin(context, builtin_name, &expanded, instruction, None, None)
 }
 
 pub(super) fn expand_native_unpack_arguments(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
 ) -> Result<Vec<i64>, String> {
@@ -466,7 +485,7 @@ pub(super) fn expand_native_unpack_arguments(
 }
 
 pub(super) fn native_builtin_default_value(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     expression: &str,
 ) -> Result<Value, String> {
     let expression = expression.trim();
@@ -529,7 +548,7 @@ pub(super) fn native_builtin_arguments_require_binding(
 }
 
 pub(super) fn bind_native_builtin_arguments<'a>(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &'a [i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
@@ -597,7 +616,7 @@ pub(super) fn bind_native_builtin_arguments<'a>(
 }
 
 pub(super) fn invoke_native_bound_method(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     target: &php_runtime::api::CallableMethodTarget,
     method: &str,
     arguments: &[i64],
@@ -685,7 +704,7 @@ pub(super) fn invoke_native_bound_method(
 }
 
 pub(super) fn execute_native_dynamic_callable(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     encoded: &[i64],
     caller_function: Option<u32>,
@@ -925,7 +944,7 @@ pub(super) fn execute_native_dynamic_callable(
 }
 
 pub(super) fn execute_native_dynamic_constructor(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     encoded: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -1008,7 +1027,7 @@ pub(super) fn execute_native_dynamic_constructor(
 }
 
 pub(super) fn execute_native_generator_method(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     encoded: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -1023,7 +1042,7 @@ pub(super) fn execute_native_generator_method(
     };
     let result = (|| -> Result<i64, String> {
         let iterator = context.generator_iterator(generator.clone())?;
-        let ensure_started = |context: &mut NativeExecutionContext<'_>| {
+        let ensure_started = |context: &mut NativeRequestColdState<'_>| {
             if generator.state() == php_runtime::api::GeneratorState::Created {
                 context.iterator_next(iterator).map(|_| ())
             } else {
@@ -1103,7 +1122,7 @@ pub(super) fn execute_native_generator_method(
 }
 
 pub(super) fn finish_native_fiber_outcome(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     fiber: &php_runtime::api::FiberRef,
     handle: php_jit::JitFunctionHandle,
     arguments: Vec<i64>,
@@ -1135,7 +1154,8 @@ pub(super) fn finish_native_fiber_outcome(
                     nested: context.pending_nested_fiber_execution.take().map(Box::new),
                 },
             );
-            context.encode(context.decode(value)?)
+            let value = context.decode(value)?;
+            context.encode(value)
         }
         php_jit::JitI64InvokeOutcome::SideExit { status, value, .. }
             if status == php_jit::JitCallStatus::THROW.0 as i32 =>
@@ -1162,7 +1182,7 @@ pub(super) fn finish_native_fiber_outcome(
 }
 
 pub(super) fn execute_native_fiber_suspend(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     encoded: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -1190,7 +1210,7 @@ pub(super) fn execute_native_fiber_suspend(
 }
 
 pub(super) fn execute_native_fiber_method(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     encoded: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -1262,7 +1282,7 @@ pub(super) fn execute_native_fiber_method(
                 arguments.extend_from_slice(&encoded[1..]);
                 fiber.set_state(php_runtime::api::FiberState::Running);
                 let previous_fiber = context.active_fiber.replace(fiber.id());
-                let runtime = std::ptr::from_mut(context).cast::<std::ffi::c_void>();
+                let runtime = context.native_runtime_ptr();
                 let outcome = handle
                     .invoke_i64_with_deopt_runtime(
                         &arguments,
@@ -1296,7 +1316,7 @@ pub(super) fn execute_native_fiber_method(
                 };
                 if let Some(mut nested) = execution.nested.take() {
                     let previous_fiber = context.active_fiber.replace(fiber.id());
-                    let runtime = std::ptr::from_mut(context).cast::<std::ffi::c_void>();
+                    let runtime = context.native_runtime_ptr();
                     let nested_outcome = nested
                         .handle
                         .invoke_i64_suspension_resume_with_native_unwind_runtime(
@@ -1323,7 +1343,7 @@ pub(super) fn execute_native_fiber_method(
                                 value,
                             ));
                             let previous_fiber = context.active_fiber.replace(fiber.id());
-                            let runtime = std::ptr::from_mut(context).cast::<std::ffi::c_void>();
+                            let runtime = context.native_runtime_ptr();
                             let outcome = execution
                                 .handle
                                 .invoke_i64_same_artifact_transition_runtime(
@@ -1352,7 +1372,8 @@ pub(super) fn execute_native_fiber_method(
                             execution.nested = Some(nested);
                             context.fiber_executions.insert(fiber.id(), execution);
                             fiber.set_state(php_runtime::api::FiberState::Suspended);
-                            return context.encode(context.decode(value)?);
+                            let value = context.decode(value)?;
+                            return context.encode(value);
                         }
                         php_jit::JitI64InvokeOutcome::SideExit { status, .. } => {
                             return Err(format!("native nested fiber returned status {status}"));
@@ -1360,7 +1381,7 @@ pub(super) fn execute_native_fiber_method(
                     }
                 }
                 let previous_fiber = context.active_fiber.replace(fiber.id());
-                let runtime = std::ptr::from_mut(&mut *context).cast::<std::ffi::c_void>();
+                let runtime = context.native_runtime_ptr();
                 let outcome = execution
                     .handle
                     .invoke_i64_suspension_resume_with_native_unwind_runtime(
@@ -1389,7 +1410,7 @@ pub(super) fn execute_native_fiber_method(
 }
 
 pub(super) fn invoke_native_callable_value(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     callable: Value,
     arguments: &[Value],
     source: &php_ir::Instruction,
@@ -1399,7 +1420,7 @@ pub(super) fn invoke_native_callable_value(
 }
 
 pub(super) fn invoke_native_callable_value_from(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     callable: Value,
     arguments: &[Value],
     source: &php_ir::Instruction,
@@ -1411,11 +1432,28 @@ pub(super) fn invoke_native_callable_value_from(
     for argument in arguments {
         encoded.push(context.encode(argument.clone())?);
     }
-    invoke_native_encoded_callable_value_from(context, &encoded, source, metadata, caller_function)
+    let result = invoke_native_encoded_callable_value_from(
+        context,
+        &encoded,
+        source,
+        metadata,
+        caller_function,
+    );
+    let mut release_error = None;
+    for value in encoded {
+        if let Err(error) = context.release_if_live(value) {
+            release_error.get_or_insert(error);
+        }
+    }
+    match (result, release_error) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Some(error)) => Err(error),
+        (Ok(value), None) => Ok(value),
+    }
 }
 
 pub(super) fn invoke_native_encoded_callable_value_from(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     encoded: &[i64],
     source: &php_ir::Instruction,
     metadata: Option<Vec<php_ir::instruction::IrCallArg>>,

@@ -38,9 +38,12 @@ pub struct VmCounters {
 
     pub native_execution_entries: u64,
     pub native_execution_time_nanos: u64,
+    pub native_baseline_entry_executions: u64,
+    pub native_optimizing_entry_executions: u64,
     pub native_region_entries: u64,
     pub native_region_side_exits: u64,
     pub native_region_side_exits_by_reason: BTreeMap<String, u64>,
+    pub native_production_lowering_by_site: BTreeMap<String, u64>,
     pub native_call_direct: u64,
     pub native_call_dynamic: u64,
     pub native_callsite_total: u64,
@@ -78,6 +81,11 @@ pub struct VmCounters {
     pub native_worker_stack_committed_bytes: u64,
     pub native_frame_arena_capacity_bytes: u64,
     pub native_frame_arena_high_water_bytes: u64,
+    pub native_arena_reserved_bytes: BTreeMap<String, u64>,
+    pub native_arena_high_water_bytes: BTreeMap<String, u64>,
+    pub native_arena_resident_bytes: BTreeMap<String, u64>,
+    pub native_arena_reused_bytes: BTreeMap<String, u64>,
+    pub native_arena_reset_bytes: BTreeMap<String, u64>,
     pub native_inlined_calls: u64,
     pub native_inline_bytes_added: u64,
     pub native_inline_calls_removed: u64,
@@ -130,7 +138,7 @@ impl VmCounters {
         format!(
             concat!(
                 "{{\n",
-                "  \"schema_version\": 13,\n",
+                "  \"schema_version\": 15,\n",
                 "  \"native_compile_attempts\": {},\n",
                 "  \"native_compile_successes\": {},\n",
                 "  \"native_compile_failures\": {},\n",
@@ -147,9 +155,12 @@ impl VmCounters {
                 "  \"native_cache_bytes_written\": {},\n",
                 "  \"native_execution_entries\": {},\n",
                 "  \"native_execution_time_nanos\": {},\n",
+                "  \"native_baseline_entry_executions\": {},\n",
+                "  \"native_optimizing_entry_executions\": {},\n",
                 "  \"native_region_entries\": {},\n",
                 "  \"native_region_side_exits\": {},\n",
                 "  \"native_region_side_exits_by_reason\": {},\n",
+                "  \"native_production_lowering_by_site\": {},\n",
                 "  \"native_call_direct\": {},\n",
                 "  \"native_call_dynamic\": {},\n",
                 "  \"native_callsite_total\": {},\n",
@@ -187,6 +198,11 @@ impl VmCounters {
                 "  \"native_worker_stack_committed_bytes\": {},\n",
                 "  \"native_frame_arena_capacity_bytes\": {},\n",
                 "  \"native_frame_arena_high_water_bytes\": {},\n",
+                "  \"native_arena_reserved_bytes\": {},\n",
+                "  \"native_arena_high_water_bytes\": {},\n",
+                "  \"native_arena_resident_bytes\": {},\n",
+                "  \"native_arena_reused_bytes\": {},\n",
+                "  \"native_arena_reset_bytes\": {},\n",
                 "  \"native_inlined_calls\": {},\n",
                 "  \"native_inline_bytes_added\": {},\n",
                 "  \"native_inline_calls_removed\": {},\n",
@@ -249,9 +265,12 @@ impl VmCounters {
             self.native_cache_bytes_written,
             self.native_execution_entries,
             self.native_execution_time_nanos,
+            self.native_baseline_entry_executions,
+            self.native_optimizing_entry_executions,
             self.native_region_entries,
             self.native_region_side_exits,
             counter_map_json(&self.native_region_side_exits_by_reason),
+            counter_map_json(&self.native_production_lowering_by_site),
             self.native_call_direct,
             self.native_call_dynamic,
             self.native_callsite_total,
@@ -289,6 +308,11 @@ impl VmCounters {
             self.native_worker_stack_committed_bytes,
             self.native_frame_arena_capacity_bytes,
             self.native_frame_arena_high_water_bytes,
+            counter_map_json(&self.native_arena_reserved_bytes),
+            counter_map_json(&self.native_arena_high_water_bytes),
+            counter_map_json(&self.native_arena_resident_bytes),
+            counter_map_json(&self.native_arena_reused_bytes),
+            counter_map_json(&self.native_arena_reset_bytes),
             self.native_inlined_calls,
             self.native_inline_bytes_added,
             self.native_inline_calls_removed,
@@ -402,7 +426,7 @@ mod tests {
             .insert("native_\"binary\"".to_owned(), 17);
 
         let parsed: serde_json::Value = serde_json::from_str(&counters.to_json()).unwrap();
-        assert_eq!(parsed["schema_version"], 13);
+        assert_eq!(parsed["schema_version"], 15);
         assert_eq!(parsed["runtime_helper_calls_by_id"]["native_\"binary\""], 2);
         assert_eq!(
             parsed["runtime_helper_time_nanos_by_id"]["native_\"binary\""],

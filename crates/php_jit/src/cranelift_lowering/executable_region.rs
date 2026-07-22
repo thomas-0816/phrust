@@ -948,28 +948,31 @@ impl NativeRegisterLiveness {
 fn ir_function_requires_trampoline(function: &php_ir::IrFunction) -> bool {
     function.params.iter().any(|parameter| parameter.by_ref)
         || function.returns_by_ref
-        || function.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instruction| {
-                matches!(
-                    instruction.kind,
-                    php_ir::InstructionKind::EnterTry { .. }
-                        | php_ir::InstructionKind::LeaveTry
-                        | php_ir::InstructionKind::Throw { .. }
-                        | php_ir::InstructionKind::MakeClosure { .. }
-                        | php_ir::InstructionKind::Yield { .. }
-                        | php_ir::InstructionKind::YieldFrom { .. }
-                )
-            })
+        || ir_function_requires_non_reference_trampoline(function)
+}
+
+fn ir_function_requires_non_reference_trampoline(function: &php_ir::IrFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.kind,
+                php_ir::InstructionKind::EnterTry { .. }
+                    | php_ir::InstructionKind::LeaveTry
+                    | php_ir::InstructionKind::Throw { .. }
+                    | php_ir::InstructionKind::MakeClosure { .. }
+                    | php_ir::InstructionKind::Yield { .. }
+                    | php_ir::InstructionKind::YieldFrom { .. }
+            )
         })
-        || function.attributes.iter().any(|attribute| {
-            attribute
-                .resolved_name
-                .as_deref()
-                .or(attribute.fallback_name.as_deref())
-                .unwrap_or(&attribute.name)
-                .trim_start_matches('\\')
-                .eq_ignore_ascii_case("deprecated")
-        })
+    }) || function.attributes.iter().any(|attribute| {
+        attribute
+            .resolved_name
+            .as_deref()
+            .or(attribute.fallback_name.as_deref())
+            .unwrap_or(&attribute.name)
+            .trim_start_matches('\\')
+            .eq_ignore_ascii_case("deprecated")
+    })
 }
 
 fn declare_baseline_value_operation(
@@ -1215,6 +1218,57 @@ pub(super) fn compile_region_graph_native(
                 if stable_builtin_helper_id(&call.target).is_some())
         })
     });
+    let needs_exact_symbol_query: [bool; StableSymbolQueryBuiltin::COUNT] =
+        std::array::from_fn(|index| {
+            !baseline_helper_imports
+                && regions.values().any(|region| {
+                    region_contains(region, |kind| {
+                        matches!(kind, RegionInstructionKind::NativeCall(call)
+                            if stable_builtin_symbol_query(&call.target)
+                                .is_some_and(|builtin| builtin.index() == index))
+                    })
+                })
+        });
+    let needs_exact_pcre: [bool; StablePcreBuiltin::COUNT] = std::array::from_fn(|index| {
+        !baseline_helper_imports
+            && regions.values().any(|region| {
+                region_contains(region, |kind| {
+                    matches!(kind, RegionInstructionKind::NativeCall(call)
+                        if stable_builtin_pcre(&call.target)
+                            .is_some_and(|builtin| builtin.index() == index))
+                })
+            })
+    });
+    let needs_exact_json: [bool; StableJsonBuiltin::COUNT] = std::array::from_fn(|index| {
+        !baseline_helper_imports
+            && regions.values().any(|region| {
+                region_contains(region, |kind| {
+                    matches!(kind, RegionInstructionKind::NativeCall(call)
+                        if stable_builtin_json(&call.target)
+                            .is_some_and(|builtin| builtin.index() == index))
+                })
+            })
+    });
+    let needs_exact_format: [bool; StableFormatBuiltin::COUNT] = std::array::from_fn(|index| {
+        !baseline_helper_imports
+            && regions.values().any(|region| {
+                region_contains(region, |kind| {
+                    matches!(kind, RegionInstructionKind::NativeCall(call)
+                        if stable_builtin_format(&call.target)
+                            .is_some_and(|builtin| builtin.index() == index))
+                })
+            })
+    });
+    let needs_exact_path: [bool; StablePathBuiltin::COUNT] = std::array::from_fn(|index| {
+        !baseline_helper_imports
+            && regions.values().any(|region| {
+                region_contains(region, |kind| {
+                    matches!(kind, RegionInstructionKind::NativeCall(call)
+                        if stable_builtin_path(&call.target)
+                            .is_some_and(|builtin| builtin.index() == index))
+                })
+            })
+    });
     let needs_semantic_dispatch = regions.values().any(|region| {
         region_contains(region, |kind| {
             matches!(kind, RegionInstructionKind::NativeCall(call)
@@ -1261,7 +1315,7 @@ pub(super) fn compile_region_graph_native(
         ));
     }
     let native_call_symbol = NATIVE_CALL_DISPATCH_SYMBOL.to_owned();
-    let native_builtin_dispatch_symbol = NATIVE_BUILTIN_DISPATCH_SYMBOL.to_owned();
+    let native_builtin_dispatch_symbol = BASELINE_NATIVE_BUILTIN_DISPATCH_SYMBOL.to_owned();
     let native_semantic_dispatch_symbol = NATIVE_SEMANTIC_DISPATCH_SYMBOL.to_owned();
     let native_function_resolve_symbol = NATIVE_FUNCTION_RESOLVE_SYMBOL.to_owned();
     let native_dynamic_code_symbol = NATIVE_DYNAMIC_CODE_SYMBOL.to_owned();
@@ -1297,6 +1351,42 @@ pub(super) fn compile_region_graph_native(
                 RegionInstructionKind::Cast { .. }
                     | RegionInstructionKind::EmptyDim { .. }
                     | RegionInstructionKind::EmptyLocal { .. }
+            )
+        })
+    });
+    let needs_float_to_string = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(
+                kind,
+                RegionInstructionKind::Cast {
+                    op: RegionCastOp::String,
+                    ..
+                }
+            )
+        })
+    });
+    let needs_float_to_int = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(
+                kind,
+                RegionInstructionKind::Cast {
+                    op: RegionCastOp::Int,
+                    ..
+                } | RegionInstructionKind::Unary {
+                    op: RegionUnaryOp::BitNot,
+                    ..
+                }
+            )
+        })
+    });
+    let needs_object_class_name = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(
+                kind,
+                RegionInstructionKind::FetchObjectClassName {
+                    prepared_class: None,
+                    ..
+                }
             )
         })
     });
@@ -1427,6 +1517,11 @@ pub(super) fn compile_region_graph_native(
     let needs_object_clone = regions.values().any(|region| {
         region_contains(region, |kind| {
             matches!(kind, RegionInstructionKind::CloneObject { .. })
+        })
+    });
+    let needs_plain_object_clone = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(kind, RegionInstructionKind::CloneObject { plain: true, .. })
         })
     });
     let needs_object_clone_with = regions.values().any(|region| {
@@ -1577,7 +1672,11 @@ pub(super) fn compile_region_graph_native(
     let needs_unary = baseline_helper_imports && needs_unary;
     let needs_binary = baseline_helper_imports && needs_binary;
     let needs_compare = baseline_helper_imports && needs_compare;
+    let needs_float_to_string = !baseline_helper_imports && needs_float_to_string;
+    let needs_float_to_int = !baseline_helper_imports && needs_float_to_int;
+    let needs_object_class_name = !baseline_helper_imports && needs_object_class_name;
     let needs_cast = baseline_helper_imports && needs_cast;
+    let needs_direct_echo = !baseline_helper_imports && needs_echo;
     let needs_echo = baseline_helper_imports && needs_echo;
     let needs_local_fetch = baseline_helper_imports && needs_local_fetch;
     let needs_local_store = baseline_helper_imports && needs_local_store;
@@ -1587,10 +1686,12 @@ pub(super) fn compile_region_graph_native(
     let needs_return_check = baseline_helper_imports && needs_return_check;
     let needs_exception_new = baseline_helper_imports && needs_exception_new;
     let needs_array_new = baseline_helper_imports && needs_array_new;
+    let needs_prepared_object_new = !baseline_helper_imports && needs_object_new;
     let needs_object_new = baseline_helper_imports && needs_object_new;
     let needs_property_fetch = baseline_helper_imports && needs_property_fetch;
     let needs_property_assign = baseline_helper_imports && needs_property_assign;
     let needs_object_clone = baseline_helper_imports && needs_object_clone;
+    let needs_plain_object_clone = !baseline_helper_imports && needs_plain_object_clone;
     let needs_object_clone_with = baseline_helper_imports && needs_object_clone_with;
     let needs_array_insert = baseline_helper_imports && needs_array_insert;
     let needs_array_fetch = baseline_helper_imports && needs_array_fetch;
@@ -1621,6 +1722,121 @@ pub(super) fn compile_region_graph_native(
             native_builtin_dispatch_symbol.clone(),
             runtime_helpers.native_builtin_dispatch,
         ));
+    }
+    for builtin in StableSymbolQueryBuiltin::all() {
+        if !needs_exact_symbol_query[builtin.index()] {
+            continue;
+        }
+        let address = match builtin {
+            StableSymbolQueryBuiltin::Defined => runtime_helpers.native_defined,
+            StableSymbolQueryBuiltin::FunctionExists => runtime_helpers.native_function_exists,
+            StableSymbolQueryBuiltin::ClassExists => runtime_helpers.native_class_exists,
+            StableSymbolQueryBuiltin::InterfaceExists => runtime_helpers.native_interface_exists,
+            StableSymbolQueryBuiltin::TraitExists => runtime_helpers.native_trait_exists,
+            StableSymbolQueryBuiltin::EnumExists => runtime_helpers.native_enum_exists,
+            StableSymbolQueryBuiltin::MethodExists => runtime_helpers.native_method_exists,
+            StableSymbolQueryBuiltin::PropertyExists => runtime_helpers.native_property_exists,
+        };
+        if address == 0 {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_NATIVE_SYMBOL_QUERY",
+                format!(
+                    "prepared symbol query requires exact handler {}",
+                    builtin.symbol()
+                ),
+            ));
+        }
+        imports.push((builtin.symbol().to_owned(), address));
+    }
+    for builtin in StablePcreBuiltin::all() {
+        if !needs_exact_pcre[builtin.index()] {
+            continue;
+        }
+        let address = match builtin {
+            StablePcreBuiltin::Match => runtime_helpers.native_preg_match,
+            StablePcreBuiltin::MatchAll => runtime_helpers.native_preg_match_all,
+            StablePcreBuiltin::Replace => runtime_helpers.native_preg_replace,
+            StablePcreBuiltin::Filter => runtime_helpers.native_preg_filter,
+            StablePcreBuiltin::Split => runtime_helpers.native_preg_split,
+            StablePcreBuiltin::Grep => runtime_helpers.native_preg_grep,
+            StablePcreBuiltin::Quote => runtime_helpers.native_preg_quote,
+            StablePcreBuiltin::LastError => runtime_helpers.native_preg_last_error,
+            StablePcreBuiltin::LastErrorMessage => runtime_helpers.native_preg_last_error_msg,
+        };
+        if address == 0 {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_EXACT_PCRE",
+                format!(
+                    "prepared PCRE builtin requires exact handler {}",
+                    builtin.symbol()
+                ),
+            ));
+        }
+        imports.push((builtin.symbol().to_owned(), address));
+    }
+    for builtin in StableJsonBuiltin::all() {
+        if !needs_exact_json[builtin.index()] {
+            continue;
+        }
+        let address = match builtin {
+            StableJsonBuiltin::Encode => runtime_helpers.native_json_encode,
+            StableJsonBuiltin::Decode => runtime_helpers.native_json_decode,
+            StableJsonBuiltin::Validate => runtime_helpers.native_json_validate,
+            StableJsonBuiltin::LastError => runtime_helpers.native_json_last_error,
+            StableJsonBuiltin::LastErrorMessage => runtime_helpers.native_json_last_error_msg,
+        };
+        if address == 0 {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_EXACT_JSON",
+                format!(
+                    "prepared JSON builtin requires exact handler {}",
+                    builtin.symbol()
+                ),
+            ));
+        }
+        imports.push((builtin.symbol().to_owned(), address));
+    }
+    for builtin in StableFormatBuiltin::all() {
+        if !needs_exact_format[builtin.index()] {
+            continue;
+        }
+        let address = match builtin {
+            StableFormatBuiltin::Sprintf => runtime_helpers.native_sprintf,
+            StableFormatBuiltin::Printf => runtime_helpers.native_printf,
+            StableFormatBuiltin::Vsprintf => runtime_helpers.native_vsprintf,
+            StableFormatBuiltin::Vprintf => runtime_helpers.native_vprintf,
+        };
+        if address == 0 {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_EXACT_FORMAT",
+                format!(
+                    "prepared formatting builtin requires exact handler {}",
+                    builtin.symbol()
+                ),
+            ));
+        }
+        imports.push((builtin.symbol().to_owned(), address));
+    }
+    for builtin in StablePathBuiltin::all() {
+        if !needs_exact_path[builtin.index()] {
+            continue;
+        }
+        let address = match builtin {
+            StablePathBuiltin::Basename => runtime_helpers.native_basename,
+            StablePathBuiltin::Dirname => runtime_helpers.native_dirname,
+            StablePathBuiltin::Realpath => runtime_helpers.native_realpath,
+            StablePathBuiltin::FileExists => runtime_helpers.native_file_exists,
+        };
+        if address == 0 {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_EXACT_PATH",
+                format!(
+                    "prepared path builtin requires exact handler {}",
+                    builtin.symbol()
+                ),
+            ));
+        }
+        imports.push((builtin.symbol().to_owned(), address));
     }
     if baseline_helper_imports && needs_semantic_dispatch {
         imports.push((
@@ -1859,6 +2075,84 @@ pub(super) fn compile_region_graph_native(
             imports.push((symbol.to_owned(), address));
         }
     }
+    if needs_direct_echo {
+        for (configured, fallback, symbol) in [
+            (
+                runtime_helpers.native_echo_bytes,
+                test_native_echo_bytes_fallback as *const () as usize,
+                "phrust_native_echo_bytes",
+            ),
+            (
+                runtime_helpers.native_echo_int,
+                test_native_echo_int_fallback as *const () as usize,
+                "phrust_native_echo_int",
+            ),
+            (
+                runtime_helpers.native_echo_float,
+                test_native_echo_float_fallback as *const () as usize,
+                "phrust_native_echo_float",
+            ),
+        ] {
+            imports.push((
+                symbol.to_owned(),
+                if configured == 0 {
+                    fallback
+                } else {
+                    configured
+                },
+            ));
+        }
+    }
+    if needs_float_to_string {
+        imports.push((
+            "phrust_native_float_to_string".to_owned(),
+            if runtime_helpers.native_float_to_string == 0 {
+                test_native_float_to_string_fallback as *const () as usize
+            } else {
+                runtime_helpers.native_float_to_string
+            },
+        ));
+    }
+    if needs_float_to_int {
+        imports.push((
+            "phrust_native_float_to_int".to_owned(),
+            if runtime_helpers.native_float_to_int == 0 {
+                test_native_float_to_int_fallback as *const () as usize
+            } else {
+                runtime_helpers.native_float_to_int
+            },
+        ));
+    }
+    if needs_object_class_name {
+        imports.push((
+            "phrust_native_object_class_name".to_owned(),
+            if runtime_helpers.native_object_class_name == 0 {
+                test_native_object_class_name_fallback as *const () as usize
+            } else {
+                runtime_helpers.native_object_class_name
+            },
+        ));
+    }
+    if needs_prepared_object_new {
+        imports.push((
+            "phrust_native_prepared_object_new".to_owned(),
+            if runtime_helpers.native_prepared_object_new == 0 {
+                test_native_prepared_object_new_fallback as *const () as usize
+            } else {
+                runtime_helpers.native_prepared_object_new
+            },
+        ));
+    }
+    if needs_plain_object_clone {
+        imports.push((
+            "phrust_native_plain_object_clone".to_owned(),
+            if runtime_helpers.native_plain_object_clone == 0 {
+                test_native_plain_object_clone_fallback as *const () as usize
+            } else {
+                runtime_helpers.native_plain_object_clone
+            },
+        ));
+    }
     #[cfg(test)]
     {
         let aliases = imports
@@ -1947,6 +2241,214 @@ pub(super) fn compile_region_graph_native(
             };
             let mut native_operations = NativeOperationFunctions::default();
             let pointer_type = module.target_config().pointer_type();
+            let mut exact_symbol_query = [None; StableSymbolQueryBuiltin::COUNT];
+            for builtin in StableSymbolQueryBuiltin::all() {
+                if !needs_exact_symbol_query[builtin.index()] {
+                    continue;
+                }
+                let mut signature = module.make_signature();
+                for _ in 0..4 {
+                    signature.params.push(AbiParam::new(types::I32));
+                }
+                for _ in 0..6 {
+                    signature.params.push(AbiParam::new(types::I64));
+                }
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                exact_symbol_query[builtin.index()] = Some(declare_native_helper(
+                    module,
+                    builtin.symbol(),
+                    &signature,
+                    helper_address(builtin.symbol()),
+                )?);
+            }
+            let mut exact_pcre = [None; StablePcreBuiltin::COUNT];
+            for builtin in StablePcreBuiltin::all() {
+                if !needs_exact_pcre[builtin.index()] {
+                    continue;
+                }
+                let mut signature = module.make_signature();
+                for _ in 0..4 {
+                    signature.params.push(AbiParam::new(types::I32));
+                }
+                for _ in 0..6 {
+                    signature.params.push(AbiParam::new(types::I64));
+                }
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                exact_pcre[builtin.index()] = Some(declare_native_helper(
+                    module,
+                    builtin.symbol(),
+                    &signature,
+                    helper_address(builtin.symbol()),
+                )?);
+            }
+            let mut exact_json = [None; StableJsonBuiltin::COUNT];
+            for builtin in StableJsonBuiltin::all() {
+                if !needs_exact_json[builtin.index()] {
+                    continue;
+                }
+                let mut signature = module.make_signature();
+                for _ in 0..4 {
+                    signature.params.push(AbiParam::new(types::I32));
+                }
+                for _ in 0..6 {
+                    signature.params.push(AbiParam::new(types::I64));
+                }
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                exact_json[builtin.index()] = Some(declare_native_helper(
+                    module,
+                    builtin.symbol(),
+                    &signature,
+                    helper_address(builtin.symbol()),
+                )?);
+            }
+            let mut exact_format = [None; StableFormatBuiltin::COUNT];
+            for builtin in StableFormatBuiltin::all() {
+                if !needs_exact_format[builtin.index()] {
+                    continue;
+                }
+                let mut signature = module.make_signature();
+                for _ in 0..4 {
+                    signature.params.push(AbiParam::new(types::I32));
+                }
+                for _ in 0..6 {
+                    signature.params.push(AbiParam::new(types::I64));
+                }
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                exact_format[builtin.index()] = Some(declare_native_helper(
+                    module,
+                    builtin.symbol(),
+                    &signature,
+                    helper_address(builtin.symbol()),
+                )?);
+            }
+            let mut exact_path = [None; StablePathBuiltin::COUNT];
+            for builtin in StablePathBuiltin::all() {
+                if !needs_exact_path[builtin.index()] {
+                    continue;
+                }
+                let mut signature = module.make_signature();
+                for _ in 0..4 {
+                    signature.params.push(AbiParam::new(types::I32));
+                }
+                for _ in 0..6 {
+                    signature.params.push(AbiParam::new(types::I64));
+                }
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                exact_path[builtin.index()] = Some(declare_native_helper(
+                    module,
+                    builtin.symbol(),
+                    &signature,
+                    helper_address(builtin.symbol()),
+                )?);
+            }
+            let (echo_bytes, echo_int, echo_float) = if needs_direct_echo {
+                let mut bytes_signature = module.make_signature();
+                bytes_signature.params.push(AbiParam::new(pointer_type));
+                bytes_signature.params.push(AbiParam::new(types::I64));
+                let bytes = declare_native_helper(
+                    module,
+                    "phrust_native_echo_bytes",
+                    &bytes_signature,
+                    helper_address("phrust_native_echo_bytes"),
+                )?;
+                let mut int_signature = module.make_signature();
+                int_signature.params.push(AbiParam::new(types::I64));
+                let int = declare_native_helper(
+                    module,
+                    "phrust_native_echo_int",
+                    &int_signature,
+                    helper_address("phrust_native_echo_int"),
+                )?;
+                let mut float_signature = module.make_signature();
+                float_signature.params.push(AbiParam::new(types::F64));
+                let float = declare_native_helper(
+                    module,
+                    "phrust_native_echo_float",
+                    &float_signature,
+                    helper_address("phrust_native_echo_float"),
+                )?;
+                (Some(bytes), Some(int), Some(float))
+            } else {
+                (None, None, None)
+            };
+            let float_to_string = if needs_float_to_string {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::F64));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    "phrust_native_float_to_string",
+                    &signature,
+                    helper_address("phrust_native_float_to_string"),
+                )?)
+            } else {
+                None
+            };
+            let float_to_int = if needs_float_to_int {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(types::F64));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    "phrust_native_float_to_int",
+                    &signature,
+                    helper_address("phrust_native_float_to_int"),
+                )?)
+            } else {
+                None
+            };
+            let object_class_name = if needs_object_class_name {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    "phrust_native_object_class_name",
+                    &signature,
+                    helper_address("phrust_native_object_class_name"),
+                )?)
+            } else {
+                None
+            };
+            let prepared_object_new = if needs_prepared_object_new {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    "phrust_native_prepared_object_new",
+                    &signature,
+                    helper_address("phrust_native_prepared_object_new"),
+                )?)
+            } else {
+                None
+            };
+            let plain_object_clone = if needs_plain_object_clone {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    "phrust_native_plain_object_clone",
+                    &signature,
+                    helper_address("phrust_native_plain_object_clone"),
+                )?)
+            } else {
+                None
+            };
             if needs_builtin_dispatch {
                 let mut signature = module.make_signature();
                 signature.params.push(AbiParam::new(types::I32));
@@ -2307,15 +2809,6 @@ pub(super) fn compile_region_graph_native(
                     helper_address("phrust_native_execution_poll"),
                 )?);
             }
-            let tier_operations = if baseline_helper_imports {
-                NativeTierOperations::Baseline {
-                    call: native_call_helper,
-                    dynamic_code: native_dynamic_code_helper,
-                    operations: native_operations,
-                }
-            } else {
-                NativeTierOperations::Optimizing
-            };
             let mut functions = BTreeMap::new();
             for candidate in regions.values() {
                 let symbol = if candidate.function == function {
@@ -2341,6 +2834,111 @@ pub(super) fn compile_region_graph_native(
                 )
             })?;
             let mut next_synthetic = synthetic_base;
+            let tier_operations = if baseline_helper_imports {
+                NativeTierOperations::Baseline {
+                    call: native_call_helper,
+                    dynamic_code: native_dynamic_code_helper,
+                    operations: native_operations,
+                }
+            } else {
+                let array_ensure_unique_symbol = FunctionId::new(next_synthetic);
+                next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
+                    CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_FRAGMENT_SYMBOL_LIMIT",
+                        "native optimizing-operation symbol id overflowed",
+                    )
+                })?;
+                let symbol = format!("{name}.native.array_ensure_unique");
+                let signature = direct_array_ensure_unique_signature(module);
+                let array_ensure_unique = module
+                    .declare_function(&symbol, Linkage::Local, &signature)
+                    .map_err(|error| {
+                        CraneliftLoweringError::new(
+                            "JIT_CRANELIFT_REJECT_DECLARE",
+                            format!("failed to declare {symbol}: {error}"),
+                        )
+                    })?;
+                functions.insert(array_ensure_unique_symbol, array_ensure_unique);
+                let array_child_entry_symbol = FunctionId::new(next_synthetic);
+                next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
+                    CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_FRAGMENT_SYMBOL_LIMIT",
+                        "native optimizing-operation symbol id overflowed",
+                    )
+                })?;
+                let symbol = format!("{name}.native.array_child_entry");
+                let signature = direct_array_child_entry_signature(module);
+                let array_child_entry = module
+                    .declare_function(&symbol, Linkage::Local, &signature)
+                    .map_err(|error| {
+                        CraneliftLoweringError::new(
+                            "JIT_CRANELIFT_REJECT_DECLARE",
+                            format!("failed to declare {symbol}: {error}"),
+                        )
+                    })?;
+                functions.insert(array_child_entry_symbol, array_child_entry);
+                let value_release_validate_symbol = FunctionId::new(next_synthetic);
+                next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
+                    CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_FRAGMENT_SYMBOL_LIMIT",
+                        "native value-release validator symbol id overflowed",
+                    )
+                })?;
+                let symbol = format!("{name}.native.value_release_validate");
+                let signature = direct_value_release_signature(module);
+                let value_release_validate = module
+                    .declare_function(&symbol, Linkage::Local, &signature)
+                    .map_err(|error| {
+                        CraneliftLoweringError::new(
+                            "JIT_CRANELIFT_REJECT_DECLARE",
+                            format!("failed to declare {symbol}: {error}"),
+                        )
+                    })?;
+                functions.insert(value_release_validate_symbol, value_release_validate);
+                let value_release_commit_symbol = FunctionId::new(next_synthetic);
+                next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
+                    CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_FRAGMENT_SYMBOL_LIMIT",
+                        "native value-release commit symbol id overflowed",
+                    )
+                })?;
+                let symbol = format!("{name}.native.value_release_commit");
+                let signature = direct_value_release_signature(module);
+                let value_release_commit = module
+                    .declare_function(&symbol, Linkage::Local, &signature)
+                    .map_err(|error| {
+                        CraneliftLoweringError::new(
+                            "JIT_CRANELIFT_REJECT_DECLARE",
+                            format!("failed to declare {symbol}: {error}"),
+                        )
+                    })?;
+                functions.insert(value_release_commit_symbol, value_release_commit);
+                NativeTierOperations::Optimizing {
+                    operations: NativeOptimizingOperations {
+                        echo_bytes,
+                        echo_int,
+                        echo_float,
+                        float_to_string,
+                        float_to_int,
+                        object_class_name,
+                        prepared_object_new,
+                        plain_object_clone,
+                        exact_symbol_query,
+                        exact_pcre,
+                        exact_json,
+                        exact_format,
+                        exact_path,
+                        array_ensure_unique,
+                        array_ensure_unique_symbol,
+                        array_child_entry,
+                        array_child_entry_symbol,
+                        value_release_validate,
+                        value_release_validate_symbol,
+                        value_release_commit,
+                        value_release_commit_symbol,
+                    },
+                }
+            };
             let (mut fragment_functions, mut fragment_symbols) =
                 declare_fragment_functions(
                     module,
@@ -2396,6 +2994,9 @@ pub(super) fn compile_region_graph_native(
                             function.params.clone(),
                             ir_function_requires_trampoline(function),
                             native_arity,
+                            (function.params.iter().any(|parameter| parameter.by_ref)
+                                || function.returns_by_ref)
+                                && !ir_function_requires_non_reference_trampoline(function),
                         ),
                     ))
                 })
@@ -2408,13 +3009,24 @@ pub(super) fn compile_region_graph_native(
                         region.params.clone(),
                         trampoline_functions.contains(function),
                         region.arity(),
+                        unit.functions
+                            .get(function.index())
+                            .is_some_and(|function| {
+                                (function.params.iter().any(|parameter| parameter.by_ref)
+                                    || function.returns_by_ref)
+                                    && !ir_function_requires_non_reference_trampoline(function)
+                            }),
                     ),
                 )
             }));
             let mut preflighted_fragments = BTreeMap::<u32, DefinedRegionFunction>::new();
-            if compilation_mode
-                == crate::cranelift_lowering::baseline_streaming::NativeCompilationMode::StreamingBaseline
-            {
+            // Fragmented optimizing functions need the same exact CLIF
+            // preflight as streaming baseline functions. The cheap planner
+            // estimate intentionally cannot account for the full live-state
+            // fanout of direct guards; without this pass, one underestimated
+            // fragment rejects the complete optimizing artifact only after
+            // all preceding fragments have already been compiled.
+            if active_fragment_layout.is_some() {
                 for replan_attempt in 0..=MAX_PRE_REGALLOC_REPLAN_ATTEMPTS {
                     let mut offending_fragments = Vec::new();
                     let mut round_preflighted = BTreeMap::new();
@@ -2456,10 +3068,16 @@ pub(super) fn compile_region_graph_native(
                                 )
                             });
                             match preflight {
-                                Ok(defined) if defined.pre_regalloc.exceeds_replan_margin() => {
+                                Ok(defined)
+                                    if defined
+                                        .pre_regalloc
+                                        .exceeds_replan_margin(region.compile_metadata.tier) =>
+                                {
                                     offending_fragments.push((
                                         fragment.id,
-                                        defined.pre_regalloc.minimum_fragment_count(),
+                                        defined
+                                            .pre_regalloc
+                                            .minimum_fragment_count(region.compile_metadata.tier),
                                     ));
                                 }
                                 Ok(defined) => {
@@ -2565,6 +3183,58 @@ pub(super) fn compile_region_graph_native(
             // Cranelift's allocation-heavy translation scratch sequentially;
             // `clear_context` preserves its backing allocations after every
             // fragment while regalloc still sees only one fragment at a time.
+            if let NativeTierOperations::Optimizing { operations } = tier_operations {
+                let defined = define_direct_array_ensure_unique_function(
+                    module,
+                    codegen_context,
+                    builder_context,
+                    operations.array_ensure_unique,
+                )?;
+                let _ = append_defined(
+                    operations.array_ensure_unique_symbol,
+                    0,
+                    0,
+                    defined,
+                )?;
+                let defined = define_direct_array_child_entry_function(
+                    module,
+                    codegen_context,
+                    builder_context,
+                    operations.array_child_entry,
+                )?;
+                let _ = append_defined(
+                    operations.array_child_entry_symbol,
+                    0,
+                    0,
+                    defined,
+                )?;
+                let defined = define_direct_value_release_validate_function(
+                    module,
+                    codegen_context,
+                    builder_context,
+                    operations.value_release_validate,
+                    operations.value_release_validate_symbol,
+                )?;
+                let _ = append_defined(
+                    operations.value_release_validate_symbol,
+                    0,
+                    0,
+                    defined,
+                )?;
+                let defined = define_direct_value_release_commit_function(
+                    module,
+                    codegen_context,
+                    builder_context,
+                    operations.value_release_commit,
+                    operations.value_release_commit_symbol,
+                )?;
+                let _ = append_defined(
+                    operations.value_release_commit_symbol,
+                    0,
+                    0,
+                    defined,
+                )?;
+            }
             for candidate in regions.values() {
                 if let Some(layout) = &active_fragment_layout {
                     let mut function_bytes = 0_u64;
@@ -2784,11 +3454,32 @@ pub(super) fn compile_region_graph_native(
                                 matches!(&instruction.kind, RegionInstructionKind::NativeCall(call)
                                 if call.direct_compiled_target().is_some_and(|target| {
                                     (regions.contains_key(&target) || needs_function_resolver)
-                                        && function_params
-                                            .get(&target)
-                                            .is_some_and(|(_, _, requires_trampoline, _)| {
-                                                !requires_trampoline
-                                            })
+                                        && function_params.get(&target).is_some_and(
+                                            |(
+                                                _,
+                                                params,
+                                                requires_trampoline,
+                                                arity,
+                                                reference_only_trampoline,
+                                            )| {
+                                                *arity == call.operands.len()
+                                                    && (!*requires_trampoline
+                                                        || (*reference_only_trampoline
+                                                            && params.iter().enumerate().all(
+                                                                |(index, parameter)| {
+                                                                    !parameter.by_ref
+                                                                        || call.args.get(index).is_some_and(
+                                                                            |argument| {
+                                                                                argument.by_ref_local.is_some()
+                                                                                    && argument.by_ref_dim.is_none()
+                                                                                    && argument.by_ref_property.is_none()
+                                                                                    && argument.by_ref_property_dim.is_none()
+                                                                            },
+                                                                        )
+                                                                },
+                                                            )))
+                                            },
+                                        )
                                         && !matches!(
                                             call.result,
                                             RegionCallResult::ReferenceLocal(_)
@@ -2812,7 +3503,7 @@ pub(super) fn compile_region_graph_native(
                                         (regions.contains_key(&target) || needs_function_resolver)
                                             && function_params
                                                 .get(&target)
-                                                .is_some_and(|(_, _, requires_trampoline, _)| {
+                                                .is_some_and(|(_, _, requires_trampoline, _, _)| {
                                                     !requires_trampoline
                                                 })
                                             && !matches!(
@@ -2893,6 +3584,42 @@ pub(super) fn compile_region_graph_native(
             {
                 let forbidden = relocatable_relocations.iter().find_map(|relocation| {
                     match &relocation.target {
+                        crate::JitRelocatableTarget::Helper(symbol)
+                            if matches!(
+                                symbol.as_str(),
+                                "phrust_native_defined"
+                                    | "phrust_native_echo_bytes"
+                                    | "phrust_native_echo_int"
+                                    | "phrust_native_echo_float"
+                                    | "phrust_native_float_to_string"
+                                    | "phrust_native_float_to_int"
+                                    | "phrust_native_object_class_name"
+                                    | "phrust_native_prepared_object_new"
+                                    | "phrust_native_plain_object_clone"
+                                    | "phrust_native_function_exists"
+                                    | "phrust_native_class_exists"
+                                    | "phrust_native_interface_exists"
+                                    | "phrust_native_trait_exists"
+                                    | "phrust_native_enum_exists"
+                                    | "phrust_native_method_exists"
+                                    | "phrust_native_property_exists"
+                            )
+                                || symbol.starts_with("phrust_native_preg_")
+                                || symbol.starts_with("phrust_native_json_")
+                                || matches!(
+                                    symbol.as_str(),
+                                    "phrust_native_sprintf"
+                                        | "phrust_native_printf"
+                                        | "phrust_native_vsprintf"
+                                        | "phrust_native_vprintf"
+                                        | "phrust_native_basename"
+                                        | "phrust_native_dirname"
+                                        | "phrust_native_realpath"
+                                        | "phrust_native_file_exists"
+                                ) =>
+                        {
+                            None
+                        }
                         crate::JitRelocatableTarget::Helper(symbol) => Some(symbol.as_str()),
                         crate::JitRelocatableTarget::InternalFunction(_) => None,
                     }
@@ -3376,6 +4103,38 @@ fn region_graph_signature(
     Ok(native_php_entry_signature(module))
 }
 
+fn direct_array_ensure_unique_signature(module: &JITModule) -> Signature {
+    let pointer_type = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I8));
+    signature.returns.push(AbiParam::new(types::I32));
+    signature.returns.push(AbiParam::new(types::I64));
+    signature
+}
+
+fn direct_array_child_entry_signature(module: &JITModule) -> Signature {
+    let pointer_type = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(pointer_type));
+    signature
+}
+
+fn direct_value_release_signature(module: &JITModule) -> Signature {
+    let pointer_type = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(types::I8));
+    signature
+}
+
 fn region_fragment_signature(
     module: &JITModule,
     region: &RegionGraph,
@@ -3491,26 +4250,45 @@ pub(super) struct PreRegallocMetrics {
 }
 
 impl PreRegallocMetrics {
-    fn exceeds_replan_margin(self) -> bool {
-        self.blocks.saturating_mul(100)
-            > MAX_FRAGMENT_CLIF_BLOCKS.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
+    fn limits(tier: NativeCompilerTier) -> (usize, usize, usize, usize) {
+        if tier == NativeCompilerTier::Optimizing {
+            (
+                MAX_OPTIMIZING_CLIF_BLOCKS,
+                MAX_OPTIMIZING_CLIF_VALUES,
+                MAX_OPTIMIZING_CLIF_INSTRUCTIONS,
+                MAX_OPTIMIZING_BLOCK_PARAMETERS,
+            )
+        } else {
+            (
+                MAX_FRAGMENT_CLIF_BLOCKS,
+                MAX_FRAGMENT_CLIF_VALUES,
+                MAX_FRAGMENT_CLIF_INSTRUCTIONS,
+                MAX_FRAGMENT_BLOCK_PARAMETERS,
+            )
+        }
+    }
+
+    fn exceeds_replan_margin(self, tier: NativeCompilerTier) -> bool {
+        let (blocks, values, instructions, parameters) = Self::limits(tier);
+        self.blocks.saturating_mul(100) > blocks.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
             || self.values.saturating_mul(100)
-                > MAX_FRAGMENT_CLIF_VALUES.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
+                > values.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
             || self.instructions.saturating_mul(100)
-                > MAX_FRAGMENT_CLIF_INSTRUCTIONS.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
+                > instructions.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
             || self.block_parameters.saturating_mul(100)
-                > MAX_FRAGMENT_BLOCK_PARAMETERS.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
+                > parameters.saturating_mul(PRE_REGALLOC_REPLAN_MARGIN_PERCENT)
     }
 
     /// Minimum number of approximately balanced fragments required by the
     /// largest exact CLIF dimension. This is a planning hint only: every
     /// resulting fragment is exact-preflighted again before regalloc.
-    fn minimum_fragment_count(self) -> usize {
+    fn minimum_fragment_count(self, tier: NativeCompilerTier) -> usize {
         let percent = PRE_REGALLOC_REPLAN_MARGIN_PERCENT;
-        let block_limit = MAX_FRAGMENT_CLIF_BLOCKS.saturating_mul(percent) / 100;
-        let value_limit = MAX_FRAGMENT_CLIF_VALUES.saturating_mul(percent) / 100;
-        let instruction_limit = MAX_FRAGMENT_CLIF_INSTRUCTIONS.saturating_mul(percent) / 100;
-        let parameter_limit = MAX_FRAGMENT_BLOCK_PARAMETERS.saturating_mul(percent) / 100;
+        let (blocks, values, instructions, parameters) = Self::limits(tier);
+        let block_limit = blocks.saturating_mul(percent) / 100;
+        let value_limit = values.saturating_mul(percent) / 100;
+        let instruction_limit = instructions.saturating_mul(percent) / 100;
+        let parameter_limit = parameters.saturating_mul(percent) / 100;
         [
             self.blocks.div_ceil(block_limit.max(1)),
             self.values.div_ceil(value_limit.max(1)),
@@ -4250,7 +5028,7 @@ fn define_region_graph_function(
                             block: terminal_exit,
                         }),
                 ),
-                NativeTierOperations::Optimizing => {
+                NativeTierOperations::Optimizing { .. } => {
                     (None, None, NativeOperationFunctions::default())
                 }
             };
@@ -5186,39 +5964,42 @@ fn define_region_graph_function(
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 match tier_operations {
-                    NativeTierOperations::Optimizing => lower_optimizing_region_instruction(
-                        module,
-                        &mut builder,
-                        &register_variables,
-                        &locals,
-                        &mut registers,
-                        instruction,
-                        transition_live_registers,
-                        constants,
-                        &value_flow,
-                        inline_constants,
-                        function_params,
-                        runtime,
-                        result_out,
-                        deopt_out,
-                        region.function,
-                        region.local_count,
-                        native_version,
-                        unit_identity,
-                    )
-                    .map(|emitted| {
-                        production_lowering.push(crate::JitProductionLoweringMetadata {
-                            function: region.function,
-                            continuation_id: instruction.continuation_id,
-                            operation: crate::region_ir::baseline_instruction_lowering(
-                                &instruction.source_kind,
-                            )
-                            .variant
-                            .to_owned(),
-                            class: emitted.class,
-                            operation_local_transition: emitted.operation_local_transition,
-                        });
-                    }),
+                    NativeTierOperations::Optimizing { operations } => {
+                        lower_optimizing_region_instruction(
+                            module,
+                            &mut builder,
+                            &register_variables,
+                            &locals,
+                            &mut registers,
+                            instruction,
+                            transition_live_registers,
+                            constants,
+                            &value_flow,
+                            inline_constants,
+                            function_params,
+                            runtime,
+                            result_out,
+                            deopt_out,
+                            region.function,
+                            region.local_count,
+                            native_version,
+                            unit_identity,
+                            operations.with_runtime(runtime),
+                        )
+                        .map(|emitted| {
+                            production_lowering.push(crate::JitProductionLoweringMetadata {
+                                function: region.function,
+                                continuation_id: instruction.continuation_id,
+                                operation: crate::region_ir::baseline_instruction_lowering(
+                                    &instruction.source_kind,
+                                )
+                                .variant
+                                .to_owned(),
+                                class: emitted.class,
+                                operation_local_transition: emitted.operation_local_transition,
+                            });
+                        })
+                    }
                     NativeTierOperations::Baseline { .. } => lower_baseline_region_instruction(
                         module,
                         &mut builder,
@@ -5301,40 +6082,48 @@ fn define_region_graph_function(
             // code and execution traffic; successor blocks already reload the
             // authoritative slots above.
             match tier_operations {
-                NativeTierOperations::Optimizing => lower_optimizing_region_terminator(
-                    &mut builder,
-                    &blocks,
-                    &locals,
-                    &registers,
-                    result_out,
-                    deopt_out,
-                    region.function,
-                    region.local_count,
-                    region_block.terminator_continuation_id,
-                    &region_block.terminator_live_locals,
-                    transition_register_liveness
-                        .get(&region_block.terminator_continuation_id)
-                        .map(Vec::as_slice)
-                        .unwrap_or_default(),
-                    native_version,
-                    region.return_type.as_ref(),
-                    &region_block.terminator,
-                    constants,
-                    &value_flow,
-                )
-                .map(|emitted| {
-                    production_lowering.push(crate::JitProductionLoweringMetadata {
-                        function: region.function,
-                        continuation_id: region_block.terminator_continuation_id,
-                        operation: crate::region_ir::baseline_terminator_lowering(
-                            &region_block.source_terminator,
-                        )
-                        .variant
-                        .to_owned(),
-                        class: emitted.class,
-                        operation_local_transition: emitted.operation_local_transition,
-                    });
-                }),
+                NativeTierOperations::Optimizing { operations } => {
+                    let value_release_validate = module
+                        .declare_func_in_func(operations.value_release_validate, builder.func);
+                    let value_release_commit =
+                        module.declare_func_in_func(operations.value_release_commit, builder.func);
+                    lower_optimizing_region_terminator(
+                        &mut builder,
+                        &blocks,
+                        &locals,
+                        &registers,
+                        result_out,
+                        deopt_out,
+                        region.function,
+                        region.local_count,
+                        region_block.terminator_continuation_id,
+                        &region_block.terminator_live_locals,
+                        transition_register_liveness
+                            .get(&region_block.terminator_continuation_id)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                        native_version,
+                        value_release_validate,
+                        value_release_commit,
+                        region.return_type.as_ref(),
+                        &region_block.terminator,
+                        constants,
+                        &value_flow,
+                    )
+                    .map(|emitted| {
+                        production_lowering.push(crate::JitProductionLoweringMetadata {
+                            function: region.function,
+                            continuation_id: region_block.terminator_continuation_id,
+                            operation: crate::region_ir::baseline_terminator_lowering(
+                                &region_block.source_terminator,
+                            )
+                            .variant
+                            .to_owned(),
+                            class: emitted.class,
+                            operation_local_transition: emitted.operation_local_transition,
+                        });
+                    })
+                }
                 NativeTierOperations::Baseline { .. } => lower_region_terminator(
                     &mut builder,
                     &terminator_blocks,
@@ -5646,6 +6435,1431 @@ fn define_region_graph_function(
         pre_regalloc,
         maximum_temporary_cache_entries,
         production_lowering,
+    })
+}
+
+fn lower_direct_array_child_entry_body(builder: &mut FunctionBuilder<'_>) {
+    let entry = builder.create_block();
+    let inspect = builder.create_block();
+    let search = builder.create_block();
+    let compare = builder.create_block();
+    let next = builder.create_block();
+    let found = builder.create_block();
+    let failed = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.append_block_param(search, types::I64);
+    builder.append_block_param(next, types::I64);
+    let pointer_type = builder.func.dfg.value_type(builder.block_params(entry)[0]);
+    builder.append_block_param(found, pointer_type);
+
+    builder.switch_to_block(entry);
+    let deopt_out = builder.block_params(entry)[0];
+    let array = builder.block_params(entry)[1];
+    let key = builder.block_params(entry)[2];
+    let is_array = lower_value_has_tag(builder, array, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
+    let encoded_index = builder.ins().ireduce(types::I32, array);
+    let is_direct_index = builder.ins().icmp_imm(
+        IntCC::UnsignedGreaterThanOrEqual,
+        encoded_index,
+        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+    );
+    let direct = builder.ins().band(is_array, is_direct_index);
+    builder.ins().brif(direct, inspect, &[], failed, &[]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, array, deopt_out);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let direct_kind = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
+    );
+    let key_runtime = lower_is_runtime_handle(builder, key);
+    let key_constant = lower_value_has_namespace_tag(builder, key, crate::JIT_VALUE_CONSTANT_TAG);
+    let namespaced = builder.ins().bor(key_runtime, key_constant);
+    let key_immediate = builder.ins().icmp_imm(IntCC::Equal, namespaced, 0);
+    let key_string = lower_value_has_tag(builder, key, crate::JIT_VALUE_RUNTIME_STRING_TAG);
+    let supported_key = builder.ins().bor(key_immediate, key_string);
+    let supported_key = builder.ins().bor(supported_key, key_constant);
+    let admitted = builder.ins().band(direct_kind, supported_key);
+    let length = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder
+        .ins()
+        .brif(admitted, search, &[zero.into()], failed, &[]);
+
+    builder.switch_to_block(search);
+    let index = builder.block_params(search)[0];
+    let exhausted = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, length);
+    builder.ins().brif(exhausted, failed, &[], compare, &[]);
+
+    builder.switch_to_block(compare);
+    let pointer_index = if pointer_type == types::I64 {
+        index
+    } else {
+        builder.ins().ireduce(pointer_type, index)
+    };
+    let offset = builder.ins().ishl_imm(pointer_index, 4);
+    let candidate_entry = builder.ins().iadd(entries, offset);
+    let candidate = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), candidate_entry, 0);
+    let matches = lower_native_array_key_equal(builder, candidate, key, deopt_out);
+    builder.ins().brif(
+        matches,
+        found,
+        &[candidate_entry.into()],
+        next,
+        &[index.into()],
+    );
+
+    builder.switch_to_block(next);
+    let index = builder.block_params(next)[0];
+    let index = builder.ins().iadd_imm(index, 1);
+    builder.ins().jump(search, &[index.into()]);
+
+    builder.switch_to_block(found);
+    let candidate_entry = builder.block_params(found)[0];
+    let value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        candidate_entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    builder.ins().return_(&[value, candidate_entry]);
+
+    builder.switch_to_block(failed);
+    let zero_value = builder.ins().iconst(types::I64, 0);
+    let null_entry = builder.ins().iconst(pointer_type, 0);
+    builder.ins().return_(&[zero_value, null_entry]);
+}
+
+fn lower_direct_value_release_validate_body(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    func_id: FuncId,
+) {
+    let entry = builder.create_block();
+    let inspect = builder.create_block();
+    let inspect_last = builder.create_block();
+    let validate_reference = builder.create_block();
+    let inspect_composite = builder.create_block();
+    let inspect_foreach = builder.create_block();
+    let validate_foreach = builder.create_block();
+    let scan = builder.create_block();
+    let validate_key = builder.create_block();
+    let validate_value = builder.create_block();
+    let next = builder.create_block();
+    let accepted = builder.create_block();
+    let rejected = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.append_block_param(inspect_composite, types::I8);
+    builder.append_block_param(inspect_foreach, types::I8);
+    builder.append_block_param(scan, types::I64);
+    builder.append_block_param(validate_value, types::I64);
+    builder.append_block_param(next, types::I64);
+
+    let recurse = module.declare_func_in_func(func_id, builder.func);
+    builder.switch_to_block(entry);
+    let deopt_out = builder.block_params(entry)[0];
+    let value = builder.block_params(entry)[1];
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let runtime = lower_is_runtime_handle(builder, value);
+    builder.ins().brif(runtime, inspect, &[], accepted, &[]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, value, deopt_out);
+    let refcount = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
+    );
+    let shared = builder
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThan, refcount, 1);
+    let last = builder.ins().icmp_imm(IntCC::Equal, refcount, 1);
+    builder.ins().brif(shared, accepted, &[], inspect_last, &[]);
+
+    builder.switch_to_block(inspect_last);
+    let index = builder.ins().ireduce(types::I32, value);
+    let direct = builder.ins().icmp_imm(
+        IntCC::UnsignedGreaterThanOrEqual,
+        index,
+        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+    );
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let direct_reference = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
+    );
+    let direct_string = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_STRING),
+    );
+    let direct_float = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_FLOAT),
+    );
+    let scalar = builder.ins().bor(direct_string, direct_float);
+    let scalar = builder.ins().band(direct, scalar);
+    let valid_last = builder.ins().band(direct, last);
+    let reference = builder.ins().band(valid_last, direct_reference);
+    let inspect_reference = builder.create_block();
+    builder
+        .ins()
+        .brif(scalar, accepted, &[], inspect_reference, &[]);
+
+    builder.switch_to_block(inspect_reference);
+    builder.ins().brif(
+        reference,
+        validate_reference,
+        &[],
+        inspect_composite,
+        &[valid_last.into()],
+    );
+
+    builder.switch_to_block(validate_reference);
+    let payload = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let call = builder.ins().call(recurse, &[deopt_out, payload]);
+    let valid = builder.inst_results(call)[0];
+    builder.ins().brif(valid, accepted, &[], rejected, &[]);
+
+    builder.switch_to_block(inspect_composite);
+    let valid_last = builder.block_params(inspect_composite)[0];
+    let direct_array = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
+    );
+    let direct_array = builder.ins().band(valid_last, direct_array);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().brif(
+        direct_array,
+        scan,
+        &[zero.into()],
+        inspect_foreach,
+        &[valid_last.into()],
+    );
+
+    builder.switch_to_block(inspect_foreach);
+    let valid_last = builder.block_params(inspect_foreach)[0];
+    let direct_foreach = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH),
+    );
+    let direct_foreach = builder.ins().band(valid_last, direct_foreach);
+    builder
+        .ins()
+        .brif(direct_foreach, validate_foreach, &[], rejected, &[]);
+
+    builder.switch_to_block(validate_foreach);
+    let source = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let call = builder.ins().call(recurse, &[deopt_out, source]);
+    let valid = builder.inst_results(call)[0];
+    builder.ins().brif(valid, accepted, &[], rejected, &[]);
+
+    builder.switch_to_block(scan);
+    let scan_index = builder.block_params(scan)[0];
+    let length = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let finished = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, scan_index, length);
+    builder
+        .ins()
+        .brif(finished, accepted, &[], validate_key, &[]);
+
+    builder.switch_to_block(validate_key);
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let pointer_index = if pointer_type == types::I64 {
+        scan_index
+    } else {
+        builder.ins().ireduce(pointer_type, scan_index)
+    };
+    let offset = builder.ins().ishl_imm(pointer_index, 4);
+    let array_entry = builder.ins().iadd(entries, offset);
+    let key = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), array_entry, 0);
+    let call = builder.ins().call(recurse, &[deopt_out, key]);
+    let valid = builder.inst_results(call)[0];
+    builder
+        .ins()
+        .brif(valid, validate_value, &[scan_index.into()], rejected, &[]);
+
+    builder.switch_to_block(validate_value);
+    let scan_index = builder.block_params(validate_value)[0];
+    let pointer_index = if pointer_type == types::I64 {
+        scan_index
+    } else {
+        builder.ins().ireduce(pointer_type, scan_index)
+    };
+    let offset = builder.ins().ishl_imm(pointer_index, 4);
+    let array_entry = builder.ins().iadd(entries, offset);
+    let child = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        array_entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let call = builder.ins().call(recurse, &[deopt_out, child]);
+    let valid = builder.inst_results(call)[0];
+    builder
+        .ins()
+        .brif(valid, next, &[scan_index.into()], rejected, &[]);
+
+    builder.switch_to_block(next);
+    let scan_index = builder.block_params(next)[0];
+    let next_index = builder.ins().iadd_imm(scan_index, 1);
+    builder.ins().jump(scan, &[next_index.into()]);
+
+    builder.switch_to_block(accepted);
+    let yes = builder.ins().iconst(types::I8, 1);
+    builder.ins().return_(&[yes]);
+    builder.switch_to_block(rejected);
+    let no = builder.ins().iconst(types::I8, 0);
+    builder.ins().return_(&[no]);
+}
+
+fn lower_free_direct_array_entries(
+    builder: &mut FunctionBuilder<'_>,
+    deopt_out: ir::Value,
+    entries: ir::Value,
+    capacity: ir::Value,
+) {
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let view = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+    let arena = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_array_entries) as i32,
+    );
+    let free_heads = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_array_free_heads) as i32,
+    );
+    let leading = builder.ins().clz(capacity);
+    let ceiling = builder.ins().iconst(types::I32, 31);
+    let bucket = builder.ins().isub(ceiling, leading);
+    let wide_bucket = builder.ins().uextend(pointer_type, bucket);
+    let bucket_offset = builder.ins().ishl_imm(wide_bucket, 2);
+    let head_ptr = builder.ins().iadd(free_heads, bucket_offset);
+    let old_head = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), head_ptr, 0);
+    let byte_offset = builder.ins().isub(entries, arena);
+    let entry_index = builder.ins().ushr_imm(byte_offset, 4);
+    let entry_index = if pointer_type == types::I32 {
+        entry_index
+    } else {
+        builder.ins().ireduce(types::I32, entry_index)
+    };
+    builder
+        .ins()
+        .store(MemFlagsData::new(), old_head, entries, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), entry_index, head_ptr, 0);
+}
+
+fn lower_free_direct_string_bytes(
+    builder: &mut FunctionBuilder<'_>,
+    deopt_out: ir::Value,
+    bytes: ir::Value,
+    reserved: ir::Value,
+) {
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let view = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+    let arena = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_string_bytes) as i32,
+    );
+    let free_heads = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_string_free_heads) as i32,
+    );
+    let capacity = builder.ins().ushr_imm(
+        reserved,
+        crate::JIT_NATIVE_DIRECT_STRING_CAPACITY_SHIFT as i64,
+    );
+    let leading = builder.ins().clz(capacity);
+    let ceiling = builder.ins().iconst(types::I32, 31);
+    let bucket = builder.ins().isub(ceiling, leading);
+    let wide_bucket = builder.ins().uextend(pointer_type, bucket);
+    let bucket_offset = builder.ins().ishl_imm(wide_bucket, 2);
+    let head_ptr = builder.ins().iadd(free_heads, bucket_offset);
+    let old_head = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), head_ptr, 0);
+    let byte_offset = builder.ins().isub(bytes, arena);
+    let byte_offset = if pointer_type == types::I32 {
+        byte_offset
+    } else {
+        builder.ins().ireduce(types::I32, byte_offset)
+    };
+    builder.ins().store(MemFlagsData::new(), old_head, bytes, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), byte_offset, head_ptr, 0);
+}
+
+fn lower_direct_value_release_commit_body(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    func_id: FuncId,
+) {
+    let entry = builder.create_block();
+    let inspect = builder.create_block();
+    let decrement = builder.create_block();
+    let inspect_last = builder.create_block();
+    let release_reference = builder.create_block();
+    let inspect_composite = builder.create_block();
+    let inspect_foreach = builder.create_block();
+    let release_foreach = builder.create_block();
+    let free_string = builder.create_block();
+    let scan = builder.create_block();
+    let release_entry = builder.create_block();
+    let next = builder.create_block();
+    let free_array = builder.create_block();
+    let free_slot = builder.create_block();
+    let accepted = builder.create_block();
+    let rejected = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.append_block_param(inspect_composite, types::I8);
+    builder.append_block_param(inspect_foreach, types::I8);
+    builder.append_block_param(scan, types::I64);
+    builder.append_block_param(next, types::I64);
+
+    let recurse = module.declare_func_in_func(func_id, builder.func);
+    builder.switch_to_block(entry);
+    let deopt_out = builder.block_params(entry)[0];
+    let value = builder.block_params(entry)[1];
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let runtime = lower_is_runtime_handle(builder, value);
+    builder.ins().brif(runtime, inspect, &[], accepted, &[]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, value, deopt_out);
+    let refcount = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
+    );
+    let shared = builder
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThan, refcount, 1);
+    builder
+        .ins()
+        .brif(shared, decrement, &[], inspect_last, &[]);
+
+    builder.switch_to_block(decrement);
+    let remaining = builder.ins().iadd_imm(refcount, -1);
+    builder.ins().store(
+        MemFlagsData::new(),
+        remaining,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
+    );
+    builder.ins().jump(accepted, &[]);
+
+    builder.switch_to_block(inspect_last);
+    let last = builder.ins().icmp_imm(IntCC::Equal, refcount, 1);
+    let index = builder.ins().ireduce(types::I32, value);
+    let direct = builder.ins().icmp_imm(
+        IntCC::UnsignedGreaterThanOrEqual,
+        index,
+        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+    );
+    let valid_last = builder.ins().band(last, direct);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let direct_reference = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
+    );
+    let direct_string = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_STRING),
+    );
+    let direct_float = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_FLOAT),
+    );
+    let string = builder.ins().band(valid_last, direct_string);
+    let float = builder.ins().band(valid_last, direct_float);
+    let reference = builder.ins().band(valid_last, direct_reference);
+    let inspect_reference = builder.create_block();
+    builder
+        .ins()
+        .brif(string, free_string, &[], inspect_reference, &[]);
+
+    builder.switch_to_block(inspect_reference);
+    let inspect_float = builder.create_block();
+    builder
+        .ins()
+        .brif(reference, release_reference, &[], inspect_float, &[]);
+
+    builder.switch_to_block(inspect_float);
+    builder.ins().brif(
+        float,
+        free_slot,
+        &[],
+        inspect_composite,
+        &[valid_last.into()],
+    );
+
+    builder.switch_to_block(free_string);
+    let bytes = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let reserved = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    lower_free_direct_string_bytes(builder, deopt_out, bytes, reserved);
+    builder.ins().jump(free_slot, &[]);
+
+    builder.switch_to_block(release_reference);
+    let payload = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let _ = builder.ins().call(recurse, &[deopt_out, payload]);
+    builder.ins().jump(free_slot, &[]);
+
+    builder.switch_to_block(inspect_composite);
+    let valid_last = builder.block_params(inspect_composite)[0];
+    let direct_array = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
+    );
+    let direct_array = builder.ins().band(valid_last, direct_array);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().brif(
+        direct_array,
+        scan,
+        &[zero.into()],
+        inspect_foreach,
+        &[valid_last.into()],
+    );
+
+    builder.switch_to_block(inspect_foreach);
+    let valid_last = builder.block_params(inspect_foreach)[0];
+    let direct_foreach = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH),
+    );
+    let direct_foreach = builder.ins().band(valid_last, direct_foreach);
+    builder
+        .ins()
+        .brif(direct_foreach, release_foreach, &[], rejected, &[]);
+
+    builder.switch_to_block(release_foreach);
+    let source = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let _ = builder.ins().call(recurse, &[deopt_out, source]);
+    builder.ins().jump(free_slot, &[]);
+
+    builder.switch_to_block(scan);
+    let scan_index = builder.block_params(scan)[0];
+    let length = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let finished = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, scan_index, length);
+    builder
+        .ins()
+        .brif(finished, free_array, &[], release_entry, &[]);
+
+    builder.switch_to_block(release_entry);
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let pointer_index = if pointer_type == types::I64 {
+        scan_index
+    } else {
+        builder.ins().ireduce(pointer_type, scan_index)
+    };
+    let offset = builder.ins().ishl_imm(pointer_index, 4);
+    let array_entry = builder.ins().iadd(entries, offset);
+    let key = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), array_entry, 0);
+    let child = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        array_entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let _ = builder.ins().call(recurse, &[deopt_out, key]);
+    let _ = builder.ins().call(recurse, &[deopt_out, child]);
+    builder.ins().jump(next, &[scan_index.into()]);
+
+    builder.switch_to_block(next);
+    let scan_index = builder.block_params(next)[0];
+    let next_index = builder.ins().iadd_imm(scan_index, 1);
+    builder.ins().jump(scan, &[next_index.into()]);
+
+    builder.switch_to_block(free_array);
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let capacity = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    lower_free_direct_array_entries(builder, deopt_out, entries, capacity);
+    builder.ins().jump(free_slot, &[]);
+
+    builder.switch_to_block(free_slot);
+    lower_free_direct_scalar_slot(builder, value, slot, deopt_out);
+    builder.ins().jump(accepted, &[]);
+
+    builder.switch_to_block(accepted);
+    let yes = builder.ins().iconst(types::I8, 1);
+    builder.ins().return_(&[yes]);
+    builder.switch_to_block(rejected);
+    let no = builder.ins().iconst(types::I8, 0);
+    builder.ins().return_(&[no]);
+}
+
+fn lower_direct_array_ensure_unique_body(builder: &mut FunctionBuilder<'_>) {
+    let entry = builder.create_block();
+    let inspect = builder.create_block();
+    let choose = builder.create_block();
+    let grow = builder.create_block();
+    let allocate = builder.create_block();
+    let reuse = builder.create_block();
+    let bump = builder.create_block();
+    let range_ready = builder.create_block();
+    let clone_slot = builder.create_block();
+    let move_slot = builder.create_block();
+    let copy = builder.create_block();
+    let copy_entry = builder.create_block();
+    let retain_entry = builder.create_block();
+    let store_entry = builder.create_block();
+    let finalize = builder.create_block();
+    let finalize_clone = builder.create_block();
+    let release_cloned_source = builder.create_block();
+    let complete_clone = builder.create_block();
+    let finalize_move = builder.create_block();
+    let failed = builder.create_block();
+    let succeeded = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.append_block_param(choose, types::I8);
+    builder.append_block_param(grow, types::I32);
+    builder.append_block_param(grow, types::I8);
+    builder.append_block_param(allocate, types::I32);
+    builder.append_block_param(allocate, types::I8);
+    let pointer_type = builder.func.dfg.value_type(builder.block_params(entry)[0]);
+    builder.append_block_param(range_ready, pointer_type);
+    builder.append_block_param(range_ready, types::I32);
+    builder.append_block_param(range_ready, types::I8);
+    for block in [copy, finalize] {
+        builder.append_block_param(block, types::I64);
+        builder.append_block_param(block, pointer_type);
+        builder.append_block_param(block, types::I64);
+        builder.append_block_param(block, types::I8);
+    }
+    builder.append_block_param(store_entry, types::I64);
+    builder.append_block_param(store_entry, pointer_type);
+    builder.append_block_param(store_entry, types::I64);
+    builder.append_block_param(store_entry, types::I8);
+    builder.append_block_param(succeeded, types::I64);
+
+    builder.switch_to_block(entry);
+    let deopt_out = builder.block_params(entry)[0];
+    let array = builder.block_params(entry)[1];
+    let additional = builder.block_params(entry)[2];
+    let consume_owner = builder.block_params(entry)[3];
+    let is_array = lower_value_has_tag(builder, array, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
+    let encoded_index = builder.ins().ireduce(types::I32, array);
+    let is_direct_index = builder.ins().icmp_imm(
+        IntCC::UnsignedGreaterThanOrEqual,
+        encoded_index,
+        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+    );
+    let direct = builder.ins().band(is_array, is_direct_index);
+    builder.ins().brif(direct, inspect, &[], failed, &[]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, array, deopt_out);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let refcount = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
+    );
+    let length = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let capacity = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    let flags = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
+    );
+    let old_entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let required = builder.ins().iadd(length, additional);
+    let wrapped = builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThan, required, length);
+    let within_limit = builder.ins().icmp_imm(
+        IntCC::UnsignedLessThanOrEqual,
+        required,
+        crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY as i64,
+    );
+    let kind_ok = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
+    );
+    let live = builder.ins().icmp_imm(IntCC::NotEqual, refcount, 0);
+    let valid = builder.ins().band(kind_ok, live);
+    let valid = builder.ins().band_not(valid, wrapped);
+    let valid = builder.ins().band(valid, within_limit);
+    let unique = builder.ins().icmp_imm(IntCC::Equal, refcount, 1);
+    let clone = builder.ins().icmp_imm(IntCC::Equal, unique, 0);
+    builder
+        .ins()
+        .brif(valid, choose, &[clone.into()], failed, &[]);
+
+    builder.switch_to_block(choose);
+    let clone = builder.block_params(choose)[0];
+    let capacity_wide = builder.ins().uextend(types::I64, capacity);
+    let enough = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, capacity_wide, required);
+    let unique_and_enough = builder.ins().band(unique, enough);
+    builder.ins().brif(
+        unique_and_enough,
+        succeeded,
+        &[array.into()],
+        grow,
+        &[capacity.into(), clone.into()],
+    );
+
+    builder.switch_to_block(grow);
+    let candidate = builder.block_params(grow)[0];
+    let clone = builder.block_params(grow)[1];
+    let wide = builder.ins().uextend(types::I64, candidate);
+    let enough = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, wide, required);
+    let double = builder.create_block();
+    builder.ins().brif(
+        enough,
+        allocate,
+        &[candidate.into(), clone.into()],
+        double,
+        &[],
+    );
+    builder.switch_to_block(double);
+    let at_limit = builder.ins().icmp_imm(
+        IntCC::UnsignedGreaterThanOrEqual,
+        candidate,
+        crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY as i64,
+    );
+    let doubled = builder.ins().imul_imm(candidate, 2);
+    let minimum = builder.ins().iconst(
+        types::I32,
+        i64::from(crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY),
+    );
+    let zero_capacity = builder.ins().icmp_imm(IntCC::Equal, candidate, 0);
+    let next = builder.ins().select(zero_capacity, minimum, doubled);
+    builder
+        .ins()
+        .brif(at_limit, failed, &[], grow, &[next.into(), clone.into()]);
+
+    builder.switch_to_block(allocate);
+    let destination_capacity = builder.block_params(allocate)[0];
+    let clone = builder.block_params(allocate)[1];
+    let view = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+    let arena = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_array_entries) as i32,
+    );
+    let free_heads = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_array_free_heads) as i32,
+    );
+    let leading = builder.ins().clz(destination_capacity);
+    let ceiling = builder.ins().iconst(types::I32, 31);
+    let bucket = builder.ins().isub(ceiling, leading);
+    let wide_bucket = builder.ins().uextend(pointer_type, bucket);
+    let bucket_offset = builder.ins().ishl_imm(wide_bucket, 2);
+    let free_head_ptr = builder.ins().iadd(free_heads, bucket_offset);
+    let free_head = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), free_head_ptr, 0);
+    let has_free = builder.ins().icmp_imm(
+        IntCC::NotEqual,
+        free_head,
+        i64::from(crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE),
+    );
+    builder.ins().brif(has_free, reuse, &[], bump, &[]);
+
+    builder.switch_to_block(reuse);
+    let wide_free_head = builder.ins().uextend(pointer_type, free_head);
+    let free_offset = builder.ins().ishl_imm(wide_free_head, 4);
+    let destination = builder.ins().iadd(arena, free_offset);
+    let preceding = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), destination, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), preceding, free_head_ptr, 0);
+    builder.ins().jump(
+        range_ready,
+        &[
+            destination.into(),
+            destination_capacity.into(),
+            clone.into(),
+        ],
+    );
+
+    builder.switch_to_block(bump);
+    let next_ptr = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_array_next) as i32,
+    );
+    let next_entry = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), next_ptr, 0);
+    let end = builder.ins().iadd(next_entry, destination_capacity);
+    let room = builder.ins().icmp_imm(
+        IntCC::UnsignedLessThanOrEqual,
+        end,
+        crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY as i64,
+    );
+    let wide_next_entry = builder.ins().uextend(pointer_type, next_entry);
+    let offset = builder.ins().ishl_imm(wide_next_entry, 4);
+    let destination = builder.ins().iadd(arena, offset);
+    let bump_ok = builder.create_block();
+    builder.ins().brif(room, bump_ok, &[], failed, &[]);
+    builder.switch_to_block(bump_ok);
+    builder.ins().store(MemFlagsData::new(), end, next_ptr, 0);
+    builder.ins().jump(
+        range_ready,
+        &[
+            destination.into(),
+            destination_capacity.into(),
+            clone.into(),
+        ],
+    );
+
+    builder.switch_to_block(range_ready);
+    let destination_entries = builder.block_params(range_ready)[0];
+    let destination_capacity = builder.block_params(range_ready)[1];
+    let clone = builder.block_params(range_ready)[2];
+    builder.ins().brif(clone, clone_slot, &[], move_slot, &[]);
+
+    builder.switch_to_block(clone_slot);
+    let new_index = lower_reserve_direct_value_index(builder, deopt_out, failed);
+    let slots = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, direct_value_slots) as i32,
+    );
+    let wide_new_index = builder.ins().uextend(pointer_type, new_index);
+    let new_slot_offset = builder.ins().ishl_imm(wide_new_index, 5);
+    let destination_slot = builder.ins().iadd(slots, new_slot_offset);
+    let runtime_index = builder.ins().iadd_imm(
+        new_index,
+        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+    );
+    let runtime_index = builder.ins().uextend(types::I64, runtime_index);
+    let destination_handle = builder
+        .ins()
+        .bor_imm(runtime_index, crate::JIT_VALUE_RUNTIME_ARRAY_TAG as i64);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(
+        copy,
+        &[
+            zero.into(),
+            destination_slot.into(),
+            destination_handle.into(),
+            clone.into(),
+        ],
+    );
+
+    builder.switch_to_block(move_slot);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(
+        copy,
+        &[zero.into(), slot.into(), array.into(), clone.into()],
+    );
+
+    builder.switch_to_block(copy);
+    let index = builder.block_params(copy)[0];
+    let destination_slot = builder.block_params(copy)[1];
+    let destination_handle = builder.block_params(copy)[2];
+    let clone = builder.block_params(copy)[3];
+    let finished = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, length);
+    builder.ins().brif(
+        finished,
+        finalize,
+        &[
+            index.into(),
+            destination_slot.into(),
+            destination_handle.into(),
+            clone.into(),
+        ],
+        copy_entry,
+        &[],
+    );
+
+    builder.switch_to_block(copy_entry);
+    let pointer_index = if pointer_type == types::I64 {
+        index
+    } else {
+        builder.ins().ireduce(pointer_type, index)
+    };
+    let offset = builder.ins().ishl_imm(pointer_index, 4);
+    let source_entry = builder.ins().iadd(old_entries, offset);
+    let destination_entry = builder.ins().iadd(destination_entries, offset);
+    let key = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), source_entry, 0);
+    let value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        source_entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    builder.ins().brif(
+        clone,
+        retain_entry,
+        &[],
+        store_entry,
+        &[
+            index.into(),
+            destination_slot.into(),
+            destination_handle.into(),
+            clone.into(),
+        ],
+    );
+    builder.switch_to_block(retain_entry);
+    lower_optimizing_retain(builder, key, deopt_out);
+    lower_optimizing_retain(builder, value, deopt_out);
+    builder.ins().jump(
+        store_entry,
+        &[
+            index.into(),
+            destination_slot.into(),
+            destination_handle.into(),
+            clone.into(),
+        ],
+    );
+    builder.switch_to_block(store_entry);
+    let index = builder.block_params(store_entry)[0];
+    let destination_slot = builder.block_params(store_entry)[1];
+    let destination_handle = builder.block_params(store_entry)[2];
+    let clone = builder.block_params(store_entry)[3];
+    builder
+        .ins()
+        .store(MemFlagsData::new(), key, destination_entry, 0);
+    builder.ins().store(
+        MemFlagsData::new(),
+        value,
+        destination_entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let next = builder.ins().iadd_imm(index, 1);
+    builder.ins().jump(
+        copy,
+        &[
+            next.into(),
+            destination_slot.into(),
+            destination_handle.into(),
+            clone.into(),
+        ],
+    );
+
+    builder.switch_to_block(finalize);
+    let destination_slot = builder.block_params(finalize)[1];
+    let destination_handle = builder.block_params(finalize)[2];
+    let clone = builder.block_params(finalize)[3];
+    builder
+        .ins()
+        .brif(clone, finalize_clone, &[], finalize_move, &[]);
+    builder.switch_to_block(finalize_clone);
+    let one = builder.ins().iconst(types::I32, 1);
+    let array_kind = builder.ins().iconst(
+        types::I32,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
+    );
+    for (value, offset) in [
+        (
+            one,
+            std::mem::offset_of!(crate::JitNativeValueSlot, refcount),
+        ),
+        (
+            array_kind,
+            std::mem::offset_of!(crate::JitNativeValueSlot, kind),
+        ),
+        (
+            flags,
+            std::mem::offset_of!(crate::JitNativeValueSlot, flags),
+        ),
+        (
+            destination_capacity,
+            std::mem::offset_of!(crate::JitNativeValueSlot, reserved),
+        ),
+    ] {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, destination_slot, offset as i32);
+    }
+    builder.ins().store(
+        MemFlagsData::new(),
+        length,
+        destination_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    builder.ins().store(
+        MemFlagsData::new(),
+        destination_entries,
+        destination_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    builder.ins().brif(
+        consume_owner,
+        release_cloned_source,
+        &[],
+        complete_clone,
+        &[],
+    );
+
+    builder.switch_to_block(release_cloned_source);
+    let remaining = builder.ins().iadd_imm(refcount, -1);
+    builder.ins().store(MemFlagsData::new(), remaining, slot, 0);
+    builder.ins().jump(complete_clone, &[]);
+
+    builder.switch_to_block(complete_clone);
+    builder.ins().jump(succeeded, &[destination_handle.into()]);
+
+    builder.switch_to_block(finalize_move);
+    let old_leading = builder.ins().clz(capacity);
+    let old_ceiling = builder.ins().iconst(types::I32, 31);
+    let old_bucket = builder.ins().isub(old_ceiling, old_leading);
+    let wide_old_bucket = builder.ins().uextend(pointer_type, old_bucket);
+    let old_bucket_offset = builder.ins().ishl_imm(wide_old_bucket, 2);
+    let old_head_ptr = builder.ins().iadd(free_heads, old_bucket_offset);
+    let old_head = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), old_head_ptr, 0);
+    let old_byte_offset = builder.ins().isub(old_entries, arena);
+    let old_entry_index = builder.ins().ushr_imm(old_byte_offset, 4);
+    let old_index = if pointer_type == types::I32 {
+        old_entry_index
+    } else {
+        builder.ins().ireduce(types::I32, old_entry_index)
+    };
+    builder
+        .ins()
+        .store(MemFlagsData::new(), old_head, old_entries, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), old_index, old_head_ptr, 0);
+    builder.ins().store(
+        MemFlagsData::new(),
+        destination_capacity,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    builder.ins().store(
+        MemFlagsData::new(),
+        destination_entries,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    builder.ins().jump(succeeded, &[array.into()]);
+
+    builder.switch_to_block(failed);
+    let status = builder.ins().iconst(types::I32, 1);
+    builder.ins().return_(&[status, array]);
+    builder.switch_to_block(succeeded);
+    let result = builder.block_params(succeeded)[0];
+    let status = builder.ins().iconst(types::I32, 0);
+    builder.ins().return_(&[status, result]);
+}
+
+fn define_direct_array_child_entry_function(
+    module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
+    func_id: FuncId,
+) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    ctx.func.signature = direct_array_child_entry_signature(module);
+    ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
+        lower_direct_array_child_entry_body(&mut builder);
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    let verifier_flags = settings::Flags::new(settings::builder());
+    verify_function(&ctx.func, &verifier_flags).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_VERIFIER",
+            format!("direct array child-entry verifier failure: {error}"),
+        )
+    })?;
+    let clif_blocks = ctx.func.layout.blocks().count();
+    let pre_regalloc = PreRegallocMetrics {
+        blocks: clif_blocks,
+        values: ctx.func.dfg.num_values(),
+        instructions: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.layout.block_insts(block).count())
+            .sum(),
+        block_parameters: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.dfg.block_params(block).len())
+            .sum(),
+        ..PreRegallocMetrics::default()
+    };
+    module.define_function(func_id, ctx).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_DEFINE",
+            format!("failed to define direct array child-entry function: {error}"),
+        )
+    })?;
+    let compiled = ctx.compiled_code().ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_CACHE_CODE",
+            "Cranelift returned no direct array child-entry code",
+        )
+    })?;
+    let native_stack_bytes = compiled
+        .buffer
+        .frame_layout()
+        .map_or(0, |layout| layout.frame_to_fp_offset);
+    let code = compiled.code_buffer().to_vec();
+    let alignment = u64::from(compiled.buffer.alignment)
+        .max(module.isa().function_alignment().minimum as u64)
+        .max(module.isa().symbol_alignment());
+    module.clear_context(ctx);
+    Ok(DefinedRegionFunction {
+        lowered_function: None,
+        code,
+        clif_blocks,
+        alignment,
+        relocations: Vec::new(),
+        native_pc_ranges: Vec::new(),
+        native_stack_bytes,
+        pre_regalloc,
+        maximum_temporary_cache_entries: 0,
+        production_lowering: Vec::new(),
+    })
+}
+
+fn define_direct_value_release_validate_function(
+    module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
+    func_id: FuncId,
+    symbol: FunctionId,
+) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    define_direct_value_release_function(module, ctx, builder_context, func_id, symbol, false)
+}
+
+fn define_direct_value_release_commit_function(
+    module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
+    func_id: FuncId,
+    symbol: FunctionId,
+) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    define_direct_value_release_function(module, ctx, builder_context, func_id, symbol, true)
+}
+
+fn define_direct_value_release_function(
+    module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
+    func_id: FuncId,
+    symbol: FunctionId,
+    commit: bool,
+) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    ctx.func.signature = direct_value_release_signature(module);
+    ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
+        if commit {
+            lower_direct_value_release_commit_body(module, &mut builder, func_id);
+        } else {
+            lower_direct_value_release_validate_body(module, &mut builder, func_id);
+        }
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    let phase = if commit { "commit" } else { "validator" };
+    let verifier_flags = settings::Flags::new(settings::builder());
+    verify_function(&ctx.func, &verifier_flags).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_VERIFIER",
+            format!("direct value-release {phase} verifier failure: {error}"),
+        )
+    })?;
+    let clif_blocks = ctx.func.layout.blocks().count();
+    let pre_regalloc = PreRegallocMetrics {
+        blocks: clif_blocks,
+        values: ctx.func.dfg.num_values(),
+        instructions: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.layout.block_insts(block).count())
+            .sum(),
+        block_parameters: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.dfg.block_params(block).len())
+            .sum(),
+        ..PreRegallocMetrics::default()
+    };
+    module.define_function(func_id, ctx).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_DEFINE",
+            format!("failed to define direct value-release {phase}: {error}"),
+        )
+    })?;
+    let compiled = ctx.compiled_code().ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_CACHE_CODE",
+            format!("Cranelift returned no direct value-release {phase} code"),
+        )
+    })?;
+    let native_stack_bytes = compiled
+        .buffer
+        .frame_layout()
+        .map_or(0, |layout| layout.frame_to_fp_offset);
+    let code = compiled.code_buffer().to_vec();
+    let alignment = u64::from(compiled.buffer.alignment)
+        .max(module.isa().function_alignment().minimum as u64)
+        .max(module.isa().symbol_alignment());
+    let relocation_functions = BTreeMap::from([(symbol, func_id)]);
+    let relocations = compiled
+        .buffer
+        .relocs()
+        .iter()
+        .map(|relocation| {
+            capture_relocation(
+                module,
+                ModuleReloc::from_mach_reloc(relocation, &ctx.func, func_id),
+                &relocation_functions,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    module.clear_context(ctx);
+    Ok(DefinedRegionFunction {
+        lowered_function: None,
+        code,
+        clif_blocks,
+        alignment,
+        relocations,
+        native_pc_ranges: Vec::new(),
+        native_stack_bytes,
+        pre_regalloc,
+        maximum_temporary_cache_entries: 0,
+        production_lowering: Vec::new(),
+    })
+}
+
+fn define_direct_array_ensure_unique_function(
+    module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
+    func_id: FuncId,
+) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    ctx.func.signature = direct_array_ensure_unique_signature(module);
+    ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
+        lower_direct_array_ensure_unique_body(&mut builder);
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    let verifier_flags = settings::Flags::new(settings::builder());
+    verify_function(&ctx.func, &verifier_flags).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_VERIFIER",
+            format!("direct array COW verifier failure: {error}"),
+        )
+    })?;
+    let clif_blocks = ctx.func.layout.blocks().count();
+    let pre_regalloc = PreRegallocMetrics {
+        blocks: clif_blocks,
+        values: ctx.func.dfg.num_values(),
+        instructions: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.layout.block_insts(block).count())
+            .sum(),
+        block_parameters: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.dfg.block_params(block).len())
+            .sum(),
+        ..PreRegallocMetrics::default()
+    };
+    module.define_function(func_id, ctx).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_DEFINE",
+            format!("failed to define direct array COW function: {error}"),
+        )
+    })?;
+    let compiled = ctx.compiled_code().ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_CACHE_CODE",
+            "Cranelift returned no direct array COW code",
+        )
+    })?;
+    let native_stack_bytes = compiled
+        .buffer
+        .frame_layout()
+        .map_or(0, |layout| layout.frame_to_fp_offset);
+    let code = compiled.code_buffer().to_vec();
+    let alignment = u64::from(compiled.buffer.alignment)
+        .max(module.isa().function_alignment().minimum as u64)
+        .max(module.isa().symbol_alignment());
+    module.clear_context(ctx);
+    Ok(DefinedRegionFunction {
+        lowered_function: None,
+        code,
+        clif_blocks,
+        alignment,
+        relocations: Vec::new(),
+        native_pc_ranges: Vec::new(),
+        native_stack_bytes,
+        pre_regalloc,
+        maximum_temporary_cache_entries: 0,
+        production_lowering: Vec::new(),
     })
 }
 

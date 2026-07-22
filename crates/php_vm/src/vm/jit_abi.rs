@@ -5,6 +5,7 @@ use php_runtime::api::PhpString;
 use php_runtime::api::Value;
 use php_runtime::experimental::WeakObjectHandle;
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -30,8 +31,18 @@ use frame_arena::NativeFrameArena;
 pub(super) use frame_arena::{jit_native_frame_alloc_abi, jit_native_frame_release_abi};
 
 pub(super) use call_dispatch::{
-    jit_native_builtin_dispatch_abi, jit_native_builtin_dispatch_diagnostic_abi,
-    jit_native_call_dispatch_abi, jit_native_call_dispatch_diagnostic_abi,
+    jit_baseline_native_builtin_dispatch_abi, jit_baseline_native_builtin_dispatch_diagnostic_abi,
+    jit_native_basename_abi, jit_native_call_dispatch_abi, jit_native_call_dispatch_diagnostic_abi,
+    jit_native_class_exists_abi, jit_native_defined_abi, jit_native_dirname_abi,
+    jit_native_enum_exists_abi, jit_native_file_exists_abi, jit_native_function_exists_abi,
+    jit_native_interface_exists_abi, jit_native_json_decode_abi, jit_native_json_encode_abi,
+    jit_native_json_last_error_abi, jit_native_json_last_error_msg_abi,
+    jit_native_json_validate_abi, jit_native_method_exists_abi, jit_native_preg_filter_abi,
+    jit_native_preg_grep_abi, jit_native_preg_last_error_abi, jit_native_preg_last_error_msg_abi,
+    jit_native_preg_match_abi, jit_native_preg_match_all_abi, jit_native_preg_quote_abi,
+    jit_native_preg_replace_abi, jit_native_preg_split_abi, jit_native_printf_abi,
+    jit_native_property_exists_abi, jit_native_realpath_abi, jit_native_sprintf_abi,
+    jit_native_trait_exists_abi, jit_native_vprintf_abi, jit_native_vsprintf_abi,
 };
 use call_support::*;
 pub(in crate::vm) use diagnostic_helpers::*;
@@ -41,9 +52,10 @@ use internal_classes::*;
 use native_builtins::{
     NativeDimensionOperation, emit_native_array_dimension_conversion_diagnostic,
     emit_native_deprecated_call, emit_native_dimension_conversion_diagnostic,
-    emit_native_php_diagnostic, emit_native_php_warning, execute_native_builtin,
-    execute_prepared_runtime_builtin, native_source_line, native_source_line_for_span,
-    native_string,
+    emit_native_php_diagnostic, emit_native_php_warning, execute_baseline_native_builtin,
+    execute_baseline_prepared_runtime_builtin, native_builtin_class_lineage,
+    native_internal_class_constant_exists, native_php_function_exists, native_source_line,
+    native_source_line_for_span, native_string,
 };
 use object_support::*;
 use request_state::{
@@ -55,10 +67,13 @@ pub(super) use runtime_ops::{
     jit_native_argument_check_abi, jit_native_array_fetch_abi, jit_native_array_insert_abi,
     jit_native_array_insert_local_abi, jit_native_array_new_abi, jit_native_array_spread_abi,
     jit_native_array_unset_abi, jit_native_binary_abi, jit_native_cast_abi, jit_native_compare_abi,
-    jit_native_constant_fetch_abi, jit_native_echo_abi, jit_native_exception_new_abi,
-    jit_native_execution_poll_abi, jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi,
-    jit_native_foreach_next_abi, jit_native_local_fetch_abi, jit_native_local_store_abi,
+    jit_native_constant_fetch_abi, jit_native_echo_abi, jit_native_echo_bytes_abi,
+    jit_native_echo_float_abi, jit_native_echo_int_abi, jit_native_exception_new_abi,
+    jit_native_execution_poll_abi, jit_native_float_to_int_abi, jit_native_float_to_string_abi,
+    jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi, jit_native_foreach_next_abi,
+    jit_native_local_fetch_abi, jit_native_local_store_abi, jit_native_object_class_name_abi,
     jit_native_object_clone_abi, jit_native_object_clone_with_abi, jit_native_object_new_abi,
+    jit_native_plain_object_clone_abi, jit_native_prepared_object_new_abi,
     jit_native_property_assign_abi, jit_native_property_fetch_abi, jit_native_reference_bind_abi,
     jit_native_return_check_abi, jit_native_runtime_fatal_abi, jit_native_stable_length_abi,
     jit_native_string_predicate_abi, jit_native_truthy_abi, jit_native_type_predicate_abi,
@@ -95,7 +110,1097 @@ thread_local! {
 }
 
 static NATIVE_TEMPNAM_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-type NativeRequestFastState = NativeExecutionContext<'static>;
+
+/// Compact stable prefix passed through every generated entry and compiled
+/// call. Common native operations consume `header.runtime_view` directly;
+/// baseline-only semantic operations explicitly cross `cold_context`.
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct NativeRequestFastState {
+    header: php_jit::JitNativeFastStateHeader,
+    cold_context: *mut std::ffi::c_void,
+    output: *mut php_runtime::api::OutputBuffer,
+    json_state: *mut php_runtime::api::JsonRequestState,
+    pcre_state: *mut php_runtime::api::PcreRequestState,
+    ini_registry: *const php_runtime::api::IniRegistry,
+    cwd: *const std::path::PathBuf,
+    filesystem_capabilities: *const php_runtime::api::FilesystemCapabilities,
+}
+
+impl NativeRequestFastState {
+    /// Borrows the two capabilities required by exact path/filesystem
+    /// handlers. Their addresses are request-stable and no cold execution
+    /// coordinator is recovered on this path.
+    #[allow(unsafe_code)]
+    fn native_filesystem_capability(
+        &self,
+    ) -> Option<(&std::path::Path, &php_runtime::api::FilesystemCapabilities)> {
+        let cwd = unsafe { self.cwd.as_ref() }?;
+        let filesystem = unsafe { self.filesystem_capabilities.as_ref() }?;
+        Some((cwd.as_path(), filesystem))
+    }
+
+    #[allow(unsafe_code)]
+    fn reserve_direct_value_index(&mut self) -> Result<u32, &'static str> {
+        let view = self.header.runtime_view;
+        let value_next = view.direct_value_next as usize as *mut u32;
+        let free_head = view.direct_value_free_head as usize as *mut u32;
+        let reused_bytes = view.direct_value_reused_bytes as usize as *mut u64;
+        let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;
+        // SAFETY: runtime publication owns these stable counters and the
+        // request executes synchronously on one thread.
+        unsafe {
+            if *free_head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+                let index = *free_head;
+                *free_head = (*slots.add(index as usize)).reserved;
+                *reused_bytes = (*reused_bytes)
+                    .saturating_add(std::mem::size_of::<php_jit::JitNativeValueSlot>() as u64);
+                return Ok(index);
+            }
+            let index = *value_next;
+            if index as usize >= php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY {
+                return Err("direct native value arena exhausted");
+            }
+            *value_next = index + 1;
+            Ok(index)
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn reserve_direct_string_range(&mut self, length: usize) -> Option<(usize, u32)> {
+        let capacity = length
+            .max(php_jit::JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY as usize)
+            .checked_next_power_of_two()?;
+        let capacity = u32::try_from(capacity).ok()?;
+        let bucket = capacity.trailing_zeros() as usize;
+        let view = self.header.runtime_view;
+        let heads = view.direct_string_free_heads as usize as *mut u32;
+        let bytes = view.direct_string_bytes as usize as *mut u8;
+        let next = view.direct_string_next as usize as *mut u32;
+        let reused_bytes = view.direct_string_reused_bytes as usize as *mut u64;
+        unsafe {
+            let head = *heads.add(bucket);
+            if head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+                let previous = (bytes.add(head as usize) as *const u32).read_unaligned();
+                *heads.add(bucket) = previous;
+                *reused_bytes = (*reused_bytes).saturating_add(u64::from(capacity));
+                return Some((head as usize, capacity));
+            }
+            let start = *next;
+            let end = start.checked_add(capacity)?;
+            if end as usize > php_jit::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY {
+                return None;
+            }
+            *next = end;
+            Some((start as usize, capacity))
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn free_direct_string_range(&mut self, start: usize, capacity: u32) {
+        if capacity < php_jit::JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY || !capacity.is_power_of_two()
+        {
+            return;
+        }
+        let view = self.header.runtime_view;
+        let bucket = capacity.trailing_zeros() as usize;
+        let heads = view.direct_string_free_heads as usize as *mut u32;
+        let bytes = view.direct_string_bytes as usize as *mut u8;
+        unsafe {
+            let previous = *heads.add(bucket);
+            (bytes.add(start) as *mut u32).write_unaligned(previous);
+            *heads.add(bucket) =
+                u32::try_from(start).unwrap_or(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE);
+        }
+    }
+
+    /// Publishes one exact-handler result directly into the request-owned
+    /// native string/value plane. Publication metadata guarantees every
+    /// pointer in the runtime view; this path performs only PHP-visible arena
+    /// bounds checks and never recovers the cold execution coordinator.
+    #[allow(unsafe_code)]
+    fn publish_direct_string_bytes(&mut self, bytes: &[u8]) -> Result<i64, &'static str> {
+        let view = self.header.runtime_view;
+        let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;
+        let string_bytes = view.direct_string_bytes as usize as *mut u8;
+
+        // SAFETY: `activate_native_context` publishes stable request-owned
+        // arena bases and counters before generated code can invoke an exact
+        // handler. A native request is single-threaded while this state is
+        // active, so reservation and publication are one ordered operation.
+        let (start, capacity) = self
+            .reserve_direct_string_range(bytes.len())
+            .ok_or("direct native string arena exhausted")?;
+
+        let index = match self.reserve_direct_value_index() {
+            Ok(index) => index,
+            Err(error) => {
+                self.free_direct_string_range(start, capacity);
+                return Err(error);
+            }
+        };
+        let runtime_index = index + php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), string_bytes.add(start), bytes.len());
+            *slots.add(index as usize) = php_jit::JitNativeValueSlot {
+                refcount: 1,
+                kind: php_jit::JIT_NATIVE_VALUE_VIEW_STRING,
+                flags: php_jit::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+                reserved: php_jit::jit_native_direct_string_reserved(capacity, bytes == b"0"),
+                payload: bytes.len() as u64,
+                aux: string_bytes.add(start) as usize as u64,
+            };
+        }
+        Ok((php_jit::JIT_VALUE_RUNTIME_STRING_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    #[allow(unsafe_code)]
+    fn direct_slot(&self, encoded: i64) -> Option<(usize, php_jit::JitNativeValueSlot)> {
+        let runtime_index = php_jit::jit_decode_runtime_value(encoded)?;
+        let index =
+            runtime_index.checked_sub(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)? as usize;
+        if index >= php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY {
+            return None;
+        }
+        let view = self.header.runtime_view;
+        let slots = view.direct_value_slots as usize as *const php_jit::JitNativeValueSlot;
+        let slot = unsafe { *slots.add(index) };
+        (slot.refcount != 0).then_some((index, slot))
+    }
+
+    /// Returns the stable backing owner for one authoritative direct object.
+    /// The owner pointer is slot-parallel and is cleared before the slot is
+    /// recycled, so exact object operations need no request hash lookup.
+    #[allow(unsafe_code)]
+    fn direct_object(&self, encoded: i64) -> Option<&php_runtime::api::ObjectRef> {
+        let (index, slot) = self.direct_slot(encoded)?;
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
+            return None;
+        }
+        let owners = self.header.runtime_view.direct_object_owners as usize as *const u64;
+        // SAFETY: both arrays share the direct-value capacity and stable
+        // request lifetime. A nonzero owner is a Box<ObjectRef> published
+        // before the direct object descriptor becomes visible.
+        let owner = unsafe { *owners.add(index) } as usize as *const php_runtime::api::ObjectRef;
+        unsafe { owner.as_ref() }
+    }
+
+    #[allow(unsafe_code)]
+    fn native_string_view(&self, encoded: i64) -> Option<&[u8]> {
+        if let Some((_, slot)) = self.direct_slot(encoded) {
+            if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_STRING {
+                return None;
+            }
+            let length = usize::try_from(slot.payload).ok()?;
+            let bytes = slot.aux as usize as *const u8;
+            if bytes.is_null() && length != 0 {
+                return None;
+            }
+            // SAFETY: the direct string descriptor points into the stable
+            // request-owned byte arena for its published length.
+            return Some(unsafe { std::slice::from_raw_parts(bytes, length) });
+        }
+        let constant = php_jit::jit_decode_constant(encoded)?;
+        let view = self.header.runtime_view;
+        if constant >= view.trusted_constant_view_count {
+            return None;
+        }
+        let constants =
+            view.trusted_constant_views as usize as *const php_jit::JitNativeConstantView;
+        // SAFETY: publication owns a dense descriptor array for the active
+        // unit and the index was checked against its exact count.
+        let constant = unsafe { *constants.add(constant as usize) };
+        if constant.kind != php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING {
+            return None;
+        }
+        let length = usize::try_from(constant.length).ok()?;
+        let bytes = constant.bytes as usize as *const u8;
+        if bytes.is_null() && length != 0 {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts(bytes, length) })
+    }
+
+    /// Encodes the authoritative native scalar/array/string graph using
+    /// PHP's default `json_encode` byte rules. Unsupported semantic shapes
+    /// return before publication so the call can take its one baseline
+    /// continuation without synchronizing a second value representation.
+    #[allow(unsafe_code)]
+    fn append_native_json_default(
+        &self,
+        mut encoded: i64,
+        output: &mut String,
+        depth: usize,
+        maximum_depth: usize,
+        active_arrays: &mut Vec<usize>,
+    ) -> Option<()> {
+        for _ in 0..64 {
+            if let Some((index, slot)) = self.direct_slot(encoded) {
+                match slot.kind {
+                    php_jit::JIT_NATIVE_VALUE_VIEW_STRING => {
+                        return php_runtime::api::append_json_default_string(
+                            self.native_string_view(encoded)?,
+                            output,
+                        )
+                        .ok();
+                    }
+                    php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                        if slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                    {
+                        encoded = slot.payload as i64;
+                        continue;
+                    }
+                    php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY => {
+                        if depth >= maximum_depth || active_arrays.contains(&index) {
+                            return None;
+                        }
+                        let length = usize::try_from(slot.payload).ok()?;
+                        let entries =
+                            slot.aux as usize as *const php_jit::JitNativeDirectArrayEntry;
+                        if entries.is_null() && length != 0 {
+                            return None;
+                        }
+                        // SAFETY: the direct-array descriptor owns this stable
+                        // insertion-ordered range for the slot's live length.
+                        let entries = unsafe { std::slice::from_raw_parts(entries, length) };
+                        let packed = entries.iter().enumerate().all(|(position, entry)| {
+                            php_jit::jit_decode_runtime_value(entry.key).is_none()
+                                && php_jit::jit_decode_constant(entry.key).is_none()
+                                && entry.key == i64::try_from(position).unwrap_or(i64::MAX)
+                        });
+                        active_arrays.push(index);
+                        output.push(if packed { '[' } else { '{' });
+                        for (position, entry) in entries.iter().enumerate() {
+                            if position != 0 {
+                                output.push(',');
+                            }
+                            if !packed {
+                                if php_jit::jit_decode_runtime_value(entry.key).is_none()
+                                    && php_jit::jit_decode_constant(entry.key).is_none()
+                                {
+                                    output.push('"');
+                                    write!(output, "{}", entry.key).ok()?;
+                                    output.push_str("\":");
+                                } else {
+                                    php_runtime::api::append_json_default_string(
+                                        self.native_string_view(entry.key)?,
+                                        output,
+                                    )
+                                    .ok()?;
+                                    output.push(':');
+                                }
+                            }
+                            self.append_native_json_default(
+                                entry.value,
+                                output,
+                                depth + 1,
+                                maximum_depth,
+                                active_arrays,
+                            )?;
+                        }
+                        output.push(if packed { ']' } else { '}' });
+                        active_arrays.pop();
+                        return Some(());
+                    }
+                    // Floats, objects, baseline references, and extension
+                    // values retain their exact cold continuation.
+                    _ => return None,
+                }
+            }
+            if php_jit::jit_decode_runtime_value(encoded).is_none()
+                && php_jit::jit_decode_constant(encoded).is_none()
+            {
+                write!(output, "{encoded}").ok()?;
+                return Some(());
+            }
+            let constant = php_jit::jit_decode_constant(encoded)?;
+            match constant {
+                u32::MAX | php_jit::JIT_VALUE_UNINITIALIZED => output.push_str("null"),
+                php_jit::JIT_VALUE_FALSE => output.push_str("false"),
+                php_jit::JIT_VALUE_TRUE => output.push_str("true"),
+                _ => {
+                    let view = self.header.runtime_view;
+                    if constant >= view.trusted_constant_view_count {
+                        return None;
+                    }
+                    let constants = view.trusted_constant_views as usize
+                        as *const php_jit::JitNativeConstantView;
+                    let constant = unsafe { *constants.add(constant as usize) };
+                    match constant.kind {
+                        php_jit::JIT_NATIVE_CONSTANT_VIEW_NULL => output.push_str("null"),
+                        php_jit::JIT_NATIVE_CONSTANT_VIEW_BOOL => {
+                            output.push_str(if constant.length != 0 {
+                                "true"
+                            } else {
+                                "false"
+                            })
+                        }
+                        php_jit::JIT_NATIVE_CONSTANT_VIEW_INT => {
+                            write!(output, "{}", constant.length as i64).ok()?;
+                        }
+                        php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING => {
+                            php_runtime::api::append_json_default_string(
+                                self.native_string_view(encoded)?,
+                                output,
+                            )
+                            .ok()?;
+                        }
+                        _ => return None,
+                    }
+                }
+            }
+            return Some(());
+        }
+        None
+    }
+
+    fn native_json_default_bytes(&self, encoded: i64, maximum_depth: usize) -> Option<Vec<u8>> {
+        let mut output = String::with_capacity(64);
+        self.append_native_json_default(encoded, &mut output, 0, maximum_depth, &mut Vec::new())?;
+        Some(output.into_bytes())
+    }
+
+    #[allow(unsafe_code)]
+    fn validate_native_json(
+        &self,
+        input: i64,
+        depth: i64,
+        flags: i64,
+    ) -> Option<Result<bool, php_runtime::api::BuiltinError>> {
+        let state = self.json_state;
+        let input = self.native_string_view(input)?;
+        let state = unsafe { state.as_mut() }?;
+        Some(php_runtime::api::validate_native_json(
+            state, input, depth, flags,
+        ))
+    }
+
+    #[allow(unsafe_code)]
+    fn decode_native_json_associative(
+        &self,
+        input: i64,
+        depth: i64,
+    ) -> Option<Result<php_runtime::api::NativeJsonDecodedValue, php_runtime::api::BuiltinError>>
+    {
+        let state = self.json_state;
+        let input = self.native_string_view(input)?;
+        let state = unsafe { state.as_mut() }?;
+        Some(php_runtime::api::decode_native_json_associative(
+            state, input, depth,
+        ))
+    }
+
+    fn native_json_footprint(
+        value: &php_runtime::api::NativeJsonDecodedValue,
+    ) -> Option<(usize, usize, usize)> {
+        use php_runtime::api::NativeJsonDecodedValue as Json;
+        match value {
+            Json::Null | Json::Bool(_) => Some((0, 0, 0)),
+            Json::Int(value)
+                if php_jit::jit_decode_runtime_value(*value).is_none()
+                    && php_jit::jit_decode_constant(*value).is_none() =>
+            {
+                Some((0, 0, 0))
+            }
+            Json::Int(_) => None,
+            Json::Float(_) => Some((1, 0, 0)),
+            Json::String(bytes) => Some((1, 0, bytes.len())),
+            Json::Array(values) => {
+                let capacity = values
+                    .len()
+                    .max(php_jit::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY as usize)
+                    .next_power_of_two();
+                values.iter().try_fold(
+                    (1_usize, capacity, 0_usize),
+                    |(slots, entries, bytes), value| {
+                        let child = Self::native_json_footprint(value)?;
+                        Some((
+                            slots.checked_add(child.0)?,
+                            entries.checked_add(child.1)?,
+                            bytes.checked_add(child.2)?,
+                        ))
+                    },
+                )
+            }
+            Json::Object(values) => {
+                let capacity = values
+                    .len()
+                    .max(php_jit::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY as usize)
+                    .next_power_of_two();
+                values.iter().try_fold(
+                    (1_usize, capacity, 0_usize),
+                    |(slots, entries, bytes), (key, value)| {
+                        let child = Self::native_json_footprint(value)?;
+                        Some((
+                            slots.checked_add(1)?.checked_add(child.0)?,
+                            entries.checked_add(child.1)?,
+                            bytes.checked_add(key.len())?.checked_add(child.2)?,
+                        ))
+                    },
+                )
+            }
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn reserve_sequential_direct_value_index(&mut self) -> Option<u32> {
+        let view = self.header.runtime_view;
+        let next = view.direct_value_next as usize as *mut u32;
+        let index = unsafe { *next };
+        if index as usize >= php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY {
+            return None;
+        }
+        unsafe { *next = index + 1 };
+        Some(index)
+    }
+
+    #[allow(unsafe_code)]
+    fn publish_sequential_json_string(&mut self, bytes: &[u8]) -> Option<i64> {
+        let view = self.header.runtime_view;
+        let (start, capacity) = self.reserve_direct_string_range(bytes.len())?;
+        let index = match self.reserve_sequential_direct_value_index() {
+            Some(index) => index,
+            None => {
+                self.free_direct_string_range(start, capacity);
+                return None;
+            }
+        };
+        let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;
+        let storage = view.direct_string_bytes as usize as *mut u8;
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), storage.add(start), bytes.len());
+            *slots.add(index as usize) = php_jit::JitNativeValueSlot {
+                refcount: 1,
+                kind: php_jit::JIT_NATIVE_VALUE_VIEW_STRING,
+                flags: php_jit::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+                reserved: php_jit::jit_native_direct_string_reserved(capacity, bytes == b"0"),
+                payload: bytes.len() as u64,
+                aux: storage.add(start) as usize as u64,
+            };
+        }
+        let runtime_index = index + php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
+        Some((php_jit::JIT_VALUE_RUNTIME_STRING_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    #[allow(unsafe_code)]
+    fn publish_sequential_json_value(
+        &mut self,
+        value: php_runtime::api::NativeJsonDecodedValue,
+    ) -> Option<i64> {
+        use php_runtime::api::NativeJsonDecodedValue as Json;
+        match value {
+            Json::Null => Some(php_jit::jit_encode_constant(u32::MAX)),
+            Json::Bool(value) => Some(php_jit::jit_encode_constant(if value {
+                php_jit::JIT_VALUE_TRUE
+            } else {
+                php_jit::JIT_VALUE_FALSE
+            })),
+            Json::Int(value) => Some(value),
+            Json::Float(value) => {
+                let view = self.header.runtime_view;
+                let index = self.reserve_sequential_direct_value_index()?;
+                let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;
+                unsafe {
+                    *slots.add(index as usize) = php_jit::JitNativeValueSlot {
+                        refcount: 1,
+                        kind: php_jit::JIT_NATIVE_VALUE_VIEW_FLOAT,
+                        payload: value.to_bits(),
+                        ..php_jit::JitNativeValueSlot::default()
+                    };
+                }
+                let runtime_index = index + php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
+                Some((php_jit::JIT_VALUE_RUNTIME_FLOAT_TAG | u64::from(runtime_index)) as i64)
+            }
+            Json::String(bytes) => self.publish_sequential_json_string(&bytes),
+            Json::Array(values) => {
+                let entries = values
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        Some(php_jit::JitNativeDirectArrayEntry {
+                            key: i64::try_from(index).ok()?,
+                            value: self.publish_sequential_json_value(value)?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                self.publish_sequential_direct_array(entries)
+            }
+            Json::Object(values) => {
+                let entries = values
+                    .into_iter()
+                    .map(|(key, value)| {
+                        Some(php_jit::JitNativeDirectArrayEntry {
+                            key: self.publish_sequential_json_string(&key)?,
+                            value: self.publish_sequential_json_value(value)?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                self.publish_sequential_direct_array(entries)
+            }
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn publish_sequential_direct_array(
+        &mut self,
+        entries: Vec<php_jit::JitNativeDirectArrayEntry>,
+    ) -> Option<i64> {
+        let view = self.header.runtime_view;
+        let capacity = entries
+            .len()
+            .max(php_jit::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY as usize)
+            .next_power_of_two();
+        let array_next = view.direct_array_next as usize as *mut u32;
+        let start = unsafe { *array_next as usize };
+        let end = start.checked_add(capacity)?;
+        if end > php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY {
+            return None;
+        }
+        let index = self.reserve_sequential_direct_value_index()?;
+        let storage = view.direct_array_entries as usize as *mut php_jit::JitNativeDirectArrayEntry;
+        let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;
+        unsafe {
+            std::ptr::copy_nonoverlapping(entries.as_ptr(), storage.add(start), entries.len());
+            *array_next = end as u32;
+            *slots.add(index as usize) = php_jit::JitNativeValueSlot {
+                refcount: 1,
+                kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+                flags: php_jit::jit_native_direct_array_flags(None),
+                reserved: capacity as u32,
+                payload: entries.len() as u64,
+                aux: storage.add(start) as usize as u64,
+            };
+        }
+        let runtime_index = index + php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
+        Some((php_jit::JIT_VALUE_RUNTIME_ARRAY_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    #[allow(unsafe_code)]
+    fn publish_native_json_decoded(
+        &mut self,
+        value: php_runtime::api::NativeJsonDecodedValue,
+    ) -> Option<i64> {
+        let (slots, entries, bytes) = Self::native_json_footprint(&value)?;
+        let view = self.header.runtime_view;
+        let value_next = unsafe { *(view.direct_value_next as usize as *const u32) } as usize;
+        let array_next = unsafe { *(view.direct_array_next as usize as *const u32) } as usize;
+        let string_next = unsafe { *(view.direct_string_next as usize as *const u32) } as usize;
+        if value_next.checked_add(slots)? > php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY
+            || array_next.checked_add(entries)? > php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
+            || string_next.checked_add(bytes)? > php_jit::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY
+        {
+            return None;
+        }
+        self.publish_sequential_json_value(value)
+    }
+
+    #[allow(unsafe_code)]
+    fn native_json_last_error(&self) -> Option<(i64, Vec<u8>)> {
+        let state = unsafe { self.json_state.as_ref() }?;
+        let (code, message) = state.value();
+        Some((code, message.as_bytes().to_vec()))
+    }
+
+    #[allow(unsafe_code)]
+    fn native_pcre_last_error(&self) -> Option<(i64, Vec<u8>)> {
+        let state = unsafe { self.pcre_state.as_ref() }?.last_error();
+        Some((state.code(), state.message().as_bytes().to_vec()))
+    }
+
+    #[allow(unsafe_code)]
+    fn native_preg_match(
+        &self,
+        pattern: i64,
+        subject: i64,
+        flags: i64,
+        offset: i64,
+    ) -> Option<
+        Result<Option<php_runtime::api::NativePregMatchResult>, php_runtime::api::BuiltinError>,
+    > {
+        let limits = self.native_pcre_limits()?;
+        let state = self.pcre_state;
+        let pattern = self.native_string_view(pattern)?;
+        let subject = self.native_string_view(subject)?;
+        let state = unsafe { state.as_mut() }?;
+        Some(php_runtime::api::native_preg_match(
+            state, limits, pattern, subject, flags, offset,
+        ))
+    }
+
+    #[allow(unsafe_code)]
+    fn native_preg_match_all(
+        &self,
+        pattern: i64,
+        subject: i64,
+        flags: i64,
+        offset: i64,
+    ) -> Option<
+        Result<Option<php_runtime::api::NativePregMatchAllResult>, php_runtime::api::BuiltinError>,
+    > {
+        let limits = self.native_pcre_limits()?;
+        let state = self.pcre_state;
+        let pattern = self.native_string_view(pattern)?;
+        let subject = self.native_string_view(subject)?;
+        let state = unsafe { state.as_mut() }?;
+        Some(php_runtime::api::native_preg_match_all(
+            state, limits, pattern, subject, flags, offset,
+        ))
+    }
+
+    #[allow(unsafe_code)]
+    fn native_preg_replace_scalar(
+        &self,
+        pattern: i64,
+        replacement: i64,
+        subject: i64,
+        limit: i64,
+        filter: bool,
+    ) -> Option<php_runtime::api::NativePregReplaceResult> {
+        let limits = self.native_pcre_limits()?;
+        let state = self.pcre_state;
+        let pattern = self.native_string_view(pattern)?;
+        let replacement = self.native_string_view(replacement)?;
+        let subject = self.native_string_view(subject)?;
+        let state = unsafe { state.as_mut() }?;
+        php_runtime::api::native_preg_replace_scalar(
+            state,
+            limits,
+            pattern,
+            replacement,
+            subject,
+            limit,
+            filter,
+        )
+    }
+
+    #[allow(unsafe_code)]
+    fn native_preg_split(
+        &self,
+        pattern: i64,
+        subject: i64,
+        limit: i64,
+        flags: i64,
+    ) -> Option<php_runtime::api::NativeJsonDecodedValue> {
+        let limits = self.native_pcre_limits()?;
+        let state = self.pcre_state;
+        let pattern = self.native_string_view(pattern)?;
+        let subject = self.native_string_view(subject)?;
+        let state = unsafe { state.as_mut() }?;
+        php_runtime::api::native_preg_split(state, limits, pattern, subject, limit, flags)
+    }
+
+    #[allow(unsafe_code)]
+    fn native_direct_array_entries(
+        &self,
+        encoded: i64,
+    ) -> Option<Vec<php_jit::JitNativeDirectArrayEntry>> {
+        let (_, slot) = self.direct_slot(encoded)?;
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY {
+            return None;
+        }
+        let length = usize::try_from(slot.payload).ok()?;
+        let entries = slot.aux as usize as *const php_jit::JitNativeDirectArrayEntry;
+        if entries.is_null() && length != 0 {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts(entries, length) }.to_vec())
+    }
+
+    #[allow(unsafe_code)]
+    fn native_preg_replace_many(
+        &self,
+        pattern: i64,
+        replacement: i64,
+        input: i64,
+        limit: i64,
+        filter: bool,
+    ) -> Option<(
+        Vec<php_jit::JitNativeDirectArrayEntry>,
+        php_runtime::api::NativePregReplaceManyResult,
+    )> {
+        let entries = self.native_direct_array_entries(input)?;
+        let subjects = entries
+            .iter()
+            .map(|entry| self.native_string_view(entry.value))
+            .collect::<Option<Vec<_>>>()?;
+        let limits = self.native_pcre_limits()?;
+        let state = self.pcre_state;
+        let pattern = self.native_string_view(pattern)?;
+        let replacement = self.native_string_view(replacement)?;
+        let state = unsafe { state.as_mut() }?;
+        let result = php_runtime::api::native_preg_replace_many(
+            state,
+            limits,
+            pattern,
+            replacement,
+            &subjects,
+            limit,
+            filter,
+        )?;
+        Some((entries, result))
+    }
+
+    #[allow(unsafe_code)]
+    fn publish_preg_replace_array(
+        &mut self,
+        entries: Vec<php_jit::JitNativeDirectArrayEntry>,
+        values: Vec<Option<Vec<u8>>>,
+    ) -> Result<i64, &'static str> {
+        if entries.len() != values.len() {
+            return Err("native preg_replace result shape mismatch");
+        }
+        let output_len = values.iter().filter(|value| value.is_some()).count();
+        let capacity = output_len
+            .max(php_jit::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY as usize)
+            .next_power_of_two();
+        let string_bytes = values.iter().try_fold(0usize, |total, value| {
+            total.checked_add(value.as_ref().map_or(0, Vec::len))
+        });
+        let Some(string_bytes) = string_bytes else {
+            return Err("native preg_replace result size overflow");
+        };
+        let view = self.header.runtime_view;
+        let value_next = unsafe { *(view.direct_value_next as usize as *const u32) } as usize;
+        let array_next = unsafe { *(view.direct_array_next as usize as *const u32) } as usize;
+        let string_next = unsafe { *(view.direct_string_next as usize as *const u32) } as usize;
+        if value_next
+            .checked_add(output_len.saturating_add(1))
+            .is_none_or(|end| end > php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY)
+            || array_next
+                .checked_add(capacity)
+                .is_none_or(|end| end > php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY)
+            || string_next
+                .checked_add(string_bytes)
+                .is_none_or(|end| end > php_jit::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY)
+        {
+            return Err("native preg_replace array exceeded its stable arenas");
+        }
+        let mut retained_keys = Vec::with_capacity(output_len);
+        for (entry, value) in entries.iter().zip(&values) {
+            if value.is_none() {
+                continue;
+            }
+            if let Err(error) = self.retain_direct_encoded(entry.key) {
+                for retained in retained_keys.into_iter().rev() {
+                    self.rollback_direct_retain(retained);
+                }
+                return Err(error);
+            }
+            retained_keys.push(entry.key);
+        }
+        let output = entries
+            .into_iter()
+            .zip(values)
+            .filter_map(|(entry, value)| value.map(|value| (entry.key, value)))
+            .map(|(key, value)| {
+                self.publish_sequential_json_string(&value)
+                    .map(|value| php_jit::JitNativeDirectArrayEntry { key, value })
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(output) = output else {
+            for retained in retained_keys.into_iter().rev() {
+                self.rollback_direct_retain(retained);
+            }
+            return Err("native preg_replace string publication failed");
+        };
+        self.publish_sequential_direct_array(output)
+            .ok_or("native preg_replace array publication failed")
+    }
+
+    #[allow(unsafe_code)]
+    fn native_preg_grep(
+        &self,
+        pattern: i64,
+        input: i64,
+        flags: i64,
+    ) -> Option<Vec<php_jit::JitNativeDirectArrayEntry>> {
+        let entries = self.native_direct_array_entries(input)?;
+        let subjects = entries
+            .iter()
+            .map(|entry| self.native_string_view(entry.value))
+            .collect::<Option<Vec<_>>>()?;
+        let limits = self.native_pcre_limits()?;
+        let state = self.pcre_state;
+        let pattern = self.native_string_view(pattern)?;
+        let state = unsafe { state.as_mut() }?;
+        let selected =
+            php_runtime::api::native_preg_grep(state, limits, pattern, &subjects, flags)?;
+        Some(
+            entries
+                .into_iter()
+                .zip(selected)
+                .filter_map(|(entry, selected)| selected.then_some(entry))
+                .collect(),
+        )
+    }
+
+    #[allow(unsafe_code)]
+    fn publish_retained_direct_array(
+        &mut self,
+        entries: Vec<php_jit::JitNativeDirectArrayEntry>,
+    ) -> Result<i64, &'static str> {
+        let capacity = entries
+            .len()
+            .max(php_jit::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY as usize)
+            .next_power_of_two();
+        let view = self.header.runtime_view;
+        let value_next = unsafe { *(view.direct_value_next as usize as *const u32) } as usize;
+        let array_next = unsafe { *(view.direct_array_next as usize as *const u32) } as usize;
+        if value_next >= php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY
+            || array_next
+                .checked_add(capacity)
+                .is_none_or(|end| end > php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY)
+        {
+            return Err("native direct-array result exceeded its stable arenas");
+        }
+        let mut retained = Vec::with_capacity(entries.len().saturating_mul(2));
+        for entry in &entries {
+            for encoded in [entry.key, entry.value] {
+                if let Err(error) = self.retain_direct_encoded(encoded) {
+                    for retained in retained.into_iter().rev() {
+                        self.rollback_direct_retain(retained);
+                    }
+                    return Err(error);
+                }
+                retained.push(encoded);
+            }
+        }
+        match self.publish_sequential_direct_array(entries) {
+            Some(array) => Ok(array),
+            None => {
+                for retained in retained.into_iter().rev() {
+                    self.rollback_direct_retain(retained);
+                }
+                Err("native direct-array result publication failed")
+            }
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn native_pcre_limits(&self) -> Option<php_runtime::api::PcreMatchLimits> {
+        let ini = unsafe { self.ini_registry.as_ref() }?;
+        Some(php_runtime::api::PcreMatchLimits {
+            backtrack_limit: ini
+                .get("pcre.backtrack_limit")
+                .and_then(|value| value.trim().parse().ok()),
+            recursion_limit: ini
+                .get("pcre.recursion_limit")
+                .and_then(|value| value.trim().parse().ok()),
+            jit: ini
+                .get("pcre.jit")
+                .is_none_or(|value| !matches!(value.trim(), "" | "0" | "Off" | "off" | "false")),
+        })
+    }
+
+    #[allow(unsafe_code)]
+    fn replace_empty_direct_reference(&mut self, reference: i64, value: i64) -> bool {
+        let Some((index, slot)) = self.direct_slot(reference) else {
+            return false;
+        };
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+            || slot.flags != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+            || php_jit::jit_decode_runtime_value(slot.payload as i64).is_some()
+        {
+            return false;
+        }
+        let slots = self.header.runtime_view.direct_value_slots as usize
+            as *mut php_jit::JitNativeValueSlot;
+        unsafe {
+            (*slots.add(index)).payload = value as u64;
+            (*slots.add(index)).reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+        }
+        true
+    }
+
+    #[allow(unsafe_code)]
+    fn clear_json_error(&mut self) -> Result<(), &'static str> {
+        let state =
+            unsafe { self.json_state.as_mut() }.ok_or("native JSON state is unavailable")?;
+        state.set(0);
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    fn native_printf_scalar(
+        &self,
+        mut encoded: i64,
+    ) -> Option<php_runtime::api::NativePrintfScalar<'_>> {
+        for _ in 0..64 {
+            if let Some((_, slot)) = self.direct_slot(encoded) {
+                match slot.kind {
+                    php_jit::JIT_NATIVE_VALUE_VIEW_STRING => {
+                        return self
+                            .native_string_view(encoded)
+                            .map(php_runtime::api::NativePrintfScalar::String);
+                    }
+                    php_jit::JIT_NATIVE_VALUE_VIEW_FLOAT => {
+                        return Some(php_runtime::api::NativePrintfScalar::Float(f64::from_bits(
+                            slot.payload,
+                        )));
+                    }
+                    php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                        if slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                    {
+                        encoded = slot.payload as i64;
+                        continue;
+                    }
+                    _ => return None,
+                }
+            }
+            if php_jit::jit_decode_runtime_value(encoded).is_none()
+                && php_jit::jit_decode_constant(encoded).is_none()
+            {
+                return Some(php_runtime::api::NativePrintfScalar::Int(encoded));
+            }
+            let constant = php_jit::jit_decode_constant(encoded)?;
+            if constant == u32::MAX {
+                return Some(php_runtime::api::NativePrintfScalar::Null);
+            }
+            if constant == php_jit::JIT_VALUE_FALSE {
+                return Some(php_runtime::api::NativePrintfScalar::Bool(false));
+            }
+            if constant == php_jit::JIT_VALUE_TRUE {
+                return Some(php_runtime::api::NativePrintfScalar::Bool(true));
+            }
+            let view = self.header.runtime_view;
+            if constant >= view.trusted_constant_view_count {
+                return None;
+            }
+            let constants =
+                view.trusted_constant_views as usize as *const php_jit::JitNativeConstantView;
+            let constant = unsafe { *constants.add(constant as usize) };
+            return match constant.kind {
+                php_jit::JIT_NATIVE_CONSTANT_VIEW_NULL => {
+                    Some(php_runtime::api::NativePrintfScalar::Null)
+                }
+                php_jit::JIT_NATIVE_CONSTANT_VIEW_BOOL => Some(
+                    php_runtime::api::NativePrintfScalar::Bool(constant.length != 0),
+                ),
+                php_jit::JIT_NATIVE_CONSTANT_VIEW_INT => Some(
+                    php_runtime::api::NativePrintfScalar::Int(constant.length as i64),
+                ),
+                php_jit::JIT_NATIVE_CONSTANT_VIEW_FLOAT => Some(
+                    php_runtime::api::NativePrintfScalar::Float(f64::from_bits(constant.length)),
+                ),
+                php_jit::JIT_NATIVE_CONSTANT_VIEW_STRING => self
+                    .native_string_view(encoded)
+                    .map(php_runtime::api::NativePrintfScalar::String),
+                _ => None,
+            };
+        }
+        None
+    }
+
+    #[allow(unsafe_code)]
+    fn native_printf_array_entries(
+        &self,
+        encoded: i64,
+    ) -> Option<&[php_jit::JitNativeDirectArrayEntry]> {
+        let (_, slot) = self.direct_slot(encoded)?;
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY {
+            return None;
+        }
+        let length = usize::try_from(slot.payload).ok()?;
+        let entries = slot.aux as usize as *const php_jit::JitNativeDirectArrayEntry;
+        if entries.is_null() && length != 0 {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts(entries, length) })
+    }
+
+    #[allow(unsafe_code)]
+    fn write_output_bytes(&mut self, bytes: Vec<u8>) -> Result<(), &'static str> {
+        let output = unsafe { self.output.as_mut() }.ok_or("native output is unavailable")?;
+        output.write_bytes(bytes);
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    fn retain_direct_encoded(&mut self, encoded: i64) -> Result<(), &'static str> {
+        let Some(runtime_index) = php_jit::jit_decode_runtime_value(encoded) else {
+            return Ok(());
+        };
+        let Some(index) = runtime_index.checked_sub(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)
+        else {
+            return Err("prepared value belongs to the cold value plane");
+        };
+        if index as usize >= php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY {
+            return Err("prepared direct value index is outside its arena");
+        }
+        let slots = self.header.runtime_view.direct_value_slots as usize
+            as *mut php_jit::JitNativeValueSlot;
+        // SAFETY: the encoded owner was published in this request's stable
+        // direct arena and remains live through the source/template owner.
+        let slot = unsafe { &mut *slots.add(index as usize) };
+        if slot.refcount == 0 {
+            return Err("prepared direct value owner is no longer live");
+        }
+        slot.refcount = slot
+            .refcount
+            .checked_add(1)
+            .ok_or("prepared direct value refcount overflow")?;
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    fn rollback_direct_retain(&mut self, encoded: i64) {
+        let Some(runtime_index) = php_jit::jit_decode_runtime_value(encoded) else {
+            return;
+        };
+        let Some(index) = runtime_index.checked_sub(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)
+        else {
+            return;
+        };
+        let slots = self.header.runtime_view.direct_value_slots as usize
+            as *mut php_jit::JitNativeValueSlot;
+        // SAFETY: called only for a successful retain above; the preceding
+        // owner remains live, so rollback cannot reach zero.
+        let slot = unsafe { &mut *slots.add(index as usize) };
+        debug_assert!(slot.refcount > 1);
+        slot.refcount -= 1;
+    }
+
+    /// Publishes a freshly created object into the authoritative direct plane.
+    /// Any already-installed native declared slots are exposed immediately in
+    /// the value descriptor; no Rust `Value` or cold identity map is created.
+    #[allow(unsafe_code)]
+    fn publish_direct_object(
+        &mut self,
+        object: php_runtime::api::ObjectRef,
+    ) -> Result<i64, &'static str> {
+        let index = self.reserve_direct_value_index()?;
+        let runtime_index = index + php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
+        let layout_id = object.class_layout_epoch();
+        let native_slots = object.native_declared_slots_view(layout_id);
+        let object_id = object.id();
+        let owner = Box::into_raw(Box::new(object));
+        let view = self.header.runtime_view;
+        let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;
+        let owners = view.direct_object_owners as usize as *mut u64;
+        let (flags, reserved, payload, aux) =
+            native_slots.map_or((0, 0, object_id, 0), |(base, count)| {
+                (
+                    php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION,
+                    u32::try_from(count).unwrap_or(u32::MAX),
+                    layout_id,
+                    base as usize as u64,
+                )
+            });
+        unsafe {
+            *owners.add(index as usize) = owner as usize as u64;
+            *slots.add(index as usize) = php_jit::JitNativeValueSlot {
+                refcount: 1,
+                kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT,
+                flags,
+                reserved,
+                payload,
+                aux,
+            };
+        }
+        Ok((php_jit::JIT_VALUE_RUNTIME_OBJECT_TAG | u64::from(runtime_index)) as i64)
+    }
+}
 // Real applications routinely cross dozens of PHP frames (for example,
 // WordPress metadata and hook dispatch). Keep a deterministic native-stack
 // guard, but leave enough headroom for those non-recursive call chains.
@@ -184,42 +1289,6 @@ struct NativeMethodPic {
 }
 
 const NATIVE_METHOD_PIC_LIMIT: usize = 4;
-// WordPress routinely reaches several hundred native functions from distinct
-const NATIVE_GLOBAL_REFERENCE_CACHE_SIZE: usize = php_jit::JIT_NATIVE_GLOBAL_REFERENCE_CACHE_SIZE;
-
-struct NativeGlobalReferenceCache {
-    entries:
-        Box<[php_jit::JitNativeGlobalReferenceCacheRecord; NATIVE_GLOBAL_REFERENCE_CACHE_SIZE]>,
-    /// Exact source name used only by rare runtime invalidation/reconciliation.
-    /// Generated hits inspect the numeric ABI record and never touch this Rust
-    /// metadata.
-    names: Vec<Option<Box<str>>>,
-}
-
-impl Default for NativeGlobalReferenceCache {
-    fn default() -> Self {
-        Self {
-            entries: Box::new(
-                [php_jit::JitNativeGlobalReferenceCacheRecord::default();
-                    NATIVE_GLOBAL_REFERENCE_CACHE_SIZE],
-            ),
-            names: (0..NATIVE_GLOBAL_REFERENCE_CACHE_SIZE)
-                .map(|_| None)
-                .collect(),
-        }
-    }
-}
-
-impl NativeGlobalReferenceCache {
-    fn index(unit_identity: u64, function: u32, continuation: u32) -> usize {
-        php_jit::jit_native_global_reference_cache_index(
-            unit_identity,
-            function,
-            continuation,
-            (NATIVE_GLOBAL_REFERENCE_CACHE_SIZE - 1) as u32,
-        )
-    }
-}
 
 #[derive(Clone)]
 struct NativeDynamicUnit {
@@ -231,7 +1300,7 @@ struct NativeDynamicUnit {
 }
 
 fn native_active_class_handle(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     name: &str,
 ) -> Option<crate::compiled_unit::CompiledClass> {
     context.current_dynamic_unit.map_or_else(
@@ -255,7 +1324,7 @@ impl ActiveNativeUnit {
     }
 }
 
-// SAFETY: The pointed-to IR is owned by `NativeExecutionContext::compiled` or
+// SAFETY: The pointed-to IR is owned by `NativeRequestColdState::compiled` or
 // by one of its `dynamic_units`. Scoped unit switches retain the prior and new
 // `CompiledUnit` handles until after this pointer is restored.
 #[allow(unsafe_code)]
@@ -301,7 +1370,7 @@ impl NativeFunctionMetadataPtr {
 }
 
 // SAFETY: Prepared function metadata is immutable and owned by the active
-// CompiledUnit. NativeExecutionContext retains that unit (including dynamic
+// CompiledUnit. NativeRequestColdState retains that unit (including dynamic
 // units) for the lifetime of every synchronous native frame using this view.
 #[allow(unsafe_code)]
 impl std::ops::Deref for NativeFunctionMetadataPtr {
@@ -312,12 +1381,16 @@ impl std::ops::Deref for NativeFunctionMetadataPtr {
     }
 }
 
-pub(super) struct NativeExecutionContext<'a> {
+pub(super) struct NativeRequestColdState<'a> {
     compiled: crate::compiled_unit::CompiledUnit,
     unit: ActiveNativeUnit,
     unit_identity: u64,
     options: &'a super::VmOptions,
     worker_state: &'a super::VmWorkerState,
+    /// Stable owner-published fast-state address used only when cold code
+    /// re-enters a native artifact. Direct generated operations never reach
+    /// this back-pointer through the cold state.
+    fast_state: *mut NativeRequestFastState,
     native_entries:
         std::sync::Arc<std::collections::BTreeMap<php_ir::FunctionId, php_jit::JitFunctionHandle>>,
     native_call_encoded_scratch: Vec<i64>,
@@ -325,19 +1398,35 @@ pub(super) struct NativeExecutionContext<'a> {
     native_method_pics: std::collections::BTreeMap<u64, NativeMethodPic>,
     pub(super) output: php_runtime::api::OutputBuffer,
     values: Vec<Option<NativeStoredValue>>,
-    value_slots: Vec<php_jit::JitNativeValueSlot>,
-    direct_value_slots: Box<[php_jit::JitNativeValueSlot]>,
+    value_slots: php_runtime::api::StableNativeArena<php_jit::JitNativeValueSlot>,
+    direct_value_slots: php_runtime::api::StableNativeArena<php_jit::JitNativeValueSlot>,
     direct_value_next: Box<u32>,
-    direct_array_entries: Box<[php_jit::JitNativeDirectArrayEntry]>,
+    direct_object_owners: php_runtime::api::StableNativeArena<u64>,
+    direct_array_entries: php_runtime::api::StableNativeArena<php_jit::JitNativeDirectArrayEntry>,
     direct_array_next: Box<u32>,
     direct_value_free_head: Box<u32>,
+    direct_value_reused_bytes: Box<u64>,
     direct_array_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS]>,
-    direct_string_bytes: Box<[u8]>,
+    direct_array_reused_bytes: Box<u64>,
+    direct_string_bytes: php_runtime::api::StableNativeArena<u8>,
     direct_string_next: Box<u32>,
-    object_property_caches: Vec<Option<Box<[php_jit::JitNativePropertyCacheEntry]>>>,
+    direct_string_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS]>,
+    direct_string_reused_bytes: Box<u64>,
+    /// Authoritative storage for exact static properties admitted at request
+    /// publication. Dynamic/autoloaded declarations remain in the cold map.
+    static_property_slots:
+        php_runtime::api::StableNativeArena<php_jit::JitNativeStaticPropertySlot>,
+    static_property_next: Box<u32>,
+    static_property_indices: std::collections::BTreeMap<(String, String), u32>,
+    /// Cold materializations of optimizing-only direct reference slots.
+    /// The slot index remains the request-wide alias identity; once a slot
+    /// crosses into baseline code its descriptor is rewritten to point at
+    /// this cell's stable native scalar view.
+    direct_reference_cells: std::collections::HashMap<usize, php_runtime::api::ReferenceCell>,
+    direct_object_handles: std::collections::HashMap<u64, u32>,
     interned_value_handles: NativeValueIdentityMap,
-    global_reference_cache: NativeGlobalReferenceCache,
     native_poll_counter: Box<u32>,
+    native_root_mutation_pending: Box<u32>,
     free_value_slots: Vec<u32>,
     /// Successfully resolved IR constants are immutable for the lifetime of
     /// their owning unit. Keep one request-local value per unit/index so hot
@@ -346,6 +1435,9 @@ pub(super) struct NativeExecutionContext<'a> {
         RefCell<std::collections::HashMap<(Option<usize>, usize), php_runtime::api::Value>>,
     runtime_class_cache:
         RefCell<std::collections::HashMap<(Option<usize>, String), Rc<PreparedNativeRuntimeClass>>>,
+    /// Dense, active-unit class allocation plans published once before native
+    /// execution. Generated code indexes this table by immutable ClassId.
+    trusted_class_plans: Vec<php_jit::JitNativePreparedClassPlan>,
     /// Long-lived request roots (globals, statics, callbacks, sessions, and
     /// suspended state). This index must not be invalidated by every call.
     root_index: RequestRootIndex,
@@ -410,8 +1502,25 @@ pub(super) struct NativeExecutionContext<'a> {
     include_path: Arc<Vec<std::path::PathBuf>>,
     cwd: std::path::PathBuf,
     inherited_globals: std::collections::BTreeMap<String, Value>,
+    /// Stable request owner loaded directly for the special `$GLOBALS`
+    /// local in optimizing functions.
+    trusted_globals_proxy: i64,
     continuation_instructions:
         std::sync::Arc<Vec<Vec<Option<std::sync::Arc<php_ir::Instruction>>>>>,
+    trusted_property_function_offsets: Vec<u32>,
+    trusted_property_slots: Vec<php_jit::JitNativeTrustedPropertySlot>,
+    /// Exact global constants resolved by their cold continuation once. This
+    /// parallel continuation table owns one encoded value per published slot.
+    trusted_constant_slots: Vec<php_jit::JitNativeTrustedConstantSlot>,
+    trusted_global_reference_slots: Vec<php_jit::JitNativeTrustedGlobalReferenceSlot>,
+    trusted_global_reference_names: Vec<Option<Box<str>>>,
+    trusted_static_local_slots: Vec<php_jit::JitNativeTrustedStaticLocalSlot>,
+    trusted_static_property_slots: Vec<php_jit::JitNativeTrustedStaticPropertySlot>,
+    /// Dense static `instanceof` plans indexed by the existing continuation
+    /// offsets. Their immutable entries are rebuilt only when the active unit
+    /// changes; generated code performs an exact layout-id lookup.
+    trusted_instanceof_plans: Vec<php_jit::JitNativeInstanceOfPlan>,
+    trusted_instanceof_entries: Vec<php_jit::JitNativeInstanceOfEntry>,
     native_callsites: std::sync::Arc<
         Vec<Vec<Option<std::sync::Arc<crate::compiled_unit::NativeCallSiteDescriptor>>>>,
     >,
@@ -422,9 +1531,73 @@ pub(super) struct NativeExecutionContext<'a> {
     pub(super) diagnostic: Option<php_runtime::api::RuntimeDiagnostic>,
 }
 
+/// Request lifetime owner. Fast and cold state are separately allocated so
+/// generated code can retain the compact ABI pointer without pointing at a
+/// facade whose first operation recovers the complete Rust coordinator.
+pub(super) struct NativeRequestOwner<'a> {
+    cold: Box<NativeRequestColdState<'a>>,
+    _fast: Box<NativeRequestFastState>,
+}
+
+impl<'a> NativeRequestOwner<'a> {
+    pub(super) fn new(
+        compiled: &'a crate::compiled_unit::CompiledUnit,
+        unit_identity: u64,
+        options: &'a super::VmOptions,
+        worker_state: &'a super::VmWorkerState,
+        output: php_runtime::api::OutputBuffer,
+        native_entries: std::sync::Arc<
+            std::collections::BTreeMap<php_ir::FunctionId, php_jit::JitFunctionHandle>,
+        >,
+    ) -> Self {
+        let mut cold = Box::new(NativeRequestColdState::new(
+            compiled,
+            unit_identity,
+            options,
+            worker_state,
+            output,
+            native_entries,
+        ));
+        let mut fast = Box::<NativeRequestFastState>::default();
+        let fast_ptr = std::ptr::from_mut(fast.as_mut());
+        let cold_ptr = std::ptr::from_mut(cold.as_mut()).cast();
+        cold.fast_state = fast_ptr;
+        fast.cold_context = cold_ptr;
+        fast.output = std::ptr::from_mut(&mut cold.output);
+        fast.json_state = std::ptr::from_mut(cold.builtin_request_state.json_mut());
+        fast.pcre_state = std::ptr::from_mut(cold.builtin_request_state.pcre_mut());
+        fast.ini_registry = std::ptr::from_ref(&cold.ini_registry);
+        cold.trusted_globals_proxy = cold
+            .encode_globals_proxy()
+            .expect("request globals proxy must fit the native value arena");
+        cold.prepare_trusted_constant_fetches();
+        cold.prepare_trusted_global_references();
+        cold.prepare_trusted_static_locals();
+        cold.prepare_trusted_static_properties();
+        cold.prepare_trusted_class_plans();
+        cold.prepare_trusted_declared_properties();
+        cold.prepare_trusted_instanceof_plans();
+        Self { cold, _fast: fast }
+    }
+}
+
+impl<'a> std::ops::Deref for NativeRequestOwner<'a> {
+    type Target = NativeRequestColdState<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.cold.as_ref()
+    }
+}
+
+impl<'a> std::ops::DerefMut for NativeRequestOwner<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.cold.as_mut()
+    }
+}
+
 // Generated code holds raw pointers into these parallel vectors while a
 // request is active, so their allocations must not move.
-const NATIVE_VALUE_REFCOUNT_CAPACITY: usize = 1 << 20;
+const NATIVE_COLD_VALUE_SLOT_LIMIT: usize = 1 << 20;
 fn stored_value_slot(value: &NativeStoredValue) -> php_jit::JitNativeValueSlot {
     let mut slot = php_jit::JitNativeValueSlot {
         refcount: 1,
@@ -547,49 +1720,61 @@ type NativeValueIdentityMap = std::collections::HashMap<
 
 pub(super) struct NativeValueArenaBuffers {
     values: Vec<Option<NativeStoredValue>>,
-    value_slots: Vec<php_jit::JitNativeValueSlot>,
-    direct_value_slots: Box<[php_jit::JitNativeValueSlot]>,
+    value_slots: php_runtime::api::StableNativeArena<php_jit::JitNativeValueSlot>,
+    direct_value_slots: php_runtime::api::StableNativeArena<php_jit::JitNativeValueSlot>,
     direct_value_next: Box<u32>,
-    direct_array_entries: Box<[php_jit::JitNativeDirectArrayEntry]>,
+    direct_object_owners: php_runtime::api::StableNativeArena<u64>,
+    direct_array_entries: php_runtime::api::StableNativeArena<php_jit::JitNativeDirectArrayEntry>,
     direct_array_next: Box<u32>,
     direct_value_free_head: Box<u32>,
+    direct_value_reused_bytes: Box<u64>,
     direct_array_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS]>,
-    direct_string_bytes: Box<[u8]>,
+    direct_array_reused_bytes: Box<u64>,
+    direct_string_bytes: php_runtime::api::StableNativeArena<u8>,
     direct_string_next: Box<u32>,
-    object_property_caches: Vec<Option<Box<[php_jit::JitNativePropertyCacheEntry]>>>,
+    direct_string_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS]>,
+    direct_string_reused_bytes: Box<u64>,
     interned_value_handles: NativeValueIdentityMap,
-    global_reference_cache: NativeGlobalReferenceCache,
     free_value_slots: Vec<u32>,
 }
 
 impl Default for NativeValueArenaBuffers {
     fn default() -> Self {
         Self {
+            // The Rust compatibility plane is cold and may grow normally.
+            // Its ABI records still need a stable base for baseline-native
+            // continuations, but demand-backed storage avoids constructing or
+            // touching the million-slot upper bound.
             values: Vec::new(),
-            value_slots: Vec::with_capacity(NATIVE_VALUE_REFCOUNT_CAPACITY),
-            direct_value_slots: vec![
-                php_jit::JitNativeValueSlot::default();
-                php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY
-            ]
-            .into_boxed_slice(),
+            value_slots: php_runtime::api::StableNativeArena::new(NATIVE_COLD_VALUE_SLOT_LIMIT),
+            direct_value_slots: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY,
+            ),
             direct_value_next: Box::new(0),
-            direct_array_entries: vec![
-                php_jit::JitNativeDirectArrayEntry::default();
-                php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
-            ]
-            .into_boxed_slice(),
+            direct_object_owners: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY,
+            ),
+            direct_array_entries: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY,
+            ),
             direct_array_next: Box::new(0),
             direct_value_free_head: Box::new(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE),
+            direct_value_reused_bytes: Box::new(0),
             direct_array_free_heads: Box::new(
                 [php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
                     php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS],
             ),
-            direct_string_bytes: vec![0; php_jit::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY]
-                .into_boxed_slice(),
+            direct_array_reused_bytes: Box::new(0),
+            direct_string_bytes: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY,
+            ),
             direct_string_next: Box::new(0),
-            object_property_caches: Vec::with_capacity(NATIVE_VALUE_REFCOUNT_CAPACITY),
+            direct_string_free_heads: Box::new(
+                [php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+                    php_jit::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS],
+            ),
+            direct_string_reused_bytes: Box::new(0),
             interned_value_handles: NativeValueIdentityMap::default(),
-            global_reference_cache: NativeGlobalReferenceCache::default(),
             free_value_slots: Vec::new(),
         }
     }
@@ -617,22 +1802,7 @@ fn take_native_value_arena() -> NativeValueArenaBuffers {
 
 fn recycle_native_value_arena(arena: NativeValueArenaBuffers) {
     debug_assert!(arena.values.is_empty());
-    debug_assert!(arena.value_slots.is_empty());
     debug_assert!(arena.interned_value_handles.is_empty());
-    debug_assert!(
-        arena
-            .global_reference_cache
-            .entries
-            .iter()
-            .all(|entry| entry.valid == 0)
-    );
-    debug_assert!(
-        arena
-            .global_reference_cache
-            .names
-            .iter()
-            .all(Option::is_none)
-    );
     debug_assert!(arena.free_value_slots.is_empty());
     const MAX_RETAINED_NATIVE_VALUE_ARENAS: usize = 1;
     NATIVE_VALUE_ARENA_POOL.with(|arenas| {
@@ -641,6 +1811,21 @@ fn recycle_native_value_arena(arena: NativeValueArenaBuffers) {
             arenas.push(arena);
         }
     });
+}
+
+fn trusted_property_storage(
+    continuations: &[Vec<Option<std::sync::Arc<php_ir::Instruction>>>],
+) -> (Vec<u32>, Vec<php_jit::JitNativeTrustedPropertySlot>) {
+    let mut offsets = Vec::with_capacity(continuations.len());
+    let mut count = 0_usize;
+    for function in continuations {
+        offsets.push(u32::try_from(count).unwrap_or(u32::MAX));
+        count = count.saturating_add(function.len());
+    }
+    (
+        offsets,
+        vec![php_jit::JitNativeTrustedPropertySlot::default(); count],
+    )
 }
 
 fn stored_value_identity(value: &NativeStoredValue) -> Option<NativeValueIdentity> {
@@ -712,7 +1897,11 @@ fn stored_value_kind(value: &NativeStoredValue) -> &'static str {
 
 struct PreparedNativeRuntimeClass {
     entry: php_runtime::api::ClassEntry,
-    default_declared_slots: Vec<Option<Value>>,
+    display_name: String,
+    layout_id: u64,
+    /// One request-owned native owner per initialized default. Each object
+    /// instance retains these encoded values into its cloned slot vector.
+    default_native_slots: Box<[php_runtime::api::NativeDeclaredPropertySlot]>,
 }
 
 #[derive(Clone)]
@@ -734,7 +1923,11 @@ struct NativeFiberExecution {
     nested: Option<Box<NativeFiberExecution>>,
 }
 
-impl<'a> NativeExecutionContext<'a> {
+impl<'a> NativeRequestColdState<'a> {
+    pub(super) fn native_runtime_ptr(&mut self) -> *mut std::ffi::c_void {
+        self.fast_state.cast()
+    }
+
     fn mark_roots_dirty(&mut self, reason: RootMutationReason) {
         self.root_index.mark_dirty(reason);
     }
@@ -800,16 +1993,28 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn synchronize_request_roots(&mut self) {
+        self.consume_native_root_mutation();
         if self.root_index.is_dirty() {
             let roots = self.request_root_values();
             self.root_index.synchronize(&roots);
         }
     }
 
+    fn consume_native_root_mutation(&mut self) {
+        if *self.native_root_mutation_pending == 0 {
+            return;
+        }
+        *self.native_root_mutation_pending = 0;
+        self.root_index
+            .mark_dirty(RootMutationReason::RootedContainer);
+    }
+
     fn finalize_replaced_value(&mut self, previous: Value) -> Result<(), String> {
         if let Value::Object(object) = previous {
-            let uniquely_owned = object.gc_refcount_estimate() == 1;
-            if uniquely_owned {
+            let class_name = object.class_name();
+            if self.object_has_native_destructor(&class_name)
+                && !self.object_is_request_rooted(object.id())
+            {
                 self.run_object_destructor(object)?;
             }
         }
@@ -912,6 +2117,24 @@ impl<'a> NativeExecutionContext<'a> {
             .entry("STDERR".to_owned())
             .or_insert(Value::Resource(stderr));
         let continuation_instructions = compiled.prepared_continuation_instructions();
+        let (trusted_property_function_offsets, trusted_property_slots) =
+            trusted_property_storage(&continuation_instructions);
+        let trusted_constant_slots =
+            vec![php_jit::JitNativeTrustedConstantSlot::default(); trusted_property_slots.len()];
+        let trusted_global_reference_slots = vec![
+            php_jit::JitNativeTrustedGlobalReferenceSlot::default();
+            trusted_property_slots.len()
+        ];
+        let trusted_global_reference_names =
+            (0..trusted_property_slots.len()).map(|_| None).collect();
+        let trusted_static_local_slots =
+            vec![php_jit::JitNativeTrustedStaticLocalSlot::default(); trusted_property_slots.len()];
+        let trusted_static_property_slots = vec![
+                php_jit::JitNativeTrustedStaticPropertySlot::default();
+                trusted_property_slots.len()
+            ];
+        let trusted_instanceof_plans =
+            vec![php_jit::JitNativeInstanceOfPlan::default(); trusted_property_slots.len()];
         let native_callsites = compiled.prepared_native_callsites();
         let native_call_argument_capacity = compiled
             .prepared_deployment_image()
@@ -931,6 +2154,7 @@ impl<'a> NativeExecutionContext<'a> {
             unit_identity,
             options,
             worker_state,
+            fast_state: std::ptr::null_mut(),
             native_entries,
             native_call_encoded_scratch: Vec::with_capacity(native_call_argument_capacity),
             native_frame_arena: NativeFrameArena::default(),
@@ -940,21 +2164,33 @@ impl<'a> NativeExecutionContext<'a> {
             value_slots: value_arena.value_slots,
             direct_value_slots: value_arena.direct_value_slots,
             direct_value_next: value_arena.direct_value_next,
+            direct_object_owners: value_arena.direct_object_owners,
             direct_array_entries: value_arena.direct_array_entries,
             direct_array_next: value_arena.direct_array_next,
             direct_value_free_head: value_arena.direct_value_free_head,
+            direct_value_reused_bytes: value_arena.direct_value_reused_bytes,
             direct_array_free_heads: value_arena.direct_array_free_heads,
+            direct_array_reused_bytes: value_arena.direct_array_reused_bytes,
             direct_string_bytes: value_arena.direct_string_bytes,
             direct_string_next: value_arena.direct_string_next,
-            object_property_caches: value_arena.object_property_caches,
+            direct_string_free_heads: value_arena.direct_string_free_heads,
+            direct_string_reused_bytes: value_arena.direct_string_reused_bytes,
+            static_property_slots: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_STATIC_PROPERTY_CAPACITY,
+            ),
+            static_property_next: Box::new(0),
+            static_property_indices: std::collections::BTreeMap::new(),
+            direct_reference_cells: std::collections::HashMap::new(),
+            direct_object_handles: std::collections::HashMap::new(),
             interned_value_handles: value_arena.interned_value_handles,
-            global_reference_cache: value_arena.global_reference_cache,
             // Wrapping 4095 + 1 makes the first loop-header visit poll. Native
             // code then checks the deadline once per 4096 loop-header visits.
             native_poll_counter: Box::new(4095),
+            native_root_mutation_pending: Box::new(0),
             free_value_slots: value_arena.free_value_slots,
             decoded_constant_cache: RefCell::new(std::collections::HashMap::new()),
             runtime_class_cache: RefCell::new(std::collections::HashMap::new()),
+            trusted_class_plans: Vec::new(),
             root_index: RequestRootIndex::new_dirty(),
             resources,
             builtin_request_state: php_runtime::api::BuiltinRequestState::new(),
@@ -1014,7 +2250,17 @@ impl<'a> NativeExecutionContext<'a> {
             include_path: Arc::new(options.runtime_context.include_path.clone()),
             cwd: options.runtime_context.cwd.clone(),
             inherited_globals,
+            trusted_globals_proxy: php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED),
             continuation_instructions,
+            trusted_property_function_offsets,
+            trusted_property_slots,
+            trusted_constant_slots,
+            trusted_global_reference_slots,
+            trusted_global_reference_names,
+            trusted_static_local_slots,
+            trusted_static_property_slots,
+            trusted_instanceof_plans,
+            trusted_instanceof_entries: Vec::new(),
             native_callsites,
             include_child,
             execution_deadline_at: options
@@ -1027,10 +2273,745 @@ impl<'a> NativeExecutionContext<'a> {
         }
     }
 
+    /// Resolve immutable local class layouts once for the active source unit.
+    /// Plans with request-dependent defaults or unresolved external parents
+    /// remain empty and retain their single baseline continuation.
+    fn prepare_trusted_class_plans(&mut self) {
+        let owner = self.current_dynamic_unit;
+        let classes = self.unit.classes.clone();
+        self.trusted_class_plans =
+            vec![php_jit::JitNativePreparedClassPlan::default(); classes.len()];
+        for (index, class) in classes.iter().enumerate() {
+            if !native_class_is_publication_allocatable(&classes, &self.unit.constants, class) {
+                continue;
+            }
+            let key = (owner, class.name.clone());
+            let cached = { self.runtime_class_cache.borrow().get(&key).cloned() };
+            let prepared = if let Some(cached) = cached {
+                Some(cached)
+            } else {
+                let Ok(entry) = native_runtime_class_with_owner(self, owner, class) else {
+                    continue;
+                };
+                let default_declared_slots = php_runtime::api::ObjectRef::default_declared_slots(
+                    &entry,
+                    &class.display_name,
+                );
+                let mut owned_defaults = Vec::new();
+                let mut default_native_slots = Vec::with_capacity(default_declared_slots.len());
+                let mut failed = false;
+                for default in default_declared_slots {
+                    let encoded = match default {
+                        None => {
+                            default_native_slots
+                                .push(php_runtime::api::NativeDeclaredPropertySlot::default());
+                            continue;
+                        }
+                        Some(Value::Uninitialized) => {
+                            php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED)
+                        }
+                        Some(value) => match self.encode(value) {
+                            Ok(encoded) => encoded,
+                            Err(_) => {
+                                failed = true;
+                                break;
+                            }
+                        },
+                    };
+                    if let Some(runtime_index) = php_jit::jit_decode_runtime_value(encoded) {
+                        if runtime_index < php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE {
+                            let _ = self.release(encoded);
+                            failed = true;
+                            break;
+                        }
+                        owned_defaults.push(encoded);
+                    }
+                    default_native_slots.push(php_runtime::api::NativeDeclaredPropertySlot {
+                        initialized: 1,
+                        reserved: 0,
+                        value: encoded,
+                    });
+                }
+                if failed {
+                    for encoded in owned_defaults {
+                        let _ = self.release(encoded);
+                    }
+                    continue;
+                }
+                let layout_id =
+                    php_runtime::api::ObjectRef::prepared_layout_id(&entry, &class.display_name);
+                let prepared = Rc::new(PreparedNativeRuntimeClass {
+                    entry,
+                    display_name: class.display_name.clone(),
+                    layout_id,
+                    default_native_slots: default_native_slots.into_boxed_slice(),
+                });
+                self.runtime_class_cache
+                    .borrow_mut()
+                    .insert(key.clone(), Rc::clone(&prepared));
+                Some(prepared)
+            };
+            let Some(prepared) = prepared else {
+                continue;
+            };
+            self.trusted_class_plans[index] = php_jit::JitNativePreparedClassPlan {
+                prepared: Rc::as_ptr(&prepared) as usize as u64,
+                display_name_bytes: prepared.display_name.as_ptr() as usize as u64,
+                display_name_length: prepared.display_name.len() as u64,
+                state: php_jit::JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE,
+                reserved: 0,
+            };
+        }
+    }
+
+    /// Resolve primary global-constant names at the request/publication
+    /// boundary. A namespace fallback is deliberately not cached: defining
+    /// the primary name later in the request must change subsequent lookup.
+    fn prepare_trusted_constant_fetches(&mut self) {
+        let names = self
+            .continuation_instructions
+            .iter()
+            .flat_map(|function| function.iter())
+            .filter_map(|instruction| {
+                let instruction = instruction.as_ref()?;
+                let php_ir::InstructionKind::FetchConst { name, .. } = &instruction.kind else {
+                    return None;
+                };
+                Some(name.clone())
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        for name in names {
+            self.publish_trusted_constant_name(&name);
+        }
+    }
+
+    /// Cold symbol-mutation hook for one newly visible constant. Resolution
+    /// and encoding occur once here; every exact callsite receives an owned
+    /// handle and generated code subsequently performs only a numeric load.
+    fn publish_trusted_constant_name(&mut self, name: &str) {
+        let Ok(value) = self.lookup_constant(name) else {
+            return;
+        };
+        let Ok(encoded) = self.encode(value) else {
+            return;
+        };
+        let continuations = std::sync::Arc::clone(&self.continuation_instructions);
+        for (function, instructions) in continuations.iter().enumerate() {
+            let Ok(function) = u32::try_from(function) else {
+                continue;
+            };
+            for (continuation, instruction) in instructions.iter().enumerate() {
+                let Some(instruction) = instruction.as_ref() else {
+                    continue;
+                };
+                if !matches!(
+                    &instruction.kind,
+                    php_ir::InstructionKind::FetchConst { name: candidate, .. }
+                        if candidate == name
+                ) {
+                    continue;
+                }
+                let Ok(continuation) = u32::try_from(continuation) else {
+                    continue;
+                };
+                let _ = self.publish_trusted_constant_fetch(function, continuation, encoded);
+            }
+        }
+        let _ = self.release(encoded);
+    }
+
+    fn insert_dynamic_constant(&mut self, name: String, value: Value) {
+        self.dynamic_constants.insert(name.clone(), value);
+        self.publish_trusted_constant_name(&name);
+    }
+
+    /// Publish exact declared-property slots for statically proven object
+    /// classes. Visibility, hooks, readonly/type constraints, layout identity,
+    /// and numeric storage location are resolved once before native entry.
+    fn prepare_trusted_declared_properties(&mut self) {
+        let sites = self.compiled.prepared_native_property_sites();
+        let owner = self.current_dynamic_unit;
+        for (function, instructions) in sites.iter().enumerate() {
+            let Some(base) = self
+                .trusted_property_function_offsets
+                .get(function)
+                .copied()
+                .and_then(|base| usize::try_from(base).ok())
+            else {
+                continue;
+            };
+            for (continuation, site) in instructions.iter().enumerate() {
+                let Some(site) = site.as_ref() else {
+                    continue;
+                };
+                let Some(class) = self.unit.classes.get(site.class_index as usize) else {
+                    continue;
+                };
+                let prepared = {
+                    self.runtime_class_cache
+                        .borrow()
+                        .get(&(owner, class.name.clone()))
+                        .cloned()
+                };
+                let Some(prepared) = prepared else {
+                    continue;
+                };
+                let Some(property) = prepared.entry.properties.iter().find(|property| {
+                    property.name == site.property.as_ref() && !property.flags.is_static
+                }) else {
+                    continue;
+                };
+                let readable = !property.flags.is_private
+                    && !property.flags.is_protected
+                    && property.hooks.get_function_id.is_none();
+                let writable = readable
+                    && !prepared.entry.flags.is_readonly
+                    && !property.flags.is_readonly
+                    && !property.flags.set_is_private
+                    && !property.flags.set_is_protected
+                    && !property.flags.is_typed
+                    && property.type_.is_none()
+                    && property.hooks.set_function_id.is_none();
+                let referenceable = writable && property.hooks.get_function_id.is_none();
+                let dimension_writable = readable
+                    && !prepared.entry.flags.is_readonly
+                    && !property.flags.is_readonly
+                    && !property.flags.set_is_private
+                    && !property.flags.set_is_protected
+                    && property.hooks.set_function_id.is_none();
+                let admitted = match site.required_state {
+                    php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED => readable,
+                    php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE => writable,
+                    php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE => referenceable,
+                    php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE => {
+                        dimension_writable
+                    }
+                    _ => false,
+                };
+                if !admitted {
+                    continue;
+                }
+                let Some(slot_index) = php_runtime::api::ObjectRef::prepared_declared_slot_index(
+                    &prepared.entry,
+                    &prepared.display_name,
+                    &site.property,
+                ) else {
+                    continue;
+                };
+                let Some(plan) = self
+                    .trusted_property_slots
+                    .get_mut(base.saturating_add(continuation))
+                else {
+                    continue;
+                };
+                *plan = php_jit::JitNativeTrustedPropertySlot {
+                    state: site.required_state,
+                    slot_index,
+                    layout_id: prepared.layout_id,
+                };
+            }
+        }
+    }
+
+    /// Resolve fixed `instanceof C` sites into immutable layout-id hash
+    /// tables. Every class whose object layout is currently visible receives
+    /// an exact boolean result. A class loaded later has a new unknown layout
+    /// and therefore takes the site's single baseline continuation.
+    fn prepare_trusted_instanceof_plans(&mut self) {
+        self.trusted_instanceof_plans.fill(Default::default());
+        self.trusted_instanceof_entries.clear();
+
+        let mut seen = std::collections::BTreeSet::new();
+        let mut declarations = Vec::new();
+        for class in &self.unit.classes {
+            if class.flags.is_conditional && !self.class_is_visible(&class.name) {
+                continue;
+            }
+            if seen.insert(class.name.clone()) {
+                declarations.push((self.current_dynamic_unit, class.clone()));
+            }
+        }
+        let external = self
+            .external_class_units
+            .iter()
+            .map(|(name, unit)| (name.clone(), *unit))
+            .collect::<Vec<_>>();
+        for (name, unit) in external {
+            if self.current_dynamic_unit == Some(unit) || !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(class) = self
+                .dynamic_units
+                .get(unit)
+                .and_then(|package| package.compiled.lookup_unit_class(&name))
+                .cloned()
+            else {
+                continue;
+            };
+            declarations.push((Some(unit), class));
+        }
+
+        let known_names = declarations
+            .iter()
+            .map(|(_, class)| class.name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let layouts = declarations
+            .iter()
+            .filter(|(_, class)| {
+                !class.flags.is_abstract && !class.flags.is_interface && !class.flags.is_trait
+            })
+            .filter_map(|(owner, class)| {
+                let runtime = native_runtime_class_with_owner(self, *owner, class).ok()?;
+                let layout_id =
+                    php_runtime::api::ObjectRef::prepared_layout_id(&runtime, &class.display_name);
+                Some((class.name.clone(), layout_id))
+            })
+            .collect::<Vec<_>>();
+
+        let continuations = std::sync::Arc::clone(&self.continuation_instructions);
+        for (function, instructions) in continuations.iter().enumerate() {
+            let Some(base) = self
+                .trusted_property_function_offsets
+                .get(function)
+                .copied()
+                .and_then(|base| usize::try_from(base).ok())
+            else {
+                continue;
+            };
+            let Ok(caller_function) = u32::try_from(function) else {
+                continue;
+            };
+            for (continuation, instruction) in instructions.iter().enumerate() {
+                let Some(instruction) = instruction.as_ref() else {
+                    continue;
+                };
+                let php_ir::InstructionKind::InstanceOf { class_name, .. } = &instruction.kind
+                else {
+                    continue;
+                };
+                if class_name.eq_ignore_ascii_case("static") {
+                    continue;
+                }
+                let Ok(target) =
+                    native_resolve_scoped_class_name(self, class_name, caller_function)
+                else {
+                    continue;
+                };
+                let target = normalize_class_name(&target);
+                if self.class_aliases.contains_key(&target) || !known_names.contains(&target) {
+                    continue;
+                }
+
+                let capacity = layouts.len().saturating_mul(2).max(2).next_power_of_two();
+                let Ok(mask) = u32::try_from(capacity - 1) else {
+                    continue;
+                };
+                let Ok(entry_offset) = u32::try_from(self.trusted_instanceof_entries.len()) else {
+                    continue;
+                };
+                self.trusted_instanceof_entries.resize(
+                    self.trusted_instanceof_entries
+                        .len()
+                        .saturating_add(capacity),
+                    php_jit::JitNativeInstanceOfEntry::default(),
+                );
+                for (candidate, layout_id) in &layouts {
+                    let result = native_internal_instanceof(candidate, &target)
+                        .unwrap_or_else(|| native_class_is_a(self, candidate, &target));
+                    let mut bucket = php_jit::jit_native_instanceof_index(*layout_id, mask);
+                    loop {
+                        let index = entry_offset as usize + bucket as usize;
+                        let entry = &mut self.trusted_instanceof_entries[index];
+                        if entry.layout_id == 0 || entry.layout_id == *layout_id {
+                            *entry = php_jit::JitNativeInstanceOfEntry {
+                                layout_id: *layout_id,
+                                result: u32::from(result),
+                                reserved: 0,
+                            };
+                            break;
+                        }
+                        bucket = bucket.wrapping_add(1) & mask;
+                    }
+                }
+                let Some(plan) = self
+                    .trusted_instanceof_plans
+                    .get_mut(base.saturating_add(continuation))
+                else {
+                    continue;
+                };
+                *plan = php_jit::JitNativeInstanceOfPlan {
+                    entry_offset,
+                    mask,
+                    state: php_jit::JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED,
+                    reserved: 0,
+                };
+            }
+        }
+    }
+
+    /// Publish effect-free constant function-static defaults before native
+    /// entry. Dynamic expressions and unresolved constants remain cold and
+    /// publish the same dense slot after their first baseline initialization.
+    fn prepare_trusted_static_locals(&mut self) {
+        let continuations = std::sync::Arc::clone(&self.continuation_instructions);
+        for (function, instructions) in continuations.iter().enumerate() {
+            let Ok(function) = u32::try_from(function) else {
+                continue;
+            };
+            for instruction in instructions.iter().flatten() {
+                let php_ir::InstructionKind::InitStaticLocal { local, default, .. } =
+                    &instruction.kind
+                else {
+                    continue;
+                };
+                let php_ir::Operand::Constant(constant) = default else {
+                    continue;
+                };
+                let Some(constant) = self.unit.constants.get(constant.index()).cloned() else {
+                    continue;
+                };
+                if !native_publication_constant_is_stable(&constant) {
+                    continue;
+                }
+                let key = (self.unit_identity, function, local.raw());
+                let reference = if let Some(reference) = self.static_locals.get(&key).cloned() {
+                    reference
+                } else {
+                    let Ok(default) = native_runtime_constant_value(self, &constant) else {
+                        continue;
+                    };
+                    let reference = php_runtime::api::ReferenceCell::new(default);
+                    self.static_locals.insert(key, reference.clone());
+                    reference
+                };
+                let Ok(encoded) = self.encode(Value::Reference(reference)) else {
+                    continue;
+                };
+                let published =
+                    self.publish_trusted_static_local_reference(function, local.raw(), encoded);
+                let _ = self.release(encoded);
+                if published.is_err() {
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Resolve exact local static-property sites once per request. Generated
+    /// code subsequently indexes the authoritative slot directly; dynamic
+    /// class names, late-static binding, typed/deferred declarations, and
+    /// autoloaded classes retain their single baseline continuation.
+    fn prepare_trusted_static_properties(&mut self) {
+        let continuations = std::sync::Arc::clone(&self.continuation_instructions);
+        for (function_index, function) in continuations.iter().enumerate() {
+            let Ok(caller_function) = u32::try_from(function_index) else {
+                continue;
+            };
+            for (continuation, instruction) in function.iter().enumerate() {
+                let Some(instruction) = instruction.as_ref() else {
+                    continue;
+                };
+                let (class_name, property, writable) = match &instruction.kind {
+                    php_ir::InstructionKind::FetchStaticProperty {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::IssetStaticProperty {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::EmptyStaticProperty {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::IssetStaticPropertyDim {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::EmptyStaticPropertyDim {
+                        class_name,
+                        property,
+                        ..
+                    } => (class_name.as_str(), property.as_str(), false),
+                    php_ir::InstructionKind::AssignStaticProperty {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::BindReferenceStaticProperty {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::BindReferenceFromStaticPropertyDim {
+                        class_name,
+                        property,
+                        ..
+                    }
+                    | php_ir::InstructionKind::UnsetStaticPropertyDim {
+                        class_name,
+                        property,
+                        ..
+                    } => (class_name.as_str(), property.as_str(), true),
+                    _ => continue,
+                };
+
+                let calling_class = native_calling_class(self, caller_function);
+                let resolved_class = match class_name.to_ascii_lowercase().as_str() {
+                    "self" => calling_class.map(|class| class.name.clone()),
+                    "parent" => calling_class.and_then(|class| class.parent.clone()),
+                    // Late-static binding depends on the active call chain and
+                    // therefore cannot be published as a request-stable slot.
+                    "static" => None,
+                    _ => Some(class_name.to_owned()),
+                };
+                let Some(resolved_class) = resolved_class else {
+                    continue;
+                };
+                let normalized = normalize_class_name(&resolved_class);
+                if !self
+                    .unit
+                    .classes
+                    .iter()
+                    .any(|class| class.name == normalized)
+                {
+                    continue;
+                }
+                let Some(declaration) = native_static_property_declaration(
+                    self,
+                    &resolved_class,
+                    property,
+                    caller_function,
+                ) else {
+                    continue;
+                };
+                if declaration.owner_unit.is_some()
+                    || declaration.type_.is_some()
+                    || declaration.flags.is_typed
+                    || declaration.flags.is_readonly
+                    || declaration.has_deferred_default
+                    || ((declaration.flags.is_private || declaration.flags.is_protected)
+                        && !declaration.caller_owns_scope)
+                {
+                    continue;
+                }
+
+                let key = (declaration.owner_name, property.to_owned());
+                let slot_index = if let Some(index) = self.static_property_indices.get(&key) {
+                    *index
+                } else {
+                    let next = *self.static_property_next;
+                    let Ok(index) = usize::try_from(next) else {
+                        continue;
+                    };
+                    if index >= self.static_property_slots.capacity() {
+                        continue;
+                    }
+                    let inherited = self.static_properties.remove(&key);
+                    let default = declaration
+                        .default
+                        .and_then(|constant| self.unit.constants.get(constant.index()))
+                        .cloned();
+                    let value = match inherited {
+                        Some(value) => value,
+                        None => match default.as_ref() {
+                            Some(value) => match native_runtime_constant_value(self, value) {
+                                Ok(value) => value,
+                                Err(_) => continue,
+                            },
+                            None => Value::Null,
+                        },
+                    };
+                    let encoded = match self.encode(value.clone()) {
+                        Ok(encoded) => encoded,
+                        Err(_) => {
+                            self.static_properties.insert(key.clone(), value);
+                            continue;
+                        }
+                    };
+                    self.static_property_slots[index] = php_jit::JitNativeStaticPropertySlot {
+                        value: encoded,
+                        initialized: 1,
+                        reserved: 0,
+                    };
+                    *self.static_property_next = next.saturating_add(1);
+                    self.static_property_indices.insert(key, next);
+                    next
+                };
+
+                let Some(base) = self
+                    .trusted_property_function_offsets
+                    .get(function_index)
+                    .copied()
+                    .and_then(|base| usize::try_from(base).ok())
+                else {
+                    continue;
+                };
+                let Some(plan) = self
+                    .trusted_static_property_slots
+                    .get_mut(base.saturating_add(continuation))
+                else {
+                    continue;
+                };
+                *plan = php_jit::JitNativeTrustedStaticPropertySlot {
+                    state: if writable {
+                        php_jit::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_WRITABLE
+                    } else {
+                        php_jit::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_READABLE
+                    },
+                    slot_index,
+                };
+            }
+        }
+    }
+
+    fn direct_static_property_value(
+        &mut self,
+        key: &(String, String),
+    ) -> Option<Result<Value, String>> {
+        let index = usize::try_from(*self.static_property_indices.get(key)?).ok()?;
+        let encoded = self.static_property_slots.get(index)?.value;
+        Some(self.decode(encoded))
+    }
+
+    /// Publish the immutable result of one exact `FetchConst` continuation.
+    /// The plan retains its own owner; the caller keeps the owner returned by
+    /// the baseline operation for the current SSA result.
+    fn publish_trusted_constant_fetch(
+        &mut self,
+        function: u32,
+        continuation: u32,
+        encoded: i64,
+    ) -> Result<(), String> {
+        let base = self
+            .trusted_property_function_offsets
+            .get(function as usize)
+            .copied()
+            .and_then(|base| usize::try_from(base).ok())
+            .ok_or_else(|| "trusted constant function index is missing".to_owned())?;
+        let index = base
+            .checked_add(continuation as usize)
+            .ok_or_else(|| "trusted constant continuation index overflow".to_owned())?;
+        let plan = self
+            .trusted_constant_slots
+            .get(index)
+            .copied()
+            .ok_or_else(|| "trusted constant continuation is missing".to_owned())?;
+        if plan.state == php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED {
+            return Ok(());
+        }
+        self.retain(encoded)?;
+        self.trusted_constant_slots[index] = php_jit::JitNativeTrustedConstantSlot {
+            value: encoded,
+            state: php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED,
+            reserved: 0,
+        };
+        Ok(())
+    }
+
+    fn clear_trusted_constant_fetches(&mut self) {
+        let values = self
+            .trusted_constant_slots
+            .iter_mut()
+            .filter_map(|slot| {
+                (slot.state == php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED).then(|| {
+                    let value = slot.value;
+                    *slot = php_jit::JitNativeTrustedConstantSlot::default();
+                    value
+                })
+            })
+            .collect::<Vec<_>>();
+        for value in values {
+            let _ = self.release_if_live(value);
+        }
+    }
+
+    /// Replace the owner held by an authoritative native static slot. The
+    /// caller supplies a PHP value only on the cold path; the stored result is
+    /// immediately native again and the superseded owner is released once.
+    fn store_direct_static_property_value(
+        &mut self,
+        key: &(String, String),
+        value: Value,
+    ) -> Option<Result<(), String>> {
+        let index = usize::try_from(*self.static_property_indices.get(key)?).ok()?;
+        let encoded = match self.encode(value) {
+            Ok(encoded) => encoded,
+            Err(error) => return Some(Err(error)),
+        };
+        let previous = self.static_property_slots[index].value;
+        self.static_property_slots[index].value = encoded;
+        self.static_property_slots[index].initialized = 1;
+        self.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+        Some(self.release(previous))
+    }
+
+    /// Include execution moves request symbols between independently owned
+    /// native contexts. Materialize only at that cold ownership boundary and
+    /// relinquish every slot owner before the child context is constructed.
+    fn demote_trusted_static_properties(&mut self) {
+        let entries = self
+            .static_property_indices
+            .iter()
+            .map(|(key, index)| (key.clone(), *index))
+            .collect::<Vec<_>>();
+        for (key, index) in entries {
+            let Ok(index) = usize::try_from(index) else {
+                continue;
+            };
+            let Some(slot) = self.static_property_slots.get(index).copied() else {
+                continue;
+            };
+            let Ok(value) = self.decode(slot.value) else {
+                continue;
+            };
+            self.static_properties.insert(key, value);
+            self.static_property_slots[index] = php_jit::JitNativeStaticPropertySlot::default();
+            let _ = self.release(slot.value);
+        }
+        let used = usize::try_from(*self.static_property_next).unwrap_or(0);
+        self.static_property_slots.discard_prefix(used);
+        *self.static_property_next = 0;
+        self.static_property_indices.clear();
+        self.trusted_static_property_slots
+            .fill(php_jit::JitNativeTrustedStaticPropertySlot::default());
+        self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+    }
+
     pub(super) fn recycle_native_value_arena(&mut self) {
+        self.clear_trusted_constant_fetches();
+        self.clear_trusted_global_references();
+        self.clear_trusted_static_locals();
+        // ObjectRef identities may escape an include/nested VM through
+        // globals or returned symbols. Their native property cells point into
+        // this request arena, so restore every such object before the arena is
+        // force-recycled. Doing this after individual slots were reclaimed
+        // made graph order observable and could leave an escaped empty shell.
+        let _ = self.demote_all_direct_objects();
+        let cold_value_used = self.values.len();
         let direct_value_used = usize::try_from(*self.direct_value_next).unwrap_or(0);
         let direct_array_used = usize::try_from(*self.direct_array_next).unwrap_or(0);
         let direct_string_used = usize::try_from(*self.direct_string_next).unwrap_or(0);
+        let static_property_used = usize::try_from(*self.static_property_next).unwrap_or(0);
+        let static_values = self
+            .static_property_slots
+            .get(..static_property_used)
+            .unwrap_or_default()
+            .iter()
+            .filter(|slot| slot.initialized != 0)
+            .map(|slot| slot.value)
+            .collect::<Vec<_>>();
+        self.static_property_slots
+            .discard_prefix(static_property_used);
+        *self.static_property_next = 0;
+        self.static_property_indices.clear();
+        for value in static_values {
+            let _ = self.release_if_live(value);
+        }
         for index in (0..direct_value_used).rev() {
             while self.direct_value_slots[index].refcount != 0 {
                 if self.release_direct_value_index(index).is_err() {
@@ -1038,23 +3019,25 @@ impl<'a> NativeExecutionContext<'a> {
                 }
             }
         }
-        for entry in &mut *self.global_reference_cache.entries {
-            *entry = php_jit::JitNativeGlobalReferenceCacheRecord::default();
-        }
-        self.global_reference_cache.names.fill_with(|| None);
-        self.object_property_caches.clear();
         self.values.clear();
-        self.value_slots.clear();
-        self.direct_value_slots[..direct_value_used].fill(php_jit::JitNativeValueSlot::default());
-        self.direct_array_entries[..direct_array_used]
-            .fill(php_jit::JitNativeDirectArrayEntry::default());
+        self.value_slots.discard_prefix(cold_value_used);
+        self.direct_value_slots.discard_prefix(direct_value_used);
+        self.direct_object_owners.discard_prefix(direct_value_used);
+        self.direct_array_entries.discard_prefix(direct_array_used);
         *self.direct_value_next = 0;
         *self.direct_array_next = 0;
         *self.direct_value_free_head = php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+        *self.direct_value_reused_bytes = 0;
         self.direct_array_free_heads
             .fill(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE);
-        self.direct_string_bytes[..direct_string_used].fill(0);
+        *self.direct_array_reused_bytes = 0;
+        self.direct_string_free_heads
+            .fill(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE);
+        *self.direct_string_reused_bytes = 0;
+        self.direct_string_bytes.discard_prefix(direct_string_used);
         *self.direct_string_next = 0;
+        self.direct_reference_cells.clear();
+        self.direct_object_handles.clear();
         self.interned_value_handles.clear();
         self.free_value_slots.clear();
         recycle_native_value_arena(NativeValueArenaBuffers {
@@ -1062,15 +3045,18 @@ impl<'a> NativeExecutionContext<'a> {
             value_slots: std::mem::take(&mut self.value_slots),
             direct_value_slots: std::mem::take(&mut self.direct_value_slots),
             direct_value_next: std::mem::take(&mut self.direct_value_next),
+            direct_object_owners: std::mem::take(&mut self.direct_object_owners),
             direct_array_entries: std::mem::take(&mut self.direct_array_entries),
             direct_array_next: std::mem::take(&mut self.direct_array_next),
             direct_value_free_head: std::mem::take(&mut self.direct_value_free_head),
+            direct_value_reused_bytes: std::mem::take(&mut self.direct_value_reused_bytes),
             direct_array_free_heads: std::mem::take(&mut self.direct_array_free_heads),
+            direct_array_reused_bytes: std::mem::take(&mut self.direct_array_reused_bytes),
             direct_string_bytes: std::mem::take(&mut self.direct_string_bytes),
             direct_string_next: std::mem::take(&mut self.direct_string_next),
-            object_property_caches: std::mem::take(&mut self.object_property_caches),
+            direct_string_free_heads: std::mem::take(&mut self.direct_string_free_heads),
+            direct_string_reused_bytes: std::mem::take(&mut self.direct_string_reused_bytes),
             interned_value_handles: std::mem::take(&mut self.interned_value_handles),
-            global_reference_cache: std::mem::take(&mut self.global_reference_cache),
             free_value_slots: std::mem::take(&mut self.free_value_slots),
         });
     }
@@ -1182,21 +3168,88 @@ impl<'a> NativeExecutionContext<'a> {
         }
     }
 
+    /// Publish references for globals that already exist at request entry.
+    /// Missing globals are deliberately left unpublished so preparing native
+    /// code cannot make them visible before PHP executes the `global` binding.
+    fn prepare_trusted_global_references(&mut self) {
+        self.ensure_native_global_references();
+        let continuations = std::sync::Arc::clone(&self.continuation_instructions);
+        let sites = continuations
+            .iter()
+            .enumerate()
+            .flat_map(|(function, instructions)| {
+                instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(continuation, instruction)| {
+                        let instruction = instruction.as_ref()?;
+                        let php_ir::InstructionKind::BindGlobal { name, .. } = &instruction.kind
+                        else {
+                            return None;
+                        };
+                        Some((function, continuation, name.clone()))
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (function, continuation, name) in sites {
+            let Some(Value::Reference(reference)) = self.inherited_globals.get(&name).cloned()
+            else {
+                continue;
+            };
+            let (Ok(function), Ok(continuation)) =
+                (u32::try_from(function), u32::try_from(continuation))
+            else {
+                continue;
+            };
+            let Ok(encoded) = self.encode(Value::Reference(reference)) else {
+                continue;
+            };
+            let published =
+                self.publish_native_global_reference(function, continuation, &name, encoded);
+            let _ = self.release(encoded);
+            if published.is_err() {
+                continue;
+            }
+        }
+    }
+
+    fn native_reference_identity(&self, encoded: i64) -> Option<u64> {
+        if encoded as u64 & php_jit::JIT_VALUE_RUNTIME_KIND_MASK
+            != php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG
+        {
+            return None;
+        }
+        if let Some(index) = Self::direct_value_index(encoded) {
+            return self
+                .direct_reference_cells
+                .get(&index)
+                .map(php_runtime::api::ReferenceCell::gc_debug_id);
+        }
+        let value_index = php_jit::jit_decode_runtime_value(encoded)? as usize;
+        match self.values.get(value_index).and_then(Option::as_ref) {
+            Some(NativeStoredValue::Php(Value::Reference(reference))) => {
+                Some(reference.gc_debug_id())
+            }
+            _ => None,
+        }
+    }
+
     fn invalidate_native_global_reference(
         &mut self,
         reference_identity: u64,
     ) -> Result<(), String> {
         let retained = self
-            .global_reference_cache
-            .entries
+            .trusted_global_reference_slots
             .iter_mut()
-            .zip(&mut self.global_reference_cache.names)
-            .filter_map(|(entry, name)| {
-                if entry.valid == 0 || entry.reference_identity != reference_identity {
+            .zip(&mut self.trusted_global_reference_names)
+            .filter_map(|(slot, name)| {
+                if slot.state != php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED
+                    || slot.reference_identity != reference_identity
+                {
                     return None;
                 }
-                let encoded = entry.encoded;
-                *entry = php_jit::JitNativeGlobalReferenceCacheRecord::default();
+                let encoded = slot.encoded;
+                *slot = php_jit::JitNativeTrustedGlobalReferenceSlot::default();
                 *name = None;
                 Some(encoded)
             })
@@ -1207,22 +3260,21 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(())
     }
 
-    fn reconcile_native_global_reference_cache(&mut self) -> Result<(), String> {
+    fn reconcile_trusted_global_references(&mut self) -> Result<(), String> {
         let stale = self
-            .global_reference_cache
-            .entries
+            .trusted_global_reference_slots
             .iter()
-            .zip(&self.global_reference_cache.names)
+            .zip(&self.trusted_global_reference_names)
             .enumerate()
-            .filter_map(|(index, (entry, name))| {
-                if entry.valid == 0 {
+            .filter_map(|(index, (slot, name))| {
+                if slot.state != php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED {
                     return None;
                 }
                 let still_bound = name.as_deref().is_some_and(|name| {
                     matches!(
                         self.inherited_globals.get(name),
                         Some(Value::Reference(reference))
-                            if reference.gc_debug_id() == entry.reference_identity
+                            if reference.gc_debug_id() == slot.reference_identity
                     )
                 });
                 (!still_bound).then_some(index)
@@ -1231,10 +3283,10 @@ impl<'a> NativeExecutionContext<'a> {
         let retained = stale
             .into_iter()
             .map(|index| {
-                let encoded = self.global_reference_cache.entries[index].encoded;
-                self.global_reference_cache.entries[index] =
-                    php_jit::JitNativeGlobalReferenceCacheRecord::default();
-                self.global_reference_cache.names[index] = None;
+                let encoded = self.trusted_global_reference_slots[index].encoded;
+                self.trusted_global_reference_slots[index] =
+                    php_jit::JitNativeTrustedGlobalReferenceSlot::default();
+                self.trusted_global_reference_names[index] = None;
                 encoded
             })
             .collect::<Vec<_>>();
@@ -1246,62 +3298,148 @@ impl<'a> NativeExecutionContext<'a> {
 
     fn publish_native_global_reference(
         &mut self,
-        unit_identity: u64,
         function: u32,
         continuation: u32,
         name: &str,
         encoded: i64,
     ) -> Result<(), String> {
-        let Some(value_index) = php_jit::jit_decode_runtime_value(encoded) else {
-            return Err("native global binding did not produce a runtime reference".to_owned());
+        let Some(reference_identity) = self.native_reference_identity(encoded) else {
+            return Err("native global binding reference handle has no reference cell".to_owned());
         };
-        if encoded as u64 & php_jit::JIT_VALUE_RUNTIME_KIND_MASK
-            != php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG
-        {
-            return Err("native global binding did not produce a reference handle".to_owned());
-        }
-        let reference_identity = match self
-            .values
-            .get(value_index as usize)
-            .and_then(Option::as_ref)
-        {
-            Some(NativeStoredValue::Php(Value::Reference(reference))) => reference.gc_debug_id(),
-            _ => {
-                return Err(
-                    "native global binding reference handle has no reference cell".to_owned(),
-                );
-            }
+        let Some(base) = self
+            .trusted_property_function_offsets
+            .get(function as usize)
+            .copied()
+            .and_then(|base| usize::try_from(base).ok())
+        else {
+            return Err("native global-binding function index is missing".to_owned());
         };
-        let index = NativeGlobalReferenceCache::index(unit_identity, function, continuation);
-        let previous = self.global_reference_cache.entries[index];
-        if previous.valid != 0
-            && previous.unit_identity == unit_identity
-            && previous.function_id == function
-            && previous.continuation_id == continuation
+        let index = base
+            .checked_add(continuation as usize)
+            .ok_or_else(|| "native global-binding continuation index overflow".to_owned())?;
+        let previous = self
+            .trusted_global_reference_slots
+            .get(index)
+            .copied()
+            .ok_or_else(|| "native global-binding continuation is missing".to_owned())?;
+        if previous.state == php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED
             && previous.encoded == encoded
             && previous.reference_identity == reference_identity
-            && self.global_reference_cache.names[index].as_deref() == Some(name)
+            && self.trusted_global_reference_names[index].as_deref() == Some(name)
         {
             return Ok(());
         }
 
         // The call result already owns one handle for the destination local.
-        // The cache owns another until replacement or request reset.
-        self.retain_runtime_value_index(value_index as usize)?;
-        self.global_reference_cache.entries[index] = php_jit::JitNativeGlobalReferenceCacheRecord {
-            unit_identity,
+        // The trusted slot owns another until replacement or request reset.
+        self.retain(encoded)?;
+        self.trusted_global_reference_slots[index] = php_jit::JitNativeTrustedGlobalReferenceSlot {
             encoded,
             reference_identity,
-            function_id: function,
-            continuation_id: continuation,
-            valid: 1,
+            state: php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED,
             reserved: 0,
+            reserved_wide: 0,
         };
-        self.global_reference_cache.names[index] = Some(name.into());
-        if previous.valid != 0 {
+        self.trusted_global_reference_names[index] = Some(name.into());
+        if previous.state == php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED {
             self.release(previous.encoded)?;
         }
         Ok(())
+    }
+
+    fn clear_trusted_global_references(&mut self) {
+        let values = self
+            .trusted_global_reference_slots
+            .iter_mut()
+            .zip(&mut self.trusted_global_reference_names)
+            .filter_map(|(slot, name)| {
+                let published =
+                    slot.state == php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED;
+                let encoded = slot.encoded;
+                *slot = php_jit::JitNativeTrustedGlobalReferenceSlot::default();
+                *name = None;
+                published.then_some(encoded)
+            })
+            .collect::<Vec<_>>();
+        for encoded in values {
+            let _ = self.release_if_live(encoded);
+        }
+    }
+
+    fn publish_trusted_static_local_reference(
+        &mut self,
+        function: u32,
+        local: u32,
+        encoded: i64,
+    ) -> Result<(), String> {
+        if encoded as u64 & php_jit::JIT_VALUE_RUNTIME_KIND_MASK
+            != php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG
+            || Self::direct_value_index(encoded).is_none()
+        {
+            return Err("native static local did not produce a direct reference".to_owned());
+        }
+        let Some(base) = self
+            .trusted_property_function_offsets
+            .get(function as usize)
+            .copied()
+            .and_then(|base| usize::try_from(base).ok())
+        else {
+            return Err("native static-local function index is missing".to_owned());
+        };
+        let sites = self
+            .continuation_instructions
+            .get(function as usize)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(continuation, instruction)| {
+                matches!(
+                    instruction.as_ref().map(|instruction| &instruction.kind),
+                    Some(php_ir::InstructionKind::InitStaticLocal { local: candidate, .. })
+                        if candidate.raw() == local
+                )
+                .then_some(base.saturating_add(continuation))
+            })
+            .collect::<Vec<_>>();
+        for index in sites {
+            let previous = self
+                .trusted_static_local_slots
+                .get(index)
+                .copied()
+                .ok_or_else(|| "native static-local continuation is missing".to_owned())?;
+            if previous.state == php_jit::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED
+                && previous.encoded == encoded
+            {
+                continue;
+            }
+            self.retain(encoded)?;
+            self.trusted_static_local_slots[index] = php_jit::JitNativeTrustedStaticLocalSlot {
+                encoded,
+                state: php_jit::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED,
+                reserved: 0,
+            };
+            if previous.state == php_jit::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED {
+                self.release(previous.encoded)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_trusted_static_locals(&mut self) {
+        let values = self
+            .trusted_static_local_slots
+            .iter_mut()
+            .filter_map(|slot| {
+                (slot.state == php_jit::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED).then(|| {
+                    let encoded = slot.encoded;
+                    *slot = php_jit::JitNativeTrustedStaticLocalSlot::default();
+                    encoded
+                })
+            })
+            .collect::<Vec<_>>();
+        for encoded in values {
+            let _ = self.release_if_live(encoded);
+        }
     }
 
     fn materialize_native_globals_array(&self) -> Value {
@@ -1351,6 +3489,36 @@ impl<'a> NativeExecutionContext<'a> {
             .cloned()
     }
 
+    fn replace_direct_reference_cell_value(
+        &mut self,
+        reference: &php_runtime::api::ReferenceCell,
+        replacement: Value,
+    ) -> Result<Option<Value>, String> {
+        let Some(index) = self
+            .direct_reference_cells
+            .iter()
+            .find_map(|(index, candidate)| candidate.ptr_eq(reference).then_some(*index))
+        else {
+            return Ok(None);
+        };
+        let Some(slot) = self.direct_value_slots.get(index).copied().filter(|slot| {
+            slot.refcount != 0
+                && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+        }) else {
+            return Ok(None);
+        };
+        let encoded = self.encode(replacement.clone())?;
+        self.direct_value_slots[index].payload = encoded as u64;
+        self.direct_value_slots[index].reserved =
+            php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+        reference.set(replacement);
+        let previous = self.decode(slot.payload as i64)?;
+        self.release(slot.payload as i64)?;
+        Ok(Some(previous))
+    }
+
     fn store_native_global_dimension(
         &mut self,
         key: &php_runtime::api::ArrayKey,
@@ -1366,8 +3534,15 @@ impl<'a> NativeExecutionContext<'a> {
         if let Some(Value::Reference(reference)) =
             self.inherited_globals.get(name.as_ref()).cloned()
         {
-            let previous = reference.get();
-            reference.set(replacement.clone());
+            let previous = if let Some(previous) =
+                self.replace_direct_reference_cell_value(&reference, replacement.clone())?
+            {
+                previous
+            } else {
+                let previous = reference.get();
+                reference.set(replacement.clone());
+                previous
+            };
             self.mark_rooted_container_dirty(&Value::Reference(reference));
             self.finalize_replaced_value(previous)?;
         } else {
@@ -1425,6 +3600,570 @@ impl<'a> NativeExecutionContext<'a> {
         (index < php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY).then_some(index)
     }
 
+    /// Clones the stable backing owner of one live direct object. The
+    /// slot-parallel pointer arena is authoritative; no object-value HashMap
+    /// participates in ordinary lookup.
+    #[allow(unsafe_code)]
+    fn direct_object(&self, index: usize) -> Option<php_runtime::api::ObjectRef> {
+        let slot = self.direct_value_slots.get(index)?;
+        if slot.refcount == 0 || slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
+            return None;
+        }
+        self.direct_object_owner(index)
+    }
+
+    /// Clone the backing owner while a direct object is being retired.  At
+    /// that point its native refcount is already zero, but the parallel owner
+    /// remains valid until the descriptor and owner are reclaimed together.
+    #[allow(unsafe_code)]
+    fn direct_object_owner(&self, index: usize) -> Option<php_runtime::api::ObjectRef> {
+        let slot = self.direct_value_slots.get(index)?;
+        if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
+            return None;
+        }
+        let owner =
+            *self.direct_object_owners.get(index)? as usize as *const php_runtime::api::ObjectRef;
+        // SAFETY: encode/publish stores a Box<ObjectRef> before exposing the
+        // descriptor, and release clears the pointer only after refcount zero.
+        unsafe { owner.as_ref().cloned() }
+    }
+
+    /// A materialized ReferenceCell can outlive a direct object handle and can
+    /// later be reached by a cold semantic operation. Restore native declared
+    /// slots before exposing that referenced object to Rust property APIs.
+    fn materialize_referenced_object(
+        &mut self,
+        reference: &php_runtime::api::ReferenceCell,
+    ) -> Result<(), String> {
+        let mut value = reference.get();
+        for _ in 0..16 {
+            let Value::Reference(next) = value else {
+                break;
+            };
+            value = next.get();
+        }
+        let Value::Object(object) = value else {
+            return Ok(());
+        };
+        self.materialize_direct_object_alias(&object)
+    }
+
+    fn materialize_direct_object_alias(
+        &mut self,
+        object: &php_runtime::api::ObjectRef,
+    ) -> Result<(), String> {
+        if object
+            .native_declared_slots_view(object.class_layout_epoch())
+            .is_none()
+        {
+            return Ok(());
+        }
+        let object_id = object.id();
+        let index = self
+            .direct_object_handles
+            .get(&object_id)
+            .copied()
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| {
+                self.direct_value_slots.get(*index).is_some_and(|slot| {
+                    slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+                        && slot.flags == php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION
+                }) && self
+                    .direct_object_owner(*index)
+                    .is_some_and(|candidate| candidate.id() == object_id)
+            })
+            .or_else(|| {
+                let used = usize::try_from(*self.direct_value_next).ok()?;
+                (0..used).find(|index| {
+                    self.direct_value_slots.get(*index).is_some_and(|slot| {
+                        slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+                            && slot.flags == php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION
+                    }) && self
+                        .direct_object_owner(*index)
+                        .is_some_and(|candidate| candidate.id() == object_id)
+                })
+            })
+            .ok_or_else(|| format!("native object {object_id} has no live direct descriptor"))?;
+        let was_dead = self.direct_value_slots[index].refcount == 0;
+        if was_dead {
+            // Recover a descriptor whose retained call-owner was decremented
+            // to zero without the last-owner commit. It is revived only long
+            // enough to materialize its escaped ObjectRef and retire cleanly.
+            self.direct_value_slots[index].refcount = 1;
+        }
+        self.demote_direct_object_declared_slots(index)?;
+        if was_dead {
+            self.release_direct_value_index(index)?;
+        }
+        Ok(())
+    }
+
+    fn reserve_direct_value_slot(&mut self) -> Result<usize, String> {
+        if *self.direct_value_free_head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+            let index = *self.direct_value_free_head as usize;
+            let slot = self
+                .direct_value_slots
+                .get(index)
+                .ok_or_else(|| "direct native value free-list entry is missing".to_owned())?;
+            *self.direct_value_free_head = slot.reserved;
+            *self.direct_value_reused_bytes = self
+                .direct_value_reused_bytes
+                .saturating_add(std::mem::size_of::<php_jit::JitNativeValueSlot>() as u64);
+            return Ok(index);
+        }
+        let index = usize::try_from(*self.direct_value_next)
+            .map_err(|_| "direct native value index overflow".to_owned())?;
+        if index >= self.direct_value_slots.len() {
+            return Err(format!(
+                "direct native value arena exhausted at {} slots",
+                index.saturating_add(1)
+            ));
+        }
+        *self.direct_value_next = u32::try_from(index + 1)
+            .map_err(|_| "direct native value index overflow".to_owned())?;
+        Ok(index)
+    }
+
+    /// Publishes a PHP string directly into the authoritative request-owned
+    /// native byte/value plane. The Rust `PhpString` is consumed at this
+    /// boundary and is not mirrored in `NativeStoredValue`.
+    #[track_caller]
+    fn encode_direct_string_value(&mut self, string: PhpString) -> Result<i64, String> {
+        self.encode_direct_string_bytes(string.as_bytes())
+    }
+
+    fn direct_string_capacity(length: usize) -> Result<usize, String> {
+        length
+            .max(php_jit::JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY as usize)
+            .checked_next_power_of_two()
+            .ok_or_else(|| "direct native string capacity overflow".to_owned())
+    }
+
+    fn reserve_direct_string_bytes(&mut self, length: usize) -> Result<(usize, usize), String> {
+        let capacity = Self::direct_string_capacity(length)?;
+        let bucket = capacity.trailing_zeros() as usize;
+        let head = self.direct_string_free_heads[bucket];
+        if head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
+            let start = head as usize;
+            let next_bytes: [u8; 4] = self
+                .direct_string_bytes
+                .get(start..start + 4)
+                .ok_or_else(|| "direct native string free-list entry is missing".to_owned())?
+                .try_into()
+                .expect("four-byte string free-list header");
+            self.direct_string_free_heads[bucket] = u32::from_ne_bytes(next_bytes);
+            *self.direct_string_reused_bytes = self
+                .direct_string_reused_bytes
+                .saturating_add(capacity as u64);
+            return Ok((start, capacity));
+        }
+        let start = usize::try_from(*self.direct_string_next)
+            .map_err(|_| "direct native string offset overflow".to_owned())?;
+        let end = start
+            .checked_add(capacity)
+            .ok_or_else(|| "direct native string range overflow".to_owned())?;
+        if end > self.direct_string_bytes.len() {
+            return Err(format!(
+                "direct native string arena exhausted at {end} bytes (next={start}, requested={capacity})"
+            ));
+        }
+        *self.direct_string_next =
+            u32::try_from(end).map_err(|_| "direct native string offset overflow".to_owned())?;
+        Ok((start, capacity))
+    }
+
+    fn free_direct_string_bytes(&mut self, start: usize, capacity: usize) {
+        if capacity < php_jit::JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY as usize
+            || !capacity.is_power_of_two()
+        {
+            return;
+        }
+        let bucket = capacity.trailing_zeros() as usize;
+        let Some(head) = self.direct_string_free_heads.get_mut(bucket) else {
+            return;
+        };
+        let Some(bytes) = self.direct_string_bytes.get_mut(start..start + 4) else {
+            return;
+        };
+        bytes.copy_from_slice(&head.to_ne_bytes());
+        *head = u32::try_from(start).unwrap_or(php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE);
+    }
+
+    fn encode_direct_string_bytes(&mut self, bytes: &[u8]) -> Result<i64, String> {
+        let (start, capacity) = self.reserve_direct_string_bytes(bytes.len())?;
+        let end = start + bytes.len();
+        let index = match self.reserve_direct_value_slot() {
+            Ok(index) => index,
+            Err(error) => {
+                self.free_direct_string_bytes(start, capacity);
+                return Err(error);
+            }
+        };
+        let runtime_index = match u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+        {
+            Some(runtime_index) => runtime_index,
+            None => {
+                self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+                    reserved: *self.direct_value_free_head,
+                    ..php_jit::JitNativeValueSlot::default()
+                };
+                *self.direct_value_free_head = index as u32;
+                self.free_direct_string_bytes(start, capacity);
+                return Err("direct native value handle overflow".to_owned());
+            }
+        };
+        self.direct_string_bytes[start..end].copy_from_slice(bytes);
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            refcount: 1,
+            kind: php_jit::JIT_NATIVE_VALUE_VIEW_STRING,
+            flags: php_jit::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+            reserved: php_jit::jit_native_direct_string_reserved(
+                u32::try_from(capacity).unwrap_or(u32::MAX),
+                bytes == b"0",
+            ),
+            payload: bytes.len() as u64,
+            aux: self.direct_string_bytes[start..].as_ptr() as usize as u64,
+        };
+        Ok((php_jit::JIT_VALUE_RUNTIME_STRING_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    /// Convert a unit-scoped literal to its request-wide native encoding at a
+    /// cross-unit call boundary. Scalar and string literals never materialize
+    /// a Rust `Value`; dynamic/class/array constants retain their exact cold
+    /// resolution path.
+    fn stabilize_active_unit_constant(&mut self, index: u32) -> Result<i64, String> {
+        let constant = self
+            .unit
+            .constants
+            .get(index as usize)
+            .cloned()
+            .ok_or_else(|| format!("native constant {index} is missing from the active unit"))?;
+        match constant {
+            php_ir::IrConstant::Null => Ok(php_jit::jit_encode_constant(u32::MAX)),
+            php_ir::IrConstant::Bool(false) => {
+                Ok(php_jit::jit_encode_constant(php_jit::JIT_VALUE_FALSE))
+            }
+            php_ir::IrConstant::Bool(true) => {
+                Ok(php_jit::jit_encode_constant(php_jit::JIT_VALUE_TRUE))
+            }
+            php_ir::IrConstant::Int(value) => Ok(value),
+            php_ir::IrConstant::Float(value) => {
+                self.encode_direct_float_value(php_runtime::api::FloatValue::from_f64(value))
+            }
+            php_ir::IrConstant::String(value) => self.encode_direct_string_bytes(value.as_bytes()),
+            php_ir::IrConstant::StringBytes(value) => self.encode_direct_string_bytes(&value),
+            php_ir::IrConstant::NamedConstant(_)
+            | php_ir::IrConstant::ClassConstant { .. }
+            | php_ir::IrConstant::Array(_) => {
+                let encoded = php_jit::jit_encode_constant(index);
+                self.decode(encoded).and_then(|value| self.encode(value))
+            }
+        }
+    }
+
+    /// Publishes one IEEE-754 scalar directly. The payload is authoritative;
+    /// no `NativeStoredValue::Php` mirror is retained.
+    fn encode_direct_float_value(
+        &mut self,
+        value: php_runtime::api::FloatValue,
+    ) -> Result<i64, String> {
+        let index = self.reserve_direct_value_slot()?;
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            refcount: 1,
+            kind: php_jit::JIT_NATIVE_VALUE_VIEW_FLOAT,
+            payload: value.to_f64().to_bits(),
+            ..php_jit::JitNativeValueSlot::default()
+        };
+        let runtime_index = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+            .ok_or_else(|| "direct native value handle overflow".to_owned())?;
+        Ok((php_jit::JIT_VALUE_RUNTIME_FLOAT_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    /// Publishes one PHP reference identity with its contained value owned by
+    /// the direct value plane. The `ReferenceCell` sidecar preserves alias
+    /// identity for a later cold boundary; optimizing code reads and replaces
+    /// only the encoded payload in the direct slot.
+    fn encode_direct_reference_value(
+        &mut self,
+        reference: php_runtime::api::ReferenceCell,
+    ) -> Result<i64, String> {
+        if let Some(index) = self
+            .direct_reference_cells
+            .iter()
+            .find_map(|(index, existing)| existing.ptr_eq(&reference).then_some(*index))
+        {
+            let slot = self
+                .direct_value_slots
+                .get_mut(index)
+                .filter(|slot| slot.refcount != 0)
+                .ok_or_else(|| {
+                    "direct native reference identity points at a dead slot".to_owned()
+                })?;
+            slot.refcount = slot
+                .refcount
+                .checked_add(1)
+                .ok_or_else(|| "direct native reference refcount overflow".to_owned())?;
+            let runtime_index = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+                .ok_or_else(|| "direct native reference handle overflow".to_owned())?;
+            return Ok(
+                (php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG | u64::from(runtime_index)) as i64,
+            );
+        }
+
+        // Publish the empty descriptor and identity before recursively
+        // encoding the payload so a recursive PHP reference resolves to this
+        // same slot instead of allocating a second identity.
+        let index = self.reserve_direct_value_slot()?;
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            refcount: 1,
+            kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+            flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
+            ..php_jit::JitNativeValueSlot::default()
+        };
+        self.direct_reference_cells.insert(index, reference.clone());
+
+        let payload = match self.encode(reference.get()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.direct_reference_cells.remove(&index);
+                let _ = self.release_direct_value_index(index);
+                return Err(error);
+            }
+        };
+        let slot = self
+            .direct_value_slots
+            .get_mut(index)
+            .ok_or_else(|| format!("direct native reference {index} slot disappeared"))?;
+        slot.reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+        slot.payload = payload as u64;
+
+        let runtime_index = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+            .ok_or_else(|| "direct native reference handle overflow".to_owned())?;
+        Ok((php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    /// Publishes object identity and PHP ownership in the direct plane. The
+    /// slot-parallel stable owner supplies the backing identity needed at a
+    /// cold boundary; declared values move into native slots immediately.
+    fn encode_direct_object_value(
+        &mut self,
+        object: php_runtime::api::ObjectRef,
+    ) -> Result<i64, String> {
+        let object_id = object.id();
+        let existing = self
+            .direct_object_handles
+            .get(&object_id)
+            .copied()
+            .or_else(|| {
+                let used = usize::try_from(*self.direct_value_next).ok()?;
+                (0..used)
+                    .find(|index| {
+                        self.direct_object(*index)
+                            .is_some_and(|candidate| candidate.id() == object_id)
+                    })
+                    .and_then(|index| u32::try_from(index).ok())
+            });
+        if let Some(index) = existing {
+            let slot = self
+                .direct_value_slots
+                .get_mut(index as usize)
+                .filter(|slot| {
+                    slot.refcount != 0 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+                })
+                .ok_or_else(|| "direct native object identity points at a dead slot".to_owned())?;
+            slot.refcount = slot
+                .refcount
+                .checked_add(1)
+                .ok_or_else(|| "direct native object refcount overflow".to_owned())?;
+            self.direct_object_handles.insert(object_id, index);
+            let runtime_index = index
+                .checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE)
+                .ok_or_else(|| "direct native object handle overflow".to_owned())?;
+            if self.direct_value_slots[index as usize].flags
+                != php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION
+                && let Err(error) = self.promote_direct_object_declared_slots(index as usize)
+            {
+                let _ = self.release_direct_value_index(index as usize);
+                return Err(error);
+            }
+            return Ok((php_jit::JIT_VALUE_RUNTIME_OBJECT_TAG | u64::from(runtime_index)) as i64);
+        }
+        let index = self.reserve_direct_value_slot()?;
+        let runtime_index = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+            .ok_or_else(|| "direct native value handle overflow".to_owned())?;
+        let owner = Box::into_raw(Box::new(object));
+        self.direct_object_owners[index] = owner as usize as u64;
+        self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+            refcount: 1,
+            kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT,
+            payload: object_id,
+            ..php_jit::JitNativeValueSlot::default()
+        };
+        self.direct_object_handles.insert(
+            object_id,
+            u32::try_from(index).map_err(|_| "direct native object index overflow".to_owned())?,
+        );
+        if let Err(error) = self.promote_direct_object_declared_slots(index) {
+            let _ = self.release_direct_value_index(index);
+            return Err(error);
+        }
+        Ok((php_jit::JIT_VALUE_RUNTIME_OBJECT_TAG | u64::from(runtime_index)) as i64)
+    }
+
+    fn promote_direct_object_declared_slots(&mut self, index: usize) -> Result<bool, String> {
+        let object = self
+            .direct_object(index)
+            .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+        let layout_id = object.class_layout_epoch();
+        if object.native_declared_slots_view(layout_id).is_some() {
+            return Ok(true);
+        }
+        let Some(rust_slots) = object.take_declared_slots_for_native(layout_id) else {
+            return Ok(false);
+        };
+        let mut native_slots: Vec<php_runtime::api::NativeDeclaredPropertySlot> =
+            Vec::with_capacity(rust_slots.len());
+        for slot in &rust_slots {
+            let encoded = match slot {
+                Some(value) => match self.encode(value.clone()) {
+                    Ok(encoded) => php_runtime::api::NativeDeclaredPropertySlot {
+                        initialized: 1,
+                        reserved: 0,
+                        value: encoded,
+                    },
+                    Err(error) => {
+                        for slot in native_slots {
+                            if slot.initialized != 0 {
+                                let _ = self.release(slot.value);
+                            }
+                        }
+                        let _ = object.restore_declared_slots_from_native(layout_id, rust_slots);
+                        return Err(error);
+                    }
+                },
+                None => php_runtime::api::NativeDeclaredPropertySlot::default(),
+            };
+            native_slots.push(encoded);
+        }
+        if !object.install_native_declared_slots(layout_id, native_slots.into_boxed_slice()) {
+            let _ = object.restore_declared_slots_from_native(layout_id, rust_slots);
+            return Ok(false);
+        }
+        let Some((base, count)) = object.native_declared_slots_view(layout_id) else {
+            return Err("native object slots disappeared during publication".to_owned());
+        };
+        let slot = self
+            .direct_value_slots
+            .get_mut(index)
+            .ok_or_else(|| format!("direct native object {index} slot is missing"))?;
+        slot.flags = php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION;
+        slot.reserved = u32::try_from(count).unwrap_or(u32::MAX);
+        slot.payload = layout_id;
+        slot.aux = base as usize as u64;
+        Ok(true)
+    }
+
+    fn demote_direct_object_declared_slots(&mut self, index: usize) -> Result<(), String> {
+        let object = self
+            .direct_object_owner(index)
+            .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+        let descriptor = *self
+            .direct_value_slots
+            .get(index)
+            .ok_or_else(|| format!("direct native object {index} slot is missing"))?;
+        if descriptor.flags != php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION {
+            return Ok(());
+        }
+        let layout_id = descriptor.payload;
+        let Some(native_slots) = object.take_native_declared_slots(layout_id) else {
+            return Err(format!(
+                "direct native object {index} lost its declared-slot storage"
+            ));
+        };
+        // Mark the descriptor cold before decoding so a self-referential
+        // object slot does not recursively attempt the same demotion.
+        if let Some(slot) = self.direct_value_slots.get_mut(index) {
+            slot.flags = 0;
+            slot.reserved = 0;
+            slot.payload = object.id();
+            slot.aux = 0;
+        }
+        let mut rust_slots = Vec::with_capacity(native_slots.len());
+        for slot in &native_slots {
+            if slot.initialized == 0 {
+                rust_slots.push(None);
+            } else {
+                match self.decode(slot.value) {
+                    Ok(value) => rust_slots.push(Some(value)),
+                    Err(error) => {
+                        let _ = object.install_native_declared_slots(layout_id, native_slots);
+                        if let Some(slot) = self.direct_value_slots.get_mut(index) {
+                            *slot = descriptor;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        if !object.restore_declared_slots_from_native(layout_id, rust_slots) {
+            let _ = object.install_native_declared_slots(layout_id, native_slots);
+            if let Some(slot) = self.direct_value_slots.get_mut(index) {
+                *slot = descriptor;
+            }
+            return Err("failed to restore cold object property slots".to_owned());
+        }
+        let mut release_error = None;
+        for slot in native_slots.iter().filter(|slot| slot.initialized != 0) {
+            if let Err(error) = self.release(slot.value) {
+                release_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = release_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Removes authoritative native properties from an object that is about
+    /// to die without running user code. The encoded children are returned to
+    /// the central direct release walk; no Rust `Value` is reconstructed.
+    fn take_direct_object_children(&mut self, index: usize) -> Result<Vec<i64>, String> {
+        let object = self
+            .direct_object_owner(index)
+            .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+        let descriptor = *self
+            .direct_value_slots
+            .get(index)
+            .ok_or_else(|| format!("direct native object {index} slot is missing"))?;
+        if descriptor.flags != php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION {
+            return Ok(Vec::new());
+        }
+        let slots = object
+            .take_native_declared_slots(descriptor.payload)
+            .ok_or_else(|| format!("direct native object {index} lost its declared slots"))?;
+        let children = slots
+            .iter()
+            .filter(|slot| slot.initialized != 0)
+            .map(|slot| slot.value)
+            .collect();
+        self.direct_value_slots[index].flags = 0;
+        self.direct_value_slots[index].reserved = 0;
+        self.direct_value_slots[index].payload = object.id();
+        self.direct_value_slots[index].aux = 0;
+        Ok(children)
+    }
+
     /// Moves one newly constructed PHP array into the canonical native array
     /// plane at a call-frame boundary. This is an ownership transfer, not a
     /// shadow view of a retained `PhpArray`: the direct slot and its entries
@@ -1434,6 +4173,9 @@ impl<'a> NativeExecutionContext<'a> {
         &mut self,
         array: php_runtime::api::PhpArray,
     ) -> Result<i64, String> {
+        let cursor = array
+            .native_pointer_position()
+            .and_then(|position| u32::try_from(position).ok());
         let mut entries: Vec<php_jit::JitNativeDirectArrayEntry> = Vec::with_capacity(array.len());
         for (key, value) in array.iter() {
             let key = match key {
@@ -1476,36 +4218,21 @@ impl<'a> NativeExecutionContext<'a> {
         };
         self.direct_array_entries[start..start + entries.len()].copy_from_slice(&entries);
 
-        let index = if *self.direct_value_free_head != php_jit::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE {
-            let index = *self.direct_value_free_head as usize;
-            let slot = self
-                .direct_value_slots
-                .get(index)
-                .ok_or_else(|| "direct native value free-list entry is missing".to_owned())?;
-            *self.direct_value_free_head = slot.reserved;
-            index
-        } else {
-            let index = usize::try_from(*self.direct_value_next)
-                .map_err(|_| "direct native value index overflow".to_owned())?;
-            if index >= self.direct_value_slots.len() {
+        let index = match self.reserve_direct_value_slot() {
+            Ok(index) => index,
+            Err(error) => {
                 self.free_direct_array_entries(start, capacity);
                 for entry in entries {
                     let _ = self.release(entry.key);
                     let _ = self.release(entry.value);
                 }
-                return Err(format!(
-                    "direct native value arena exhausted at {} slots",
-                    index.saturating_add(1)
-                ));
+                return Err(error);
             }
-            *self.direct_value_next = u32::try_from(index + 1)
-                .map_err(|_| "direct native value index overflow".to_owned())?;
-            index
         };
         self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
             refcount: 1,
             kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
-            flags: php_jit::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
+            flags: php_jit::jit_native_direct_array_flags(cursor),
             reserved: u32::try_from(capacity).unwrap_or(u32::MAX),
             payload: entries.len() as u64,
             aux: self.direct_array_entries[start..].as_ptr() as usize as u64,
@@ -1532,6 +4259,10 @@ impl<'a> NativeExecutionContext<'a> {
                 .map(|entry| entry.key as u32)
                 .ok_or_else(|| "direct native array free-list entry is missing".to_owned())?;
             self.direct_array_free_heads[bucket] = next;
+            *self.direct_array_reused_bytes = self.direct_array_reused_bytes.saturating_add(
+                capacity.saturating_mul(std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>())
+                    as u64,
+            );
             return Ok((start, capacity));
         }
         let start = usize::try_from(*self.direct_array_next)
@@ -1580,6 +4311,9 @@ impl<'a> NativeExecutionContext<'a> {
         index: usize,
         array: php_runtime::api::PhpArray,
     ) -> Result<(), String> {
+        let cursor = array
+            .native_pointer_position()
+            .and_then(|position| u32::try_from(position).ok());
         let old = *self
             .direct_value_slots
             .get(index)
@@ -1635,7 +4369,7 @@ impl<'a> NativeExecutionContext<'a> {
         self.direct_array_entries[start..start + encoded_entries.len()]
             .copy_from_slice(&encoded_entries);
         let slot = &mut self.direct_value_slots[index];
-        slot.flags = php_jit::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION;
+        slot.flags = php_jit::jit_native_direct_array_flags(cursor);
         slot.reserved = u32::try_from(capacity).unwrap_or(u32::MAX);
         slot.payload = encoded_entries.len() as u64;
         slot.aux = self.direct_array_entries[start..].as_ptr() as usize as u64;
@@ -1648,7 +4382,7 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(())
     }
 
-    fn decode_direct_array(&self, index: usize) -> Result<Value, String> {
+    fn decode_direct_array(&mut self, index: usize) -> Result<Value, String> {
         let slot = self
             .direct_value_slots
             .get(index)
@@ -1659,6 +4393,8 @@ impl<'a> NativeExecutionContext<'a> {
         }
         let length = usize::try_from(slot.payload)
             .map_err(|_| format!("direct native array {index} length overflow"))?;
+        let cursor = php_jit::jit_native_direct_array_cursor(slot.flags)
+            .and_then(|position| usize::try_from(position).ok());
         let base = self.direct_array_entries.as_ptr() as usize;
         let address = usize::try_from(slot.aux)
             .map_err(|_| format!("direct native array {index} address overflow"))?;
@@ -1673,7 +4409,8 @@ impl<'a> NativeExecutionContext<'a> {
         let entries = self
             .direct_array_entries
             .get(start..start.saturating_add(length))
-            .ok_or_else(|| format!("direct native array {index} entries are outside its arena"))?;
+            .ok_or_else(|| format!("direct native array {index} entries are outside its arena"))?
+            .to_vec();
         let mut array = php_runtime::api::PhpArray::with_capacity(length);
         for entry in entries {
             let key = self.decode(entry.key)?;
@@ -1681,11 +4418,12 @@ impl<'a> NativeExecutionContext<'a> {
                 .ok_or_else(|| format!("direct native array {index} has an invalid key"))?;
             array.insert(key, self.decode(entry.value)?);
         }
+        array.set_native_pointer_position(cursor);
         Ok(Value::Array(array))
     }
 
-    fn decode_direct_value(&self, index: usize) -> Result<Value, String> {
-        let slot = self
+    fn decode_direct_value(&mut self, index: usize) -> Result<Value, String> {
+        let slot = *self
             .direct_value_slots
             .get(index)
             .filter(|slot| slot.refcount != 0)
@@ -1700,6 +4438,58 @@ impl<'a> NativeExecutionContext<'a> {
             )
             .ok_or_else(|| format!("shared native array {index} storage is unavailable"))?;
             return Ok(Value::Array(array));
+        }
+        if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
+            self.demote_direct_object_declared_slots(index)?;
+            let object = self
+                .direct_object(index)
+                .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+            return Ok(Value::Object(object));
+        }
+        if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR {
+            if slot.flags != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+                || slot.reserved == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+            {
+                return Err(format!(
+                    "direct native reference {index} has no published scalar"
+                ));
+            }
+            let value = self.decode(slot.payload as i64)?;
+            let reference = self
+                .direct_reference_cells
+                .get(&index)
+                .cloned()
+                .unwrap_or_else(|| php_runtime::api::ReferenceCell::new(Value::Null));
+            reference.set(value);
+            self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
+                kind: php_jit::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
+                flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+                reserved: 0,
+                payload: reference.native_scalar_view_address() as u64,
+                aux: reference.native_array_view_address() as u64,
+                ..slot
+            };
+            self.direct_reference_cells.insert(index, reference.clone());
+            // The cold `ReferenceCell` now owns the materialized PHP value;
+            // the direct payload ownership ended at this exact boundary.
+            self.release(slot.payload as i64)?;
+            return Ok(Value::Reference(reference));
+        }
+        if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR {
+            let reference = self
+                .direct_reference_cells
+                .get(&index)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("materialized direct native reference {index} has no cell")
+                })?;
+            self.materialize_referenced_object(&reference)?;
+            return Ok(Value::Reference(reference));
+        }
+        if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_FLOAT {
+            return Ok(Value::Float(php_runtime::api::FloatValue::from_f64(
+                f64::from_bits(slot.payload),
+            )));
         }
         if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_STRING {
             return self.decode_direct_array(index);
@@ -1719,7 +4509,7 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(Value::String(PhpString::from_bytes(bytes.to_vec())))
     }
 
-    fn decode(&self, encoded: i64) -> Result<Value, String> {
+    fn decode(&mut self, encoded: i64) -> Result<Value, String> {
         if let Some(constant) = php_jit::jit_decode_constant(encoded) {
             if constant == u32::MAX {
                 return Ok(Value::Null);
@@ -1766,6 +4556,20 @@ impl<'a> NativeExecutionContext<'a> {
         if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
             if let Some(direct) = Self::direct_value_index(encoded) {
                 return self.decode_direct_value(direct);
+            }
+            if let Some(NativeStoredValue::Php(Value::Reference(reference))) =
+                self.values.get(index as usize).and_then(Option::as_ref)
+            {
+                let reference = reference.clone();
+                self.materialize_referenced_object(&reference)?;
+                return Ok(Value::Reference(reference));
+            }
+            if let Some(NativeStoredValue::Php(Value::Object(object))) =
+                self.values.get(index as usize).and_then(Option::as_ref)
+            {
+                let object = object.clone();
+                self.materialize_direct_object_alias(&object)?;
+                return Ok(Value::Object(object));
             }
             return match self.values.get(index as usize).and_then(Option::as_ref) {
                 Some(NativeStoredValue::Php(value)) => Ok(value.clone()),
@@ -1838,6 +4642,10 @@ impl<'a> NativeExecutionContext<'a> {
     fn encode(&mut self, value: Value) -> Result<i64, String> {
         let value = match value {
             Value::Array(array) => return self.encode_direct_array_value(array),
+            Value::String(string) => return self.encode_direct_string_value(string),
+            Value::Float(value) => return self.encode_direct_float_value(value),
+            Value::Object(object) => return self.encode_direct_object_value(object),
+            Value::Reference(reference) => return self.encode_direct_reference_value(reference),
             Value::Callable(callable)
                 if matches!(
                     callable.as_ref(),
@@ -1910,7 +4718,6 @@ impl<'a> NativeExecutionContext<'a> {
             }
             *slot = Some(value);
             self.value_slots[index as usize] = native_slot;
-            self.object_property_caches[index as usize] = None;
             if let Some(identity) = identity {
                 self.interned_value_handles.insert(identity, index);
             }
@@ -1919,15 +4726,14 @@ impl<'a> NativeExecutionContext<'a> {
         }
         let index = u32::try_from(self.values.len())
             .map_err(|_| "native runtime value table exhausted".to_owned())?;
-        if self.value_slots.len() == self.value_slots.capacity() {
+        if self.values.len() >= self.value_slots.capacity() {
             return Err(format!(
                 "native runtime value plane exhausted at {} entries",
-                self.value_slots.len()
+                self.values.len()
             ));
         }
         self.values.push(Some(value));
-        self.value_slots.push(native_slot);
-        self.object_property_caches.push(None);
+        self.value_slots[index as usize] = native_slot;
         if let Some(identity) = identity {
             self.interned_value_handles.insert(identity, index);
         }
@@ -2001,7 +4807,7 @@ impl<'a> NativeExecutionContext<'a> {
                     | php_jit::JIT_VALUE_TRUE
             )
         {
-            return self.decode(encoded).and_then(|value| self.encode(value));
+            return self.stabilize_active_unit_constant(constant);
         }
         Ok(encoded)
     }
@@ -2064,8 +4870,7 @@ impl<'a> NativeExecutionContext<'a> {
                     | php_jit::JIT_VALUE_TRUE
             )
         {
-            let value = self.decode(encoded)?;
-            return self.encode(native_external_return_value(value, owner_unit));
+            return self.stabilize_active_unit_constant(constant);
         }
         Ok(encoded)
     }
@@ -2113,6 +4918,15 @@ impl<'a> NativeExecutionContext<'a> {
     /// arena. Immediates are always plain; runtime iterator/control records
     /// are deliberately excluded because they are not PHP local values.
     fn php_handle_is_reference(&self, encoded: i64) -> Option<bool> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            return self.direct_value_slots.get(index).and_then(|slot| {
+                (slot.refcount != 0).then_some(matches!(
+                    slot.kind,
+                    php_jit::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR
+                        | php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                ))
+            });
+        }
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Some(false);
         };
@@ -2147,6 +4961,9 @@ impl<'a> NativeExecutionContext<'a> {
     /// `Some(None)` denotes an immediate or immutable constant handle;
     /// `Some(Some(index))` denotes a non-reference PHP arena value.
     fn plain_php_storage_index(&self, encoded: i64) -> Option<Option<usize>> {
+        if Self::direct_value_index(encoded).is_some() {
+            return None;
+        }
         let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Some(None);
         };
@@ -2177,6 +4994,52 @@ impl<'a> NativeExecutionContext<'a> {
                 | NativeStoredValue::GeneratorIterator(_),
             )
             | None => None,
+        }
+    }
+
+    /// Copy one native string name for a cold capability lookup without
+    /// materializing a PHP `Value`. Symbol tables own Rust strings, so this
+    /// allocation is the exact query payload rather than a value-plane
+    /// conversion.
+    fn native_string_name_bytes(&self, encoded: i64) -> Option<Vec<u8>> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            let slot = self.direct_value_slots.get(index)?;
+            if slot.refcount == 0 || slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_STRING {
+                return None;
+            }
+            let length = usize::try_from(slot.payload).ok()?;
+            let base = self.direct_string_bytes.as_ptr() as usize;
+            let address = usize::try_from(slot.aux).ok()?;
+            let start = address.checked_sub(base)?;
+            return self
+                .direct_string_bytes
+                .get(start..start.checked_add(length)?)
+                .map(<[u8]>::to_vec);
+        }
+        if let Some(index) = php_jit::jit_decode_runtime_value(encoded) {
+            return match self.values.get(index as usize)?.as_ref()? {
+                NativeStoredValue::Php(Value::String(value)) => Some(value.as_bytes().to_vec()),
+                _ => None,
+            };
+        }
+        let constant = php_jit::jit_decode_constant(encoded)?;
+        match self.unit.constants.get(constant as usize)? {
+            php_ir::IrConstant::String(value) => Some(value.as_bytes().to_vec()),
+            php_ir::IrConstant::StringBytes(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    /// Borrows the stable owner of a direct native object without demoting its
+    /// authoritative declared-slot storage or constructing a Rust `Value`.
+    fn native_query_object(&self, encoded: i64) -> Option<php_runtime::api::ObjectRef> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            return self.direct_object(index);
+        }
+        let index = php_jit::jit_decode_runtime_value(encoded)? as usize;
+        match self.values.get(index)?.as_ref()? {
+            NativeStoredValue::Php(Value::Object(object)) => Some(object.clone()),
+            _ => None,
         }
     }
 
@@ -2233,7 +5096,43 @@ impl<'a> NativeExecutionContext<'a> {
         if !reached_zero {
             return Ok(());
         }
+        let mut direct_object_children = Vec::new();
+        if self.direct_value_slots[index].kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
+            let object = self
+                .direct_object_owner(index)
+                .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+            let has_cold_alias = object.gc_refcount_estimate() > 2;
+            if self.object_has_native_destructor(&object.class_name()) || has_cold_alias {
+                // The direct descriptor is losing its final encoded owner, but
+                // an ObjectRef may still live in a PHP reference/root. Restore
+                // Rust slots before dropping the native owner so that alias
+                // remains a complete object rather than an empty shell.
+                self.demote_direct_object_declared_slots(index)?;
+            } else {
+                direct_object_children = self.take_direct_object_children(index)?;
+            }
+        }
         let slot = self.direct_value_slots[index];
+        let released_object = if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
+            let owner = std::mem::replace(&mut self.direct_object_owners[index], 0);
+            if owner == 0 {
+                return Err(format!(
+                    "direct native object {index} lost its stable owner"
+                ));
+            }
+            // SAFETY: object publication created exactly one Box<ObjectRef>
+            // for this slot and release clears/reclaims it exactly once when
+            // the authoritative direct refcount reaches zero.
+            #[allow(unsafe_code)]
+            let object =
+                unsafe { *Box::from_raw(owner as usize as *mut php_runtime::api::ObjectRef) };
+            if self.direct_object_handles.get(&object.id()) == Some(&(index as u32)) {
+                self.direct_object_handles.remove(&object.id());
+            }
+            Some(object)
+        } else {
+            None
+        };
         if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
             && !php_runtime::api::PhpArray::release_native_storage_refcount(slot.payload as usize)
         {
@@ -2241,7 +5140,16 @@ impl<'a> NativeExecutionContext<'a> {
                 "shared native array {index} storage was already released"
             ));
         }
-        let (children, freed_array_range) =
+        let freed_string_range = if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_STRING {
+            let base = self.direct_string_bytes.as_ptr() as usize;
+            let address = usize::try_from(slot.aux).unwrap_or(base);
+            let start = address.saturating_sub(base);
+            let capacity = php_jit::jit_native_direct_string_capacity(slot.reserved) as usize;
+            (capacity != 0).then_some((start, capacity))
+        } else {
+            None
+        };
+        let (mut children, freed_array_range) =
             if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH {
                 (vec![slot.payload as i64], None)
             } else if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY {
@@ -2259,19 +5167,41 @@ impl<'a> NativeExecutionContext<'a> {
                         .collect::<Vec<_>>(),
                     Some((start, slot.reserved as usize)),
                 )
+            } else if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+            {
+                (vec![slot.payload as i64], None)
             } else {
                 (Vec::new(), None)
             };
+        children.extend(direct_object_children);
         self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
             reserved: *self.direct_value_free_head,
             ..php_jit::JitNativeValueSlot::default()
         };
         *self.direct_value_free_head = index as u32;
+        self.direct_reference_cells.remove(&index);
         if let Some((start, capacity)) = freed_array_range {
             self.free_direct_array_entries(start, capacity);
         }
+        if let Some((start, capacity)) = freed_string_range {
+            self.free_direct_string_bytes(start, capacity);
+        }
         for child in children {
             self.release(child)?;
+        }
+        if let Some(object) = released_object {
+            let class_name = object.class_name();
+            if self.object_has_native_destructor(&class_name) {
+                let uniquely_owned = object.gc_refcount_estimate() == 1;
+                if uniquely_owned {
+                    self.record_object_release_root_check(true);
+                }
+                if uniquely_owned || !self.object_is_request_rooted(object.id()) {
+                    self.run_object_destructor(object)?;
+                }
+            }
         }
         Ok(())
     }
@@ -2291,7 +5221,6 @@ impl<'a> NativeExecutionContext<'a> {
         };
         if reached_zero {
             self.record_release_to_zero();
-            self.invalidate_object_property_cache(index)?;
             let value = self
                 .values
                 .get_mut(index)
@@ -2354,6 +5283,7 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn object_is_request_rooted(&mut self, object_id: u64) -> bool {
+        self.consume_native_root_mutation();
         if self.root_index.is_dirty() {
             let reason = self.root_index.last_reason().as_str();
             let roots = self.request_root_values();
@@ -2370,7 +5300,7 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn live_native_values_contain_object(&self, object_id: u64) -> bool {
-        self.values.iter().flatten().any(|stored| match stored {
+        let cold_contains = self.values.iter().flatten().any(|stored| match stored {
             NativeStoredValue::Php(value) => values_contain_object([value], object_id),
             NativeStoredValue::PreparedClosure(prepared) => {
                 let php_runtime::api::CallableValue::Closure(closure) = prepared.callable.as_ref()
@@ -2421,7 +5351,119 @@ impl<'a> NativeExecutionContext<'a> {
                     ),
                     NativeGeneratorDelegation::Generator { .. } => false,
                 }),
+        });
+        if cold_contains {
+            return true;
+        }
+        let mut visited = std::collections::HashSet::new();
+        let used = usize::try_from(*self.direct_value_next).unwrap_or(0);
+        (0..used).any(|index| {
+            self.direct_value_slots
+                .get(index)
+                .is_some_and(|slot| slot.refcount != 0)
+                && self.direct_slot_contains_object(index, object_id, &mut visited)
         })
+    }
+
+    fn direct_slot_contains_object(
+        &self,
+        index: usize,
+        object_id: u64,
+        visited: &mut std::collections::HashSet<usize>,
+    ) -> bool {
+        if !visited.insert(index) {
+            return false;
+        }
+        let Some(slot) = self
+            .direct_value_slots
+            .get(index)
+            .copied()
+            .filter(|slot| slot.refcount != 0)
+        else {
+            return false;
+        };
+        match slot.kind {
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT => {
+                let Some(object) = self.direct_object(index) else {
+                    return false;
+                };
+                if object.id() == object_id {
+                    return true;
+                }
+                let mut cold_property_contains = false;
+                object.visit_property_values(|value| {
+                    cold_property_contains |= values_contain_object([value], object_id);
+                });
+                if cold_property_contains {
+                    return true;
+                }
+                if slot.flags != php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION {
+                    return false;
+                }
+                let Some((base, count)) = object.native_declared_slots_view(slot.payload) else {
+                    return false;
+                };
+                // SAFETY: publication installs one boxed slot slice and keeps
+                // it immovable until the descriptor is demoted. This scan is
+                // synchronous on the owning request thread and performs no
+                // mutation or cold conversion while the slice is borrowed.
+                #[allow(unsafe_code)]
+                let properties = unsafe { std::slice::from_raw_parts(base, count) };
+                properties.iter().any(|property| {
+                    property.initialized != 0
+                        && self.encoded_value_contains_object(property.value, object_id, visited)
+                })
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY => {
+                let length = usize::try_from(slot.payload).unwrap_or(0);
+                let base = self.direct_array_entries.as_ptr() as usize;
+                let address = usize::try_from(slot.aux).unwrap_or(base);
+                let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+                if address < base || (address - base) % entry_size != 0 {
+                    return false;
+                }
+                let start = (address - base) / entry_size;
+                self.direct_array_entries
+                    .get(start..start.saturating_add(length))
+                    .is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            self.encoded_value_contains_object(entry.key, object_id, visited)
+                                || self.encoded_value_contains_object(
+                                    entry.value,
+                                    object_id,
+                                    visited,
+                                )
+                        })
+                    })
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+            | php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH => {
+                self.encoded_value_contains_object(slot.payload as i64, object_id, visited)
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
+            | php_jit::JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY => {
+                php_runtime::api::PhpArray::clone_from_native_storage_refcount(
+                    slot.payload as usize,
+                )
+                .is_some_and(|array| {
+                    values_contain_object(array.iter().map(|(_, value)| value), object_id)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn encoded_value_contains_object(
+        &self,
+        encoded: i64,
+        object_id: u64,
+        visited: &mut std::collections::HashSet<usize>,
+    ) -> bool {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            return self.direct_slot_contains_object(index, object_id, visited);
+        }
+        self.borrowed_php_value(encoded)
+            .is_some_and(|value| values_contain_object([value], object_id))
     }
 
     fn run_object_destructor(&mut self, object: php_runtime::api::ObjectRef) -> Result<(), String> {
@@ -2502,9 +5544,38 @@ impl<'a> NativeExecutionContext<'a> {
             NativeFunctionNameScope::child(self.visible_function_names.clone(), names);
     }
 
-    fn take_include_symbols(&mut self) -> NativeIncludeSymbols {
+    fn demote_all_direct_objects(&mut self) -> Result<(), String> {
+        let native_objects = (0..usize::try_from(*self.direct_value_next).unwrap_or(0))
+            .filter_map(|index| {
+                self.direct_value_slots
+                    .get(index)
+                    .is_some_and(|slot| {
+                        slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+                            && slot.flags == php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION
+                    })
+                    .then(|| self.direct_object_owner(index))
+                    .flatten()
+                    .filter(|object| {
+                        object
+                            .native_declared_slots_view(object.class_layout_epoch())
+                            .is_some()
+                    })
+            })
+            .collect::<Vec<_>>();
+        for object in native_objects {
+            self.materialize_direct_object_alias(&object)?;
+        }
+        Ok(())
+    }
+
+    fn take_include_symbols(&mut self) -> Result<NativeIncludeSymbols, String> {
+        self.demote_trusted_static_properties();
+        // Include/eval hands Rust-owned request state to a separately owned
+        // native arena. No ObjectRef crossing that ownership boundary may
+        // retain declared-property slots encoded against this arena.
+        self.demote_all_direct_objects()?;
         self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
-        NativeIncludeSymbols {
+        Ok(NativeIncludeSymbols {
             deployment_functions: std::sync::Arc::clone(&self.deployment_functions),
             deployment_classes: std::sync::Arc::clone(&self.deployment_classes),
             external_functions: std::mem::take(&mut self.external_functions),
@@ -2524,7 +5595,7 @@ impl<'a> NativeExecutionContext<'a> {
             error_handlers: std::mem::take(&mut self.error_handlers),
             exception_handlers: std::mem::take(&mut self.exception_handlers),
             last_error: self.last_error.take(),
-        }
+        })
     }
 
     fn restore_include_symbols(&mut self, symbols: NativeIncludeSymbols) {
@@ -2551,6 +5622,7 @@ impl<'a> NativeExecutionContext<'a> {
         self.error_handlers = symbols.error_handlers;
         self.exception_handlers = symbols.exception_handlers;
         self.last_error = symbols.last_error;
+        self.prepare_trusted_static_properties();
         self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
     }
 
@@ -2606,15 +5678,68 @@ impl<'a> NativeExecutionContext<'a> {
         let previous_identity =
             std::mem::replace(&mut self.unit_identity, compiled.artifact_identity());
         let previous_entries = std::mem::replace(&mut self.native_entries, active_entries);
-        let previous_continuations = std::mem::replace(
-            &mut self.continuation_instructions,
-            compiled.prepared_continuation_instructions(),
+        let active_continuations = compiled.prepared_continuation_instructions();
+        let (active_property_offsets, active_property_slots) =
+            trusted_property_storage(&active_continuations);
+        let active_constant_slots =
+            vec![php_jit::JitNativeTrustedConstantSlot::default(); active_property_slots.len()];
+        let active_global_reference_slots = vec![
+            php_jit::JitNativeTrustedGlobalReferenceSlot::default();
+            active_property_slots.len()
+        ];
+        let active_global_reference_names =
+            (0..active_property_slots.len()).map(|_| None).collect();
+        let active_static_local_slots =
+            vec![php_jit::JitNativeTrustedStaticLocalSlot::default(); active_property_slots.len()];
+        let active_static_property_slots = vec![
+            php_jit::JitNativeTrustedStaticPropertySlot::default(
+            );
+            active_property_slots.len()
+        ];
+        let active_instanceof_plans =
+            vec![php_jit::JitNativeInstanceOfPlan::default(); active_property_slots.len()];
+        let previous_continuations =
+            std::mem::replace(&mut self.continuation_instructions, active_continuations);
+        let previous_property_offsets = std::mem::replace(
+            &mut self.trusted_property_function_offsets,
+            active_property_offsets,
         );
+        let previous_property_slots =
+            std::mem::replace(&mut self.trusted_property_slots, active_property_slots);
+        let previous_constant_slots =
+            std::mem::replace(&mut self.trusted_constant_slots, active_constant_slots);
+        let previous_global_reference_slots = std::mem::replace(
+            &mut self.trusted_global_reference_slots,
+            active_global_reference_slots,
+        );
+        let previous_global_reference_names = std::mem::replace(
+            &mut self.trusted_global_reference_names,
+            active_global_reference_names,
+        );
+        let previous_static_local_slots = std::mem::replace(
+            &mut self.trusted_static_local_slots,
+            active_static_local_slots,
+        );
+        let previous_static_property_slots = std::mem::replace(
+            &mut self.trusted_static_property_slots,
+            active_static_property_slots,
+        );
+        let previous_instanceof_plans =
+            std::mem::replace(&mut self.trusted_instanceof_plans, active_instanceof_plans);
+        let previous_instanceof_entries = std::mem::take(&mut self.trusted_instanceof_entries);
         let previous_callsites = std::mem::replace(
             &mut self.native_callsites,
             compiled.prepared_native_callsites(),
         );
+        let previous_class_plans = std::mem::take(&mut self.trusted_class_plans);
         let previous_dynamic_unit = self.current_dynamic_unit.replace(unit);
+        self.prepare_trusted_static_properties();
+        self.prepare_trusted_constant_fetches();
+        self.prepare_trusted_global_references();
+        self.prepare_trusted_static_locals();
+        self.prepare_trusted_class_plans();
+        self.prepare_trusted_declared_properties();
+        self.prepare_trusted_instanceof_plans();
 
         // Native code in an included/eval unit uses that unit's dense trusted
         // function-cell table. The outer request activation describes the
@@ -2630,9 +5755,22 @@ impl<'a> NativeExecutionContext<'a> {
             .get_mut(unit)
             .expect("active dynamic native unit disappeared")
             .native_entries = active_entries;
+        self.clear_trusted_constant_fetches();
+        self.clear_trusted_global_references();
+        self.clear_trusted_static_locals();
         self.current_dynamic_unit = previous_dynamic_unit;
         self.native_callsites = previous_callsites;
         self.continuation_instructions = previous_continuations;
+        self.trusted_property_function_offsets = previous_property_offsets;
+        self.trusted_property_slots = previous_property_slots;
+        self.trusted_constant_slots = previous_constant_slots;
+        self.trusted_global_reference_slots = previous_global_reference_slots;
+        self.trusted_global_reference_names = previous_global_reference_names;
+        self.trusted_static_local_slots = previous_static_local_slots;
+        self.trusted_static_property_slots = previous_static_property_slots;
+        self.trusted_instanceof_plans = previous_instanceof_plans;
+        self.trusted_instanceof_entries = previous_instanceof_entries;
+        self.trusted_class_plans = previous_class_plans;
         self.unit_identity = previous_identity;
         self.unit = previous_unit;
         self.compiled = previous_compiled;
@@ -2741,7 +5879,7 @@ impl<'a> NativeExecutionContext<'a> {
             .map(|(_, slot)| slot.refcount == 1)
     }
 
-    fn direct_array_can_append(&self, encoded: i64) -> Option<bool> {
+    fn direct_array_can_append(&mut self, encoded: i64) -> Option<bool> {
         let Value::Array(array) = Self::direct_value_index(encoded)
             .and_then(|index| self.decode_direct_array(index).ok())?
         else {
@@ -2751,11 +5889,11 @@ impl<'a> NativeExecutionContext<'a> {
     }
 
     fn direct_array_find_encoded(
-        &self,
+        &mut self,
         encoded: i64,
         key: &php_runtime::api::ArrayKey,
     ) -> Result<Option<i64>, String> {
-        let Some(entries) = self.direct_array_entries_for(encoded) else {
+        let Some(entries) = self.direct_array_entries_for(encoded).map(<[_]>::to_vec) else {
             return Err("native value is not a direct array".to_owned());
         };
         for entry in entries {
@@ -2798,6 +5936,9 @@ impl<'a> NativeExecutionContext<'a> {
                 .get(index)
                 .ok_or_else(|| "direct native value free-list entry is missing".to_owned())?;
             *self.direct_value_free_head = slot.reserved;
+            *self.direct_value_reused_bytes = self
+                .direct_value_reused_bytes
+                .saturating_add(std::mem::size_of::<php_jit::JitNativeValueSlot>() as u64);
             index
         } else {
             let index = usize::try_from(*self.direct_value_next)
@@ -2861,11 +6002,12 @@ impl<'a> NativeExecutionContext<'a> {
             Some(key) => key.clone(),
             None => {
                 let mut maximum = None::<i64>;
-                for entry in self
+                let entries = self
                     .direct_array_entries
                     .get(start..start.saturating_add(length))
                     .ok_or_else(|| "direct native array entries are outside its arena".to_owned())?
-                {
+                    .to_vec();
+                for entry in entries {
                     if let Value::Int(key) = self.decode(entry.key)? {
                         maximum = Some(maximum.map_or(key, |current| current.max(key)));
                     }
@@ -2882,7 +6024,8 @@ impl<'a> NativeExecutionContext<'a> {
         let entries = self
             .direct_array_entries
             .get(start..start.saturating_add(length))
-            .ok_or_else(|| "direct native array entries are outside its arena".to_owned())?;
+            .ok_or_else(|| "direct native array entries are outside its arena".to_owned())?
+            .to_vec();
         let mut existing = None;
         for (position, entry) in entries.iter().enumerate() {
             let entry_key = self.decode(entry.key)?;
@@ -2942,108 +6085,97 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(())
     }
 
-    fn invalidate_object_property_cache(&mut self, index: usize) -> Result<(), String> {
-        let Some(view) = self
-            .object_property_caches
-            .get_mut(index)
-            .and_then(Option::take)
-        else {
-            return Ok(());
-        };
-        if let Some(slot) = self.value_slots.get_mut(index) {
-            slot.kind = php_jit::JIT_NATIVE_VALUE_VIEW_NONE;
-            slot.flags = 0;
-            slot.reserved = 0;
-            slot.payload = 0;
-            slot.aux = 0;
-        }
-        for entry in view.iter().copied() {
-            if entry.name_hash == php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS {
-                continue;
-            }
-            if let Some(value_index) = php_jit::jit_decode_runtime_value(entry.value) {
-                self.release_runtime_value_index(value_index as usize)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn invalidate_object_property_cache_for_encoded(&mut self, object: i64) -> Result<(), String> {
-        let Some(index) = php_jit::jit_decode_runtime_value(object) else {
-            return Ok(());
-        };
-        self.invalidate_object_property_cache(index as usize)
-    }
-
-    fn publish_object_property_cache(
+    fn publish_direct_object_slots(
         &mut self,
         object: i64,
         property: &str,
-        value: i64,
+        _value: i64,
+        function: i64,
+        continuation: i64,
+        state: u32,
     ) -> Result<(), String> {
-        let object_index = php_jit::jit_decode_runtime_value(object)
-            .and_then(|index| usize::try_from(index).ok())
-            .ok_or_else(|| "native property receiver is not a runtime object".to_owned())?;
-        let object_ref = match self.values.get(object_index).and_then(Option::as_ref) {
-            Some(NativeStoredValue::Php(Value::Object(object))) => object.clone(),
-            _ => return Ok(()),
+        if !matches!(
+            state,
+            php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED
+                | php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE
+                | php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE
+                | php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE
+        ) {
+            return Err(format!("invalid trusted property slot state {state}"));
+        }
+        let direct_index = Self::direct_value_index(object).filter(|index| {
+            self.direct_value_slots.get(*index).is_some_and(|slot| {
+                slot.refcount != 0 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+            })
+        });
+        let mut temporary_owner = None;
+        let index = if let Some(index) = direct_index {
+            index
+        } else {
+            // A baseline continuation may have materialized a direct reference
+            // receiver before publishing this exact property site. Resolve the
+            // referenced object once here; never reinterpret that reference's
+            // slot index as an object descriptor.
+            let mut value = self.decode(object)?;
+            for _ in 0..16 {
+                let Value::Reference(reference) = value else {
+                    break;
+                };
+                value = reference.get();
+            }
+            let Value::Object(object) = value else {
+                return Ok(());
+            };
+            let encoded = self.encode_direct_object_value(object)?;
+            let index = Self::direct_value_index(encoded)
+                .ok_or_else(|| "published property receiver is not direct".to_owned())?;
+            temporary_owner = Some(encoded);
+            index
         };
-        // Cache only immediates and immutable strings. Object/reference/array
-        // handles can form observable cycles and remain on the baseline path.
-        if let Some(value_index) = php_jit::jit_decode_runtime_value(value) {
-            if !matches!(
-                self.values
-                    .get(value_index as usize)
-                    .and_then(Option::as_ref),
-                Some(NativeStoredValue::Php(Value::String(_)))
-            ) {
+        let published = (|| {
+            if !self.promote_direct_object_declared_slots(index)? {
                 return Ok(());
             }
+            let object = self
+                .direct_object(index)
+                .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+            let Some(slot_index) = object.declared_slot_index(property) else {
+                return Ok(());
+            };
+            let function = usize::try_from(function as u64 as u32)
+                .map_err(|_| "trusted property function index overflow".to_owned())?;
+            let continuation = usize::try_from(
+                u32::try_from(continuation)
+                    .map_err(|_| "trusted property continuation index overflow".to_owned())?,
+            )
+            .map_err(|_| "trusted property continuation index overflow".to_owned())?;
+            let Some(base) = self
+                .trusted_property_function_offsets
+                .get(function)
+                .copied()
+                .and_then(|base| usize::try_from(base).ok())
+            else {
+                return Ok(());
+            };
+            let Some(plan) = self
+                .trusted_property_slots
+                .get_mut(base.saturating_add(continuation))
+            else {
+                return Ok(());
+            };
+            *plan = php_jit::JitNativeTrustedPropertySlot {
+                state,
+                slot_index,
+                layout_id: object.class_layout_epoch(),
+            };
+            Ok(())
+        })();
+        if let Some(encoded) = temporary_owner {
+            let released = self.release(encoded);
+            published.and(released)
+        } else {
+            published
         }
-        if self.object_property_caches[object_index].is_none() {
-            self.object_property_caches[object_index] = Some(
-                vec![
-                    php_jit::JitNativePropertyCacheEntry::default();
-                    php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE
-                ]
-                .into_boxed_slice(),
-            );
-        }
-        let name_hash = php_jit::jit_native_property_name_hash(property);
-        let mask = php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_SIZE - 1;
-        let cache_index = name_hash as usize & mask;
-        let old = self.object_property_caches[object_index]
-            .as_ref()
-            .expect("property cache was initialized")[cache_index];
-        if old.name_hash == name_hash && old.value == value {
-            return Ok(());
-        }
-        if old.name_hash != php_jit::JIT_NATIVE_OBJECT_PROPERTY_CACHE_MISS
-            && let Some(value_index) = php_jit::jit_decode_runtime_value(old.value)
-        {
-            self.release_runtime_value_index(value_index as usize)?;
-        }
-        if let Some(value_index) = php_jit::jit_decode_runtime_value(value) {
-            self.retain_runtime_value_index(value_index as usize)?;
-        }
-        let cache = self.object_property_caches[object_index]
-            .as_mut()
-            .expect("property cache remains initialized");
-        cache[cache_index] = php_jit::JitNativePropertyCacheEntry {
-            name_hash,
-            property_epoch: object_ref.property_epoch(),
-            value,
-        };
-        let slot = self
-            .value_slots
-            .get_mut(object_index)
-            .ok_or_else(|| format!("native object value {object_index} has no native slot"))?;
-        slot.kind = php_jit::JIT_NATIVE_VALUE_VIEW_OBJECT_PROPERTIES;
-        slot.flags = php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION;
-        slot.reserved = mask as u32;
-        slot.payload = object_ref.property_epoch_address() as usize as u64;
-        slot.aux = cache.as_ptr() as usize as u64;
-        Ok(())
     }
 
     fn mutate_array(
@@ -3059,21 +6191,44 @@ impl<'a> NativeExecutionContext<'a> {
         encoded: i64,
         mutate: impl FnOnce(&mut php_runtime::api::PhpArray) -> T,
     ) -> Result<T, String> {
+        if encoded as u64 & php_jit::JIT_VALUE_RUNTIME_KIND_MASK
+            == php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG
+        {
+            if let Some(index) = Self::direct_value_index(encoded) {
+                let slot = self
+                    .direct_value_slots
+                    .get(index)
+                    .copied()
+                    .filter(|slot| slot.refcount != 0)
+                    .ok_or_else(|| format!("direct native reference {index} is missing"))?;
+                if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                    && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+                    && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                {
+                    // The direct payload, not the cold ReferenceCell sidecar,
+                    // is authoritative until materialization. Mutate that
+                    // payload in place so foreach-by-reference preserves both
+                    // the reference identity and the array's native handle.
+                    return self.mutate_array_with(slot.payload as i64, mutate);
+                }
+            }
+            if let Value::Reference(reference) = self.decode(encoded)? {
+                let mut value = reference.get();
+                let Value::Array(array) = &mut value else {
+                    return Err("native reference does not contain an array".to_owned());
+                };
+                let result = mutate(array);
+                reference.set(value);
+                return Ok(result);
+            }
+            return Err("native reference handle is unavailable".to_owned());
+        }
         if let Some(index) = Self::direct_value_index(encoded) {
             let Value::Array(mut array) = self.decode_direct_array(index)? else {
                 return Err("direct native value is not an array".to_owned());
             };
             let result = mutate(&mut array);
             self.replace_direct_array(index, array)?;
-            return Ok(result);
-        }
-        if let Value::Reference(reference) = self.decode(encoded)? {
-            let mut value = reference.get();
-            let Value::Array(array) = &mut value else {
-                return Err("native reference does not contain an array".to_owned());
-            };
-            let result = mutate(array);
-            reference.set(value);
             return Ok(result);
         }
         let index = php_jit::jit_decode_runtime_value(encoded)
@@ -3429,7 +6584,7 @@ impl<'a> NativeExecutionContext<'a> {
             }
         }
         let outcome = if let Some(state) = state.as_ref() {
-            let runtime = std::ptr::from_mut(&mut *self).cast::<std::ffi::c_void>();
+            let runtime = self.native_runtime_ptr();
             handle.invoke_i64_suspension_resume_with_native_unwind_runtime(
                 &arguments,
                 state,
@@ -3440,7 +6595,7 @@ impl<'a> NativeExecutionContext<'a> {
                 |types, value| native_catch_matches(self, types, value),
             )
         } else {
-            let runtime = std::ptr::from_mut(self).cast::<std::ffi::c_void>();
+            let runtime = self.native_runtime_ptr();
             handle.invoke_i64_with_deopt_runtime(&arguments, php_jit::JIT_RUNTIME_ABI_HASH, runtime)
         }
         .map_err(|error| format!("native generator invocation failed: {error:?}"))?;
@@ -3831,7 +6986,7 @@ impl<'a> NativeExecutionContext<'a> {
         constants
     }
 
-    pub(super) fn decode_result(&self, encoded: i64) -> Result<Value, String> {
+    pub(super) fn decode_result(&mut self, encoded: i64) -> Result<Value, String> {
         self.decode(encoded)
     }
 
@@ -3905,6 +7060,20 @@ impl<'a> NativeExecutionContext<'a> {
         loop {
             let mut objects = Vec::new();
             let mut seen = std::collections::BTreeSet::new();
+            let used = usize::try_from(*self.direct_value_next).unwrap_or(0);
+            for index in 0..used {
+                let Some(object) = self.direct_object(index) else {
+                    continue;
+                };
+                if !self
+                    .destroyed_objects
+                    .get(&object.id())
+                    .is_some_and(WeakObjectHandle::is_alive)
+                    && seen.insert(object.id())
+                {
+                    objects.push(object);
+                }
+            }
             for stored in &self.values {
                 let Some(NativeStoredValue::Php(Value::Object(object))) = stored else {
                     continue;
@@ -3976,7 +7145,7 @@ impl<'a> NativeExecutionContext<'a> {
         Ok(true)
     }
 
-    pub(super) fn publish_include_globals(&mut self) {
+    pub(super) fn publish_include_globals(&mut self) -> Result<(), String> {
         if self.include_child {
             let entry_file = self
                 .unit
@@ -4055,7 +7224,7 @@ impl<'a> NativeExecutionContext<'a> {
                     )
                 })
                 .collect();
-            let mut symbols = self.take_include_symbols();
+            let mut symbols = self.take_include_symbols()?;
             for class in &classes {
                 let class = normalize_class_name(class);
                 symbols.dynamic_classes.remove(&class);
@@ -4076,11 +7245,28 @@ impl<'a> NativeExecutionContext<'a> {
                 }));
             });
         }
+        Ok(())
     }
 }
 
-pub(super) struct NativeExecutionContextGuard {
+pub(super) struct NativeRequestActivationGuard {
     _runtime_view: php_jit::JitNativeRuntimeViewGuard,
+    fast_state: *mut NativeRequestFastState,
+    previous_header: php_jit::JitNativeFastStateHeader,
+}
+
+impl Drop for NativeRequestActivationGuard {
+    fn drop(&mut self) {
+        // SAFETY: the request owner keeps the separately allocated fast state
+        // stable for the complete synchronous activation. Nested unit
+        // activations overwrite only this request-owned header and unwind in
+        // strict stack order, so restoring the captured header returns direct
+        // callees to the outer unit's dense publication tables.
+        #[allow(unsafe_code)]
+        unsafe {
+            (*self.fast_state).header = self.previous_header;
+        }
+    }
 }
 
 fn rooted_membership_may_change(previous: &Value, replacement: &Value) -> bool {
@@ -4099,10 +7285,10 @@ fn rooted_membership_may_change(previous: &Value, replacement: &Value) -> bool {
 }
 
 pub(super) fn activate_native_context(
-    context: &mut NativeExecutionContext<'_>,
-) -> NativeExecutionContextGuard {
+    context: &mut NativeRequestColdState<'_>,
+) -> NativeRequestActivationGuard {
     let deployment = context.compiled.prepared_deployment_image();
-    let runtime_view = php_jit::activate_native_runtime_view(php_jit::JitNativeRuntimeView {
+    let view = php_jit::JitNativeRuntimeView {
         abi_version: php_jit::JIT_RUNTIME_ABI_VERSION,
         value_slot_capacity: u32::try_from(context.value_slots.capacity()).unwrap_or(u32::MAX),
         value_slots: context.value_slots.as_mut_ptr() as usize as u64,
@@ -4110,15 +7296,32 @@ pub(super) fn activate_native_context(
         direct_value_next: std::ptr::from_mut(context.direct_value_next.as_mut()) as usize as u64,
         direct_value_free_head: std::ptr::from_mut(context.direct_value_free_head.as_mut()) as usize
             as u64,
+        direct_value_reused_bytes: std::ptr::from_mut(context.direct_value_reused_bytes.as_mut())
+            as usize as u64,
+        direct_object_owners: context.direct_object_owners.as_mut_ptr() as usize as u64,
         direct_array_entries: context.direct_array_entries.as_mut_ptr() as usize as u64,
         direct_array_next: std::ptr::from_mut(context.direct_array_next.as_mut()) as usize as u64,
         direct_array_free_heads: context.direct_array_free_heads.as_mut_ptr() as usize as u64,
+        direct_array_reused_bytes: std::ptr::from_mut(context.direct_array_reused_bytes.as_mut())
+            as usize as u64,
         direct_string_bytes: context.direct_string_bytes.as_mut_ptr() as usize as u64,
         direct_string_next: std::ptr::from_mut(context.direct_string_next.as_mut()) as usize as u64,
+        direct_string_free_heads: context.direct_string_free_heads.as_mut_ptr() as usize as u64,
+        direct_string_reused_bytes: std::ptr::from_mut(context.direct_string_reused_bytes.as_mut())
+            as usize as u64,
+        trusted_globals_proxy: context.trusted_globals_proxy,
         trusted_constant_views: deployment.constant_views.as_ptr() as usize as u64,
         trusted_constant_view_count: u32::try_from(deployment.constant_views.len())
             .unwrap_or(u32::MAX),
         trusted_constant_view_reserved: 0,
+        trusted_constant_slots: context.trusted_constant_slots.as_mut_ptr() as usize as u64,
+        trusted_constant_slot_count: u32::try_from(context.trusted_constant_slots.len())
+            .unwrap_or(u32::MAX),
+        trusted_constant_slot_reserved: 0,
+        trusted_class_plans: context.trusted_class_plans.as_ptr() as usize as u64,
+        trusted_class_plan_count: u32::try_from(context.trusted_class_plans.len())
+            .unwrap_or(u32::MAX),
+        trusted_class_plan_reserved: 0,
         trusted_function_entries: deployment.native_function_entries.as_ptr() as usize as u64,
         trusted_function_entry_count: u32::try_from(deployment.native_function_entries.len())
             .unwrap_or(u32::MAX),
@@ -4131,12 +7334,79 @@ pub(super) fn activate_native_context(
         .unwrap_or(u32::MAX),
         trusted_optimizing_function_entry_reserved: 0,
         poll_counter: std::ptr::from_mut(context.native_poll_counter.as_mut()) as usize as u64,
-        global_reference_cache: context.global_reference_cache.entries.as_mut_ptr() as usize as u64,
-        global_reference_cache_mask: (NATIVE_GLOBAL_REFERENCE_CACHE_SIZE - 1) as u32,
-        global_reference_cache_reserved: 0,
-    });
-    NativeExecutionContextGuard {
+        root_mutation_pending: std::ptr::from_mut(context.native_root_mutation_pending.as_mut())
+            as usize as u64,
+        trusted_property_function_offsets: context.trusted_property_function_offsets.as_ptr()
+            as usize as u64,
+        trusted_property_function_count: u32::try_from(
+            context.trusted_property_function_offsets.len(),
+        )
+        .unwrap_or(u32::MAX),
+        trusted_property_reserved: 0,
+        trusted_property_slots: context.trusted_property_slots.as_mut_ptr() as usize as u64,
+        trusted_property_slot_count: u32::try_from(context.trusted_property_slots.len())
+            .unwrap_or(u32::MAX),
+        trusted_property_slot_reserved: 0,
+        trusted_global_reference_slots: context.trusted_global_reference_slots.as_ptr() as usize
+            as u64,
+        trusted_global_reference_slot_count: u32::try_from(
+            context.trusted_global_reference_slots.len(),
+        )
+        .unwrap_or(u32::MAX),
+        trusted_global_reference_slot_reserved: 0,
+        trusted_static_local_slots: context.trusted_static_local_slots.as_ptr() as usize as u64,
+        trusted_static_local_slot_count: u32::try_from(context.trusted_static_local_slots.len())
+            .unwrap_or(u32::MAX),
+        trusted_static_local_slot_reserved: 0,
+        static_property_slots: context.static_property_slots.as_mut_ptr() as usize as u64,
+        static_property_slot_count: *context.static_property_next,
+        static_property_slot_reserved: 0,
+        trusted_static_property_slots: context.trusted_static_property_slots.as_mut_ptr() as usize
+            as u64,
+        trusted_static_property_slot_count: u32::try_from(
+            context.trusted_static_property_slots.len(),
+        )
+        .unwrap_or(u32::MAX),
+        trusted_static_property_slot_reserved: 0,
+        trusted_instanceof_plans: context.trusted_instanceof_plans.as_ptr() as usize as u64,
+        trusted_instanceof_plan_count: u32::try_from(context.trusted_instanceof_plans.len())
+            .unwrap_or(u32::MAX),
+        trusted_instanceof_plan_reserved: 0,
+        trusted_instanceof_entries: context.trusted_instanceof_entries.as_ptr() as usize as u64,
+        trusted_instanceof_entry_count: u32::try_from(context.trusted_instanceof_entries.len())
+            .unwrap_or(u32::MAX),
+        trusted_instanceof_entry_reserved: 0,
+        error_reporting: std::ptr::from_mut(&mut context.error_reporting) as usize as u64,
+    };
+    let cold_context = std::ptr::from_mut(&mut *context).cast();
+    // SAFETY: `NativeRequestOwner` allocates the fast state separately and
+    // wires this stable pointer before exposing the cold state.
+    let fast_state = context.fast_state;
+    let previous_header;
+    #[allow(unsafe_code)]
+    unsafe {
+        previous_header = (*fast_state).header;
+        (*fast_state).header = php_jit::JitNativeFastStateHeader {
+            abi_version: php_jit::JIT_RUNTIME_ABI_VERSION,
+            flags: 0,
+            runtime_view: view,
+        };
+        (*context.fast_state).cold_context = cold_context;
+        (*context.fast_state).output = std::ptr::from_mut(&mut context.output);
+        (*context.fast_state).json_state =
+            std::ptr::from_mut(context.builtin_request_state.json_mut());
+        (*context.fast_state).pcre_state =
+            std::ptr::from_mut(context.builtin_request_state.pcre_mut());
+        (*context.fast_state).ini_registry = std::ptr::from_ref(&context.ini_registry);
+        (*context.fast_state).cwd = std::ptr::from_ref(&context.cwd);
+        (*context.fast_state).filesystem_capabilities =
+            std::ptr::from_ref(&context.options.runtime_context.filesystem);
+    }
+    let runtime_view = php_jit::activate_native_runtime_view(view);
+    NativeRequestActivationGuard {
         _runtime_view: runtime_view,
+        fast_state,
+        previous_header,
     }
 }
 
@@ -4144,13 +7414,26 @@ pub(super) fn activate_native_context(
 fn with_native_context_for<R>(
     runtime: *mut NativeRequestFastState,
     _helper_id: &'static str,
-    operation: impl FnOnce(&mut NativeExecutionContext<'_>) -> R,
+    operation: impl FnOnce(&mut NativeRequestColdState<'_>) -> R,
 ) -> Option<R> {
-    // SAFETY: every published native entry receives the live request context
-    // from its Rust caller and passes it unchanged to helpers and callees.
-    // Helper execution is synchronous and cannot outlive that request.
-    let context = unsafe { &mut *runtime };
+    // SAFETY: baseline semantics and explicitly approved exact capability
+    // calls receive the stable fast-state pointer. Its owner refreshes
+    // `cold_context` at every activation, and the synchronous call cannot
+    // outlive the request coordinator.
+    let context = unsafe { native_cold_context(runtime) };
     Some(operation(context))
+}
+
+/// Enters the cold Rust semantic coordinator from a baseline/diagnostic ABI
+/// or one exact capability call such as a symbol-table query. Direct value and
+/// data operations never recover the coordinator.
+#[allow(unsafe_code)]
+unsafe fn native_cold_context<'a>(
+    runtime: *mut NativeRequestFastState,
+) -> &'a mut NativeRequestColdState<'a> {
+    // SAFETY: the request owner refreshes this pointer before every native
+    // activation, and all cold crossings are synchronous.
+    unsafe { &mut *(*runtime).cold_context.cast::<NativeRequestColdState<'a>>() }
 }
 
 fn ir_constant_value(constant: &php_ir::IrConstant) -> Result<Value, String> {
@@ -4189,11 +7472,11 @@ fn ir_constant_value(constant: &php_ir::IrConstant) -> Result<Value, String> {
 }
 
 fn native_runtime_constant_value(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     constant: &php_ir::IrConstant,
 ) -> Result<Value, String> {
     fn resolve(
-        context: &NativeExecutionContext<'_>,
+        context: &NativeRequestColdState<'_>,
         constant: &php_ir::IrConstant,
         depth: usize,
     ) -> Result<Value, String> {
@@ -4348,7 +7631,7 @@ fn native_value_matches_ir_type(value: &Value, type_: &php_ir::IrReturnType) -> 
 }
 
 fn native_value_matches_ir_type_in_context(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     value: &Value,
     type_: &php_ir::IrReturnType,
 ) -> bool {
@@ -4378,7 +7661,7 @@ fn native_value_matches_ir_type_in_context(
     }
 }
 
-fn native_value_is_callable(context: &NativeExecutionContext<'_>, value: &Value) -> bool {
+fn native_value_is_callable(context: &NativeRequestColdState<'_>, value: &Value) -> bool {
     match value {
         Value::Reference(reference) => native_value_is_callable(context, &reference.get()),
         Value::Callable(_) => true,
@@ -4462,8 +7745,90 @@ fn native_ir_type_name(type_: &php_ir::IrReturnType) -> String {
     }
 }
 
+fn native_publication_constant_is_stable(constant: &php_ir::IrConstant) -> bool {
+    match constant {
+        php_ir::IrConstant::Null
+        | php_ir::IrConstant::Bool(_)
+        | php_ir::IrConstant::Int(_)
+        | php_ir::IrConstant::Float(_)
+        | php_ir::IrConstant::String(_)
+        | php_ir::IrConstant::StringBytes(_) => true,
+        php_ir::IrConstant::Array(entries) => entries.iter().all(|entry| {
+            entry
+                .key
+                .as_ref()
+                .is_none_or(native_publication_constant_is_stable)
+                && native_publication_constant_is_stable(&entry.value)
+        }),
+        php_ir::IrConstant::NamedConstant(_) | php_ir::IrConstant::ClassConstant { .. } => false,
+    }
+}
+
+fn native_class_is_publication_allocatable(
+    classes: &[php_ir::module::ClassEntry],
+    constants: &[php_ir::IrConstant],
+    class: &php_ir::module::ClassEntry,
+) -> bool {
+    if class.flags.is_abstract
+        || class.flags.is_interface
+        || class.flags.is_trait
+        || class.flags.is_enum
+    {
+        return false;
+    }
+    let mut current = Some(class);
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(candidate) = current {
+        if !visited.insert(candidate.name.as_str()) {
+            return false;
+        }
+        if candidate.properties.iter().any(|property| {
+            property
+                .default
+                .and_then(|constant| constants.get(constant.index()))
+                .is_some_and(|constant| !native_publication_constant_is_stable(constant))
+        }) {
+            return false;
+        }
+        current = match candidate.parent.as_deref() {
+            None => None,
+            Some(parent) => {
+                let parent = normalize_class_name(parent);
+                if let Some(parent) = classes.iter().find(|class| class.name == parent) {
+                    Some(parent)
+                } else {
+                    let internal = php_std::ExtensionRegistry::standard_library()
+                        .enabled_class(&parent)
+                        .is_some()
+                        || matches!(
+                            parent.as_str(),
+                            "stdclass"
+                                | "exception"
+                                | "errorexception"
+                                | "error"
+                                | "typeerror"
+                                | "valueerror"
+                                | "argumentcounterror"
+                                | "fibererror"
+                                | "closure"
+                                | "generator"
+                                | "fiber"
+                                | "arrayobject"
+                                | "arrayiterator"
+                        );
+                    if !internal {
+                        return false;
+                    }
+                    None
+                }
+            }
+        };
+    }
+    true
+}
+
 fn native_runtime_class_with_owner(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     owner_unit: Option<usize>,
     class: &php_ir::module::ClassEntry,
 ) -> Result<php_runtime::api::ClassEntry, String> {
@@ -4618,42 +7983,25 @@ fn native_runtime_class_with_owner(
 }
 
 fn new_native_object(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     owner_unit: Option<usize>,
     class: &php_ir::module::ClassEntry,
 ) -> Result<php_runtime::api::ObjectRef, String> {
-    let key = (owner_unit, class.name.clone());
-    let prepared = if let Some(prepared) = context.runtime_class_cache.borrow().get(&key) {
-        Rc::clone(prepared)
-    } else {
-        let entry = native_runtime_class_with_owner(context, owner_unit, class)?;
-        let default_declared_slots =
-            php_runtime::api::ObjectRef::default_declared_slots(&entry, &class.display_name);
-        let prepared = Rc::new(PreparedNativeRuntimeClass {
-            entry,
-            default_declared_slots,
-        });
-        context
-            .runtime_class_cache
-            .borrow_mut()
-            .insert(key, Rc::clone(&prepared));
-        prepared
-    };
-    Ok(php_runtime::api::ObjectRef::from_layout_slots(
-        &prepared.entry,
+    let entry = native_runtime_class_with_owner(context, owner_unit, class)?;
+    Ok(php_runtime::api::ObjectRef::new_with_display_name(
+        &entry,
         class.display_name.clone(),
-        prepared.default_declared_slots.clone(),
     ))
 }
 
 fn native_prepare_runtime_class_constants(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     owner_unit: Option<usize>,
     class: &php_ir::module::ClassEntry,
     source: &php_ir::Instruction,
 ) -> Result<(), String> {
     fn prepare_constant(
-        context: &mut NativeExecutionContext<'_>,
+        context: &mut NativeRequestColdState<'_>,
         constant: &php_ir::IrConstant,
         source: &php_ir::Instruction,
     ) -> Result<(), String> {
@@ -4712,7 +8060,7 @@ fn native_prepare_runtime_class_constants(
 }
 
 fn encode_native_enum_case(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class: &php_ir::module::ClassEntry,
     case: &php_ir::module::ClassEnumCaseEntry,
 ) -> Result<i64, String> {
@@ -4744,11 +8092,12 @@ struct NativeStaticPropertyDeclaration {
     caller_owns_scope: bool,
     flags: php_ir::module::ClassPropertyFlags,
     default: Option<php_ir::ConstId>,
+    has_deferred_default: bool,
     type_: Option<php_ir::IrReturnType>,
 }
 
 fn native_static_property_declaration(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     class_name: &str,
     property: &str,
     caller_function: u32,
@@ -4782,6 +8131,9 @@ fn native_static_property_declaration(
                     .any(|method| method.function.raw() == caller_function),
                 flags: entry.flags,
                 default: entry.default,
+                has_deferred_default: entry.default_class_constant.is_some()
+                    || entry.default_named_constant.is_some()
+                    || entry.default_expr.is_some(),
                 type_: entry.type_.clone(),
             });
         }
@@ -4840,7 +8192,7 @@ fn dereference_native_assignment_value(mut value: Value) -> Value {
 }
 
 fn execute_native_static_property(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
     caller_function: u32,
@@ -4892,38 +8244,60 @@ fn execute_native_static_property(
             )));
         };
         let key = (declaration.owner_name, property.clone());
-        let current = context.static_properties.get(&key).cloned().or_else(|| {
-            declaration
-                .default
-                .and_then(|constant| {
-                    if declaration.owner_unit.is_none() {
-                        context.unit.constants.get(constant.index())
-                    } else {
-                        declaration.owner_unit.and_then(|unit| {
-                            context.dynamic_units.get(unit).and_then(|package| {
-                                package.compiled.unit().constants.get(constant.index())
+        let current = match context.direct_static_property_value(&key) {
+            Some(Ok(value)) => Some(value),
+            Some(Err(error)) => return Some(Err(error)),
+            None => context.static_properties.get(&key).cloned().or_else(|| {
+                declaration
+                    .default
+                    .and_then(|constant| {
+                        if declaration.owner_unit.is_none() {
+                            context.unit.constants.get(constant.index())
+                        } else {
+                            declaration.owner_unit.and_then(|unit| {
+                                context.dynamic_units.get(unit).and_then(|package| {
+                                    package.compiled.unit().constants.get(constant.index())
+                                })
                             })
-                        })
-                    }
-                })
-                .and_then(|constant| ir_constant_value(constant).ok())
-        });
-        let reference = match current.unwrap_or(Value::Null) {
-            Value::Reference(reference) => reference,
-            value => php_runtime::api::ReferenceCell::new(value),
+                        }
+                    })
+                    .and_then(|constant| ir_constant_value(constant).ok())
+            }),
         };
-        context
-            .static_properties
-            .insert(key, Value::Reference(reference.clone()));
-        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
         if keys.is_empty() {
+            let reference = match current.unwrap_or(Value::Null) {
+                Value::Reference(reference) => reference,
+                value => php_runtime::api::ReferenceCell::new(value),
+            };
+            let replacement = Value::Reference(reference.clone());
+            match context.store_direct_static_property_value(&key, replacement.clone()) {
+                Some(Ok(())) => {}
+                Some(Err(error)) => return Some(Err(error)),
+                None => {
+                    context.static_properties.insert(key, replacement);
+                    context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                }
+            }
             return Some(context.encode(Value::Reference(reference)));
         }
-        let mut root = Value::Reference(reference);
+
+        // Binding one dimension must put the leaf ReferenceCell into the
+        // authoritative array itself. Wrapping the whole static property in a
+        // separate root reference before descending leaves later dimension
+        // fetches observing the old array snapshot.
+        let mut root = current.unwrap_or(Value::Null);
         let reference = match native_nested_array_reference(&mut root, &keys) {
             Ok(reference) => reference,
             Err(error) => return Some(Err(error)),
         };
+        match context.store_direct_static_property_value(&key, root.clone()) {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Some(Err(error)),
+            None => {
+                context.static_properties.insert(key, root);
+                context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+            }
+        }
         return Some(context.encode(Value::Reference(reference)));
     }
     let (class_name, property, assigned, bind_reference) = match &instruction.kind {
@@ -5136,10 +8510,16 @@ fn execute_native_static_property(
                 native_ir_type_name(type_)
             )));
         }
-        let previous = context
-            .static_properties
-            .insert(key.clone(), Value::Reference(reference.clone()));
-        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+        let replacement = Value::Reference(reference.clone());
+        let previous = match context.store_direct_static_property_value(&key, replacement.clone()) {
+            Some(Ok(())) => None,
+            Some(Err(error)) => return Some(Err(error)),
+            None => {
+                let previous = context.static_properties.insert(key.clone(), replacement);
+                context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                previous
+            }
+        };
         if let Some(previous) = previous.map(dereference_native_assignment_value)
             && let Value::Object(previous) = previous
             && let Err(error) = context.run_object_destructor(previous)
@@ -5168,16 +8548,30 @@ fn execute_native_static_property(
                 native_ir_type_name(type_)
             )));
         }
-        let existing_reference = context.static_properties.get(&key).and_then(|current| {
-            let Value::Reference(reference) = current else {
-                return None;
-            };
-            Some(reference.clone())
-        });
+        let direct_current = match context.direct_static_property_value(&key) {
+            Some(Ok(value)) => Some(value),
+            Some(Err(error)) => return Some(Err(error)),
+            None => None,
+        };
+        let existing_reference = direct_current
+            .as_ref()
+            .or_else(|| context.static_properties.get(&key))
+            .and_then(|current| {
+                let Value::Reference(reference) = current else {
+                    return None;
+                };
+                Some(reference.clone())
+            });
         let previous = if let Some(reference) = existing_reference {
             let previous = reference.get();
             reference.set(value.clone());
             Some(previous)
+        } else if direct_current.is_some() {
+            match context.store_direct_static_property_value(&key, value.clone()) {
+                Some(Ok(())) => None,
+                Some(Err(error)) => return Some(Err(error)),
+                None => unreachable!("direct static value lost its published slot"),
+            }
         } else {
             context.static_properties.insert(key.clone(), value.clone())
         };
@@ -5188,6 +8582,11 @@ fn execute_native_static_property(
             return Some(Err(error));
         }
         value
+    } else if let Some(value) = context.direct_static_property_value(&key) {
+        match value {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        }
     } else if let Some(value) = context.static_properties.get(&key).cloned() {
         value
     } else {
@@ -5269,8 +8668,14 @@ fn execute_native_static_property(
                     }
                     mut value => {
                         unset_native_array_dims(&mut value, &keys);
-                        context.static_properties.insert(key.clone(), value);
-                        context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                        match context.store_direct_static_property_value(&key, value.clone()) {
+                            Some(Ok(())) => {}
+                            Some(Err(error)) => return Some(Err(error)),
+                            None => {
+                                context.static_properties.insert(key.clone(), value);
+                                context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                            }
+                        }
                     }
                 }
             }
@@ -5289,7 +8694,7 @@ fn execute_native_static_property(
 }
 
 fn native_dimension_path_value(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     mut value: Option<Value>,
     arguments: &[i64],
     dimension_count: usize,
@@ -5417,7 +8822,7 @@ fn assign_native_array_dims(
 }
 
 fn native_external_method(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     class_name: &str,
     method: &str,
 ) -> Option<(NativeDynamicFunction, php_ir::module::ClassMethodEntry)> {
@@ -5464,7 +8869,7 @@ fn native_external_method(
 }
 
 fn create_native_external_object(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
     source: &php_ir::Instruction,
@@ -5601,7 +9006,7 @@ fn native_backtrace_frame_from_metadata(
 }
 
 fn invoke_native_external_function(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     target: NativeDynamicFunction,
     arguments: &[i64],
     called_class: Option<String>,
@@ -5618,7 +9023,7 @@ fn invoke_native_external_function(
 }
 
 fn invoke_native_external_function_with_metadata(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     target: NativeDynamicFunction,
     arguments: &[i64],
     metadata: Option<&[php_ir::instruction::IrCallArg]>,
@@ -5636,16 +9041,19 @@ fn invoke_native_external_function_with_metadata(
                     && index != php_jit::JIT_VALUE_FALSE
                     && index != php_jit::JIT_VALUE_TRUE
             });
-            let direct_array = NativeExecutionContext::direct_value_index(encoded)
+            let direct_array = NativeRequestColdState::direct_value_index(encoded)
                 .and_then(|index| context.direct_value_slots.get(index))
                 .is_some_and(|slot| {
                     slot.refcount != 0 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
                 });
             if unit_local_constant {
-                // Constant indexes are scoped to the caller's IrUnit. Convert
-                // a scalar/string constant exactly once at the boundary.
-                let value = context.decode(encoded)?;
-                context.encode(value)
+                // Constant indexes are scoped to the caller's IrUnit. Publish
+                // scalar/string literals directly into request-wide native
+                // storage before switching the active unit.
+                context.stabilize_active_unit_constant(
+                    php_jit::jit_decode_constant(encoded)
+                        .expect("unit-local constant was classified above"),
+                )
             } else if direct_array {
                 // Do not rebuild the entire native array through Rust
                 // `Value`.  Stabilize only embedded unit-local constants in
@@ -5723,7 +9131,7 @@ fn native_value_with_owner_unit(value: Value, owner_unit: Option<usize>) -> Valu
 }
 
 fn invoke_native_method(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
 ) -> Result<i64, String> {
@@ -5731,7 +9139,7 @@ fn invoke_native_method(
 }
 
 fn invoke_native_method_with_trace_arguments(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
     trace_arguments: Option<request_state::NativeTraceArguments>,
@@ -5747,7 +9155,7 @@ fn invoke_native_method_with_trace_arguments(
 }
 
 fn invoke_native_method_with_prepared_trace_arguments(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     arguments: &[i64],
     trace_arguments: Option<request_state::NativeTraceArguments>,
@@ -5811,7 +9219,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
         )
     });
     context.record_native_direct_calls(&handle);
-    let runtime = std::ptr::from_mut(&mut *context).cast::<std::ffi::c_void>();
+    let runtime = context.native_runtime_ptr();
     let outcome = handle.invoke_i64_with_native_unwind_runtime(
         arguments,
         php_jit::JIT_RUNTIME_ABI_HASH,
@@ -5992,7 +9400,7 @@ fn invoke_native_method_with_prepared_trace_arguments(
 }
 
 pub(super) fn resume_native_optimizing_exit(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     mut outcome: Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError>,
 ) -> Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError> {
     loop {
@@ -6087,6 +9495,47 @@ pub(super) fn resume_native_optimizing_exit(
                 "{}:{raw}:{stored}:{descriptor}",
                 transition_reason.as_ref()
             ));
+        } else if transition_reason
+            .as_ref()
+            .starts_with("optimizer_call:CallFunction:")
+            && let Some(instruction) = transition_instruction.as_ref()
+            && let php_ir::InstructionKind::CallFunction { args, .. } = &instruction.kind
+        {
+            let values = args
+                .iter()
+                .take(4)
+                .map(|argument| {
+                    let encoded = match argument.value {
+                        php_ir::Operand::Local(local) if state.local_initialized(local) => {
+                            Some(state.slots[local.index()])
+                        }
+                        php_ir::Operand::Register(register) => (0
+                            ..php_jit::JIT_DEOPT_MAX_REGISTERS)
+                            .find(|index| {
+                                state.initialized_register_mask & (1_u64 << index) != 0
+                                    && state.register_ids[*index] == register.raw()
+                            })
+                            .map(|index| state.registers[index]),
+                        php_ir::Operand::Constant(_) | php_ir::Operand::Local(_) => None,
+                    };
+                    encoded.map_or_else(
+                        || "constant_or_unpublished".to_owned(),
+                        |encoded| {
+                            format!(
+                                "{}/{}",
+                                native_transition_value_kind(encoded),
+                                native_transition_stored_value_kind(context, encoded),
+                            )
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            transition_reason = std::borrow::Cow::Owned(format!(
+                "{}:values_{values}:detail_{:#x}",
+                transition_reason.as_ref(),
+                state.control_reserved,
+            ));
         }
         let transition_started = context
             .options
@@ -6099,7 +9548,7 @@ pub(super) fn resume_native_optimizing_exit(
                 continuation: state.continuation_id,
             }
         })?;
-        let runtime = std::ptr::from_mut(&mut *context).cast::<std::ffi::c_void>();
+        let runtime = context.native_runtime_ptr();
         outcome = baseline.invoke_i64_native_transition_with_unwind_runtime(
             state,
             php_jit::JIT_RUNTIME_ABI_HASH,
@@ -6132,7 +9581,7 @@ fn native_transition_value_kind(encoded: i64) -> &'static str {
 }
 
 fn native_transition_stored_value_kind(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     encoded: i64,
 ) -> &'static str {
     let Some(index) = php_jit::jit_decode_runtime_value(encoded) else {
@@ -6243,7 +9692,7 @@ fn native_optimizing_transition_reason(
 }
 
 fn invoke_native_property_magic(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class: &php_ir::module::ClassEntry,
     receiver: i64,
     property: &str,
@@ -6268,10 +9717,11 @@ fn invoke_native_property_magic(
 }
 
 fn execute_native_property_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
     caller_function: u32,
+    trusted_continuation: Option<u32>,
 ) -> Option<Result<i64, String>> {
     use php_ir::InstructionKind;
     let (object, property, dynamic_property) = match &instruction.kind {
@@ -6428,6 +9878,9 @@ fn execute_native_property_instruction(
             )));
         }
     };
+    if let Err(error) = context.materialize_direct_object_alias(&object) {
+        return Some(Err(error));
+    }
     let normalized_class = normalize_class_name(&object.class_name());
     let class = native_active_class_handle(context, &normalized_class);
     let caller_owns_class_scope = class.as_ref().is_some_and(|class| {
@@ -6597,7 +10050,7 @@ fn execute_native_property_instruction(
                     return Some(context.encode(value));
                 }
             }
-            object.set_property(property, value.clone());
+            object.set_property(property.clone(), value.clone());
             value
         }
         InstructionKind::UnsetProperty { .. } | InstructionKind::UnsetDynamicProperty { .. } => {
@@ -6656,19 +10109,24 @@ fn execute_native_property_instruction(
                                 .iter()
                                 .any(|candidate| candidate == instruction)
                         })
+                    })
+                    .map(|block| {
+                        format!(
+                            "{:?}",
+                            block
+                                .instructions
+                                .iter()
+                                .map(|candidate| &candidate.kind)
+                                .collect::<Vec<_>>()
+                        )
                     });
+                let decoded = arguments
+                    .iter()
+                    .map(|value| context.decode(*value))
+                    .collect::<Vec<_>>();
                 return Some(Err(format!(
                     "property dimension key is invalid: instruction={:?} arguments={arguments:?} decoded={:?} block={:?}",
-                    instruction.kind,
-                    arguments
-                        .iter()
-                        .map(|value| context.decode(*value))
-                        .collect::<Vec<_>>(),
-                    block.map(|block| block
-                        .instructions
-                        .iter()
-                        .map(|candidate| &candidate.kind)
-                        .collect::<Vec<_>>())
+                    instruction.kind, decoded, block,
                 )));
             };
             let _ = object.try_modify_property_value(&property, |value| {
@@ -6708,19 +10166,24 @@ fn execute_native_property_instruction(
                                 .iter()
                                 .any(|candidate| candidate == instruction)
                         })
+                    })
+                    .map(|block| {
+                        format!(
+                            "{:?}",
+                            block
+                                .instructions
+                                .iter()
+                                .map(|candidate| &candidate.kind)
+                                .collect::<Vec<_>>()
+                        )
                     });
+                let decoded = arguments
+                    .iter()
+                    .map(|value| context.decode(*value))
+                    .collect::<Vec<_>>();
                 return Some(Err(format!(
                     "property dimension key is invalid: instruction={:?} arguments={arguments:?} decoded={:?} block={:?}",
-                    instruction.kind,
-                    arguments
-                        .iter()
-                        .map(|value| context.decode(*value))
-                        .collect::<Vec<_>>(),
-                    block.map(|block| block
-                        .instructions
-                        .iter()
-                        .map(|candidate| &candidate.kind)
-                        .collect::<Vec<_>>())
+                    instruction.kind, decoded, block,
                 )));
             };
             if let Some(class) = &class
@@ -6776,17 +10239,70 @@ fn execute_native_property_instruction(
             if !matches!(modified, Ok(Some(()))) {
                 let mut value = object.get_property(&property).unwrap_or(Value::Null);
                 assign_native_array_dims(&mut value, &keys, result.clone(), *append);
-                object.set_property(property, value);
+                object.set_property(property.clone(), value);
             }
             result
         }
         _ => return None,
     };
+    if let Some(continuation) = trusted_continuation {
+        let entry = class
+            .as_ref()
+            .and_then(|class| class.properties.iter().find(|entry| entry.name == property));
+        let accessible = entry.is_some_and(|entry| {
+            (!entry.flags.is_private && !entry.flags.is_protected) || caller_owns_class_scope
+        });
+        let state = match instruction.kind {
+            InstructionKind::IssetProperty { .. }
+            | InstructionKind::EmptyProperty { .. }
+            | InstructionKind::IssetPropertyDim { .. }
+            | InstructionKind::EmptyPropertyDim { .. }
+                if accessible && entry.is_none_or(|entry| entry.hooks.get.is_none()) =>
+            {
+                Some(php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED)
+            }
+            InstructionKind::AssignPropertyDim { .. }
+            | InstructionKind::UnsetPropertyDim { .. }
+                if accessible
+                    && entry.is_some_and(|entry| {
+                        !entry.flags.is_readonly
+                            && entry.hooks.get.is_none()
+                            && entry.hooks.set.is_none()
+                    })
+                    && matches!(object.get_property(&property), Some(Value::Array(_))) =>
+            {
+                Some(php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE)
+            }
+            InstructionKind::UnsetProperty { .. }
+                if accessible
+                    && entry.is_some_and(|entry| {
+                        !entry.flags.is_readonly
+                            && entry.hooks.get.is_none()
+                            && entry.hooks.set.is_none()
+                    }) =>
+            {
+                Some(php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE)
+            }
+            _ => None,
+        };
+        if let Some(state) = state
+            && let Err(error) = context.publish_direct_object_slots(
+                object_encoded,
+                &property,
+                0,
+                i64::from(caller_function),
+                i64::from(continuation),
+                state,
+            )
+        {
+            return Some(Err(error));
+        }
+    }
     Some(context.encode(result))
 }
 
 fn cached_native_class_constant(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     caller_function: u32,
     class: &str,
     constant: &str,
@@ -6800,7 +10316,7 @@ fn cached_native_class_constant(
 }
 
 fn encode_and_cache_native_class_constant(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     caller_function: u32,
     class: &str,
     constant: &str,
@@ -6817,7 +10333,7 @@ fn encode_and_cache_native_class_constant(
 }
 
 fn execute_native_class_constant(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     caller_function: u32,
 ) -> Option<Result<i64, String>> {
@@ -7127,7 +10643,7 @@ fn execute_native_class_constant(
 }
 
 fn execute_native_enum_static_method(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -7186,7 +10702,7 @@ fn execute_native_enum_static_method(
     None
 }
 
-fn native_class_is_a(context: &NativeExecutionContext<'_>, class_name: &str, target: &str) -> bool {
+fn native_class_is_a(context: &NativeRequestColdState<'_>, class_name: &str, target: &str) -> bool {
     let target = normalize_class_name(target);
     let class_name = normalize_class_name(class_name);
     if class_name == "arrayiterator" && matches!(target.as_str(), "iterator" | "traversable") {
@@ -7232,7 +10748,7 @@ fn native_class_is_a(context: &NativeExecutionContext<'_>, class_name: &str, tar
 }
 
 fn native_method_in_hierarchy(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     class_name: &str,
     method: &str,
 ) -> Option<php_ir::FunctionId> {
@@ -7255,7 +10771,7 @@ fn native_method_in_hierarchy(
 }
 
 fn native_function_is_generator(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
 ) -> bool {
     context
@@ -7279,7 +10795,7 @@ fn native_function_is_generator(
 }
 
 fn native_calling_class<'a>(
-    context: &'a NativeExecutionContext<'_>,
+    context: &'a NativeRequestColdState<'_>,
     function: u32,
 ) -> Option<&'a php_ir::ClassEntry> {
     context.unit.classes.iter().find(|class| {
@@ -7291,7 +10807,7 @@ fn native_calling_class<'a>(
 }
 
 fn native_effective_calling_class<'a>(
-    context: &'a NativeExecutionContext<'_>,
+    context: &'a NativeRequestColdState<'_>,
     function: u32,
 ) -> Option<&'a php_ir::ClassEntry> {
     native_calling_class(context, function).or_else(|| {
@@ -7306,7 +10822,7 @@ fn native_effective_calling_class<'a>(
 }
 
 fn native_resolve_scoped_class_name(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     class_name: &str,
     caller_function: u32,
 ) -> Result<String, String> {
@@ -7336,7 +10852,7 @@ fn native_resolve_scoped_class_name(
 }
 
 fn native_method_access_error(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     caller_function: u32,
     _late_static_call: bool,
@@ -7377,7 +10893,7 @@ fn native_method_access_error(
 }
 
 fn native_external_method_access_error(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     target: NativeDynamicFunction,
     caller_function: u32,
     _late_static_call: bool,
@@ -7419,7 +10935,7 @@ fn native_external_method_access_error(
 }
 
 fn encode_native_call_arguments_array(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
 ) -> Result<i64, String> {
     let mut array = php_runtime::api::PhpArray::new();
@@ -7430,7 +10946,7 @@ fn encode_native_call_arguments_array(
 }
 
 fn execute_native_instanceof(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -7493,7 +11009,7 @@ fn execute_native_instanceof(
 }
 
 fn execute_native_acquire_callable(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -7565,7 +11081,7 @@ fn execute_native_acquire_callable(
 }
 
 fn execute_native_resolve_callable(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
 ) -> Option<Result<i64, String>> {
     let php_ir::InstructionKind::ResolveCallable { callable, .. } = &instruction.kind else {
@@ -7651,7 +11167,7 @@ fn native_rebind_closure(
 }
 
 fn execute_native_bind_global(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
 ) -> Option<Result<i64, String>> {
     let php_ir::InstructionKind::BindGlobal { name, .. } = &instruction.kind else {

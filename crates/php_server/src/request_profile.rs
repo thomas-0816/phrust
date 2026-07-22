@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SCHEMA_VERSION: u64 = 6;
+const SCHEMA_VERSION: u64 = 7;
 
 #[derive(Debug)]
 pub(crate) struct RequestProfileWriter {
@@ -117,6 +117,46 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
         native.insert(
             "execution_entries".to_owned(),
             Value::from(counters.native_execution_entries),
+        );
+        native.insert(
+            "baseline_entry_executions".to_owned(),
+            Value::from(counters.native_baseline_entry_executions),
+        );
+        native.insert(
+            "optimizing_entry_executions".to_owned(),
+            Value::from(counters.native_optimizing_entry_executions),
+        );
+        native.insert(
+            "production_lowering_by_site".to_owned(),
+            counter_map_json(&counters.native_production_lowering_by_site),
+        );
+        let operation_local_transition_executions = counters
+            .native_transition_by_reason
+            .iter()
+            .filter(|(reason, _)| reason.starts_with("optimizer_"))
+            .map(|(_, count)| *count)
+            .sum::<u64>();
+        native.insert(
+            "operation_local_transition_executions".to_owned(),
+            Value::from(operation_local_transition_executions),
+        );
+        let optimizer_transition_time_nanos = counters
+            .native_transition_time_nanos_by_reason
+            .iter()
+            .filter(|(reason, _)| reason.starts_with("optimizer_"))
+            .map(|(_, nanos)| *nanos)
+            .sum::<u64>();
+        let baseline_hot_time_share_pct = if counters.native_execution_time_nanos == 0 {
+            0.0
+        } else if counters.native_optimizing_entry_executions == 0 {
+            100.0
+        } else {
+            optimizer_transition_time_nanos as f64 * 100.0
+                / counters.native_execution_time_nanos as f64
+        };
+        native.insert(
+            "baseline_hot_time_share_pct".to_owned(),
+            Value::from(baseline_hot_time_share_pct),
         );
         native.insert(
             "region_side_exits".to_owned(),
@@ -361,6 +401,26 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
         native.insert(
             "frame_arena_high_water_bytes".to_owned(),
             Value::from(counters.native_frame_arena_high_water_bytes),
+        );
+        native.insert(
+            "arena_reserved_bytes".to_owned(),
+            counter_map_json(&counters.native_arena_reserved_bytes),
+        );
+        native.insert(
+            "arena_high_water_bytes".to_owned(),
+            counter_map_json(&counters.native_arena_high_water_bytes),
+        );
+        native.insert(
+            "arena_resident_bytes".to_owned(),
+            counter_map_json(&counters.native_arena_resident_bytes),
+        );
+        native.insert(
+            "arena_reused_bytes".to_owned(),
+            counter_map_json(&counters.native_arena_reused_bytes),
+        );
+        native.insert(
+            "arena_reset_bytes".to_owned(),
+            counter_map_json(&counters.native_arena_reset_bytes),
         );
         native.insert(
             "inlined_calls".to_owned(),

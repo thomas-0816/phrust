@@ -121,7 +121,17 @@ impl PcreCache {
         pattern: &PhpString,
         limits: PcreMatchLimits,
     ) -> Result<Arc<CompiledPattern>, PcreFailure> {
-        let key = pattern.to_string_lossy();
+        self.compile_bytes_with_limits(pattern.as_bytes(), limits)
+    }
+
+    /// Compile or reuse a delimited PHP PCRE pattern directly from native
+    /// string bytes, without constructing a `PhpString` wrapper.
+    pub fn compile_bytes_with_limits(
+        &mut self,
+        pattern: &[u8],
+        limits: PcreMatchLimits,
+    ) -> Result<Arc<CompiledPattern>, PcreFailure> {
+        let key = String::from_utf8_lossy(pattern);
         let key = format!(
             "{key}\0{:?}\0{:?}\0{}",
             limits.backtrack_limit, limits.recursion_limit, limits.jit
@@ -130,7 +140,7 @@ impl PcreCache {
             return Ok(Arc::clone(compiled));
         }
 
-        let parsed = parse_delimited_pattern(pattern.as_bytes())?;
+        let parsed = parse_delimited_pattern(pattern)?;
         let utf8_mode = parsed.modifiers.chars().any(|modifier| modifier == 'u');
         let start_offset_anchored = pattern_starts_with_start_offset_anchor(&parsed.body);
         let fast_path = PcreFastPath::classify(&parsed.body, utf8_mode);
@@ -204,6 +214,25 @@ impl PcreCache {
         Ok(options)
     }
 
+    /// Validate native subject bytes for an already compiled pattern. The
+    /// PHP-string identity cache is intentionally bypassed because native
+    /// strings are authoritative and already have stable request storage.
+    pub fn match_options_for_subject_bytes_at_offset(
+        &mut self,
+        pattern: &CompiledPattern,
+        subject: &[u8],
+        offset: usize,
+    ) -> Result<MatchOptions, PcreFailure> {
+        let mut options = MatchOptions::default();
+        if pattern.is_start_offset_anchored() {
+            options = options.anchored(true);
+        }
+        if pattern.is_utf8_mode() {
+            Utf8SubjectValidation::scan(subject).validate_offset(subject, offset)?;
+        }
+        Ok(options)
+    }
+
     fn cached_utf8_subject_validation(
         &mut self,
         subject: &PhpString,
@@ -248,10 +277,17 @@ impl SimpleLiteralPattern {
 pub fn simple_literal_pattern(
     pattern: &PhpString,
 ) -> Result<Option<SimpleLiteralPattern>, PcreFailure> {
-    if let Some(literal) = simple_literal_pattern_fast(pattern.as_bytes())? {
+    simple_literal_pattern_bytes(pattern.as_bytes())
+}
+
+/// Byte-native counterpart of [`simple_literal_pattern`].
+pub fn simple_literal_pattern_bytes(
+    pattern: &[u8],
+) -> Result<Option<SimpleLiteralPattern>, PcreFailure> {
+    if let Some(literal) = simple_literal_pattern_fast(pattern)? {
         return Ok(Some(literal));
     }
-    let parsed = parse_delimited_pattern(pattern.as_bytes())?;
+    let parsed = parse_delimited_pattern(pattern)?;
     for modifier in parsed.modifiers.chars() {
         match modifier {
             modifier if modifier.is_ascii_whitespace() => {}

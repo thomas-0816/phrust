@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn publish_native_call_diagnostic(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     message: String,
 ) {
     // A typed helper can publish the precise failure before the native caller
@@ -51,7 +51,7 @@ pub(super) fn publish_native_call_diagnostic(
 }
 
 pub(super) fn record_native_helper_failure(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     message: String,
 ) {
     context.diagnostic = Some(php_runtime::api::RuntimeDiagnostic::new(
@@ -140,24 +140,34 @@ pub(super) fn native_assignment_type_name(value: &Value) -> String {
 }
 
 pub(super) fn encode_native_throwable(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class: &str,
     message: &str,
 ) -> Result<i64, String> {
-    encode_native_throwable_fields(context, class, message, None)
+    encode_native_throwable_fields(context, class, message, None, None)
 }
 
 pub(super) fn encode_native_throwable_at(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class: &str,
     message: &str,
     span: php_ir::IrSpan,
 ) -> Result<i64, String> {
-    encode_native_throwable_fields(context, class, message, Some(span))
+    encode_native_throwable_fields(context, class, message, Some(span), None)
+}
+
+pub(super) fn encode_native_throwable_at_with_code(
+    context: &mut NativeRequestColdState<'_>,
+    class: &str,
+    message: &str,
+    span: php_ir::IrSpan,
+    code: i64,
+) -> Result<i64, String> {
+    encode_native_throwable_fields(context, class, message, Some(span), Some(code))
 }
 
 pub(super) fn initialize_native_throwable_parent(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class: &str,
     method: &str,
     arguments: &[i64],
@@ -216,10 +226,11 @@ pub(super) fn initialize_native_throwable_parent(
 }
 
 fn encode_native_throwable_fields(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class: &str,
     message: &str,
     span: Option<php_ir::IrSpan>,
+    code: Option<i64>,
 ) -> Result<i64, String> {
     let mut exception = php_runtime::api::PhpArray::new();
     for (name, value) in [
@@ -245,6 +256,12 @@ fn encode_native_throwable_fields(
             Value::Int(
                 i64::try_from(native_source_line_for_span(context, span)).unwrap_or(i64::MAX),
             ),
+        );
+    }
+    if let Some(code) = code {
+        exception.insert(
+            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"code".to_vec())),
+            Value::Int(code),
         );
     }
     context.encode(Value::Array(exception))
@@ -278,7 +295,7 @@ pub(super) fn native_throwable_with_frame(
 }
 
 pub(super) fn native_throwable_with_internal_frame(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     mut throwable: Value,
     source: &php_ir::Instruction,
 ) -> Value {
@@ -321,7 +338,7 @@ pub(super) fn native_throwable_with_internal_frame(
 }
 
 pub(super) fn native_throwable_with_call_source(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     mut throwable: Value,
     source_span: php_ir::IrSpan,
 ) -> Value {

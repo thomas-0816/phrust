@@ -23,9 +23,9 @@ mod serialization;
 mod snefru;
 mod snefru_tables;
 
-use crate::convert::float_to_php_string;
+use crate::convert::{float_fits_int, float_to_php_string};
 use crate::layout_stats;
-use crate::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
+use crate::numeric_string::{NumericStringKind, NumericStringValue, classify, classify_php_string};
 use crate::{
     ArrayKey, ClassEntry, ClassFlags, FloatValue, NumericValue, ObjectRef, OutputBuffer, PhpArray,
     PhpString, ResourceKind, StreamWrapperRegistry, UnserializeOptions, Value, compare, equal,
@@ -6020,12 +6020,35 @@ struct PrintfSpec {
     specifier: u8,
 }
 
+/// Scalar payload consumed by exact native formatting handlers without
+/// constructing a runtime `Value`.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativePrintfScalar<'a> {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(&'a [u8]),
+}
+
 pub(in crate::builtins::modules) fn php_format(
     name: &str,
     format: &[u8],
     args: &[Value],
     context: &mut BuiltinContext<'_>,
     span: RuntimeSourceSpan,
+) -> Result<Vec<u8>, BuiltinError> {
+    php_format_with(name, format, args.len(), |spec, value_index| {
+        format_printf_value(name, spec, &args[value_index], context, span.clone())
+    })
+}
+
+fn php_format_with(
+    name: &str,
+    format: &[u8],
+    argument_count: usize,
+    mut format_value: impl FnMut(&PrintfSpec, usize) -> Result<Vec<u8>, BuiltinError>,
 ) -> Result<Vec<u8>, BuiltinError> {
     let mut output = Vec::new();
     let mut format_index = 0;
@@ -6056,22 +6079,30 @@ pub(in crate::builtins::modules) fn php_format(
             arg_index += 1;
             position
         };
-        let Some(value) = args.get(value_index) else {
+        if value_index >= argument_count {
             return Err(BuiltinError::new(
                 "E_PHP_RUNTIME_PRINTF_ARGUMENTS",
                 format!("builtin {name} has too few arguments for format string"),
             ));
-        };
-        output.extend_from_slice(&format_printf_value(
-            name,
-            &spec,
-            value,
-            context,
-            span.clone(),
-        )?);
+        }
+        output.extend_from_slice(&format_value(&spec, value_index)?);
     }
 
     Ok(output)
+}
+
+/// Formats already-decoded native scalar payloads with the same parser and
+/// padding rules as PHP's runtime builtin. Shapes requiring PHP-visible
+/// object/array conversion are rejected by the caller before this boundary.
+#[doc(hidden)]
+pub fn format_native_printf_scalars(
+    name: &str,
+    format: &[u8],
+    args: &[NativePrintfScalar<'_>],
+) -> Result<Vec<u8>, BuiltinError> {
+    php_format_with(name, format, args.len(), |spec, value_index| {
+        format_native_printf_value(name, spec, &args[value_index])
+    })
 }
 
 fn parse_printf_spec(
@@ -6273,6 +6304,81 @@ fn format_printf_value(
         b'f' | b'F' => format_float_decimal(name, spec, float_arg(name, value)?)?.into_bytes(),
         b'e' | b'E' => format_float_scientific(name, spec, float_arg(name, value)?)?.into_bytes(),
         b'g' | b'G' => format_float_general(name, spec, float_arg(name, value)?)?.into_bytes(),
+        b'%' => b"%".to_vec(),
+        _ => unreachable!("parse_printf_spec validates specifier"),
+    };
+    Ok(apply_printf_padding(spec, bytes))
+}
+
+fn native_printf_int(value: &NativePrintfScalar<'_>) -> Result<i64, BuiltinError> {
+    match value {
+        NativePrintfScalar::Null | NativePrintfScalar::Bool(false) => Ok(0),
+        NativePrintfScalar::Bool(true) => Ok(1),
+        NativePrintfScalar::Int(value) => Ok(*value),
+        NativePrintfScalar::Float(value) if float_fits_int(*value) => Ok(*value as i64),
+        NativePrintfScalar::Float(_) => Err(BuiltinError::new(
+            "E_PHP_NATIVE_FORMAT_BASELINE",
+            "native printf float-to-int conversion requires the PHP warning path",
+        )),
+        NativePrintfScalar::String(bytes) => {
+            Ok(classify(bytes).value.map_or(0, NumericStringValue::to_i64))
+        }
+    }
+}
+
+fn native_printf_float(value: &NativePrintfScalar<'_>) -> f64 {
+    match value {
+        NativePrintfScalar::Null | NativePrintfScalar::Bool(false) => 0.0,
+        NativePrintfScalar::Bool(true) => 1.0,
+        NativePrintfScalar::Int(value) => *value as f64,
+        NativePrintfScalar::Float(value) => *value,
+        NativePrintfScalar::String(bytes) => classify(bytes)
+            .value
+            .map_or(0.0, NumericStringValue::as_f64),
+    }
+}
+
+fn native_printf_string(value: &NativePrintfScalar<'_>) -> Vec<u8> {
+    match value {
+        NativePrintfScalar::Null | NativePrintfScalar::Bool(false) => Vec::new(),
+        NativePrintfScalar::Bool(true) => b"1".to_vec(),
+        NativePrintfScalar::Int(value) => value.to_string().into_bytes(),
+        NativePrintfScalar::Float(value) => float_to_php_string(*value).into_bytes(),
+        NativePrintfScalar::String(bytes) => bytes.to_vec(),
+    }
+}
+
+fn format_native_printf_value(
+    name: &str,
+    spec: &PrintfSpec,
+    value: &NativePrintfScalar<'_>,
+) -> Result<Vec<u8>, BuiltinError> {
+    if matches!(spec.specifier, b'f' | b'F' | b'e' | b'E' | b'g' | b'G')
+        && let Some(text) = non_finite_float_text(native_printf_float(value))
+    {
+        return Ok(text.as_bytes().to_vec());
+    }
+    let bytes = match spec.specifier {
+        b's' => {
+            let mut bytes = native_printf_string(value);
+            if let Some(precision) = spec.precision {
+                bytes.truncate(precision);
+            }
+            bytes
+        }
+        b'c' => vec![native_printf_int(value)?.rem_euclid(256) as u8],
+        b'd' => format_signed_decimal(name, spec, native_printf_int(value)?)?.into_bytes(),
+        b'u' => (native_printf_int(value)? as u64).to_string().into_bytes(),
+        b'x' | b'X' | b'o' | b'b' if spec.precision.is_some() => Vec::new(),
+        b'x' => format!("{:x}", native_printf_int(value)? as u64).into_bytes(),
+        b'X' => format!("{:X}", native_printf_int(value)? as u64).into_bytes(),
+        b'o' => format!("{:o}", native_printf_int(value)? as u64).into_bytes(),
+        b'b' => format!("{:b}", native_printf_int(value)? as u64).into_bytes(),
+        b'f' | b'F' => format_float_decimal(name, spec, native_printf_float(value))?.into_bytes(),
+        b'e' | b'E' => {
+            format_float_scientific(name, spec, native_printf_float(value))?.into_bytes()
+        }
+        b'g' | b'G' => format_float_general(name, spec, native_printf_float(value))?.into_bytes(),
         b'%' => b"%".to_vec(),
         _ => unreachable!("parse_printf_spec validates specifier"),
     };

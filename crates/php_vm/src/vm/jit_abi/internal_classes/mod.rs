@@ -40,7 +40,7 @@ use xml_writer::{
 };
 
 pub(super) fn construct_native_internal_class(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -54,7 +54,7 @@ pub(super) fn construct_native_internal_class(
 }
 
 pub(super) fn execute_native_internal_class(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -68,7 +68,7 @@ pub(super) fn execute_native_internal_class(
 }
 
 pub(super) fn execute_native_internal_builtin(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

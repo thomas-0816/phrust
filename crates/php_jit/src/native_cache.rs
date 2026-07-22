@@ -1287,6 +1287,7 @@ impl NativeLoadedArtifact {
                 }
                 NativeFunctionAbi::PackedI64StatusOut => {
                     let entry: extern "C" fn(
+                        *mut std::ffi::c_void,
                         *const i64,
                         *mut i64,
                         *mut crate::JitDeoptState,
@@ -1294,6 +1295,7 @@ impl NativeLoadedArtifact {
                         *const crate::JitDeoptState,
                     ) -> i32 = std::mem::transmute(address);
                     entry(
+                        std::ptr::null_mut(),
                         std::ptr::NonNull::<i64>::dangling().as_ptr(),
                         &mut out,
                         &mut state,

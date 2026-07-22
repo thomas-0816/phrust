@@ -15,6 +15,298 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+/// Marker for plain native ABI records whose all-zero bit pattern is valid.
+///
+/// # Safety
+///
+/// Implementors must be `Copy`, require no drop, and accept an all-zero bit
+/// pattern as a valid value. This permits demand-zero virtual storage to be
+/// exposed as a stable slice without eagerly initializing its full capacity.
+#[allow(unsafe_code)]
+pub unsafe trait NativeZeroed: Copy {}
+
+// SAFETY: every bit pattern of these integer byte/word types is valid.
+#[allow(unsafe_code)]
+unsafe impl NativeZeroed for u8 {}
+#[allow(unsafe_code)]
+unsafe impl NativeZeroed for u32 {}
+#[allow(unsafe_code)]
+unsafe impl NativeZeroed for u64 {}
+
+/// Stable, demand-zero native ABI arena.
+///
+/// On production Unix builds the address range is reserved with anonymous
+/// `mmap`; physical pages are supplied only when generated code touches them.
+/// Non-runtime/minimal builds use the allocator's zeroed storage while keeping
+/// the same API. The allocation never moves.
+pub struct StableNativeArena<T: NativeZeroed> {
+    ptr: NonNull<T>,
+    capacity: usize,
+    bytes: usize,
+    mapped: bool,
+}
+
+/// A diagnostics-only snapshot of one stable native arena.
+///
+/// The request owner supplies high-water state when it asks for this snapshot,
+/// and resident pages are queried only while explicit runtime counters are
+/// being materialized. Arena allocation itself never scans or commits unused
+/// pages.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StableNativeArenaUsage {
+    pub reserved_bytes: usize,
+    pub high_water_bytes: usize,
+    pub resident_bytes: usize,
+}
+
+impl<T: NativeZeroed> StableNativeArena<T> {
+    #[must_use]
+    #[allow(unsafe_code)]
+    pub fn new(capacity: usize) -> Self {
+        if capacity == 0 {
+            return Self::default();
+        }
+        let bytes = std::mem::size_of::<T>()
+            .checked_mul(capacity)
+            .expect("stable native arena capacity overflow");
+        assert!(
+            bytes != 0,
+            "zero-sized native arena elements are unsupported"
+        );
+
+        #[cfg(all(unix, feature = "full-runtime"))]
+        {
+            let mut flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            {
+                flags |= libc::MAP_NORESERVE;
+            }
+            // SAFETY: an anonymous private mapping owns `bytes` demand-zero
+            // bytes and is released exactly once by Drop. Page alignment
+            // satisfies the native ABI records used by the JIT.
+            let address = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    bytes,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    flags,
+                    -1,
+                    0,
+                )
+            };
+            if address == libc::MAP_FAILED {
+                std::alloc::handle_alloc_error(
+                    Layout::from_size_align(bytes, std::mem::align_of::<T>())
+                        .expect("stable native arena layout"),
+                );
+            }
+            let ptr = NonNull::new(address.cast::<T>()).expect("mmap returned null");
+            return Self {
+                ptr,
+                capacity,
+                bytes,
+                mapped: true,
+            };
+        }
+
+        #[cfg(not(all(unix, feature = "full-runtime")))]
+        {
+            let layout = Layout::from_size_align(bytes, std::mem::align_of::<T>())
+                .expect("stable native arena layout");
+            // SAFETY: `layout` is non-zero and valid. NativeZeroed guarantees
+            // the initialized zero bytes form valid values.
+            let address = unsafe { std::alloc::alloc_zeroed(layout) };
+            let ptr = NonNull::new(address.cast::<T>())
+                .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+            Self {
+                ptr,
+                capacity,
+                bytes,
+                mapped: false,
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    #[must_use]
+    pub const fn reserved_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Returns a diagnostics-only memory snapshot without touching unused
+    /// arena pages. `initialized` is the owner's logical high-water element
+    /// count, not the maximum capacity.
+    #[must_use]
+    pub fn usage(&self, initialized: usize) -> StableNativeArenaUsage {
+        let initialized = initialized.min(self.capacity);
+        let high_water_bytes = std::mem::size_of::<T>()
+            .checked_mul(initialized)
+            .expect("stable native arena initialized length overflow");
+        StableNativeArenaUsage {
+            reserved_bytes: self.bytes,
+            high_water_bytes,
+            resident_bytes: self.resident_bytes().unwrap_or(high_water_bytes),
+        }
+    }
+
+    /// Counts resident pages in the arena's private mapping. This is only
+    /// called by explicit diagnostic/profile collection; ordinary requests
+    /// neither scan page state nor allocate the residency vector.
+    #[cfg(all(unix, feature = "full-runtime"))]
+    #[allow(unsafe_code)]
+    fn resident_bytes(&self) -> Option<usize> {
+        if self.bytes == 0 {
+            return Some(0);
+        }
+        if !self.mapped {
+            return None;
+        }
+        // SAFETY: sysconf has no memory-safety preconditions.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page_size = usize::try_from(page_size).ok().filter(|size| *size != 0)?;
+        let page_count = self.bytes.div_ceil(page_size);
+        let mut residency = vec![0_u8; page_count];
+        // SAFETY: mmap returned a page-aligned base covering `self.bytes`,
+        // and `residency` contains one output byte per covered page.
+        let status = unsafe {
+            libc::mincore(
+                self.ptr.as_ptr().cast(),
+                self.bytes,
+                residency.as_mut_ptr().cast(),
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        Some(
+            residency
+                .into_iter()
+                .enumerate()
+                .filter(|(_, state)| state & 1 != 0)
+                .map(|(index, _)| {
+                    self.bytes
+                        .saturating_sub(index.saturating_mul(page_size))
+                        .min(page_size)
+                })
+                .sum(),
+        )
+    }
+
+    #[cfg(not(all(unix, feature = "full-runtime")))]
+    fn resident_bytes(&self) -> Option<usize> {
+        None
+    }
+
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr.as_ptr()
+    }
+
+    /// Resets the initialized prefix to its demand-zero state without moving
+    /// the arena or writing across every used element.
+    ///
+    /// The request owner must first release any native ownership represented
+    /// by records in the prefix. These arenas contain only plain ABI records,
+    /// so returning their pages to the kernel is then equivalent to filling
+    /// the prefix with zeroes while also dropping its resident-memory cost.
+    #[allow(unsafe_code)]
+    pub fn discard_prefix(&mut self, initialized: usize) {
+        let initialized = initialized.min(self.capacity);
+        if initialized == 0 {
+            return;
+        }
+        let bytes = std::mem::size_of::<T>()
+            .checked_mul(initialized)
+            .expect("stable native arena initialized length overflow");
+
+        #[cfg(all(unix, feature = "full-runtime"))]
+        if self.mapped {
+            // SAFETY: the address is page-aligned because it came from mmap,
+            // and `bytes` is bounded by the live mapping. MADV_DONTNEED keeps
+            // the mapping and makes subsequent reads observe anonymous zero
+            // pages. The kernel may round the length up to the final page;
+            // bytes beyond `initialized` have never been published as live.
+            let result =
+                unsafe { libc::madvise(self.ptr.as_ptr().cast(), bytes, libc::MADV_DONTNEED) };
+            if result == 0 {
+                return;
+            }
+        }
+
+        // Allocator-backed platforms do not offer a portable page-discard
+        // primitive. Clear only the initialized prefix, never the arena's
+        // maximum capacity.
+        self[..initialized].fill(unsafe { std::mem::zeroed() });
+    }
+}
+
+impl<T: NativeZeroed> Default for StableNativeArena<T> {
+    fn default() -> Self {
+        Self {
+            ptr: NonNull::dangling(),
+            capacity: 0,
+            bytes: 0,
+            mapped: false,
+        }
+    }
+}
+
+impl<T: NativeZeroed> Deref for StableNativeArena<T> {
+    type Target = [T];
+
+    #[allow(unsafe_code)]
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the stable allocation contains `capacity` demand-zero
+        // NativeZeroed records and remains alive for this borrow.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.capacity) }
+    }
+}
+
+impl<T: NativeZeroed> std::ops::DerefMut for StableNativeArena<T> {
+    #[allow(unsafe_code)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the arena is exclusively borrowed and never reallocates.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.capacity) }
+    }
+}
+
+impl<T: NativeZeroed> Drop for StableNativeArena<T> {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        if self.capacity == 0 {
+            return;
+        }
+        #[cfg(all(unix, feature = "full-runtime"))]
+        if self.mapped {
+            // SAFETY: this exact range was returned by mmap in `new` and has
+            // not been unmapped or moved.
+            unsafe {
+                libc::munmap(self.ptr.as_ptr().cast(), self.bytes);
+            }
+            return;
+        }
+        let layout = Layout::from_size_align(self.bytes, std::mem::align_of::<T>())
+            .expect("stable native arena layout");
+        // SAFETY: the fallback allocation used this identical layout.
+        unsafe { dealloc(self.ptr.as_ptr().cast::<u8>(), layout) };
+    }
+}
+
+impl<T: NativeZeroed> std::fmt::Debug for StableNativeArena<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StableNativeArena")
+            .field("capacity", &self.capacity)
+            .field("reserved_bytes", &self.bytes)
+            .field("demand_backed", &self.mapped)
+            .finish()
+    }
+}
+
 /// ABI-stable single-threaded shared storage used by native-visible PHP data.
 /// The strong counter is the first field, so published native descriptors may
 /// retain a COW snapshot with one direct integer update instead of calling
@@ -541,6 +833,18 @@ impl std::fmt::Debug for CompactBytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_native_arena_usage_reports_reserved_high_water_and_residency() {
+        let mut arena = StableNativeArena::<u64>::new(4096);
+        arena[0] = 7;
+        arena[1023] = 9;
+        let usage = arena.usage(1024);
+        assert_eq!(usage.reserved_bytes, 4096 * std::mem::size_of::<u64>());
+        assert_eq!(usage.high_water_bytes, 1024 * std::mem::size_of::<u64>());
+        assert!(usage.resident_bytes <= usage.reserved_bytes);
+        assert!(usage.resident_bytes >= std::mem::size_of::<u64>());
+    }
 
     #[test]
     fn shared_storage_clones_separates_and_keeps_weak_lifetime_exact() {

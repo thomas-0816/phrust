@@ -107,7 +107,11 @@ pub fn to_string(value: &Value) -> Result<PhpString, String> {
     }
 }
 
-pub(crate) fn float_to_php_string(value: f64) -> String {
+/// Formats one IEEE-754 value using PHP's request-local scalar-string rules.
+///
+/// This is exposed separately from [`to_string`] so native callers that have
+/// already proven the scalar type do not need to construct a runtime `Value`.
+pub fn float_to_php_string(value: f64) -> String {
     if value.is_nan() {
         "NAN".to_owned()
     } else if value.is_infinite() {
@@ -478,6 +482,22 @@ fn compare_numbers(left: NumericValue, right: NumericValue) -> Result<Ordering, 
         return Err("cannot compare NaN numeric values".to_owned());
     };
     Ok(ordering)
+}
+
+/// Whether an ordinary numeric comparison has no IEEE ordering. PHP's
+/// relational operators return false for this case even though `<=>` maps it
+/// to 1. Keep that distinction outside the total `Ordering` compatibility
+/// representation used by `compare`.
+pub(crate) fn numeric_comparison_is_unordered(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Reference(left), right) => numeric_comparison_is_unordered(&left.get(), right),
+        (left, Value::Reference(right)) => numeric_comparison_is_unordered(left, &right.get()),
+        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
+            matches!(left, Value::Float(value) if value.to_f64().is_nan())
+                || matches!(right, Value::Float(value) if value.to_f64().is_nan())
+        }
+        _ => false,
+    }
 }
 
 fn compare_number_and_string(left: &Value, right: &Value) -> Result<Ordering, String> {

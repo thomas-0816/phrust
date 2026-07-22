@@ -33,6 +33,14 @@ const BORROW_3: &[HelperInputOwnership] = &[
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
 ];
+const BORROW_6: &[HelperInputOwnership] = &[
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+    HelperInputOwnership::Borrow,
+];
 const CONSUME_BORROW_2: &[HelperInputOwnership] = &[
     HelperInputOwnership::Consume,
     HelperInputOwnership::Borrow,
@@ -53,8 +61,32 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         may_alias_input: false,
     };
     match name {
+        name if name.starts_with("phrust_native_preg_")
+            || name.starts_with("phrust_native_json_")
+            || matches!(
+                name,
+                "phrust_native_defined"
+                    | "phrust_native_function_exists"
+                    | "phrust_native_class_exists"
+                    | "phrust_native_interface_exists"
+                    | "phrust_native_trait_exists"
+                    | "phrust_native_enum_exists"
+                    | "phrust_native_method_exists"
+                    | "phrust_native_property_exists"
+                    | "phrust_native_sprintf"
+                    | "phrust_native_printf"
+                    | "phrust_native_vsprintf"
+                    | "phrust_native_vprintf"
+                    | "phrust_native_basename"
+                    | "phrust_native_dirname"
+                    | "phrust_native_realpath"
+                    | "phrust_native_file_exists"
+            ) =>
+        {
+            Some(owned(BORROW_6, false))
+        }
         "phrust_jit_native_call_dispatch"
-        | "phrust_jit_native_builtin_dispatch"
+        | "phrust_baseline_native_builtin_dispatch"
         | "phrust_jit_native_semantic_dispatch"
         | "phrust_jit_native_dynamic_code" => Some(owned(NONE, false)),
         "phrust_jit_native_function_resolve"

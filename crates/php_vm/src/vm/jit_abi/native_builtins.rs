@@ -40,7 +40,7 @@ fn native_dereference_value(mut value: Value) -> Value {
 }
 
 fn native_reference_is_visibly_aliased(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     value: &Value,
 ) -> bool {
     let Value::Reference(reference) = value else {
@@ -56,7 +56,7 @@ fn native_reference_is_visibly_aliased(
 }
 
 fn prepare_native_sysvshm_serialization(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &mut [Value],
 ) -> Result<(), String> {
     let Some(Value::Object(object)) = arguments.get(2).cloned().map(native_dereference_value)
@@ -179,7 +179,7 @@ fn native_var_dump(value: &Value, indent: usize, output: &mut Vec<u8>) {
 }
 
 fn native_var_dump_with_context(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     value: &Value,
     indent: usize,
     output: &mut Vec<u8>,
@@ -370,14 +370,14 @@ fn native_var_dump_with_context(
 }
 
 pub(super) fn native_source_line(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     source: &php_ir::Instruction,
 ) -> usize {
     native_source_line_for_span(context, source.span)
 }
 
 pub(super) fn native_source_line_for_span(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     span: php_ir::IrSpan,
 ) -> usize {
     context
@@ -388,7 +388,7 @@ pub(super) fn native_source_line_for_span(
 }
 
 pub(super) fn emit_native_php_warning(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     errno: i64,
     message: &str,
     source: &php_ir::Instruction,
@@ -397,18 +397,28 @@ pub(super) fn emit_native_php_warning(
 }
 
 pub(super) fn emit_native_php_diagnostic(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     errno: i64,
     message: &str,
     source: &php_ir::Instruction,
     leading_newline: bool,
 ) -> Result<(), String> {
+    emit_native_php_diagnostic_at_span(context, errno, message, source.span, leading_newline)
+}
+
+pub(super) fn emit_native_php_diagnostic_at_span(
+    context: &mut NativeRequestColdState<'_>,
+    errno: i64,
+    message: &str,
+    span: php_ir::IrSpan,
+    leading_newline: bool,
+) -> Result<(), String> {
     let path = context
         .unit
         .files
-        .get(source.span.file.index())
+        .get(span.file.index())
         .map_or_else(|| "<unknown>".to_owned(), |file| file.path.clone());
-    let line = native_source_line(context, source);
+    let line = native_source_line_for_span(context, span);
     context.record_last_error(errno, message, &path, line);
     if let Some(handler) = context
         .error_handlers
@@ -422,7 +432,16 @@ pub(super) fn emit_native_php_diagnostic(
             Value::String(PhpString::from_bytes(path.as_bytes().to_vec())),
             Value::Int(line as i64),
         ];
-        let _ = invoke_native_callable_value(context, handler.callback, &arguments, source, None)?;
+        // Dynamic user error handlers still consume the baseline call-source
+        // carrier. This object is created only after a PHP-visible diagnostic
+        // selected such a handler; the successful exact-builtin path never
+        // allocates or reconstructs an IR instruction.
+        let source = php_ir::Instruction {
+            id: php_ir::InstrId::new(0),
+            span,
+            kind: php_ir::InstructionKind::Nop,
+        };
+        let _ = invoke_native_callable_value(context, handler.callback, &arguments, &source, None)?;
         return Ok(());
     }
     if context.error_reporting & errno == 0 {
@@ -493,7 +512,7 @@ fn dereferenced_native_diagnostic_value(value: &Value) -> std::borrow::Cow<'_, V
 }
 
 pub(super) fn emit_native_dimension_conversion_diagnostic(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     target: &Value,
     key: &Value,
     source: Option<&php_ir::Instruction>,
@@ -525,7 +544,7 @@ pub(super) fn emit_native_dimension_conversion_diagnostic(
 }
 
 pub(super) fn emit_native_array_dimension_conversion_diagnostic(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     key: &Value,
     source: Option<&php_ir::Instruction>,
     operation: NativeDimensionOperation,
@@ -539,7 +558,7 @@ pub(super) fn emit_native_array_dimension_conversion_diagnostic(
 }
 
 fn emit_native_dimension_conversion_diagnostic_for_target(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     target_is_array: bool,
     target_is_string: bool,
     target_is_nullish: bool,
@@ -608,7 +627,7 @@ fn emit_native_dimension_conversion_diagnostic_for_target(
 }
 
 pub(super) fn emit_native_deprecated_call(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
     source: &php_ir::Instruction,
 ) {
@@ -693,7 +712,7 @@ fn native_array_key_number(key: &php_runtime::api::ArrayKey) -> f64 {
 }
 
 fn execute_native_key_sort(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     reverse: bool,
 ) -> Result<i64, String> {
@@ -751,7 +770,7 @@ fn execute_native_key_sort(
 }
 
 fn execute_native_callback_sort(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
     compare_keys: bool,
@@ -828,7 +847,7 @@ fn native_array_key_value(key: &php_runtime::api::ArrayKey) -> Value {
 }
 
 fn execute_native_array_map(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
 ) -> Result<i64, String> {
@@ -889,7 +908,7 @@ fn execute_native_array_map(
 }
 
 fn execute_native_array_filter(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
 ) -> Result<i64, String> {
@@ -949,7 +968,7 @@ fn execute_native_array_filter(
 }
 
 fn native_array_argument(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     encoded: i64,
     function: &str,
 ) -> Result<php_runtime::api::PhpArray, String> {
@@ -967,7 +986,7 @@ fn native_array_argument(
 }
 
 fn execute_native_array_reduce(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
 ) -> Result<i64, String> {
@@ -998,7 +1017,7 @@ fn execute_native_array_reduce(
 }
 
 fn execute_native_array_walk(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
 ) -> Result<i64, String> {
@@ -1045,7 +1064,7 @@ fn execute_native_array_walk(
 }
 
 fn walk_native_array_recursive(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     array: &mut php_runtime::api::PhpArray,
     callback: &Value,
     userdata: Option<&Value>,
@@ -1099,7 +1118,7 @@ fn walk_native_array_recursive(
 }
 
 fn execute_native_array_walk_recursive(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
 ) -> Result<i64, String> {
@@ -1131,7 +1150,7 @@ fn execute_native_array_walk_recursive(
 }
 
 fn execute_native_array_predicate(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
     source: &php_ir::Instruction,
@@ -1172,7 +1191,7 @@ fn execute_native_array_predicate(
 }
 
 fn execute_native_iterator_to_array(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
 ) -> Result<i64, String> {
     if !(1..=2).contains(&arguments.len()) {
@@ -1223,7 +1242,7 @@ fn execute_native_iterator_to_array(
         entries
     } else {
         let class_name = iterator.class_name();
-        let has_method = |context: &NativeExecutionContext<'_>, method: &str| {
+        let has_method = |context: &NativeRequestColdState<'_>, method: &str| {
             native_method_in_hierarchy(context, &class_name, method).is_some()
                 || native_external_method(context, &class_name, method).is_some()
         };
@@ -1233,7 +1252,7 @@ fn execute_native_iterator_to_array(
         {
             return Err("iterator_to_array() requires a supported Traversable object".to_owned());
         }
-        let invoke = |context: &mut NativeExecutionContext<'_>, method: &str| {
+        let invoke = |context: &mut NativeRequestColdState<'_>, method: &str| {
             let encoded = invoke_native_bound_method(
                 context,
                 &php_runtime::api::CallableMethodTarget::Object(iterator.clone()),
@@ -1334,7 +1353,7 @@ fn native_natural_compare(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
 }
 
 fn execute_native_value_sort(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
 ) -> Result<i64, String> {
@@ -1420,8 +1439,8 @@ fn execute_native_value_sort(
     context.encode(Value::Bool(true))
 }
 
-fn native_builtin_class(
-    context: &NativeExecutionContext<'_>,
+pub(super) fn native_builtin_class(
+    context: &NativeRequestColdState<'_>,
     name: &str,
 ) -> Option<crate::compiled_unit::CompiledClass> {
     let normalized = normalize_class_name(name);
@@ -1429,8 +1448,8 @@ fn native_builtin_class(
         .or_else(|| native_external_class_handle(context, &normalized).map(|(_, class)| class))
 }
 
-fn native_builtin_class_lineage(
-    context: &NativeExecutionContext<'_>,
+pub(super) fn native_builtin_class_lineage(
+    context: &NativeRequestColdState<'_>,
     name: &str,
 ) -> Vec<crate::compiled_unit::CompiledClass> {
     let mut lineage = Vec::new();
@@ -1448,7 +1467,7 @@ fn native_builtin_class_lineage(
 }
 
 fn native_builtin_caller_class(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     caller_locals: Option<(u32, &[php_jit::JitAbiSlot])>,
 ) -> Option<String> {
     let function = caller_locals?.0;
@@ -1473,7 +1492,7 @@ fn native_property_visible_from(
 }
 
 fn native_object_vars(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     caller_class: Option<&str>,
     mangled: bool,
@@ -1521,7 +1540,7 @@ fn native_object_vars(
 }
 
 fn execute_native_preg_replace_callback(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: &php_ir::Instruction,
 ) -> Result<i64, String> {
@@ -1569,7 +1588,7 @@ fn execute_native_preg_replace_callback(
             return context.encode(Value::Null);
         }
     };
-    let replace = |context: &mut NativeExecutionContext<'_>,
+    let replace = |context: &mut NativeRequestColdState<'_>,
                    subject: &[u8],
                    count: &mut i64|
      -> Result<Vec<u8>, String> {
@@ -1656,7 +1675,7 @@ fn execute_native_preg_replace_callback(
 }
 
 fn execute_native_preg_replace_callback_array(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
 ) -> Result<Option<i64>, String> {
     if !(2..=5).contains(&arguments.len()) {
@@ -1689,7 +1708,7 @@ fn native_ir_function_has_no_by_ref_parameters(function: &php_ir::IrFunction) ->
 }
 
 fn native_named_callable_has_no_by_ref_parameters(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     name: &str,
 ) -> Option<bool> {
     if let Some((class, method)) = name.split_once("::") {
@@ -1719,7 +1738,7 @@ fn native_named_callable_has_no_by_ref_parameters(
 }
 
 fn native_method_has_no_by_ref_parameters(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     class: &str,
     method: &str,
 ) -> Option<bool> {
@@ -1744,7 +1763,7 @@ fn native_method_has_no_by_ref_parameters(
 }
 
 fn native_callable_has_no_by_ref_parameters(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     callable: &Value,
 ) -> Option<bool> {
     match callable {
@@ -1820,7 +1839,7 @@ pub(super) fn normalized_native_builtin_name(name: &str) -> std::borrow::Cow<'_,
 }
 
 fn native_builtin_type_predicate(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     encoded: i64,
     predicate: fn(&Value) -> bool,
 ) -> Result<bool, String> {
@@ -1838,7 +1857,7 @@ fn native_builtin_type_predicate(
 }
 
 fn execute_native_type_predicate(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
 ) -> Result<Option<i64>, String> {
@@ -1862,7 +1881,7 @@ fn execute_native_type_predicate(
 }
 
 pub(super) fn execute_native_type_predicate_operation(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     value: i64,
     operation: php_jit::JitNativeTypePredicate,
 ) -> Result<i64, String> {
@@ -1899,7 +1918,7 @@ pub(super) fn execute_native_type_predicate_operation(
 }
 
 fn execute_native_read_builtin_fast(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
     source: &php_ir::Instruction,
@@ -1975,8 +1994,13 @@ fn execute_native_read_builtin_fast(
     }
 }
 
-pub(super) fn execute_prepared_runtime_builtin(
-    context: &mut NativeExecutionContext<'_>,
+/// Baseline-native compatibility executor for runtime-backed builtins.
+///
+/// Optimizing artifacts never import this path. Fixed admitted builtins use
+/// their exact typed ABI; uncommon/dynamic call shapes enter this executor
+/// only after the caller has selected its baseline continuation.
+pub(super) fn execute_baseline_prepared_runtime_builtin(
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
     source: php_ir::IrSpan,
     prepared: crate::compiled_unit::PreparedNativeBuiltin,
@@ -2141,8 +2165,10 @@ pub(super) fn execute_prepared_runtime_builtin(
     }
 }
 
-pub(super) fn execute_native_builtin(
-    context: &mut NativeExecutionContext<'_>,
+/// Baseline-native compatibility executor for builtins without an admitted
+/// exact handler. This must not be imported by optimizing artifacts.
+pub(super) fn execute_baseline_native_builtin(
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
     source: &php_ir::Instruction,
@@ -2155,7 +2181,12 @@ pub(super) fn execute_native_builtin(
             php_runtime::api::BuiltinExecutionKind::Runtime
         )
     {
-        return execute_prepared_runtime_builtin(context, arguments, source.span, prepared);
+        return execute_baseline_prepared_runtime_builtin(
+            context,
+            arguments,
+            source.span,
+            prepared,
+        );
     }
     // A prepared direct callsite owns a canonical static registry name. The
     // generic path still normalizes dynamic names, while warm direct calls do
@@ -2278,18 +2309,15 @@ pub(super) fn execute_native_builtin(
         "uasort" => execute_native_callback_sort(context, arguments, source, false, true),
         "uksort" => execute_native_callback_sort(context, arguments, source, true, true),
         "func_get_args" => {
-            let values = context
+            let arguments = context
                 .call_frames
                 .last()
-                .map(|frame| {
-                    frame
-                        .arguments
-                        .iter()
-                        .map(|argument| context.decode(*argument))
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
+                .map(|frame| frame.arguments.clone())
                 .unwrap_or_default();
+            let values = arguments
+                .iter()
+                .map(|argument| context.decode(*argument))
+                .collect::<Result<Vec<_>, _>>()?;
             context.encode(Value::Array(php_runtime::api::PhpArray::from_packed(
                 values,
             )))
@@ -2298,18 +2326,20 @@ pub(super) fn execute_native_builtin(
             let (function_id, slots) = caller_locals.ok_or_else(|| {
                 "compact() requires the active native caller symbol table".to_owned()
             })?;
-            let function = context
+            let locals = context
                 .unit
                 .functions
                 .get(function_id as usize)
-                .ok_or_else(|| "compact() caller function metadata is missing".to_owned())?;
+                .ok_or_else(|| "compact() caller function metadata is missing".to_owned())?
+                .locals
+                .clone();
             let mut names = Vec::new();
             for argument in arguments {
                 collect_native_compact_names(context.decode(*argument)?, &mut names)?;
             }
             let mut result = php_runtime::api::PhpArray::new();
             for name in names {
-                let Some(index) = function.locals.iter().position(|local| local == &name) else {
+                let Some(index) = locals.iter().position(|local| local == &name) else {
                     continue;
                 };
                 let Some(slot) = slots.get(index) else {
@@ -2378,7 +2408,7 @@ pub(super) fn execute_native_builtin(
                 ));
                 return context.encode(Value::Bool(false));
             }
-            context.dynamic_constants.insert(name, value);
+            context.insert_dynamic_constant(name, value);
             context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
             context.encode(Value::Bool(true))
         }
@@ -3526,12 +3556,15 @@ pub(super) fn execute_native_builtin(
                         let mut encoded_value = entry.value;
                         if let Value::String(name) = &callback {
                             let name = name.to_string_lossy();
-                            if let Some(parameter) = context
+                            let by_ref_parameter = context
                                 .function_id(&name)
                                 .and_then(|function| context.unit.functions.get(function.index()))
                                 .and_then(|function| function.params.get(index))
-                                && parameter.by_ref
-                                && !matches!(context.decode(encoded_value)?, Value::Reference(_))
+                                .filter(|parameter| parameter.by_ref)
+                                .map(|parameter| parameter.name.clone());
+                            let decoded = context.decode(encoded_value)?;
+                            if let Some(parameter_name) = by_ref_parameter
+                                && !matches!(&decoded, Value::Reference(_))
                             {
                                 let path = context
                                     .unit
@@ -3542,12 +3575,10 @@ pub(super) fn execute_native_builtin(
                                 context.output.write_bytes(format!(
                                     "\nWarning: {name}(): Argument #{} (${}) must be passed by reference, value given in {path} on line {line}\n",
                                     index + 1,
-                                    parameter.name,
+                                    parameter_name,
                                 ));
                                 encoded_value = context.encode(Value::Reference(
-                                    php_runtime::api::ReferenceCell::new(
-                                        context.decode(encoded_value)?,
-                                    ),
+                                    php_runtime::api::ReferenceCell::new(decoded),
                                 ))?;
                             }
                         }
@@ -3752,6 +3783,10 @@ pub(super) fn execute_native_builtin(
                 .iter()
                 .rev()
                 .take(if limit == 0 { usize::MAX } else { limit })
+                .cloned()
+                .collect::<Vec<_>>();
+            let frames = frames
+                .into_iter()
                 .map(|frame| -> Result<Value, String> {
                     let metadata = frame.metadata.as_ref();
                     let mut value = php_runtime::api::PhpArray::new();
@@ -4433,7 +4468,7 @@ fn validate_native_builtin_arity_with_metadata(
     Ok(())
 }
 
-fn native_php_function_exists(name: &str) -> bool {
+pub(super) fn native_php_function_exists(name: &str) -> bool {
     // `print` is a language construct, while the mhash compatibility symbols
     // are conditional on a libmhash-enabled PHP build. Both have internal
     // implementation entries but are absent from the pinned PHP 8.5.7 target
@@ -4453,7 +4488,7 @@ fn native_php_function_exists(name: &str) -> bool {
         || php_extensions::BuiltinRegistry::new().contains(name)
 }
 
-fn native_internal_class_constant_exists(name: &str) -> bool {
+pub(super) fn native_internal_class_constant_exists(name: &str) -> bool {
     let Some((class_name, constant_name)) = name.rsplit_once("::") else {
         return false;
     };
@@ -4478,7 +4513,7 @@ pub(super) fn native_builtin_is_unavailable_target_function(name: &str) -> bool 
 }
 
 fn validate_native_builtin_types(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     arguments: &[i64],
     source: php_ir::IrSpan,
@@ -4513,7 +4548,7 @@ fn validate_native_builtin_types(
 }
 
 fn validate_native_builtin_types_with_info(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     info: &php_std::arginfo::FunctionArgInfo,
     arguments: &[i64],
     source: php_ir::IrSpan,

@@ -3,6 +3,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 help:
     @printf '%s\n' \
       'Available commands:' \
+      '  ACTIVE NATIVE CUTOVER: defer ratchets, broad gates, benchmarks, profiles, and reports until the integrated post-cutover checkpoint.' \
+      '  Do not bypass the cutover guard by invoking its scripts directly or through nested just targets.' \
       '  just help                 Show this help' \
       '  just check                Format, lint, and run workspace tests' \
       '  just verify               Run the full local verification gate' \
@@ -92,6 +94,7 @@ help:
       '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
       '  just wordpress-root-tranche-gate Run strict c1-p50 performance acceptance gate' \
       '  just trusted-runtime-hotpath-gate Check trusted ABI/property ratchets' \
+      '  just native-hotpath-breakthrough-gate CLEAN DIAGNOSTIC [BASELINE] Run final cutover acceptance only' \
       '  just wordpress-root-benchmark-feedback-ab Run persistent-feedback A/B' \
       '  just cranelift-only-no-alternate-emitter Prove the retired native emitter is absent' \
       '  just cranelift-only-precondition Rebuild the pinned cutover foundation report' \
@@ -198,7 +201,7 @@ pre-commit:
     @just fmt
     @just source-integrity
 
-pre-push:
+pre-push: _native-cutover-deferred-warning
     @just pre-commit
     PHRUST_DIAGNOSTICS_AUDIT_QUIET=1 scripts/diagnostics/audit.py
     @just known-gaps
@@ -208,21 +211,21 @@ pre-push:
 fmt:
     cargo fmt --all --check
 
-lint:
+lint: _native-cutover-deferred-warning
     cargo clippy --workspace --all-targets -- -D warnings
 
-runtime-hardening-lints:
+runtime-hardening-lints: _native-cutover-deferred-warning
     # unsafe enforcement lives in the crate roots (#![deny(unsafe_code)]);
     # php_runtime carves out only the audited runtime_memory module.
     cargo clippy -p php_runtime -p php_vm --all-targets -- -D warnings
 
-test:
+test: _native-cutover-deferred-warning
     RUST_MIN_STACK="${PHRUST_RUST_MIN_STACK:-8388608}" cargo test --workspace
 
-diagnostics-audit:
+diagnostics-audit: _native-cutover-deferred-warning
     scripts/diagnostics/audit.py
 
-server-smoke:
+server-smoke: _native-cutover-deferred-warning
     scripts/server/smoke.sh
 
 php *ARGS:
@@ -237,23 +240,23 @@ serve-advanced DOCROOT="public" LISTEN="127.0.0.1:8080":
 install-user-bin:
     scripts/install-user-bin.sh
 
-cli-interface-smoke:
+cli-interface-smoke: _native-cutover-deferred-warning
     scripts/cli/interface_smoke.sh
 
-cli-server-smoke:
+cli-server-smoke: _native-cutover-deferred-warning
     scripts/cli/builtin_server_smoke.sh
 
-verify-user-interfaces:
+verify-user-interfaces: _native-cutover-deferred-warning
     @just cli-interface-smoke
     @just cli-server-smoke
 
-diagnostics-smoke:
+diagnostics-smoke: _native-cutover-deferred-warning
     scripts/diagnostics/smoke.sh diagnostics
 
-debug-smoke:
+debug-smoke: _native-cutover-deferred-warning
     scripts/diagnostics/smoke.sh debug
 
-verify-server:
+verify-server: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     # Combined runs (ci-local, verify) execute the workspace test suite,
@@ -265,56 +268,56 @@ verify-server:
     fi
     just server-smoke
 
-server-compat-smoke SECTION="all":
+server-compat-smoke SECTION="all": _native-cutover-deferred-warning
     scripts/server/compat_smoke.sh {{SECTION}}
 
-server-tls-smoke:
+server-tls-smoke: _native-cutover-deferred-warning
     scripts/server/tls_smoke.sh
 
-server-benchmark-smoke:
+server-benchmark-smoke: _native-cutover-deferred-warning
     scripts/server/benchmark_smoke.sh
 
-test-lexer:
+test-lexer: _native-cutover-deferred-warning
     cargo test -p php_lexer
 
-check:
+check: _native-cutover-deferred-warning
     @just source-integrity
     @just fmt
     @just lint
     @just test
 
-source-integrity:
+source-integrity: _native-cutover-deferred-warning
     @just architecture-guardrails
     scripts/verify/panic_unwrap_policy.py
     scripts/verify/docs_strategy.py
 
-architecture-guardrails:
+architecture-guardrails: _native-cutover-deferred-warning
     scripts/verify/architecture_guardrails.py --self-test
     scripts/verify/architecture_guardrails.py
     scripts/verify/dependency_boundaries.py
     scripts/verify/validation_strategy.py --self-test
     scripts/verify/validation_strategy.py
 
-architecture-inventory:
+architecture-inventory: _native-cutover-deferred-warning
     scripts/verify/architecture_inventory.py --check --verify-determinism
 
-architecture-performance-baseline *args:
+architecture-performance-baseline *args: _native-cutover-deferred-warning
     scripts/performance/architecture_baseline.py {{args}}
 
-dependency-boundaries:
+dependency-boundaries: _native-cutover-deferred-warning
     scripts/verify/dependency_boundaries.py
 
-runtime-core-boundaries:
+runtime-core-boundaries: _native-cutover-deferred-warning
     scripts/verify/runtime_core_boundaries.py
     cargo check -p php_runtime --no-default-features
 
-request-state-boundaries:
+request-state-boundaries: _native-cutover-deferred-warning
     scripts/verify/request_state_boundaries.py
 
-panic-unwrap-policy:
+panic-unwrap-policy: _native-cutover-deferred-warning
     scripts/verify/panic_unwrap_policy.py
 
-quality:
+quality: _native-cutover-deferred-warning
     @just quality-fast
     @just quality-coverage
     @just quality-mutants
@@ -322,7 +325,7 @@ quality:
     @just quality-api
     @just quality-lints
 
-quality-fast:
+quality-fast: _native-cutover-deferred-warning
     @just source-integrity
     @just diagnostics-audit
     @just known-gaps
@@ -331,28 +334,28 @@ quality-fast:
     cargo check --workspace --all-targets --all-features
     @just quality-docs
 
-quality-deps:
+quality-deps: _native-cutover-deferred-warning
     @if ! command -v cargo-deny >/dev/null 2>&1; then \
         printf '%s\n' '[skip] cargo-deny unavailable; enter nix develop or install cargo-deny.'; \
         exit 0; \
     fi; \
     cargo deny check advisories bans licenses sources
 
-quality-deps-quiet:
+quality-deps-quiet: _native-cutover-deferred-warning
     @if ! command -v cargo-deny >/dev/null 2>&1; then \
         printf '%s\n' '[skip] cargo-deny unavailable; enter nix develop or install cargo-deny.'; \
         exit 0; \
     fi; \
     cargo deny check --hide-inclusion-graph -A duplicate advisories bans licenses sources
 
-quality-unused-deps:
+quality-unused-deps: _native-cutover-deferred-warning
     @if ! command -v cargo-machete >/dev/null 2>&1; then \
       printf '%s\n' '[skip] cargo-machete unavailable; enter nix develop or install cargo-machete.'; \
       exit 0; \
     fi; \
     cargo machete
 
-quality-coverage:
+quality-coverage: _native-cutover-deferred-warning
     @if [[ "${PHRUST_RUN_COVERAGE:-0}" != "1" ]]; then \
       printf '%s\n' '[skip] set PHRUST_RUN_COVERAGE=1 to run cargo-llvm-cov coverage.'; \
       exit 0; \
@@ -367,14 +370,14 @@ quality-coverage:
       cargo llvm-cov --workspace --summary-only; \
     fi
 
-sonar-coverage:
+sonar-coverage: _native-cutover-deferred-warning
     mkdir -p target/sonar
     cargo llvm-cov --workspace --lcov --output-path target/sonar/lcov.info
 
-sonar-scan *ARGS:
+sonar-scan *ARGS: _native-cutover-deferred-warning
     scripts/sonar/scan.sh {{ARGS}}
 
-quality-mutants:
+quality-mutants: _native-cutover-deferred-warning
     @if [[ "${PHRUST_RUN_MUTANTS:-0}" != "1" ]]; then \
       printf '%s\n' '[skip] set PHRUST_RUN_MUTANTS=1 to run cargo-mutants mutation testing.'; \
       exit 0; \
@@ -388,7 +391,7 @@ quality-mutants:
       exit 0; \
     fi
 
-quality-fuzz:
+quality-fuzz: _native-cutover-deferred-warning
     @just fuzz-lexer-smoke
     @just fuzz-parser-smoke
     @just runtime-fuzz-smoke
@@ -399,11 +402,11 @@ quality-fuzz:
       printf '%s\n' '[skip] cargo-fuzz unavailable; deterministic fuzz/property smokes ran, but coverage-guided cargo-fuzz is not installed.'; \
     fi
 
-quality-docs:
+quality-docs: _native-cutover-deferred-warning
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --lib --no-deps
     cargo test --doc --workspace
 
-quality-api:
+quality-api: _native-cutover-deferred-warning
     @baseline="${PHRUST_SEMVER_BASELINE:-HEAD}"; \
     if command -v cargo-semver-checks >/dev/null 2>&1 || cargo semver-checks --version >/dev/null 2>&1; then \
       cargo semver-checks check-release --workspace --baseline-rev "$baseline"; \
@@ -412,7 +415,7 @@ quality-api:
       exit 0; \
     fi
 
-quality-lints:
+quality-lints: _native-cutover-deferred-warning
     cargo clippy --workspace --all-targets -- \
       -W clippy::pedantic \
       -W clippy::nursery \
@@ -422,7 +425,7 @@ quality-lints:
       -A clippy::must_use_candidate \
       -A clippy::too_many_lines
 
-verify:
+verify: _native-cutover-deferred-warning
     @just check
     @just verify-frontend
     @just verify-runtime
@@ -432,29 +435,29 @@ verify:
     @just verify-performance-extended
     @PHRUST_COMBINED_RUN=1 just verify-phpt
 
-ci-rust:
+ci-rust: _native-cutover-deferred-warning
     @just fmt
     @just lint
     @just test
 
-ci-domain-gates:
+ci-domain-gates: _native-cutover-deferred-warning
     @just verify-frontend
     @just verify-runtime
     @just verify-stdlib
     @just verify-server
     @just verify-performance
 
-ci-phpt-smoke:
+ci-phpt-smoke: _native-cutover-deferred-warning
     scripts/phpt/ci_smoke.sh
 
-ci-local:
+ci-local: _native-cutover-deferred-warning
     @just quality-fast
     @just ci-rust
     @PHRUST_COMBINED_RUN=1 just ci-domain-gates
     @just cranelift-only-ratchet
     @just ci-phpt-smoke
 
-verify-frontend:
+verify-frontend: _native-cutover-deferred-warning
     @just lexer-fixtures
     @just parser-fixtures
     @just cst-roundtrip
@@ -462,7 +465,7 @@ verify-frontend:
     @just semantic-diff
     @just frontend-snapshots
 
-verify-runtime:
+verify-runtime: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     # Mirror CI: the runtime gate diffs against the pinned PHP 8.5.7 oracle.
@@ -494,7 +497,7 @@ verify-runtime:
     # workspace job already clippy these crates.
     just runtime-semantics-diff
 
-verify-stdlib:
+verify-stdlib: _native-cutover-deferred-warning
     @just stdlib-docs
     @just stdlib-coverage
     @just verify-generated-extension-surfaces
@@ -507,16 +510,16 @@ verify-stdlib:
 # Correctness-focused performance gates. Sub-gates share one engine build
 # through the perf-build dependency (deduplicated within this invocation).
 # Release-profile and report gates live in verify-performance-extended.
-verify-performance: native-fast-baseline-ratchet native-linkage-ratchet wordpress-benchmark-self-test fast-baseline-acceptance-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet native-hotpath-ratchet trusted-runtime-hotpath-gate reference-scalar-view reference-dimension-operand local-array-write-gate templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
+verify-performance: _native-cutover-deferred-warning native-fast-baseline-ratchet native-linkage-ratchet wordpress-benchmark-self-test fast-baseline-acceptance-self-test performance-tests performance-regression benchmark-smoke framework-smoke default-profile-smoke app-flow-smoke baseline-native-compile-smoke function-on-demand-gate cache-roundtrip optimizer-diff native-ssa-ratchet native-hotpath-ratchet trusted-runtime-hotpath-gate reference-scalar-view reference-dimension-operand local-array-write-gate templates-smoke inline-cache-model-tests native-smoke object-release-root-scan safety-audit-smoke
     @printf '%s\n' '[pass] performance verification complete'
 
 # Heavy release-profile and report gates, split out of verify-performance so
 # the serial local gate fits pre-push budgets; CI runs both gates in its
 # parallel matrix. Depends on benchmark-smoke for the hotpath report inputs.
-verify-performance-extended: benchmark-smoke release-benchmark-smoke callgrind-smoke hotpath-inventory perf-report
+verify-performance-extended: _native-cutover-deferred-warning benchmark-smoke release-benchmark-smoke callgrind-smoke hotpath-inventory perf-report
     @printf '%s\n' '[pass] extended performance verification complete'
 
-verify-phpt:
+verify-phpt: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     just known-gaps
@@ -530,16 +533,16 @@ verify-phpt:
       cargo test -p php_phpt_tools
     fi
 
-verify-foundation:
+verify-foundation: _native-cutover-deferred-warning
     scripts/verify/foundation.sh
 
-verify-lexer:
+verify-lexer: _native-cutover-deferred-warning
     scripts/verify/lexer.sh
 
 bootstrap-ref:
     scripts/bootstrap-php-reference.sh
 
-verify-ref:
+verify-ref: _native-cutover-deferred-warning
     scripts/verify-php-reference.sh
 
 dump-reference-tokens:
@@ -566,50 +569,50 @@ lexer-ref file:
 lex file:
     cargo run -p php_lexer_cli -- --file "{{file}}" --pretty
 
-lexer-fixtures:
+lexer-fixtures: _native-cutover-deferred-warning
     scripts/compare-lexer-fixtures.py
 
-lexer-diff:
+lexer-diff: _native-cutover-deferred-warning
     scripts/compare-lexer-fixtures.py
 
-lexer-diff-report:
+lexer-diff-report: _native-cutover-deferred-warning
     scripts/compare-lexer-fixtures.py --all-diffs --json-report target/lexer-diff-report.json
 
-fuzz-lexer-smoke:
+fuzz-lexer-smoke: _native-cutover-deferred-warning
     cargo test -p php_lexer lexer_invariants
 
-bench-lexer:
+bench-lexer: _native-cutover-deferred-warning
     cargo bench -p php_lexer --bench lexer_throughput
 
-lexer-corpus-smoke:
+lexer-corpus-smoke: _native-cutover-deferred-warning
     scripts/lexer-corpus-smoke.py
 
-parser-lint-oracle:
+parser-lint-oracle: _native-cutover-deferred-warning
     scripts/run_parser_fixtures.py
 
-parser-fixtures:
+parser-fixtures: _native-cutover-deferred-warning
     scripts/run_parser_fixtures.py
 
-parser-diff:
+parser-diff: _native-cutover-deferred-warning
     scripts/compare_parser_acceptance.py --strict
 
-cst-roundtrip:
+cst-roundtrip: _native-cutover-deferred-warning
     cargo test -p php_syntax --test fixture_roundtrip
 
 extract-parser-corpus:
     scripts/extract_parser_corpus.py
 
-parser-corpus-smoke:
+parser-corpus-smoke: _native-cutover-deferred-warning
     scripts/run_parser_corpus_smoke.py
 
-fuzz-parser-smoke:
+fuzz-parser-smoke: _native-cutover-deferred-warning
     cargo test -p php_syntax --test parser_properties
     PARSER_FUZZ_CASES=1024 cargo test -p php_syntax --test parser_properties -- --ignored
 
-bench-parser:
+bench-parser: _native-cutover-deferred-warning
     cargo test -p php_syntax --test perf_smoke -- --ignored --nocapture
 
-parser-snapshots:
+parser-snapshots: _native-cutover-deferred-warning
     UPDATE_PARSER_SNAPSHOTS=1 cargo test -p php_syntax --test parser_snapshots
     UPDATE_PARSER_SNAPSHOTS=1 cargo test -p php_syntax --test diagnostic_snapshots
 
@@ -644,13 +647,13 @@ phpt-source-index *args:
     ${CARGO_TARGET_DIR:-target}/debug/php-phpt-tools source-index {{args}}
     ${CARGO_TARGET_DIR:-target}/debug/php-phpt-tools symbol-index {{args}}
 
-phpt-runner-smoke *args:
+phpt-runner-smoke *args: _native-cutover-deferred-warning
     scripts/phpt/runner_smoke.sh
 
-phpt-reference-smoke *args:
+phpt-reference-smoke *args: _native-cutover-deferred-warning
     scripts/phpt/binary_smoke.sh reference
 
-phpt-target-smoke *args:
+phpt-target-smoke *args: _native-cutover-deferred-warning
     scripts/phpt/binary_smoke.sh target
 
 phpt-build:
@@ -667,72 +670,72 @@ phpt-dev-shell:
       nix develop -c bash -lc 'just phpt-dev-build; exec "${SHELL:-bash}"'; \
     fi
 
-phpt-generate-module *args:
+phpt-generate-module *args: _native-cutover-deferred-warning
     scripts/phpt/generate_module.sh {{args}}
 
-phpt-module *args:
+phpt-module *args: _native-cutover-deferred-warning
     scripts/phpt/module_run.sh {{args}}
 
-phpt-dev-module *args:
+phpt-dev-module *args: _native-cutover-deferred-warning
     @PHPT_SKIP_BUILD=1 PHPT_REUSE_LAST="${PHPT_REUSE_LAST:-1}" PHPT_DEV_REUSE_TARGET_PASS="${PHPT_DEV_REUSE_TARGET_PASS:-1}" PHPT_TIMEOUT_SECONDS="${PHPT_TIMEOUT_SECONDS:-10}" PHPT_WORK_DIR="${PHPT_WORK_DIR:-/private/tmp/phrust-phpt-work}" scripts/phpt/module_run.sh {{args}}
 
-phpt-module-target *args:
+phpt-module-target *args: _native-cutover-deferred-warning
     scripts/phpt/module_target.sh {{args}}
 
-phpt-fast *args:
+phpt-fast *args: _native-cutover-deferred-warning
     @PHPT_REQUIRE_FOCUS=1 PHPT_SKIP_BUILD=1 PHPT_REUSE_LAST="${PHPT_REUSE_LAST:-1}" PHPT_TIMEOUT_SECONDS="${PHPT_TIMEOUT_SECONDS:-3}" PHPT_WORK_DIR="${PHPT_WORK_DIR:-/private/tmp/phrust-phpt-work}" scripts/phpt/module_target.sh {{args}}
 
-phpt-dev-fast *args:
+phpt-dev-fast *args: _native-cutover-deferred-warning
     @PHPT_REQUIRE_FOCUS=1 PHPT_SKIP_BUILD=1 PHPT_DEV_REUSE_PASS=1 PHPT_REUSE_LAST="${PHPT_REUSE_LAST:-1}" PHPT_TIMEOUT_SECONDS="${PHPT_TIMEOUT_SECONDS:-3}" PHPT_WORK_DIR="${PHPT_WORK_DIR:-/private/tmp/phrust-phpt-work}" scripts/phpt/module_target.sh {{args}}
 
-phpt-rerun-failures *args:
+phpt-rerun-failures *args: _native-cutover-deferred-warning
     @PHPT_SKIP_BUILD=1 PHPT_TIMEOUT_SECONDS="${PHPT_TIMEOUT_SECONDS:-3}" PHPT_WORK_DIR="${PHPT_WORK_DIR:-/private/tmp/phrust-phpt-work}" scripts/phpt/rerun_failures.sh {{args}}
 
-phpt-full-regression *args:
+phpt-full-regression *args: _native-cutover-deferred-warning
     scripts/phpt/full_regression.sh {{args}}
 
-phpt-full-fast *args:
+phpt-full-fast *args: _native-cutover-deferred-warning
     @PHPT_RUN_FULL=1 PHPT_SKIP_BUILD=1 PHPT_DEV_REUSE_PASS=1 PHPT_TIMEOUT_SECONDS="${PHPT_TIMEOUT_SECONDS:-30}" PHPT_WORK_DIR="${PHPT_WORK_DIR:-/private/tmp/phrust-phpt-work}" scripts/phpt/full_regression.sh {{args}}
 
-phpt-triage *args:
+phpt-triage *args: _native-cutover-deferred-warning
     cargo build -q -p php_phpt_tools --bin php-phpt-tools
     ${CARGO_TARGET_DIR:-target}/debug/php-phpt-tools triage {{args}}
 
-phpt-verify-baseline:
+phpt-verify-baseline: _native-cutover-deferred-warning
     cargo build -q -p php_phpt_tools --bin php-phpt-tools
     ${CARGO_TARGET_DIR:-target}/debug/php-phpt-tools verify-baseline
 
-phpt-verify-source-integrity:
+phpt-verify-source-integrity: _native-cutover-deferred-warning
     scripts/phpt/verify_source_integrity.sh
 
 phpt-source-lookup *args:
     cargo build -q -p php_phpt_tools --bin php-phpt-tools
     ${CARGO_TARGET_DIR:-target}/debug/php-phpt-tools lookup-symbol {{args}}
 
-phpt-official-smoke *args:
+phpt-official-smoke *args: _native-cutover-deferred-warning
     scripts/phpt/official_smoke.sh {{args}}
 
-stdlib-docs:
+stdlib-docs: _native-cutover-deferred-warning
     scripts/stdlib-docs.sh
 
-stdlib-coverage:
+stdlib-coverage: _native-cutover-deferred-warning
     scripts/stdlib-coverage.sh
 
-stdlib-registry-drift:
+stdlib-registry-drift: _native-cutover-deferred-warning
     scripts/stdlib/registry_drift.py
 
 generate-arginfo php_src="third_party/php-src" out="crates/php_std/src/generated/arginfo.rs":
     scripts/stdlib/generate_arginfo.py --php-src "{{php_src}}" --overrides fixtures/stdlib/arginfo_overrides.txt --out "{{out}}"
     rustfmt --edition 2024 "{{out}}"
 
-verify-generated-arginfo:
+verify-generated-arginfo: _native-cutover-deferred-warning
     scripts/stdlib/verify_generated_arginfo.sh
 
 generate-extension-surfaces:
     scripts/stdlib/generate_extension_surfaces.py --schema-dir fixtures/stdlib/extensions --arginfo crates/php_std/src/generated/arginfo.rs --out-root .
     cargo fmt --all
 
-verify-generated-extension-surfaces:
+verify-generated-extension-surfaces: _native-cutover-deferred-warning
     scripts/stdlib/test_generate_extension_surfaces.py
     scripts/stdlib/verify_generated_extension_surfaces.sh
 
@@ -746,12 +749,12 @@ oracle-api-summary:
     fi
     scripts/oracle/api_index.py --summary-only
 
-native-surface-inventory:
+native-surface-inventory: _native-cutover-deferred-warning
     @just oracle-api-index
     @just oracle-probe-generate
     scripts/oracle/native_surface_inventory.py --self-test --check
 
-native-php-surface:
+native-php-surface: _native-cutover-deferred-warning
     @just native-surface-inventory
     scripts/verify/native_php_surface.py --check
 
@@ -761,26 +764,26 @@ oracle-probe-generate:
     fi
     scripts/oracle/generate_probes.py --self-test
 
-oracle-probe-smoke:
+oracle-probe-smoke: _native-cutover-deferred-warning
     @just oracle-probe-generate
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/runtime_semantics_diff.py --dir fixtures/runtime_semantics/oracle_generated/smoke --out target/oracle/probes/smoke --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-oracle-probe-full:
+oracle-probe-full: _native-cutover-deferred-warning
     @just oracle-probe-generate
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/runtime_semantics_diff.py --dir fixtures/runtime_semantics/oracle_generated --out target/oracle/probes/full --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-oracle-gap-report *args:
+oracle-gap-report *args: _native-cutover-deferred-warning
     scripts/oracle/gap_report.py --self-test {{args}}
 
-oracle-next-gap-prompt *args:
+oracle-next-gap-prompt *args: _native-cutover-deferred-warning
     @if [[ ! -f target/oracle/gap-report.json ]]; then \
       just oracle-gap-report --check >/dev/null; \
     fi
     scripts/oracle/next_gap_prompt.py --self-test {{args}}
 
-oracle-smoke:
+oracle-smoke: _native-cutover-deferred-warning
     @just oracle-api-index
     @reference="${REFERENCE_PHP:-}"; \
     if [[ -z "${reference}" && -x third_party/php-src/sapi/cli/php ]]; then \
@@ -793,7 +796,7 @@ oracle-smoke:
     fi
     scripts/oracle/gap_report.py --cheap --check --fail-on-unclassified
 
-verify-oracle:
+verify-oracle: _native-cutover-deferred-warning
     @just oracle-api-index
     @reference="${REFERENCE_PHP:-}"; \
     if [[ -z "${reference}" && -x third_party/php-src/sapi/cli/php ]]; then \
@@ -806,57 +809,57 @@ verify-oracle:
     fi
     scripts/oracle/gap_report.py --cheap --check --fail-on-unclassified
 
-diff-stdlib:
+diff-stdlib: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --area stdlib --out target/stdlib/diff-stdlib --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-diff-streams:
+diff-streams: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --area streams --out target/stdlib/diff-streams --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-diff-json-pcre-date:
+diff-json-pcre-date: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --area json-pcre-date --out target/stdlib/diff-json-pcre-date --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-diff-spl-reflection:
+diff-spl-reflection: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --area spl-reflection --out target/stdlib/diff-spl-reflection --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-composer-smoke:
+composer-smoke: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --area composer --out target/stdlib/composer-smoke --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
 composer-fixture-prepare:
     scripts/stdlib/prepare_composer_fixture.sh
 
-composer-smoke-source:
+composer-smoke-source: _native-cutover-deferred-warning
     scripts/stdlib/composer_source_smoke.sh
 
-composer-smoke-autoload:
+composer-smoke-autoload: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --file tests/fixtures/stdlib/_harness/composer/basic_project_autoload_order.php --out target/stdlib/composer-smoke-autoload --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-composer-smoke-platform:
+composer-smoke-platform: _native-cutover-deferred-warning
     cargo build -q -p php_vm_cli --bin php-vm
     scripts/stdlib_diff.py --file tests/fixtures/stdlib/_harness/composer/basic_project_platform_check.php --file tests/fixtures/stdlib/_harness/composer/platform_version_compare.php --out target/stdlib/composer-smoke-platform --vm-binary ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-process-capability-smoke:
+process-capability-smoke: _native-cutover-deferred-warning
     scripts/stdlib/process_capability_smoke.sh
 
-semantic-fixtures:
+semantic-fixtures: _native-cutover-deferred-warning
     scripts/run_semantic_fixtures.py
     scripts/run_semantic_fixtures.py --write-snapshots
 
-semantic-reference-smoke:
+semantic-reference-smoke: _native-cutover-deferred-warning
     scripts/reference_php_frontend_json.py --file fixtures/semantic/valid/minimal.php
 
-semantic-diff:
+semantic-diff: _native-cutover-deferred-warning
     scripts/compare_semantic_acceptance.py
 
-semantic-diff-strict:
+semantic-diff-strict: _native-cutover-deferred-warning
     scripts/compare_semantic_acceptance.py --strict
 
-frontend-snapshots:
+frontend-snapshots: _native-cutover-deferred-warning
     cargo build -p php_frontend_cli
     ${CARGO_TARGET_DIR:-target}/debug/php-frontend --help >/dev/null
     ${CARGO_TARGET_DIR:-target}/debug/php-frontend analyze fixtures/semantic/valid/hello.php --format json >/dev/null
@@ -867,19 +870,19 @@ frontend-snapshots:
     ${CARGO_TARGET_DIR:-target}/debug/php-frontend snapshot fixtures/semantic/valid/minimal.php --output target/frontend-minimal.snap >/dev/null
     test -s target/frontend-minimal.snap
 
-semantic-corpus-smoke:
+semantic-corpus-smoke: _native-cutover-deferred-warning
     @printf '%s\n' '[skip] semantic corpus smoke is not configured for Semantic frontend; curated fixtures are covered by semantic-fixtures.'
 
-fuzz-frontend-smoke:
+fuzz-frontend-smoke: _native-cutover-deferred-warning
     @printf '%s\n' '[skip] frontend fuzz smoke is not configured for Semantic frontend; parser fuzz smoke remains available via just fuzz-parser-smoke.'
 
-bench-frontend:
+bench-frontend: _native-cutover-deferred-warning
     @printf '%s\n' '[skip] frontend benchmarks are not configured for Semantic frontend; no benchmark baseline is defined yet.'
 
-bytecode-snapshots:
+bytecode-snapshots: _native-cutover-deferred-warning
     cargo test -p php_ir --test bytecode_snapshots -- --nocapture
 
-vm-smoke:
+vm-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     @tmp_dir="$PWD/target/vm-smoke"; \
     mkdir -p "$tmp_dir"; \
@@ -897,7 +900,7 @@ vm-smoke:
     test ! -s "$tmp_dir/empty.out"; \
     printf '%s\n' '[ok] runtime VM smoke fixtures passed.'
 
-vm-trace-smoke:
+vm-trace-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     @tmp_dir="$PWD/target/runtime/failures"; \
     mkdir -p "$tmp_dir"; \
@@ -913,26 +916,26 @@ vm-trace-smoke:
     grep -q '^--- ir ---' "$tmp_dir/trace-smoke.ir"; \
     printf '%s\n' '[ok] runtime VM trace/debug smoke passed.'
 
-runtime-fixtures:
+runtime-fixtures: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_fixture_runner.py --self-test
     scripts/runtime_fixture_runner.py
 
-runtime-corpus-smoke:
+runtime-corpus-smoke: _native-cutover-deferred-warning
     scripts/runtime-corpus-smoke.sh
 
-runtime-reference-smoke:
+runtime-reference-smoke: _native-cutover-deferred-warning
     cargo test -p php_testkit runtime_reference_smoke -- --nocapture
 
-runtime-diff:
+runtime-diff: _native-cutover-deferred-warning
     cargo build -p php_vm_cli -p php_testkit --bin compare-runtime
     ${CARGO_TARGET_DIR:-target}/debug/compare-runtime --fixtures fixtures/runtime --out target/runtime/runtime-diff --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-phpt-smoke:
+phpt-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli -p php_testkit --bin run-phpt-smoke
     ${CARGO_TARGET_DIR:-target}/debug/run-phpt-smoke --fixtures fixtures/phpt_smoke --out target/runtime/phpt-smoke --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm
 
-runtime-known-gaps:
+runtime-known-gaps: _native-cutover-deferred-warning
     @just known-gaps
     scripts/runtime_gap_report.py --check
     cargo build -p php_vm_cli
@@ -1004,25 +1007,25 @@ runtime-known-gaps:
     done; \
     printf '%s\n' '[ok] runtime known-gap catalog and reference fixtures passed.'
 
-runtime-gap-report:
+runtime-gap-report: _native-cutover-deferred-warning
     scripts/runtime_gap_report.py
 
 known-gaps:
     scripts/known_gaps/validate.py
 
-bench-vm-smoke:
+bench-vm-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     mkdir -p target/runtime/bench-vm-smoke
     rustc --edition=2024 tools/bench_vm_smoke.rs -o target/runtime/bench-vm-smoke/bench-vm-smoke
     target/runtime/bench-vm-smoke/bench-vm-smoke
 
-fuzz-vm-smoke:
+fuzz-vm-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     mkdir -p target/runtime/fuzz-vm-smoke
     rustc --edition=2024 tools/fuzz_vm_smoke.rs -o target/runtime/fuzz-vm-smoke/fuzz-vm-smoke
     target/runtime/fuzz-vm-smoke/fuzz-vm-smoke
 
-runtime-semantics-fixtures:
+runtime-semantics-fixtures: _native-cutover-deferred-warning
     @just refs-cow-fixtures
     @just object-semantics-fixtures
     @just generator-fiber-fixtures
@@ -1030,7 +1033,7 @@ runtime-semantics-fixtures:
     @just regression-fixtures
     @printf '%s\n' '[ok] runtime semantics fixture gates complete.'
 
-runtime-semantics-diff *args:
+runtime-semantics-diff *args: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py {{args}}
 
@@ -1056,7 +1059,7 @@ runtime-toolchain-audit:
     test -n "${SCCACHE_DIR:-}"
     printf '%s\n' '[ok] runtime semantics devshell toolchain audit passed'
 
-runtime-miri-smoke:
+runtime-miri-smoke: _native-cutover-deferred-warning
     @if ! command -v cargo-miri >/dev/null 2>&1 && ! cargo miri --version >/dev/null 2>&1; then \
       printf '%s\n' '[skip] cargo-miri is not available in this toolchain; install a Miri-capable Rust toolchain to run this opt-in smoke.'; \
       exit 0; \
@@ -1069,7 +1072,7 @@ runtime-miri-smoke:
     cargo miri test -p php_runtime runtime_memory::tests
     cargo miri test -p php_vm frame_memory::tests
 
-runtime-sanitizer-smoke:
+runtime-sanitizer-smoke: _native-cutover-deferred-warning
     @if [[ "${PHRUST_RUN_SANITIZER:-0}" != "1" ]]; then \
       printf '%s\n' '[skip] set PHRUST_RUN_SANITIZER=1 to run the opt-in sanitizer smoke.'; \
       exit 0; \
@@ -1088,15 +1091,15 @@ runtime-sanitizer-smoke:
     fi; \
     RUSTFLAGS="-Zsanitizer=address" cargo test -p php_runtime gc::tests::gc_scans_roots_and_refcount_metadata_without_panics
 
-runtime-fuzz-smoke:
+runtime-fuzz-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_fuzz_smoke.py
 
-runtime-bench-smoke:
+runtime-bench-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_bench_smoke.py
 
-runtime-composer-smoke:
+runtime-composer-smoke: _native-cutover-deferred-warning
     @if [ -z "${PHPRUST_COMPOSER_FIXTURE_DIR:-}" ]; then \
         scripts/runtime_composer_smoke.py; \
     else \
@@ -1104,37 +1107,47 @@ runtime-composer-smoke:
         scripts/runtime_composer_smoke.py; \
     fi
 
-refs-cow-fixtures:
+refs-cow-fixtures: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category refs --category cow --out target/runtime-semantics/refs-cow
 
-object-semantics-fixtures:
+object-semantics-fixtures: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category objects --category traits --category enums --category magic --category properties --category property_hooks --category clone_with --out target/runtime-semantics/object-semantics
 
-generator-fiber-fixtures:
+generator-fiber-fixtures: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category generators --category fibers --out target/runtime-semantics/generator-fiber
 
-real-world-fixtures:
+real-world-fixtures: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category real_world --out target/runtime-semantics/real-world
 
-wordpress-blockers:
+wordpress-blockers: _native-cutover-deferred-warning
     python3 -m unittest scripts/wordpress/test_smoke_response.py
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category wordpress_blockers --out target/runtime-semantics/wordpress-blockers
 
-wp-language-vm:
+wp-language-vm: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category wp_language_vm --out target/runtime-semantics/wp-language-vm
 
-wp-autoload-stdlib:
+wp-autoload-stdlib: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category wp_autoload_stdlib --out target/runtime-semantics/wp-autoload-stdlib
     scripts/wordpress_builtin_heatmap.py --input target/runtime-semantics/wp-autoload-stdlib/runtime-semantics-diff-report.json --out target/wordpress-bringup
 
-wordpress-preflight:
+_native-cutover-deferred-warning:
+    @if [ "${PHRUST_NATIVE_CUTOVER_ACCEPTANCE:-0}" != "1" ]; then \
+        printf '%s\n' \
+          'BLOCKED: Do not run ratchets, broad gates, benchmarks, profiles, or reports during the active native cutover.' \
+          'Finish the integrated native architecture and delete superseded production warm paths first.' \
+          'During implementation, use only focused format/check/build commands, native-compile probes without execution, and one semantic fixture per completed vertical boundary.' \
+          'Only the explicit post-cutover acceptance run may set PHRUST_NATIVE_CUTOVER_ACCEPTANCE=1.' >&2; \
+        exit 2; \
+      fi
+
+wordpress-preflight: _native-cutover-deferred-warning
     scripts/wordpress/preflight.py --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/debug/php-vm}" --phrust-server "${PHRUST_SERVER:-target/debug/phrust-server}" --out target/wordpress-real/preflight.json
 
 parallel-rustc-wrapper:
@@ -1146,132 +1159,144 @@ wordpress-cutover-build: parallel-rustc-wrapper
 wordpress-native-compile file *args: wordpress-cutover-build
     target/cutover/php-vm native-compile "{{file}}" {{args}}
 
-php-ai-client-smoke:
+php-ai-client-smoke: _native-cutover-deferred-warning
     @project="${PHRUST_PHP_AI_CLIENT_DIR:-third_party/php-ai-client}"; if [ -d "$project" ] && [ -z "${PHP_VM_CLI:-}" ]; then RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/development/parallel_php_vm_rustc.sh" PHRUST_RUSTC_CACHE_WRAPPER= CARGO_INCREMENTAL=1 cargo build --profile cutover -p php_vm_cli --bin php-vm; fi
     scripts/php_ai_client_smoke.py
 
-wordpress-real-smoke: wordpress-cutover-build
+wordpress-real-smoke: _native-cutover-deferred-warning wordpress-cutover-build
     scripts/wordpress/smoke.py --phase web-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/cutover/php-vm}" --phrust-server "${PHRUST_SERVER:-target/cutover/phrust-server}" --stop-on-fail
 
-wordpress-real-install-smoke: wordpress-cutover-build
+wordpress-real-install-smoke: _native-cutover-deferred-warning wordpress-cutover-build
     scripts/wordpress/smoke.py --phase db-install --phase admin-login-page --phase post-install-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/cutover/php-vm}" --phrust-server "${PHRUST_SERVER:-target/cutover/phrust-server}" --stop-on-fail
 
 wordpress-db-snapshot action path:
     scripts/wordpress/db_snapshot.py "{{action}}" "{{path}}"
 
-wordpress-real-perf-report:
+wordpress-real-perf-report: _native-cutover-deferred-warning
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/real_perf_report.py
 
-wordpress-root-profile:
+wordpress-root-profile: _native-cutover-deferred-warning
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
 
-wordpress-benchmark-self-test:
+wordpress-benchmark-self-test: _native-cutover-deferred-warning
     scripts/performance/wordpress_root_benchmark.py --self-test
 
 # Build the pinned stock PHP-FPM 8.5.7 + mysqli + OPcache reference image.
-wordpress-reference-image:
+wordpress-reference-image: _native-cutover-deferred-warning
     docker build --build-arg PHP_VERSION=8.5.7 --tag phrust-php-fpm:8.5.7 docker/performance/php-fpm
     docker pull nginx:1.28.0-alpine
 
 # Clean timing: release Phrust and stock PHP-FPM/OPcache. This never enables
 # request profiles, VM counters, or trace collection.
-wordpress-root-benchmark *args:
+wordpress-root-benchmark *args: _native-cutover-deferred-warning
     if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean {{args}}
 
 # Isolated persistent-feedback A/B using the same lean binary and benchmark
 # contract. Both arms and their joint ratio report share one result directory.
-wordpress-root-benchmark-feedback-ab *args:
+wordpress-root-benchmark-feedback-ab *args: _native-cutover-deferred-warning
     if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --feedback-ab {{args}}
 
 # Instrumented Phrust-only attribution. Its samples are marked timing-ineligible.
-wordpress-root-diagnostics *args:
+wordpress-root-diagnostics *args: _native-cutover-deferred-warning
     if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode diagnostic {{args}}
 
 # Strict regression gate: compare both engines and a recorded Phrust baseline;
 # missing WordPress or reference PHP is a failure.
-wordpress-root-regression-gate *args:
+wordpress-root-regression-gate *args: _native-cutover-deferred-warning
     if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
 
 # Prompt-pack tranche acceptance: the leading result is the warm,
 # instrumentation-free WordPress concurrency-1 p50. The ordinary regression
 # recipe remains a no-regression CI guard and does not require a speedup.
-wordpress-root-tranche-gate baseline *args:
+wordpress-root-tranche-gate baseline *args: _native-cutover-deferred-warning
     if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server --no-default-features ; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --baseline "{{baseline}}" --min-c1-p50-improvement-pct 3 {{args}}
 
 # Anti-theater guard: fail performance branches that only add docs, reports,
 # counters, or metric renames without production Rust changes or gates.
-perf-pr-guard *args:
+perf-pr-guard *args: _native-cutover-deferred-warning
     scripts/verify/perf_pr_guard.py {{args}}
 
 # Profiler containment: unprofiled requests after a profiled request must stay
 # within 5% of clean unprofiled requests in the same server process.
-profiler-overhead-gate:
+profiler-overhead-gate: _native-cutover-deferred-warning
     if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/profiler_overhead_gate.py
 
 # Trusted internal execution must not regain request-local metadata copies,
 # checked output pointers, or panic wrappers.
-trusted-runtime-hotpath-gate:
+trusted-runtime-hotpath-gate: _native-cutover-deferred-warning
     scripts/performance/trusted_runtime_hotpath_gate.sh
 
+# ACTIVE NATIVE CUTOVER: DO NOT RUN THIS OR ANY OTHER RATCHET. This is final
+# acceptance work, not an implementation-time check. It is blocked until the
+# integrated cutover is complete and the superseded production warm paths are
+# deleted; only that acceptance run may use PHRUST_NATIVE_CUTOVER_ACCEPTANCE=1.
 # Generated CLIF/metadata checks, plus optional strict WordPress counter gates.
-native-hotpath-ratchet *args:
+native-hotpath-ratchet *args: _native-cutover-deferred-warning
     scripts/verify/native_hotpath_ratchet.py {{args}}
 
-reference-scalar-view:
+# FINAL ACCEPTANCE ONLY. Requires a timing-eligible clean WordPress result, a
+# separate diagnostic profile, and sibling lowering-coverage.json evidence.
+# The optional third argument is a source-identical clean WordPress baseline.
+native-hotpath-breakthrough-gate clean diagnostic baseline="": _native-cutover-deferred-warning
+    args=(--breakthrough --clean-result "{{clean}}" --profile "{{diagnostic}}"); \
+    if [ -n "{{baseline}}" ]; then args+=(--clean-baseline "{{baseline}}"); fi; \
+    scripts/verify/native_hotpath_ratchet.py "${args[@]}"
+
+reference-scalar-view: _native-cutover-deferred-warning
     scripts/performance/reference_scalar_view.sh
 
-reference-dimension-operand:
+reference-dimension-operand: _native-cutover-deferred-warning
     scripts/performance/reference_dimension_operand.sh
 
-local-array-write-gate:
+local-array-write-gate: _native-cutover-deferred-warning
     scripts/performance/local_array_write_gate.sh
 
-native-hotpath-report *args:
+native-hotpath-report *args: _native-cutover-deferred-warning
     scripts/performance/native_hotpath_report.py {{args}}
 
-wordpress-clone-churn-report:
+wordpress-clone-churn-report: _native-cutover-deferred-warning
     scripts/performance/clone_churn_report.py
 
-wordpress-array-hotpath-report:
+wordpress-array-hotpath-report: _native-cutover-deferred-warning
     scripts/performance/array_hotpath_report.py
 
-wordpress-call-hotpath-report:
+wordpress-call-hotpath-report: _native-cutover-deferred-warning
     scripts/performance/call_hotpath_report.py
 
-native-linkage-report counters *args:
+native-linkage-report counters *args: _native-cutover-deferred-warning
     scripts/performance/native_linkage_report.py "{{counters}}" {{args}}
 
-native-footprint-report cache_dir *args:
+native-footprint-report cache_dir *args: _native-cutover-deferred-warning
     scripts/performance/native_footprint_report.py --cache-dir "{{cache_dir}}" {{args}}
 
-native-linkage-tranche-report *args:
+native-linkage-tranche-report *args: _native-cutover-deferred-warning
     scripts/performance/native_linkage_tranche.py {{args}}
 
-native-linkage-ratchet *args:
+native-linkage-ratchet *args: _native-cutover-deferred-warning
     scripts/verify/native_linkage_ratchet.py {{args}}
 
 wordpress-real-extract-first-failure:
     scripts/wordpress/extract_failure.py --failure "${PHRUST_WORDPRESS_FIRST_FAILURE:-}"
 
-mysqli-integration:
+mysqli-integration: _native-cutover-deferred-warning
     scripts/mysqli_integration.py
 
-wordpress-smoke-report:
+wordpress-smoke-report: _native-cutover-deferred-warning
     scripts/wordpress_smoke_report.py
 
-regression-fixtures:
+regression-fixtures: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category regressions --out target/runtime-semantics/regressions
 
-local-composer-smoke *paths:
+local-composer-smoke *paths: _native-cutover-deferred-warning
     @if [ -z "{{paths}}" ]; then \
         printf '%s\n' '[skip] provide one or more local package-manager project paths.'; \
         exit 0; \
@@ -1281,15 +1306,15 @@ local-composer-smoke *paths:
     for path in {{paths}}; do args="$$args --dir $$path"; done; \
     scripts/runtime_semantics_diff.py $$args --out target/runtime-semantics/local-composer-smoke
 
-runtime-phpt-smoke:
+runtime-phpt-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli -p php_testkit --bin run-phpt-smoke
     ${CARGO_TARGET_DIR:-target}/debug/run-phpt-smoke --fixtures /private/tmp/phrust-empty-phpt-smoke --out target/runtime-semantics/phpt-smoke --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm --allowlist fixtures/runtime_semantics/phpt_allowlist.toml
 
-extension-phpt-smoke:
+extension-phpt-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli -p php_testkit --bin run-phpt-smoke
     scripts/stdlib/phpt_extension_selector.py
 
-compat-corpus-smoke:
+compat-corpus-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli
     scripts/stdlib_diff.py --fixtures tests/fixtures/stdlib/corpus --area corpus --out target/stdlib/corpus
 
@@ -1299,7 +1324,7 @@ compat-corpus-smoke:
 perf-build:
     cargo build -p php_vm_cli --bin php-vm
 
-performance-tests:
+performance-tests: _native-cutover-deferred-warning
     scripts/performance/compare_perf_json.py --self-test
     scripts/performance/hotpath_inventory.py --self-test
     scripts/performance/bench_matrix.py --self-test
@@ -1314,11 +1339,11 @@ performance-tests:
     scripts/performance/decision_baseline.py --self-test
     scripts/performance/startup_matrix.py --self-test
 
-performance-regression: perf-build
+performance-regression: _native-cutover-deferred-warning perf-build
     scripts/performance_regression_smoke.sh
     scripts/performance/regression_smoke.sh
 
-default-profile-smoke: perf-build
+default-profile-smoke: _native-cutover-deferred-warning perf-build
     scripts/performance/default_profile_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
 baseline-native-compile-smoke: perf-build
@@ -1331,66 +1356,66 @@ baseline-native-compile-smoke: perf-build
       "$report" >/dev/null
     printf '%s\n' '[pass] baseline native compile probe used production Cranelift without execution'
 
-ir-verify:
+ir-verify: _native-cutover-deferred-warning
     cargo test -p php_ir verify --lib
 
-benchmark-smoke: perf-build
+benchmark-smoke: _native-cutover-deferred-warning perf-build
     scripts/performance/bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/benchmark-smoke.json --repetitions "${PHRUST_PERF_BENCH_SMOKE_REPETITIONS:-1}" --warmups "${PHRUST_PERF_BENCH_SMOKE_WARMUPS:-0}" --timeout "${PHRUST_PERF_BENCH_TIMEOUT:-10.0}"
 
-callgrind-smoke:
+callgrind-smoke: _native-cutover-deferred-warning
     scripts/performance/callgrind_smoke.sh
 
-rust-hotpath-bench:
+rust-hotpath-bench: _native-cutover-deferred-warning
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --manifest-path crates/php_bench/Cargo.toml --bench perf_hotpaths
 
-benchmark-suite:
+benchmark-suite: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/benchmark-suite.json --repetitions "${PHRUST_PERF_BENCH_REPETITIONS:-5}" --warmups "${PHRUST_PERF_BENCH_WARMUPS:-1}" --timeout "${PHRUST_PERF_BENCH_TIMEOUT:-5.0}"
     @just rust-hotpath-bench
 
-profile-dispatch:
+profile-dispatch: _native-cutover-deferred-warning
     scripts/performance/profile_smoke.sh dispatch
 
-profile-arrays:
+profile-arrays: _native-cutover-deferred-warning
     scripts/performance/profile_smoke.sh arrays
 
-profile-calls:
+profile-calls: _native-cutover-deferred-warning
     scripts/performance/profile_smoke.sh calls
 
-profile-composer:
+profile-composer: _native-cutover-deferred-warning
     scripts/performance/profile_smoke.sh composer
 
-release-profile-plan:
+release-profile-plan: _native-cutover-deferred-warning
     scripts/performance/release_profile_plan.sh
 
 # Production binaries with telemetry recorders compiled out (runtime
 # request-profiling and layout counters are unavailable in these builds;
 # use the default release build for diagnosis). Measured on microbenches:
 # property reads ~11% faster, concatenation ~5%.
-release-lean: cranelift-only-ratchet
+release-lean: _native-cutover-deferred-warning cranelift-only-ratchet
     cargo build --release -p php_server --no-default-features
     cargo build --release -p php_vm_cli --bin php-vm --no-default-features
 
-release-benchmark-smoke:
+release-benchmark-smoke: _native-cutover-deferred-warning
     scripts/performance/release_profiles.py release
 
-pgo-benchmark-smoke:
+pgo-benchmark-smoke: _native-cutover-deferred-warning
     scripts/performance/release_profiles.py pgo
 
-bolt-benchmark-smoke:
+bolt-benchmark-smoke: _native-cutover-deferred-warning
     scripts/performance/release_profiles.py bolt
 
-framework-smoke: perf-build
+framework-smoke: _native-cutover-deferred-warning perf-build
     scripts/performance/framework_micro_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
-front-controller-hotpath-smoke:
+front-controller-hotpath-smoke: _native-cutover-deferred-warning
     cargo build -p php_server --bin phrust-server
     scripts/performance/front_controller_hotpath_smoke.py --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/front-controller-hotpath/report.json
 
-app-flow-smoke: perf-build
+app-flow-smoke: _native-cutover-deferred-warning perf-build
     scripts/performance/app_flow_matrix.py --smoke --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}"
 
-app-flow-matrix:
+app-flow-matrix: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     cargo build --release -p php_vm_cli --bin php-vm
     scripts/performance/app_flow_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --release-engine "${CARGO_TARGET_DIR:-target}/release/php-vm" --iterations "${PHRUST_APP_FLOW_ITERATIONS:-5}" --warmups "${PHRUST_APP_FLOW_WARMUPS:-1}" --scale "${PHRUST_APP_FLOW_SCALE:-2}" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}"
@@ -1398,7 +1423,7 @@ app-flow-matrix:
 # Runtime-layout tranche gate: focused fast-path tests, app-flow smoke, and
 # the counter-existence/ratchet checker. Counter regressions are reported by
 # default; PHRUST_RATCHET_ENFORCE=1 makes them hard failures.
-runtime-layout-performance-smoke:
+runtime-layout-performance-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     cargo test -p php_runtime string_intrinsics
     cargo test -p php_runtime json_fast
@@ -1408,40 +1433,40 @@ runtime-layout-performance-smoke:
     @just app-flow-smoke
     scripts/performance/runtime_layout_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
-perf-ratchet-prereq:
+perf-ratchet-prereq: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/ratchet_prereq.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
 
-cli-speed-ratchet-smoke:
+cli-speed-ratchet-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cli_speed_suite.py --smoke --out target/performance/ratchet/cli/smoke.json --markdown-out target/performance/ratchet/cli/smoke.md
 
-cli-speed-ratchet:
+cli-speed-ratchet: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/cli_speed_suite.py --out target/performance/ratchet/cli/current.json --markdown-out target/performance/ratchet/cli/current.md
 
-app-flow-ratchet-smoke:
+app-flow-ratchet-smoke: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/app_flow_matrix.py --smoke --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}" --ratchet-out target/performance/ratchet/app-flow/smoke.json --ratchet-markdown-out target/performance/ratchet/app-flow/smoke.md
 
-app-flow-ratchet:
+app-flow-ratchet: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/app_flow_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --iterations "${PHRUST_RATCHET_ITERATIONS:-10}" --warmups "${PHRUST_RATCHET_WARMUPS:-3}" --scale "${PHRUST_RATCHET_SCALE:-2}" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}" --allow-missing-reference --ratchet-out target/performance/ratchet/app-flow/current.json --ratchet-markdown-out target/performance/ratchet/app-flow/current.md
 
-server-responsiveness-ratchet-smoke:
+server-responsiveness-ratchet-smoke: _native-cutover-deferred-warning
     cargo build -p php_server --bin phrust-server
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/server_responsiveness.py --smoke --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/ratchet/server/smoke.json --markdown-out target/performance/ratchet/server/smoke.md
 
-server-responsiveness-ratchet:
+server-responsiveness-ratchet: _native-cutover-deferred-warning
     cargo build --release -p php_server --bin phrust-server
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/server_responsiveness.py --server "${CARGO_TARGET_DIR:-target}/release/phrust-server" --out target/performance/ratchet/server/current.json --markdown-out target/performance/ratchet/server/current.md
 
-counter-ratchet:
+counter-ratchet: _native-cutover-deferred-warning
     scripts/performance/counter_ratchet.py --benchmark target/performance/benchmark-smoke.json --app-flow target/performance/ratchet/app-flow/current.json --server target/performance/ratchet/server/current.json --out target/performance/ratchet/counters/current.json --markdown-out target/performance/ratchet/counters/current.md
 
-perf-ratchet-smoke:
+perf-ratchet-smoke: _native-cutover-deferred-warning
     @just perf-ratchet-prereq
     @just cli-speed-ratchet-smoke
     @just app-flow-ratchet-smoke
@@ -1449,40 +1474,40 @@ perf-ratchet-smoke:
     scripts/performance/counter_ratchet.py --benchmark target/performance/benchmark-smoke.json --app-flow target/performance/ratchet/app-flow/smoke.json --server target/performance/ratchet/server/smoke.json --out target/performance/ratchet/counters/smoke.json --markdown-out target/performance/ratchet/counters/smoke.md
     scripts/performance/ratchet_schema.py --validate target/performance/ratchet/cli/smoke.json target/performance/ratchet/app-flow/smoke.json target/performance/ratchet/server/smoke.json target/performance/ratchet/counters/smoke.json
 
-perf-ratchet-current:
+perf-ratchet-current: _native-cutover-deferred-warning
     @just cli-speed-ratchet
     @just app-flow-ratchet
     @just server-responsiveness-ratchet
     @just counter-ratchet
     scripts/performance/perf_ratchet.py combine --run-id perf-ratchet-current --out target/performance/ratchet/current.json --markdown-out target/performance/ratchet/current.md
 
-perf-ratchet-baseline:
+perf-ratchet-baseline: _native-cutover-deferred-warning
     @just cli-speed-ratchet
     @just app-flow-ratchet
     @just server-responsiveness-ratchet
     @just counter-ratchet
     scripts/performance/perf_ratchet.py combine --run-id perf-ratchet-baseline --out target/performance/ratchet/baseline.json --markdown-out target/performance/ratchet/baseline.md
 
-perf-ratchet-compare:
+perf-ratchet-compare: _native-cutover-deferred-warning
     scripts/performance/ratchet_compare.py target/performance/ratchet/baseline.json target/performance/ratchet/current.json --out target/performance/ratchet/compare.md --json-out target/performance/ratchet/compare.json
 
-perf-ratchet-report:
+perf-ratchet-report: _native-cutover-deferred-warning
     scripts/performance/perf_ratchet.py report --run-id perf-ratchet-report --out target/performance/ratchet/report.json --markdown-out target/performance/ratchet/report.md
 
-perf-ratchet-next-prompt:
+perf-ratchet-next-prompt: _native-cutover-deferred-warning
     scripts/performance/ratchet_next_prompt.py --ratchet target/performance/ratchet/cli/current.json --ratchet target/performance/ratchet/app-flow/current.json --ratchet target/performance/ratchet/server/current.json --compare target/performance/ratchet/compare.json --out target/performance/ratchet/next-performance-prompt.md
 
-perf-ratchet-accept-local:
+perf-ratchet-accept-local: _native-cutover-deferred-warning
     scripts/performance/perf_ratchet.py accept-local
 
-hotpath-inventory:
+hotpath-inventory: _native-cutover-deferred-warning
     scripts/performance/hotpath_inventory.py target/performance/benchmark-smoke.json --json-out target/performance/hotpaths.json --markdown-out target/performance/hotpath-inventory.md
 
-perf-baseline:
+perf-baseline: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/bench_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --out target/performance/baseline.json --repetitions "${PHRUST_PERF_BASELINE_REPETITIONS:-3}" --warmups "${PHRUST_PERF_BASELINE_WARMUPS:-1}" --timeout "${PHRUST_PERF_BENCH_TIMEOUT:-5.0}"
 
-perf-compare:
+perf-compare: _native-cutover-deferred-warning
     @if [ ! -f target/performance/baseline.json ]; then \
         printf '%s\n' '[skip] target/performance/baseline.json missing; run `just perf-baseline` first'; \
         exit 0; \
@@ -1490,60 +1515,60 @@ perf-compare:
     @just benchmark-smoke
     scripts/performance/compare_perf_json.py target/performance/baseline.json target/performance/benchmark-smoke.json --out target/performance/perf-compare.md --json-out target/performance/perf-compare.json
 
-cache-roundtrip:
+cache-roundtrip: _native-cutover-deferred-warning
     @just dependency-units-smoke
     cargo test -p php_jit --lib native_cache
 
-function-on-demand-gate:
+function-on-demand-gate: _native-cutover-deferred-warning
     scripts/performance/function_on_demand_gate.sh
 
-dependency-units-smoke:
+dependency-units-smoke: _native-cutover-deferred-warning
     cargo test -p php_vm dependency_units::
 
-templates-smoke:
+templates-smoke: _native-cutover-deferred-warning
     scripts/performance/templates_smoke.sh
 
-optimizer-diff:
+optimizer-diff: _native-cutover-deferred-warning
     @just ir-verify
     scripts/performance/optimizer_diff_smoke.sh
 
-native-ssa-ratchet:
+native-ssa-ratchet: _native-cutover-deferred-warning
     scripts/verify/native_ssa_ratchet.py
 
 # Render the B9 evidence bundle from the deterministic native smoke fixture.
-native-ssa-report:
+native-ssa-report: _native-cutover-deferred-warning
     scripts/performance/native_ssa_acceptance_report.py \
         --after target/performance/native-smoke-counters.json \
         --after-kind validation-fixture
 
-inline-cache-model-tests:
+inline-cache-model-tests: _native-cutover-deferred-warning
     cargo test -p php_vm inline_cache::
 
 # Compatibility aliases for pre-cutover documentation and local muscle memory.
 # The native-only product no longer exposes the retired VM cache toggle or its
 # interpreter-era counters; Prompt 16 will add measured native call-site caches.
-inline-cache-smoke: inline-cache-model-tests
+inline-cache-smoke: _native-cutover-deferred-warning inline-cache-model-tests
 
-inline-cache-lookup-benchmark-gate:
+inline-cache-lookup-benchmark-gate: _native-cutover-deferred-warning
     scripts/performance/inline_cache_lookup_gate.py --self-test
     cargo bench --manifest-path crates/php_bench/Cargo.toml --bench perf_hotpaths -- inline_cache_function_hit
     scripts/performance/inline_cache_lookup_gate.py
 
-polymorphic-inline-cache-smoke:
+polymorphic-inline-cache-smoke: _native-cutover-deferred-warning
     @just inline-cache-model-tests
 
-native-smoke:
+native-smoke: _native-cutover-deferred-warning
     scripts/performance/native_smoke.sh
 
-native-baseline-cfg-ratchet *args:
+native-baseline-cfg-ratchet *args: _native-cutover-deferred-warning
     scripts/verify/native_baseline_cfg_ratchet.py {{args}}
 
-native-fast-baseline-ratchet *args:
+native-fast-baseline-ratchet *args: _native-cutover-deferred-warning
     scripts/verify/native_fast_baseline_ratchet.py {{args}}
     cargo test -p php_jit ordinary_instructions_do_not_create_resume_or_clif_entry_blocks
     cargo test -p php_jit oversized_php_cfg_compiles_as_bounded_direct_native_fragments
 
-native-compile-breakthrough-baseline:
+native-compile-breakthrough-baseline: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     wordpress_dir="${PHRUST_WORDPRESS_DIR:-target/wordpress-cutover}"
@@ -1578,18 +1603,18 @@ native-compile-breakthrough-baseline:
     scripts/verify/native_fast_baseline_ratchet.py \
       --report target/breakthrough/fast-baseline/after.json
 
-fast-baseline-acceptance-self-test:
+fast-baseline-acceptance-self-test: _native-cutover-deferred-warning
     scripts/performance/fast_baseline_acceptance.py --self-test
 
-native-fast-baseline-acceptance *args:
+native-fast-baseline-acceptance *args: _native-cutover-deferred-warning
     scripts/performance/fast_baseline_acceptance.py {{args}}
 
-object-release-root-scan:
+object-release-root-scan: _native-cutover-deferred-warning
     scripts/performance/object_release_root_scan.sh
 
 # Prompt 0 cutover gate: regenerate current source identity, exercise the
 # detached pre-cutover diagnostic oracle, and prove the native foundation.
-cranelift-only-precondition:
+cranelift-only-precondition: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     just cranelift-only-ratchet-fast
@@ -1600,14 +1625,14 @@ cranelift-only-precondition:
 
 # Prompt 1 cutover gate: the retired emitter must be absent from source and all
 # product targets must build against the Cranelift feature graph.
-cranelift-only-no-alternate-emitter:
+cranelift-only-no-alternate-emitter: _native-cutover-deferred-warning
     cargo check --workspace --all-targets
     cargo build -p php_vm_cli --bins --no-default-features --features runtime-telemetry
     cargo build -p php_server --bin phrust-server --no-default-features --features runtime-telemetry
 
 # Prompt 2 cutover gate: Cranelift is mandatory and the release server contains
 # neither a selectable backend nor linked interpreter entry points.
-cranelift-only-mandatory:
+cranelift-only-mandatory: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo check --workspace --all-targets
@@ -1616,7 +1641,7 @@ cranelift-only-mandatory:
 
 # Prompt 3 cutover gate: every function starts from authoritative php_ir and
 # reaches the same baseline Region IR compiler path without candidate matching.
-cranelift-baseline-ir-coverage:
+cranelift-baseline-ir-coverage: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     scripts/verify/cranelift_baseline_ir_coverage.py
@@ -1625,7 +1650,7 @@ cranelift-baseline-ir-coverage:
 
 # Prompt 4 cutover gate: Rust exhaustiveness and the generated manifest must
 # cover every IR operation without wildcard or generic-dispatch escape hatches.
-cranelift-exhaustive-lowering:
+cranelift-exhaustive-lowering: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_instruction_coverage
@@ -1636,7 +1661,7 @@ cranelift-exhaustive-lowering:
 
 # Prompt 5 cutover gate: helper-mapped IR operations use the shared typed
 # runtime ABI, with explicit effects, ownership, status, and caller audit data.
-cranelift-typed-runtime-ops:
+cranelift-typed-runtime-ops: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_instruction_coverage
@@ -1649,7 +1674,7 @@ cranelift-typed-runtime-ops:
 
 # Prompt 6 cutover gate: every PHP call form uses one native frame and either
 # generation-bound compiled code or the typed native dispatch trampoline.
-cranelift-native-calls:
+cranelift-native-calls: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_native_call_audit
@@ -1661,7 +1686,7 @@ cranelift-native-calls:
 
 # Prompt 7 cutover gate: PHP control leaves generated frames only through the
 # stable status ABI, explicit native unwind, published roots, and native PCs.
-cranelift-native-control:
+cranelift-native-control: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_native_control_audit
@@ -1679,7 +1704,7 @@ cranelift-native-control:
 
 # Prompt 8 cutover gate: generator/fiber suspension points publish stable
 # generated resume entries and persist all live state without resume dispatch.
-cranelift-native-suspensions:
+cranelift-native-suspensions: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_native_suspension_audit
@@ -1697,7 +1722,7 @@ cranelift-native-suspensions:
 
 # Prompt 9 cutover gate: include/eval and visible runtime declarations compile,
 # publish, cache, and invoke native entries before any dynamic PHP execution.
-cranelift-native-dynamic-code:
+cranelift-native-dynamic-code: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_native_dynamic_code_audit
@@ -1714,7 +1739,7 @@ cranelift-native-dynamic-code:
 
 # Prompt 10 cutover gate: optimized exits reconstruct precise state and enter
 # exact baseline/less-specialized generated continuations without effect replay.
-cranelift-native-transitions:
+cranelift-native-transitions: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_native_transition_audit
@@ -1732,7 +1757,7 @@ cranelift-native-transitions:
 
 # Prompt 11 cutover gate: no opcode executor, adaptive interpreter machinery,
 # public engine selector, or linked retired entry symbol may remain.
-cranelift-native-executor:
+cranelift-native-executor: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     scripts/verify/cranelift_native_executor.py
@@ -1746,7 +1771,7 @@ cranelift-native-executor:
 
 # Prompt 12 cutover gate: a fresh process loads validated PNA2 machine code,
 # corrupt artifacts rebuild, and loader/concurrency controls remain covered.
-cranelift-native-cache:
+cranelift-native-cache: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     scripts/verify/cranelift_native_cache.py
@@ -1759,7 +1784,7 @@ cranelift-native-cache:
 
 # Prompt 13 cutover gate: CLI, server, presets, docs, startup identity, and
 # telemetry expose one mandatory Cranelift-native engine.
-cranelift-native-product:
+cranelift-native-product: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build -p php_vm_cli --bin php-vm -p php_server --bin phrust-server
@@ -1773,7 +1798,7 @@ cranelift-native-product:
 # Prompt 14 architecture gate: source, Cargo graph, exhaustive lowering,
 # release binaries, help snapshots, server startup, native state machines, and
 # restart cache behavior pass with no exception list.
-cranelift-only-ratchet-fast:
+cranelift-only-ratchet-fast: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_instruction_coverage
@@ -1786,7 +1811,7 @@ cranelift-only-ratchet-fast:
       --cli "${CARGO_TARGET_DIR:-target}/cutover/php-vm" \
       --server "${CARGO_TARGET_DIR:-target}/cutover/phrust-server"
 
-cranelift-only-ratchet:
+cranelift-only-ratchet: _native-cutover-deferred-warning
     #!/usr/bin/env bash
     set -euo pipefail
     cargo run --quiet -p php_jit --example cranelift_instruction_coverage
@@ -1802,7 +1827,7 @@ cranelift-only-ratchet:
 dump-cranelift-clif:
     cargo run -p php_vm_cli --bin php-vm  -- dump-cranelift-clif
 
-safety-audit-smoke:
+safety-audit-smoke: _native-cutover-deferred-warning
     @if rg -n '\bunsafe\b' crates/php_vm/src/inline_cache.rs crates/php_vm/src/tiering.rs; then \
         printf '%s\n' '[fail] performance cache/JIT surface contains Rust unsafe' >&2; \
         exit 1; \
@@ -1816,13 +1841,13 @@ safety-audit-smoke:
     cargo test -p php_jit --lib pna_roundtrip_maps_rx_and_executes_after_reload
     cargo test -p php_jit --lib code_manager::tests
 
-perf-report:
+perf-report: _native-cutover-deferred-warning
     scripts/performance/perf_report.py
 
-perf-decision-baseline:
+perf-decision-baseline: _native-cutover-deferred-warning
     scripts/performance/decision_baseline.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --smoke
 
-startup-matrix:
+startup-matrix: _native-cutover-deferred-warning
     cargo build -p php_vm_cli --bin php-vm
     cargo build --release -p php_vm_cli --bin php-vm
     scripts/performance/startup_matrix.py --debug-engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --release-engine "${CARGO_TARGET_DIR:-target}/release/php-vm"

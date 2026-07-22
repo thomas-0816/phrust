@@ -21,7 +21,7 @@ fn mysqli_internal_object(class_name: &str, display_name: &str) -> php_runtime::
 /// capability probes. Network and result objects continue to be created by
 /// the owning typed mysqli builtins; this does not invent a second DB path.
 pub(in crate::vm::jit_abi) fn construct_native_mysqli_class(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -57,7 +57,7 @@ pub(in crate::vm::jit_abi) fn construct_native_mysqli_class(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_mysqli_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

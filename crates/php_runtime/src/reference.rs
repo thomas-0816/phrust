@@ -30,6 +30,16 @@ pub const NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION: u32 = 1;
 pub const NATIVE_REFERENCE_SCALAR_VIEW_EMPTY: u32 = 0;
 /// The scalar view contains a valid immediate encoded value.
 pub const NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED: u32 = 1;
+/// Native code replaced the reference with an immediate integer.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_INT: u32 = 2;
+/// Native code replaced the reference with PHP null.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_NULL: u32 = 3;
+/// Native code replaced the reference with PHP false.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_FALSE: u32 = 4;
+/// Native code replaced the reference with PHP true.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_TRUE: u32 = 5;
+/// Native code replaced the reference with the internal uninitialized value.
+pub const NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_UNINITIALIZED: u32 = 6;
 /// ABI version for a reference-owned, read-only array `isset` view.
 pub const NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION: u32 = 2;
 pub const NATIVE_REFERENCE_ARRAY_VIEW_EMPTY: u32 = 0;
@@ -179,6 +189,7 @@ impl ReferenceCell {
     /// Reads the contained value by cloning it.
     #[must_use]
     pub fn get(&self) -> Value {
+        self.materialize_native_scalar_overlay();
         self.materialize_native_array_overlay();
         let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
         self.inner.value.borrow().clone()
@@ -189,6 +200,7 @@ impl ReferenceCell {
     /// This checked accessor is preferred outside low-level runtime internals.
     /// It returns `Err` if another caller currently holds a mutable borrow.
     pub fn try_get(&self) -> Result<Value, BorrowError> {
+        self.materialize_native_scalar_overlay();
         self.materialize_native_array_overlay();
         let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
         self.inner.value.try_borrow().map(|value| value.clone())
@@ -202,12 +214,14 @@ impl ReferenceCell {
     #[doc(hidden)]
     #[must_use]
     pub fn borrow(&self) -> Ref<'_, Value> {
+        self.materialize_native_scalar_overlay();
         self.materialize_native_array_overlay();
         self.inner.value.borrow()
     }
 
     /// Runs `f` with a checked immutable borrow of the contained value.
     pub fn try_with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> Result<T, BorrowError> {
+        self.materialize_native_scalar_overlay();
         self.materialize_native_array_overlay();
         self.inner.value.try_borrow().map(|value| f(&value))
     }
@@ -221,6 +235,7 @@ impl ReferenceCell {
         &self,
         f: impl FnOnce(&mut Value) -> T,
     ) -> Result<T, BorrowMutError> {
+        self.materialize_native_scalar_overlay();
         self.materialize_native_array_overlay();
         let result = {
             let mut value = self.inner.value.try_borrow_mut()?;
@@ -299,6 +314,7 @@ impl ReferenceCell {
     }
 
     fn publish_native_array_view(&self) {
+        self.materialize_native_scalar_overlay();
         if self.inner.native_array.state.get() == NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED {
             return;
         }
@@ -395,6 +411,33 @@ impl ReferenceCell {
         }
         self.inner.native_array.dirty.set(0);
         self.publish_native_array_view();
+    }
+
+    /// Commits an immediate scalar written by native code into the cold Rust
+    /// value only when a cold semantic consumer crosses that boundary.
+    /// Native reads continue to use the encoded scalar in the stable view.
+    fn materialize_native_scalar_overlay(&self) {
+        let state = self.inner.native_scalar.state.get();
+        let value = match state {
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_INT => {
+                Value::Int(self.inner.native_scalar.encoded.get())
+            }
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_NULL => Value::Null,
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_FALSE => Value::Bool(false),
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_TRUE => Value::Bool(true),
+            NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_UNINITIALIZED => Value::Uninitialized,
+            _ => return,
+        };
+        self.inner.native_array.dirty.set(0);
+        self.inner
+            .native_array
+            .state
+            .set(NATIVE_REFERENCE_ARRAY_VIEW_EMPTY);
+        *self.inner.value.borrow_mut() = value;
+        self.inner
+            .native_scalar
+            .state
+            .set(NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED);
     }
 
     /// Returns true when both cells point at the same shared storage.

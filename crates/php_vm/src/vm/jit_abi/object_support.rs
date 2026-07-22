@@ -47,7 +47,7 @@ pub(super) fn native_reflection_type(type_: &php_ir::IrReturnType) -> Value {
 }
 
 pub(super) fn native_reflection_attributes(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     attributes: &[php_ir::AttributeEntry],
 ) -> Result<Value, String> {
     let mut result = php_runtime::api::PhpArray::new();
@@ -83,7 +83,7 @@ pub(super) fn native_reflection_attributes(
 }
 
 pub(super) fn native_reflection_parameter(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     parameter: &php_ir::IrParam,
 ) -> Result<Value, String> {
     let default = parameter
@@ -117,7 +117,7 @@ pub(super) fn native_reflection_parameter(
 }
 
 pub(super) fn native_reflection_function_properties(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     function: &php_ir::IrFunction,
     closure: Option<&php_runtime::api::ClosurePayload>,
 ) -> Result<Vec<(String, Value)>, String> {
@@ -181,7 +181,7 @@ pub(super) fn native_reflection_function_properties(
 }
 
 pub(super) fn execute_native_array_object(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

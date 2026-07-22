@@ -8,6 +8,17 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
+/// One authoritative declared-property cell while an object is admitted to
+/// native execution. `initialized == 0` represents an absent/unset slot;
+/// otherwise `value` is the request-native encoded owner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NativeDeclaredPropertySlot {
+    pub initialized: u32,
+    pub reserved: u32,
+    pub value: i64,
+}
+
 /// Class-owned declared-property layout, shared across instances of the
 /// same class through a thread-local cache. The layout maps storage names
 /// (private names arrive pre-mangled as `private:Owner:prop`) to slot
@@ -151,6 +162,10 @@ struct ObjectStorage {
     /// Declared property slots; `None` means unset (absent), which is
     /// distinct from a present `Value::Uninitialized` typed slot.
     declared_slots: Vec<Option<Value>>,
+    /// Mutually exclusive native representation of `declared_slots`.
+    /// Promotion moves every Rust value out before installing this box;
+    /// demotion removes the box before restoring Rust values.
+    native_declared_slots: Option<Box<[NativeDeclaredPropertySlot]>>,
     /// Dynamic (undeclared) properties; declared names never live here.
     dynamic_properties: HashMap<String, Value>,
     /// Insertion order of dynamic properties. Declared properties iterate
@@ -369,12 +384,69 @@ impl ObjectRef {
         Self::assemble(class, display_name, layout, declared_slots)
     }
 
+    /// Returns the immutable numeric layout identity selected for a runtime
+    /// class/display-name pair without allocating an object instance.
+    #[must_use]
+    pub fn prepared_layout_id(class: &ClassEntry, display_name: &str) -> u64 {
+        class_layout(class, display_name).layout_id
+    }
+
+    /// Returns the numeric declared-storage slot for a prepared class shape
+    /// without allocating an object. Publication uses this once; generated
+    /// code subsequently consumes only the slot and layout identity.
+    #[must_use]
+    pub fn prepared_declared_slot_index(
+        class: &ClassEntry,
+        display_name: &str,
+        storage_name: &str,
+    ) -> Option<u32> {
+        class_layout(class, display_name)
+            .slot_by_name
+            .get(storage_name)
+            .copied()
+    }
+
+    /// Creates an object whose declared properties are already represented by
+    /// authoritative native encoded slots. No Rust `Value` slot vector is
+    /// constructed at this boundary.
+    #[must_use]
+    pub fn from_layout_native_slots(
+        class: &ClassEntry,
+        display_name: impl Into<String>,
+        native_declared_slots: Box<[NativeDeclaredPropertySlot]>,
+    ) -> Self {
+        let display_name = display_name.into();
+        let layout = class_layout(class, &display_name);
+        debug_assert_eq!(
+            native_declared_slots.len(),
+            layout.slot_names.len(),
+            "prepared native slot template length must match the class layout"
+        );
+        Self::assemble_with_slots(
+            class,
+            display_name,
+            layout,
+            Vec::new(),
+            Some(native_declared_slots),
+        )
+    }
+
     /// Assembles object storage from a resolved layout and declared-slot vector.
     fn assemble(
         class: &ClassEntry,
         display_name: String,
         layout: Rc<PropertyLayout>,
         declared_slots: Vec<Option<Value>>,
+    ) -> Self {
+        Self::assemble_with_slots(class, display_name, layout, declared_slots, None)
+    }
+
+    fn assemble_with_slots(
+        class: &ClassEntry,
+        display_name: String,
+        layout: Rc<PropertyLayout>,
+        declared_slots: Vec<Option<Value>>,
+        native_declared_slots: Option<Box<[NativeDeclaredPropertySlot]>>,
     ) -> Self {
         crate::layout_stats::record_object_allocation();
         let id = next_object_id();
@@ -393,6 +465,7 @@ impl ObjectRef {
                     id_guard: Some(ObjectIdGuard::new(id)),
                     layout,
                     declared_slots,
+                    native_declared_slots,
                     dynamic_properties: HashMap::new(),
                     dynamic_order: Vec::new(),
                     dynamic_debug_labels: HashMap::new(),
@@ -441,6 +514,7 @@ impl ObjectRef {
                     id_guard: None,
                     layout: empty_layout,
                     declared_slots: Vec::new(),
+                    native_declared_slots: None,
                     dynamic_properties,
                     dynamic_order,
                     dynamic_debug_labels,
@@ -526,6 +600,7 @@ impl ObjectRef {
                     id_guard: Some(ObjectIdGuard::new(id)),
                     layout: Rc::clone(&storage.layout),
                     declared_slots: storage.declared_slots.clone(),
+                    native_declared_slots: None,
                     dynamic_properties: storage.dynamic_properties.clone(),
                     dynamic_order: storage.dynamic_order.clone(),
                     dynamic_debug_labels: storage.dynamic_debug_labels.clone(),
@@ -538,6 +613,24 @@ impl ObjectRef {
     #[must_use]
     pub fn get_property(&self, name: &str) -> Option<Value> {
         self.cell.storage.borrow().get(name).cloned()
+    }
+
+    /// Tests only the actual dynamic-property side map without cloning a PHP
+    /// value. Declared-property existence is answered from the shared numeric
+    /// layout and remains true for uninitialized typed slots.
+    #[must_use]
+    pub fn has_dynamic_property(&self, name: &str) -> bool {
+        self.cell
+            .storage
+            .borrow()
+            .dynamic_properties
+            .contains_key(name)
+    }
+
+    /// Returns whether this identity owns any actual dynamic properties.
+    #[must_use]
+    pub fn has_dynamic_properties(&self) -> bool {
+        !self.cell.storage.borrow().dynamic_properties.is_empty()
     }
 
     /// Attempts to read a property value without panicking on nested borrows.
@@ -765,6 +858,97 @@ impl ObjectRef {
             .slot_names
             .get(slot as usize)
             .cloned()
+    }
+
+    /// Moves the complete declared-slot vector out for request-native
+    /// promotion. No Rust property value remains authoritative afterwards.
+    pub fn take_declared_slots_for_native(&self, layout_id: u64) -> Option<Vec<Option<Value>>> {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id || storage.native_declared_slots.is_some() {
+            return None;
+        }
+        Some(std::mem::take(&mut storage.declared_slots))
+    }
+
+    /// Installs the authoritative request-native declared cells after every
+    /// Rust slot value has been moved into an encoded owner.
+    pub fn install_native_declared_slots(
+        &self,
+        layout_id: u64,
+        slots: Box<[NativeDeclaredPropertySlot]>,
+    ) -> bool {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_some()
+            || !storage.declared_slots.is_empty()
+            || slots.len() != storage.layout.slot_names.len()
+        {
+            return false;
+        }
+        storage.native_declared_slots = Some(slots);
+        true
+    }
+
+    /// Returns the stable native declared-slot base guarded by the layout ID.
+    #[must_use]
+    pub fn native_declared_slots_view(
+        &self,
+        layout_id: u64,
+    ) -> Option<(*mut NativeDeclaredPropertySlot, usize)> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id {
+            return None;
+        }
+        let slots = storage.native_declared_slots.as_ref()?;
+        Some((slots.as_ptr().cast_mut(), slots.len()))
+    }
+
+    /// Copies authoritative native declared-slot records for a prepared
+    /// shallow clone. The caller must retain each initialized encoded value
+    /// before installing the copy in another object identity.
+    #[must_use]
+    pub fn clone_native_declared_slots(
+        &self,
+        layout_id: u64,
+    ) -> Option<Box<[NativeDeclaredPropertySlot]>> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id {
+            return None;
+        }
+        Some(storage.native_declared_slots.as_ref()?.clone())
+    }
+
+    /// Removes the native cells before a cold boundary reconstructs Rust
+    /// values. Until [`Self::restore_declared_slots_from_native`] succeeds,
+    /// the object has no declared-slot representation and must stay cold.
+    pub fn take_native_declared_slots(
+        &self,
+        layout_id: u64,
+    ) -> Option<Box<[NativeDeclaredPropertySlot]>> {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id || !storage.declared_slots.is_empty() {
+            return None;
+        }
+        storage.native_declared_slots.take()
+    }
+
+    /// Restores the cold Rust declared-slot vector after native owners were
+    /// decoded and released.
+    pub fn restore_declared_slots_from_native(
+        &self,
+        layout_id: u64,
+        slots: Vec<Option<Value>>,
+    ) -> bool {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_some()
+            || !storage.declared_slots.is_empty()
+            || slots.len() != storage.layout.slot_names.len()
+        {
+            return false;
+        }
+        storage.declared_slots = slots;
+        true
     }
 
     /// Reads a declared slot directly when the layout guard matches.

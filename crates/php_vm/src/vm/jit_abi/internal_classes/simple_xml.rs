@@ -5,7 +5,7 @@ fn is_simple_xml(class_name: &str) -> bool {
 }
 
 pub(in crate::vm::jit_abi) fn construct_native_simple_xml(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     class_name: &str,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {
@@ -28,7 +28,7 @@ pub(in crate::vm::jit_abi) fn construct_native_simple_xml(
     Some(result)
 }
 
-fn write_xml_file(context: &NativeExecutionContext<'_>, path: &str, bytes: &[u8]) -> Value {
+fn write_xml_file(context: &NativeRequestColdState<'_>, path: &str, bytes: &[u8]) -> Value {
     let path = normalize_runtime_path(context, path);
     if !context
         .options
@@ -42,7 +42,7 @@ fn write_xml_file(context: &NativeExecutionContext<'_>, path: &str, bytes: &[u8]
 }
 
 fn call_simple_xml_method(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     object: &php_runtime::api::ObjectRef,
     method: &str,
     arguments: Vec<Value>,
@@ -115,7 +115,7 @@ fn call_simple_xml_method(
 }
 
 pub(in crate::vm::jit_abi) fn execute_native_simple_xml_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

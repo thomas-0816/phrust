@@ -476,7 +476,7 @@ fn server_request_profile_alone_stays_in_summary_mode() {
             .expect("parse profile json");
     // A request profile alone must not pay native hot-counter overhead; it
     // still records phase timings.
-    assert_eq!(profile["schema_version"], serde_json::Value::from(6));
+    assert_eq!(profile["schema_version"], serde_json::Value::from(7));
     assert_eq!(profile["native"], serde_json::json!({}));
     assert!(profile["phases_nanos"].is_object());
 
@@ -567,7 +567,7 @@ fn server_request_profile_vm_counter_mode_collects_native_counters() {
     let profile: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
             .expect("parse profile json");
-    assert_eq!(profile["schema_version"], serde_json::Value::from(6));
+    assert_eq!(profile["schema_version"], serde_json::Value::from(7));
     assert!(
         profile["native"]["execution_entries"]
             .as_u64()

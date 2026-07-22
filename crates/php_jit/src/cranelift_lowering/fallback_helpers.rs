@@ -113,6 +113,63 @@ pub(super) extern "C" fn test_native_echo_fallback(
     crate::JitCallStatus::RUNTIME_ERROR.0 as i32
 }
 
+pub(super) extern "C" fn test_native_echo_bytes_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _bytes: *const u8,
+    _length: u64,
+) {
+}
+
+pub(super) extern "C" fn test_native_echo_int_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _value: i64,
+) {
+}
+
+pub(super) extern "C" fn test_native_echo_float_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _value: f64,
+) {
+}
+
+pub(super) extern "C" fn test_native_float_to_string_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _value: f64,
+) -> crate::JitNativeControlResult {
+    crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
+}
+
+pub(super) extern "C" fn test_native_float_to_int_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _mode: u32,
+    _function: u32,
+    _continuation: u32,
+    _value: f64,
+) -> crate::JitNativeControlResult {
+    crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
+}
+
+pub(super) extern "C" fn test_native_object_class_name_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _object: i64,
+) -> crate::JitNativeControlResult {
+    crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
+}
+
+pub(super) extern "C" fn test_native_prepared_object_new_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _prepared: u64,
+) -> crate::JitNativeControlResult {
+    crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
+}
+
+pub(super) extern "C" fn test_native_plain_object_clone_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _object: i64,
+) -> crate::JitNativeControlResult {
+    crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
+}
+
 pub(super) extern "C" fn test_native_local_fetch_fallback(
     _runtime: *mut std::ffi::c_void,
     _op: u32,

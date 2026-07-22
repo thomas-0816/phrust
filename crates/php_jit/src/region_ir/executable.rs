@@ -555,27 +555,37 @@ pub enum RegionInstructionKind {
     BindReferenceProperty {
         object: RegionOperand,
         source: LocalId,
+        property: String,
+        prepared_class: Option<u32>,
     },
     BindReferenceFromProperty {
         target: LocalId,
         object: RegionOperand,
+        property: String,
+        prepared_class: Option<u32>,
     },
     BindReferenceFromPropertyDim {
         target: LocalId,
         object: RegionOperand,
         keys: Vec<RegionOperand>,
+        property: String,
+        prepared_class: Option<u32>,
     },
     BindReferenceIntoPropertyDim {
         object: RegionOperand,
         keys: Vec<RegionOperand>,
         append: bool,
         source: LocalId,
+        property: String,
+        prepared_class: Option<u32>,
     },
     BindReferenceDimFromProperty {
         array: LocalId,
         keys: Vec<RegionOperand>,
         append: bool,
         object: RegionOperand,
+        property: String,
+        prepared_class: Option<u32>,
     },
     BindReferenceStaticProperty {
         source: LocalId,
@@ -618,11 +628,13 @@ pub enum RegionInstructionKind {
     NewObject {
         dst: RegId,
         class: u32,
+        prepared: bool,
     },
     FetchProperty {
         dst: RegId,
         object: RegionOperand,
         property: String,
+        prepared_class: Option<u32>,
     },
     FetchDynamicStaticProperty {
         dst: RegId,
@@ -631,16 +643,19 @@ pub enum RegionInstructionKind {
     FetchObjectClassName {
         dst: RegId,
         object: RegionOperand,
+        prepared_class: Option<u32>,
     },
     AssignProperty {
         dst: RegId,
         object: RegionOperand,
         value: RegionOperand,
         property: String,
+        prepared_class: Option<u32>,
     },
     CloneObject {
         dst: RegId,
         object: RegionOperand,
+        plain: bool,
     },
     CloneWith {
         dst: RegId,
@@ -1368,6 +1383,13 @@ impl BaselineRegionBuilder {
                                 Some(RegionInstructionKind::BindReferenceProperty {
                                     object: lower_operand(unit, property.object),
                                     source: temporary,
+                                    property: property.property.clone(),
+                                    prepared_class: prepared_exact_object_class(
+                                        unit,
+                                        property.object,
+                                        &known_object_registers,
+                                        &exact_object_registers,
+                                    ),
                                 })
                             } else {
                                 None
@@ -1583,12 +1605,25 @@ impl BaselineRegionBuilder {
                                 kind: RegionInstructionKind::NewObject {
                                     dst: *dst,
                                     class: class_index,
+                                    prepared: class_has_publication_stable_layout(
+                                        unit,
+                                        class_index,
+                                    ),
                                 },
                             });
                             next_continuation = next_continuation.saturating_add(1);
                         }
                         if let Some((class_index, _)) = find_class(unit, class_name) {
                             known_object_registers.insert(*dst, class_index);
+                            exact_object_registers.insert(*dst);
+                        }
+                    }
+                    InstructionKind::CloneObject { dst, object } => {
+                        if let Operand::Register(register) = object
+                            && exact_object_registers.contains(register)
+                            && let Some(class) = known_object_registers.get(register).copied()
+                        {
+                            known_object_registers.insert(*dst, class);
                             exact_object_registers.insert(*dst);
                         }
                     }
@@ -2356,6 +2391,7 @@ impl BaselineRegionBuilder {
                             None if args.is_empty() => RegionInstructionKind::NewObject {
                                 dst: *dst,
                                 class: class_index,
+                                prepared: class_has_publication_stable_layout(unit, class_index),
                             },
                             None => RegionInstructionKind::NativeCall(RegionNativeCall {
                                 result: RegionCallResult::Register(*dst),
@@ -2752,6 +2788,19 @@ impl BaselineRegionBuilder {
                         dst: *dst,
                         object: lower_operand(unit, *object),
                         property: property.clone(),
+                        prepared_class: match object {
+                            Operand::Register(register)
+                                if exact_object_registers.contains(register) =>
+                            {
+                                known_object_registers
+                                    .get(register)
+                                    .copied()
+                                    .filter(|class| {
+                                        class_has_publication_stable_layout(unit, *class)
+                                    })
+                            }
+                            Operand::Register(_) | Operand::Local(_) | Operand::Constant(_) => None,
+                        },
                     },
                     InstructionKind::AssignProperty {
                         dst,
@@ -2763,6 +2812,19 @@ impl BaselineRegionBuilder {
                         object: lower_operand(unit, *object),
                         value: lower_operand(unit, *value),
                         property: property.clone(),
+                        prepared_class: match object {
+                            Operand::Register(register)
+                                if exact_object_registers.contains(register) =>
+                            {
+                                known_object_registers
+                                    .get(register)
+                                    .copied()
+                                    .filter(|class| {
+                                        class_has_publication_stable_layout(unit, *class)
+                                    })
+                            }
+                            Operand::Register(_) | Operand::Local(_) | Operand::Constant(_) => None,
+                        },
                     },
                     InstructionKind::FetchDynamicProperty {
                         dst,
@@ -3283,9 +3345,23 @@ impl BaselineRegionBuilder {
                         })
                     }
                     InstructionKind::CloneObject { dst, object } => {
+                        let plain = match object {
+                            Operand::Register(register)
+                                if exact_object_registers.contains(register) =>
+                            {
+                                known_object_registers
+                                    .get(register)
+                                    .copied()
+                                    .is_some_and(|class| !class_has_clone_method(unit, class))
+                            }
+                            Operand::Register(_) | Operand::Local(_) | Operand::Constant(_) => {
+                                false
+                            }
+                        };
                         RegionInstructionKind::CloneObject {
                             dst: *dst,
                             object: lower_operand(unit, *object),
+                            plain,
                         }
                     }
                     InstructionKind::CloneWith {
@@ -3327,51 +3403,90 @@ impl BaselineRegionBuilder {
                         append: *append,
                         source: *source,
                     },
-                    InstructionKind::BindReferenceProperty { object, source, .. } => {
-                        RegionInstructionKind::BindReferenceProperty {
-                            object: lower_operand(unit, *object),
-                            source: *source,
-                        }
-                    }
+                    InstructionKind::BindReferenceProperty {
+                        object,
+                        property,
+                        source,
+                    } => RegionInstructionKind::BindReferenceProperty {
+                        object: lower_operand(unit, *object),
+                        source: *source,
+                        property: property.clone(),
+                        prepared_class: prepared_exact_object_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            &exact_object_registers,
+                        ),
+                    },
                     InstructionKind::BindReferencePropertyDim {
                         object,
                         dims,
                         append,
                         source,
-                        ..
+                        property,
                     } => RegionInstructionKind::BindReferenceIntoPropertyDim {
                         object: lower_operand(unit, *object),
                         keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
                         append: *append,
                         source: *source,
+                        property: property.clone(),
+                        prepared_class: prepared_exact_object_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            &exact_object_registers,
+                        ),
                     },
                     InstructionKind::BindReferenceDimFromProperty {
                         local,
                         dims,
                         append,
                         object,
-                        ..
+                        property,
                     } => RegionInstructionKind::BindReferenceDimFromProperty {
                         array: *local,
                         keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
                         append: *append,
                         object: lower_operand(unit, *object),
+                        property: property.clone(),
+                        prepared_class: prepared_exact_object_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            &exact_object_registers,
+                        ),
                     },
-                    InstructionKind::BindReferenceFromProperty { target, object, .. } => {
-                        RegionInstructionKind::BindReferenceFromProperty {
-                            target: *target,
-                            object: lower_operand(unit, *object),
-                        }
-                    }
+                    InstructionKind::BindReferenceFromProperty {
+                        target,
+                        object,
+                        property,
+                    } => RegionInstructionKind::BindReferenceFromProperty {
+                        target: *target,
+                        object: lower_operand(unit, *object),
+                        property: property.clone(),
+                        prepared_class: prepared_exact_object_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            &exact_object_registers,
+                        ),
+                    },
                     InstructionKind::BindReferenceFromPropertyDim {
                         target,
                         object,
                         dims,
-                        ..
+                        property,
                     } => RegionInstructionKind::BindReferenceFromPropertyDim {
                         target: *target,
                         object: lower_operand(unit, *object),
                         keys: dims.iter().map(|dim| lower_operand(unit, *dim)).collect(),
+                        property: property.clone(),
+                        prepared_class: prepared_exact_object_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            &exact_object_registers,
+                        ),
                     },
                     InstructionKind::BindReferenceStaticProperty { source, .. } => {
                         RegionInstructionKind::BindReferenceStaticProperty { source: *source }
@@ -3383,9 +3498,23 @@ impl BaselineRegionBuilder {
                         class_name: lower_operand(unit, *class_name),
                     },
                     InstructionKind::FetchObjectClassName { dst, object } => {
+                        let prepared_class = match object {
+                            Operand::Register(register)
+                                if exact_object_registers.contains(register) =>
+                            {
+                                known_object_registers
+                                    .get(register)
+                                    .copied()
+                                    .filter(|class| {
+                                        class_has_publication_stable_layout(unit, *class)
+                                    })
+                            }
+                            Operand::Register(_) | Operand::Local(_) | Operand::Constant(_) => None,
+                        };
                         RegionInstructionKind::FetchObjectClassName {
                             dst: *dst,
                             object: lower_operand(unit, *object),
+                            prepared_class,
                         }
                     }
                     InstructionKind::RegisterConstant { name, value } => {
@@ -4111,11 +4240,103 @@ fn find_class<'a>(unit: &'a IrUnit, name: &str) -> Option<(u32, &'a php_ir::modu
         .and_then(|(index, class)| u32::try_from(index).ok().map(|index| (index, class)))
 }
 
+fn publication_constant_is_stable(constant: &IrConstant) -> bool {
+    match constant {
+        IrConstant::Null
+        | IrConstant::Bool(_)
+        | IrConstant::Int(_)
+        | IrConstant::Float(_)
+        | IrConstant::String(_)
+        | IrConstant::StringBytes(_) => true,
+        IrConstant::Array(entries) => entries.iter().all(|entry| {
+            entry
+                .key
+                .as_ref()
+                .is_none_or(publication_constant_is_stable)
+                && publication_constant_is_stable(&entry.value)
+        }),
+        IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => false,
+    }
+}
+
+fn class_has_publication_stable_layout(unit: &IrUnit, class_index: u32) -> bool {
+    let Some(mut class) = unit.classes.get(class_index as usize) else {
+        return false;
+    };
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        if class.flags.is_abstract
+            || class.flags.is_interface
+            || class.flags.is_trait
+            || class.flags.is_enum
+            || !visited.insert(class.name.as_str())
+            || class.properties.iter().any(|property| {
+                property
+                    .default
+                    .and_then(|constant| unit.constants.get(constant.index()))
+                    .is_some_and(|constant| !publication_constant_is_stable(constant))
+            })
+        {
+            return false;
+        }
+        let Some(parent) = class.parent.as_deref() else {
+            return true;
+        };
+        let Some((_, parent)) = find_class(unit, parent) else {
+            // Runtime/internal and dynamically supplied parents need their
+            // exact baseline declaration boundary before publication.
+            return false;
+        };
+        class = parent;
+    }
+}
+
+fn class_has_clone_method(unit: &IrUnit, class_index: u32) -> bool {
+    let Some(mut class) = unit.classes.get(class_index as usize) else {
+        return true;
+    };
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        if !visited.insert(class.name.as_str())
+            || class
+                .methods
+                .iter()
+                .any(|method| method.name.eq_ignore_ascii_case("__clone"))
+        {
+            return true;
+        }
+        let Some(parent) = class.parent.as_deref() else {
+            return false;
+        };
+        let Some((_, parent)) = find_class(unit, parent) else {
+            // An external parent may supply magic clone semantics.
+            return true;
+        };
+        class = parent;
+    }
+}
+
 fn known_object_class(operand: Operand, registers: &BTreeMap<RegId, u32>) -> Option<u32> {
     match operand {
         Operand::Register(register) => registers.get(&register).copied(),
         Operand::Local(_) | Operand::Constant(_) => None,
     }
+}
+
+fn prepared_exact_object_class(
+    unit: &IrUnit,
+    operand: Operand,
+    known_registers: &BTreeMap<RegId, u32>,
+    exact_registers: &BTreeSet<RegId>,
+) -> Option<u32> {
+    let Operand::Register(register) = operand else {
+        return None;
+    };
+    exact_registers
+        .contains(&register)
+        .then(|| known_registers.get(&register).copied())
+        .flatten()
+        .filter(|class| class_has_publication_stable_layout(unit, *class))
 }
 
 fn returned_closure(unit: &IrUnit, name: &str, args: &[IrCallArg]) -> Option<KnownClosure> {

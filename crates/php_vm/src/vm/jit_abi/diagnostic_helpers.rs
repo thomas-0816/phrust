@@ -13,12 +13,12 @@ macro_rules! diagnostic_helper {
             debug_assert!(!runtime.is_null());
             // SAFETY: diagnostic baseline helpers execute synchronously and
             // use the same caller-owned output slot as the production ABI.
-            unsafe { (&*runtime).enter_runtime_helper($helper) };
+            unsafe { native_cold_context(runtime).enter_runtime_helper($helper) };
             let result = super::$target(runtime, $($name,)* out);
             if result == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 {
                 // SAFETY: diagnostic wrappers receive a live request pointer
                 // and run synchronously around the production baseline helper.
-                let context = unsafe { &mut *runtime };
+                let context = unsafe { native_cold_context(runtime) };
                 if context.diagnostic.is_none() {
                     record_native_helper_failure(
                         context,
@@ -27,7 +27,7 @@ macro_rules! diagnostic_helper {
                 }
             }
             // SAFETY: the target returned before the request can be destroyed.
-            unsafe { (&*runtime).exit_runtime_helper($helper) };
+            unsafe { native_cold_context(runtime).exit_runtime_helper($helper) };
             result
         }
     };
@@ -40,10 +40,10 @@ macro_rules! diagnostic_helper {
             debug_assert!(!runtime.is_null());
             // SAFETY: diagnostic helpers receive the same live request pointer
             // as their production target and execute synchronously.
-            unsafe { (&*runtime).enter_runtime_helper($helper) };
+            unsafe { native_cold_context(runtime).enter_runtime_helper($helper) };
             let result = super::$target(runtime, $($name),*);
             // SAFETY: the target returned before the request can be destroyed.
-            unsafe { (&*runtime).exit_runtime_helper($helper) };
+            unsafe { native_cold_context(runtime).exit_runtime_helper($helper) };
             result
         }
     };

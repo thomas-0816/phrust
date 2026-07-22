@@ -1,5 +1,31 @@
 use super::*;
 
+fn publish_dynamic_unit_entry(
+    compiled: &crate::compiled_unit::CompiledUnit,
+    function: php_ir::FunctionId,
+    handle: &php_jit::JitFunctionHandle,
+) {
+    let Some(address) = handle.native_entry_address() else {
+        return;
+    };
+    let deployment = compiled.prepared_deployment_image();
+    let tier = handle
+        .region_state_metadata()
+        .map(|metadata| metadata.compiler_tier);
+    match tier {
+        Some(php_jit::region_ir::NativeCompilerTier::Optimizing) => {
+            if let Some(cell) = deployment.optimizing_function_entries.get(function.index()) {
+                cell.store(address, std::sync::atomic::Ordering::Release);
+            }
+        }
+        _ => {
+            if let Some(cell) = deployment.native_function_entries.get(function.index()) {
+                cell.store(address, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+}
+
 /// Compile-on-demand boundary for a statically known PHP callee.
 ///
 /// The helper resolves code only; generated code performs the native call
@@ -71,7 +97,7 @@ pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
 }
 
 pub(super) fn register_native_dynamic_unit(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     compiled: crate::compiled_unit::CompiledUnit,
     exports: NativeIncludeExports,
 ) -> Result<(), String> {
@@ -127,6 +153,9 @@ pub(super) fn register_native_dynamic_unit(
         .copied()
         .map(|function| (function, context.external_signature_epoch))
         .collect();
+    for (function, handle) in native_entries.iter() {
+        publish_dynamic_unit_entry(&compiled, *function, handle);
+    }
     let unit = context.dynamic_units.len();
     context.dynamic_units.push(NativeDynamicUnit {
         compiled,
@@ -177,7 +206,7 @@ pub(super) fn register_native_dynamic_unit(
                 "\nWarning: Constant {name} already defined, this will be an error in PHP 9 in {path} on line {line}\n"
             ));
         } else {
-            context.dynamic_constants.insert(name, value);
+            context.insert_dynamic_constant(name, value);
         }
     }
     context
@@ -246,7 +275,7 @@ pub(in crate::vm) fn native_entries_from_records(
 }
 
 pub(super) fn ensure_native_entry(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
 ) -> Result<php_jit::JitFunctionHandle, String> {
     let external_signatures =
@@ -298,7 +327,7 @@ pub(super) fn ensure_native_entry(
 }
 
 pub(super) fn ensure_native_baseline_entry(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     function: php_ir::FunctionId,
 ) -> Result<php_jit::JitFunctionHandle, String> {
     let external_signatures =
@@ -320,7 +349,7 @@ pub(super) fn ensure_native_baseline_entry(
 /// required handle. Returning a clone here as well made every warm external
 /// call perform two generation-owner reference-count operations.
 pub(super) fn prepare_dynamic_native_entry(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     unit: usize,
     function: php_ir::FunctionId,
 ) -> Result<(), String> {
@@ -329,8 +358,23 @@ pub(super) fn prepare_dynamic_native_entry(
         .dynamic_units
         .get(unit)
         .ok_or_else(|| "dynamic native unit is missing".to_owned())?;
+    let wants_optimizing =
+        context.options.native_optimization == super::super::NativeOptimizationPolicy::Optimizing;
+    let prepared_tier_matches = |handle: &php_jit::JitFunctionHandle| {
+        handle.region_state_metadata().is_some_and(|metadata| {
+            metadata.compiler_tier
+                == if wants_optimizing {
+                    php_jit::region_ir::NativeCompilerTier::Optimizing
+                } else {
+                    php_jit::region_ir::NativeCompilerTier::Baseline
+                }
+        })
+    };
     if package.native_entry_signature_epochs.get(&function) == Some(&signature_epoch)
-        && package.native_entries.contains_key(&function)
+        && package
+            .native_entries
+            .get(&function)
+            .is_some_and(prepared_tier_matches)
     {
         return Ok(());
     }
@@ -338,7 +382,10 @@ pub(super) fn prepare_dynamic_native_entry(
     let external_signatures = visible_external_function_signatures(context, &compiled, function);
     let signature_hash = super::super::external_function_signatures_hash(&external_signatures);
     if package.native_entry_signature_hashes.get(&function) == Some(&signature_hash)
-        && package.native_entries.contains_key(&function)
+        && package
+            .native_entries
+            .get(&function)
+            .is_some_and(prepared_tier_matches)
     {
         context
             .dynamic_units
@@ -348,12 +395,28 @@ pub(super) fn prepare_dynamic_native_entry(
             .insert(function, signature_epoch);
         return Ok(());
     }
+    let mut baseline_options = context.options.clone();
+    baseline_options.native_optimization = super::super::NativeOptimizationPolicy::Baseline;
+    baseline_options.tiering.enabled = false;
     let handle = context.worker_state.resolve_native_function(
         &compiled,
         function,
-        context.options,
+        &baseline_options,
         &external_signatures,
     )?;
+    publish_dynamic_unit_entry(&compiled, function, &handle);
+    let preferred = if wants_optimizing {
+        let optimizing = context.worker_state.resolve_native_function(
+            &compiled,
+            function,
+            context.options,
+            &external_signatures,
+        )?;
+        publish_dynamic_unit_entry(&compiled, function, &optimizing);
+        optimizing
+    } else {
+        handle
+    };
     let package = context
         .dynamic_units
         .get_mut(unit)
@@ -364,12 +427,12 @@ pub(super) fn prepare_dynamic_native_entry(
     package
         .native_entry_signature_epochs
         .insert(function, signature_epoch);
-    std::sync::Arc::make_mut(&mut package.native_entries).insert(function, handle);
+    std::sync::Arc::make_mut(&mut package.native_entries).insert(function, preferred);
     Ok(())
 }
 
 pub(super) fn visible_external_function_signatures(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     compiled: &crate::compiled_unit::CompiledUnit,
     root: php_ir::FunctionId,
 ) -> Vec<php_jit::JitExternalFunctionSignature> {
@@ -380,7 +443,7 @@ pub(super) fn visible_external_function_signatures(
 }
 
 pub(super) fn visible_external_function_signatures_for_unit(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     compiled: &crate::compiled_unit::CompiledUnit,
 ) -> Vec<php_jit::JitExternalFunctionSignature> {
     collect_visible_external_function_signatures(
@@ -390,7 +453,7 @@ pub(super) fn visible_external_function_signatures_for_unit(
 }
 
 pub(super) fn collect_visible_external_function_signatures(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     calls: &[crate::compiled_unit::PreparedExternalFunctionCall],
 ) -> Vec<php_jit::JitExternalFunctionSignature> {
     calls
@@ -443,7 +506,7 @@ pub(super) fn native_include_uses_implicit_return(unit: &php_ir::IrUnit) -> bool
 }
 
 pub(super) fn native_external_class_handle(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     name: &str,
 ) -> Option<(usize, crate::compiled_unit::CompiledClass)> {
     let (unit, class_entry) = native_external_class_ref(context, name)?;
@@ -455,7 +518,7 @@ pub(super) fn native_external_class_handle(
 }
 
 pub(super) fn native_external_class_ref<'a>(
-    context: &'a NativeExecutionContext<'_>,
+    context: &'a NativeRequestColdState<'_>,
     name: &str,
 ) -> Option<(usize, &'a php_ir::module::ClassEntry)> {
     let requested = normalized_class_name(name);
@@ -479,14 +542,14 @@ pub(super) fn native_external_class_ref<'a>(
 }
 
 pub(super) fn native_external_class_exists(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     name: &str,
 ) -> bool {
     native_external_class_ref(context, name).is_some()
 }
 
 pub(super) fn native_autoload_class(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     name: &str,
     source: &php_ir::Instruction,
 ) -> Result<(), String> {

@@ -847,8 +847,12 @@ def resolve_phrust(args: argparse.Namespace, out_dir: Path, docroot: Path | None
     target = HttpTarget("phrust", base_url, args.host_header, (process.pid,))
     readiness = wait_for_native_readiness(target, args.timeout_seconds, args.metrics_token)
     identity = binary_identity(server)
-    identity["source_commit"] = args.server_source_commit or None
-    identity["source_patch_sha256"] = args.server_source_patch_sha256 or None
+    identity["source_commit"] = args.server_source_commit or command_output(
+        ["git", "rev-parse", "HEAD"], REPO_ROOT
+    )
+    identity["source_patch_sha256"] = (
+        args.server_source_patch_sha256 or repository_patch_sha256()
+    )
     identity["deployment_mode"] = "immutable"
     identity["engine_preset"] = args.engine_preset
     identity["persistent_feedback"] = args.persistent_feedback
@@ -1786,6 +1790,38 @@ def directory_identity(root: Path) -> tuple[str, int]:
 def command_output(command: list[str], cwd: Path | None = None) -> str | None:
     completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
     return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def repository_patch_sha256() -> str | None:
+    diff = subprocess.run(
+        ["git", "diff", "--binary", "HEAD", "--", "."],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if diff.returncode != 0 or untracked.returncode != 0:
+        return None
+    digest = hashlib.sha256()
+    digest.update(len(diff.stdout).to_bytes(8, "big"))
+    digest.update(diff.stdout)
+    paths = sorted(path for path in untracked.stdout.split(b"\0") if path)
+    for encoded_path in paths:
+        relative = encoded_path.decode("utf-8", errors="surrogateescape")
+        path = REPO_ROOT / relative
+        if not path.is_file():
+            continue
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def checked(command: list[str]) -> str:

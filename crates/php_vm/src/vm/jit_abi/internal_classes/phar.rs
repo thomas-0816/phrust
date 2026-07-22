@@ -10,7 +10,7 @@ fn is_phar(class_name: &str) -> bool {
 /// intentionally has no OpenSSL signing backend. Reporting only those exact
 /// capabilities keeps PHPT skip decisions honest.
 pub(in crate::vm::jit_abi) fn execute_native_phar_instruction(
-    context: &mut NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     instruction: &php_ir::Instruction,
     arguments: &[i64],
 ) -> Option<Result<i64, String>> {

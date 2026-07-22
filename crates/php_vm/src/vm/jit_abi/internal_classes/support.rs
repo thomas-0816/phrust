@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn decode_arguments(
-    context: &NativeExecutionContext<'_>,
+    context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
 ) -> Result<Vec<Value>, String> {
     arguments
@@ -80,7 +80,7 @@ pub(super) fn object_argument(
 }
 
 pub(super) fn normalize_runtime_path(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     path: &str,
 ) -> std::path::PathBuf {
     let raw = std::path::Path::new(path);
@@ -105,7 +105,7 @@ pub(super) fn normalize_runtime_path(
 }
 
 pub(super) fn read_runtime_file(
-    context: &NativeExecutionContext<'_>,
+    context: &NativeRequestColdState<'_>,
     path: &str,
 ) -> Result<Option<String>, String> {
     let path = normalize_runtime_path(context, path);
