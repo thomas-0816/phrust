@@ -3780,39 +3780,68 @@ fn fiber_suspend_and_resume_use_native_continuation() {
     );
     builder.terminate_return(function, entry, Some(Operand::Register(result)), span);
     let unit = builder.finish();
-    let mut backend = CraneliftNativeCompiler;
-    let outcome = backend.compile_region(&NativeCompileRequest {
-        compile: &JitCompileRequest::new("cl.native-fiber"),
-        unit: Some(&unit),
-        function: Some(function),
-        runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
-    });
-    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
-    let handle = outcome.handle.expect("native fiber handle");
-    let crate::JitI64InvokeOutcome::SideExit {
-        status,
-        value,
-        state,
-    } = handle
-        .invoke_i64_with_deopt(&[], JIT_RUNTIME_ABI_HASH)
-        .expect("fiber start")
-    else {
-        panic!("fiber did not suspend");
-    };
-    assert_eq!(status, crate::JitCallStatus::SUSPEND_FIBER.0 as i32);
-    assert_eq!(value, 5);
-    assert_eq!(
-        handle
-            .invoke_i64_suspension_resume(
-                &[],
-                &state,
-                crate::JitNativeResumeInputKind::VALUE,
-                44,
-                JIT_RUNTIME_ABI_HASH,
-            )
-            .expect("fiber resume"),
-        crate::JitI64InvokeOutcome::Returned(44)
-    );
+    for (tier, opt_level) in [("baseline", 0), ("optimizing", 2)] {
+        let mut backend = CraneliftNativeCompiler;
+        let outcome = backend.compile_region(&NativeCompileRequest {
+            compile: &JitCompileRequest::new(format!("cl.native-fiber.{tier}"))
+                .with_opt_level(opt_level),
+            unit: Some(&unit),
+            function: Some(function),
+            runtime_helpers: crate::JitRuntimeHelperAddresses::default(),
+        });
+        assert_eq!(
+            outcome.status,
+            JitCompileStatus::Compiled,
+            "{tier}: {outcome:?}"
+        );
+        let handle = outcome.handle.expect("native fiber handle");
+        if opt_level == 2 {
+            assert_optimizing_artifact(&handle);
+            let metadata = handle
+                .region_state_metadata()
+                .expect("optimizing Fiber metadata");
+            let suspension = metadata
+                .suspensions
+                .first()
+                .expect("optimizing Fiber suspension metadata");
+            let lowering = metadata
+                .production_lowering
+                .iter()
+                .find(|entry| entry.continuation_id == suspension.continuation_id)
+                .expect("optimizing Fiber suspension lowering");
+            assert_eq!(
+                lowering.class,
+                crate::JitProductionLoweringClass::DirectClif,
+                "optimizing Fiber suspension must not enter the baseline continuation"
+            );
+            assert!(!lowering.operation_local_transition);
+        }
+        let crate::JitI64InvokeOutcome::SideExit {
+            status,
+            value,
+            state,
+        } = handle
+            .invoke_i64_with_deopt(&[], JIT_RUNTIME_ABI_HASH)
+            .expect("fiber start")
+        else {
+            panic!("{tier} fiber did not suspend");
+        };
+        assert_eq!(status, crate::JitCallStatus::SUSPEND_FIBER.0 as i32);
+        assert_eq!(value, 5);
+        assert_eq!(
+            handle
+                .invoke_i64_suspension_resume(
+                    &[],
+                    &state,
+                    crate::JitNativeResumeInputKind::VALUE,
+                    44,
+                    JIT_RUNTIME_ABI_HASH,
+                )
+                .expect("fiber resume"),
+            crate::JitI64InvokeOutcome::Returned(44),
+            "{tier}"
+        );
+    }
 }
 
 #[test]

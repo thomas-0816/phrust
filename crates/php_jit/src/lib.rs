@@ -1400,6 +1400,28 @@ impl JitFunctionHandle {
         self.invoke_i64_transition_impl(state, runtime_abi_hash, false, runtime)
     }
 
+    /// Re-enters a same-generation call continuation and completes PHP
+    /// catch/finally selection without demoting an already encoded throwable.
+    /// Fiber suspension uses this after a nested callee finishes or unwinds.
+    pub fn invoke_i64_same_artifact_transition_with_unwind_runtime(
+        &self,
+        state: &JitNativeTransitionState,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let outcome = self.invoke_i64_transition_impl(state, runtime_abi_hash, false, runtime)?;
+        let arity = self.native_entry.map_or(0, |entry| entry.arity);
+        let args = vec![0_i64; usize::from(arity)];
+        self.continue_i64_with_native_unwind_runtime(
+            &args,
+            runtime_abi_hash,
+            runtime,
+            outcome,
+            catch_matches,
+        )
+    }
+
     fn invoke_i64_transition_impl(
         &self,
         state: &JitNativeTransitionState,

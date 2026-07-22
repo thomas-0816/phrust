@@ -1510,6 +1510,9 @@ fn exact_callback_control_result(
                 Err(error) => exact_builtin_runtime_error(context, error),
             }
         }
+        Err(NativeCallControl::Propagate { status, value }) => {
+            php_jit::JitNativeControlResult::control(status, 0, value)
+        }
         Err(NativeCallControl::SuspendFiber) => {
             let value = context
                 .pending_fiber_suspension_value
@@ -1850,6 +1853,7 @@ pub(super) fn finish_native_dispatch_outcome(
             .flatten();
             (php_jit::JitCallStatus::THROW, value)
         }
+        Some(Err(NativeCallControl::Propagate { status, value })) => (status, Some(value)),
         Some(Err(NativeCallControl::SuspendFiber)) => {
             let value = with_native_context_for(runtime, "call_dispatch", |context| {
                 context.pending_fiber_suspension_value.take()
@@ -2155,13 +2159,16 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
             let completed_nested_fiber_matches = context
                 .completed_nested_fiber_call
                 .as_ref()
-                .is_some_and(|(function, continuation, _)| {
+                .is_some_and(|(function, continuation, _, _)| {
                     *function == frame.function_id && *continuation == frame.continuation_id
                 });
             if completed_nested_fiber_matches
-                && let Some((_, _, value)) = context.completed_nested_fiber_call.take()
+                && let Some((_, _, status, value)) = context.completed_nested_fiber_call.take()
             {
-                return Ok(value);
+                if status.is_terminal_return() {
+                    return Ok(value);
+                }
+                return Err(NativeCallControl::Propagate { status, value });
             }
             if direct_external_in_place {
                 let name = descriptor.target_symbol.as_deref().ok_or_else(|| {
@@ -3529,6 +3536,9 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     php_jit::JitCallStatus::THROW,
                     value,
                 )
+            }
+            Some(Err(NativeCallControl::Propagate { status, value })) => {
+                (status.0 as i32, status, Some(value))
             }
             Some(Err(NativeCallControl::SuspendFiber)) => {
                 let value = with_native_context_for(runtime, "call_dispatch", |context| {

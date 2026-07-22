@@ -17137,6 +17137,7 @@ fn lower_optimizing_region_instruction(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     register_variables: &NativeRegisterMap,
+    suspension_blocks: &BTreeMap<u32, ir::Block>,
     locals: &NativeLocalMap,
     registers: &mut NativeRegisterMap,
     instruction: &RegionInstruction,
@@ -17148,6 +17149,7 @@ fn lower_optimizing_region_instruction(
     runtime: ir::Value,
     result_out: ir::Value,
     deopt_out: ir::Value,
+    resume_state: ir::Value,
     function: FunctionId,
     local_count: u32,
     native_version: u32,
@@ -19134,6 +19136,23 @@ fn lower_optimizing_region_instruction(
                 transition,
             )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
+        }
+        RegionInstructionKind::NativeSuspend(suspend) => {
+            lower_native_suspension(
+                builder,
+                suspension_blocks,
+                locals,
+                register_variables,
+                registers,
+                transition_live_registers,
+                suspend,
+                instruction,
+                result_out,
+                deopt_out,
+                resume_state,
+                function,
+                local_count,
+            )?;
         }
         RegionInstructionKind::NativeCall(call) => {
             emitted_class = crate::JitProductionLoweringClass::BaselineFragmentTransition;

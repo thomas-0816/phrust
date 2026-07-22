@@ -1521,7 +1521,7 @@ pub(super) struct NativeRequestColdState<'a> {
     active_fiber: Option<u64>,
     pending_fiber_suspension_value: Option<i64>,
     pending_nested_fiber_execution: Option<NativeFiberExecution>,
-    completed_nested_fiber_call: Option<(u32, u32, i64)>,
+    completed_nested_fiber_call: Option<(u32, u32, php_jit::JitCallStatus, i64)>,
     pending_throwable: Option<Value>,
     called_classes: Vec<Arc<str>>,
     lexical_scope_classes: Vec<String>,
@@ -1711,7 +1711,17 @@ enum NativeEncodedValueKind {
 #[derive(Debug)]
 enum NativeCallControl {
     Rethrow,
-    Throw { class: String, message: String },
+    Throw {
+        class: String,
+        message: String,
+    },
+    /// A nested native activation already produced an authoritative encoded
+    /// PHP control value. Re-entering its caller must preserve both fields
+    /// verbatim so the caller's generated unwind/catch path handles them.
+    Propagate {
+        status: php_jit::JitCallStatus,
+        value: i64,
+    },
     SuspendFiber,
     Exit(i64),
     PublishedRuntimeError,
@@ -1736,6 +1746,10 @@ impl NativeCallControl {
         match self {
             Self::Rethrow => "E_PHP_RETHROW".to_owned(),
             Self::Throw { class, message } => format!("E_PHP_THROW:{class}:{message}"),
+            Self::Propagate { status, value } => format!(
+                "native encoded control status={} value={value} escaped into the baseline boundary",
+                status.0
+            ),
             Self::SuspendFiber => "E_PHP_SUSPEND_FIBER".to_owned(),
             Self::Exit(value) => format!("E_PHP_EXIT:{value}"),
             Self::PublishedRuntimeError => NATIVE_RUNTIME_ERROR_MARKER.to_owned(),
@@ -2213,13 +2227,11 @@ impl<'a> NativeRequestColdState<'a> {
                 owners.push(state.registers[snapshot]);
             }
         }
-        if self
-            .completed_nested_fiber_call
-            .as_ref()
-            .is_some_and(|(function, continuation, _)| {
+        if self.completed_nested_fiber_call.as_ref().is_some_and(
+            |(function, continuation, _, _)| {
                 *function == state.function_id && *continuation == state.continuation_id
-            })
-            && let Some((_, _, value)) = self.completed_nested_fiber_call.take()
+            },
+        ) && let Some((_, _, _, value)) = self.completed_nested_fiber_call.take()
         {
             owners.push(value);
         }
@@ -3353,7 +3365,7 @@ impl<'a> NativeRequestColdState<'a> {
         if let Some(value) = self.pending_fiber_suspension_value.take() {
             let _ = self.release_if_live(value);
         }
-        if let Some((_, _, value)) = self.completed_nested_fiber_call.take() {
+        if let Some((_, _, _, value)) = self.completed_nested_fiber_call.take() {
             let _ = self.release_if_live(value);
         }
         self.active_fiber = None;
@@ -4498,7 +4510,13 @@ impl<'a> NativeRequestColdState<'a> {
                     .native_fiber_return_value(*encoded)
                     .ok_or_else(|| "native Fiber return slot is missing".to_owned())?;
                 value
-                    .map(|value| self.duplicate_baseline_call_argument(value))
+                    .map(|value| {
+                        self.duplicate_authoritative_native_value(value)?
+                            .ok_or_else(|| {
+                                "direct Fiber return value is not authoritative native data"
+                                    .to_owned()
+                            })
+                    })
                     .transpose()
             }
             NativeFiberReceiver::Materialized(fiber) => fiber
@@ -12426,11 +12444,12 @@ fn invoke_native_method_with_prepared_trace_arguments(
         }) if status == php_jit::JitCallStatus::SUSPEND_FIBER.0 as i32
             && context.active_fiber.is_some() =>
         {
+            let nested = context.pending_nested_fiber_execution.take().map(Box::new);
             context.pending_nested_fiber_execution = Some(NativeFiberExecution {
                 handle,
                 arguments: arguments.to_vec(),
                 state,
-                nested: None,
+                nested,
             });
             context.pending_fiber_suspension_value = Some(value);
             Err(NativeCallControl::SuspendFiber)
