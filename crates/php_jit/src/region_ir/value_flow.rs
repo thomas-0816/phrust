@@ -41,7 +41,10 @@ impl LocalStorageClass {
 
     #[must_use]
     pub const fn is_reference_slot(self) -> bool {
-        matches!(self, Self::MemoryReference | Self::RequestGlobal | Self::Superglobal)
+        matches!(
+            self,
+            Self::MemoryReference | Self::RequestGlobal | Self::Superglobal
+        )
     }
 }
 

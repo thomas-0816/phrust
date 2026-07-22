@@ -1526,6 +1526,16 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
                 php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
             };
         }
+        if is_top_level
+            && let Some(name) = name.as_deref().filter(|name| *name != "GLOBALS")
+            && let Err(error) = context.materialize_native_request_global(name)
+        {
+            record_native_helper_failure(
+                context,
+                format!("top-level local store could not materialize ${name}: {error}"),
+            );
+            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+        }
         if !is_top_level
             && name.as_deref() != Some("GLOBALS")
             && context.php_handle_is_reference(current) == Some(false)
@@ -2004,6 +2014,13 @@ pub(in crate::vm) extern "C" fn jit_native_reference_bind_abi(
                 && is_top_level
                 && name != "GLOBALS"
             {
+                if context.php_handle_is_reference(encoded) == Some(true)
+                    && let Err(error) =
+                        context.rebind_native_request_local_reference(&name, encoded)
+                {
+                    record_native_helper_failure(context, error);
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                }
                 let Ok(value) = context.decode(encoded) else {
                     return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
                 };
@@ -4166,7 +4183,13 @@ pub(in crate::vm) extern "C" fn jit_native_array_fetch_abi(
                 return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
             };
             let exists = if context.is_globals_proxy(array) {
-                context.fetch_native_global_dimension(&key).is_some()
+                match context.fetch_native_global_dimension(&key) {
+                    Ok(found) => found.is_some(),
+                    Err(error) => {
+                        record_native_helper_failure(context, error);
+                        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                    }
+                }
             } else if let Some(array) = context.direct_array_encoding(array) {
                 let Ok(found) = context.direct_array_find_encoded(array, &key) else {
                     return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
@@ -4259,7 +4282,13 @@ pub(in crate::vm) extern "C" fn jit_native_array_fetch_abi(
             let Some(key) = php_runtime::api::ArrayKey::from_value(&key) else {
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             };
-            let found = context.fetch_native_global_dimension(&key);
+            let found = match context.fetch_native_global_dimension(&key) {
+                Ok(found) => found,
+                Err(error) => {
+                    record_native_helper_failure(context, error);
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                }
+            };
             return finish_native_array_fetch(
                 context,
                 found,

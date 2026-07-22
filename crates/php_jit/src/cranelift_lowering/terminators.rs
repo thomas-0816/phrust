@@ -54,6 +54,83 @@ impl NativeOptimizingTerminatorTransition<'_> {
     }
 }
 
+fn lower_optimizing_terminator_reference_local(
+    builder: &mut FunctionBuilder<'_>,
+    local: ir::Value,
+    transition: NativeOptimizingTerminatorTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let inspect = builder.create_block();
+    let direct = builder.create_block();
+    let plain = builder.create_block();
+    let rejected = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::I64);
+
+    let reference = lower_value_has_tag(builder, local, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
+    builder.ins().brif(reference, inspect, &[], plain, &[]);
+
+    builder.switch_to_block(plain);
+    builder.ins().jump(merge, &[local.into()]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, local, transition.deopt_out);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let flags = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
+    );
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    let direct_kind = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
+    );
+    let version = builder.ins().icmp_imm(
+        IntCC::Equal,
+        flags,
+        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION),
+    );
+    let published = builder.ins().icmp_imm(
+        IntCC::NotEqual,
+        state,
+        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
+    );
+    let admitted = builder.ins().band(direct_kind, version);
+    let admitted = builder.ins().band(admitted, published);
+    builder.ins().brif(admitted, direct, &[], rejected, &[]);
+
+    builder.switch_to_block(direct);
+    let value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    builder.ins().jump(merge, &[value.into()]);
+
+    builder.switch_to_block(rejected);
+    transition.emit(builder)?;
+    let placeholder = builder
+        .ins()
+        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+    builder.ins().jump(merge, &[placeholder.into()]);
+
+    builder.switch_to_block(merge);
+    Ok(builder.block_params(merge)[0])
+}
+
 fn lower_optimizing_frame_cleanup(
     builder: &mut FunctionBuilder<'_>,
     cleanup: &[(LocalId, ir::Value)],
@@ -99,6 +176,13 @@ fn lower_optimizing_condition(
     transition: NativeOptimizingTerminatorTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let value = lower_region_operand(builder, locals, registers, condition)?;
+    let value = if let RegionOperand::Local(local) = condition
+        && value_flow.local_storage(local).is_reference_slot()
+    {
+        lower_optimizing_terminator_reference_local(builder, value, transition)?
+    } else {
+        value
+    };
     let fact = value_flow.operand_fact(constants, condition);
     if let Some(truthy) = scalar_truthy(builder, value, fact.class)
         && fact.certainty != crate::region_ir::SsaCertainty::Unknown
@@ -776,7 +860,16 @@ pub(super) fn lower_optimizing_region_terminator(
                 )
             });
             let fact = lowering_operand_fact(value_flow, constants, *value);
+            let reference_local = match *value {
+                RegionOperand::Local(local) => value_flow.local_storage(local).is_reference_slot(),
+                _ => false,
+            };
             let value = lower_region_operand(builder, locals, registers, *value)?;
+            let value = if reference_local {
+                lower_optimizing_terminator_reference_local(builder, value, transition)?
+            } else {
+                value
+            };
             if return_check_required {
                 let Some(matches_return_type) = return_type
                     .and_then(|type_| lower_optimizing_type_guard(builder, value, type_))
@@ -797,7 +890,7 @@ pub(super) fn lower_optimizing_region_terminator(
                 builder.ins().jump(admitted, &[]);
                 builder.switch_to_block(admitted);
             }
-            if fact.ownership == SsaOwnership::Borrowed {
+            if reference_local || fact.ownership == SsaOwnership::Borrowed {
                 lower_optimizing_retain(builder, value, deopt_out);
             }
             let cleanup = frame_cleanup_locals
@@ -844,10 +937,21 @@ pub(super) fn lower_optimizing_region_terminator(
             value,
             finally: None,
         } => {
+            let reference_local = value.is_some_and(|value| {
+                matches!(value, RegionOperand::Local(local) if value_flow.local_storage(local).is_reference_slot())
+            });
             let value = value
                 .map(|value| lower_region_operand(builder, locals, registers, value))
                 .transpose()?
                 .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+            let value = if reference_local {
+                let value =
+                    lower_optimizing_terminator_reference_local(builder, value, transition)?;
+                lower_optimizing_retain(builder, value, deopt_out);
+                value
+            } else {
+                value
+            };
             let cleanup = frame_cleanup_locals
                 .iter()
                 .copied()

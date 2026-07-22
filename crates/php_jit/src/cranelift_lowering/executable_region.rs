@@ -552,8 +552,9 @@ pub(super) fn instruction_has_native_transition(
 
 fn optimizing_instruction_family_is_direct(kind: &RegionInstructionKind) -> bool {
     match kind {
-        RegionInstructionKind::AssignDim { keys, .. } => keys.len() == 1,
-        RegionInstructionKind::AppendDim { keys, .. } => keys.is_empty(),
+        RegionInstructionKind::AssignDim { keys, .. }
+        | RegionInstructionKind::UnsetDim { keys, .. } => !keys.is_empty(),
+        RegionInstructionKind::AppendDim { .. } => true,
         RegionInstructionKind::ArrayInsert {
             key, by_ref_local, ..
         } => key.is_none() && by_ref_local.is_none(),
@@ -3681,16 +3682,6 @@ pub(super) fn select_native_region_tier(
     _plan: &NativeCompilePlan,
     _constants: &[IrConstant],
 ) {
-    // A PHP top-level body executes in the including scope: every named local
-    // is observable through the caller frame and may be introduced by the
-    // included file itself. The optimizing local-SSA contract deliberately
-    // excludes that dynamic symbol-table aliasing. Keep top-level bodies in
-    // baseline-native code until they have a dedicated direct native scope
-    // representation; silently treating these locals as private SSA values
-    // loses include exports such as WordPress' `$wp_version`.
-    if candidate.flags.is_top_level {
-        candidate.compile_metadata.tier = NativeCompilerTier::Baseline;
-    }
     // Baseline and optimizing code must share real CFG boundaries around a
     // baseline-only island.  Otherwise baseline has no edge on which it can
     // re-enter the published optimizing continuation and one unsupported
@@ -5229,8 +5220,7 @@ fn define_region_graph_function(
                         value_flow.local_storage(*local),
                         crate::region_ir::LocalStorageClass::RequestGlobal
                             | crate::region_ir::LocalStorageClass::Superglobal
-                    )
-                {
+                    ) {
                     lower_trusted_request_local_reference(
                         &mut builder,
                         deopt_out,

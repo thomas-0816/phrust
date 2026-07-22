@@ -3351,6 +3351,19 @@ impl<'a> NativeRequestColdState<'a> {
 
     fn duplicate_native_global_value(&mut self, name: &str) -> Result<Option<i64>, String> {
         self.ensure_native_global_references();
+        if let Some(encoded) = self
+            .native_global_reference_handles
+            .get(name)
+            .copied()
+            .filter(|encoded| self.native_reference_identity(*encoded).is_some())
+        {
+            if self.native_encoded_value_kind(encoded)
+                == Some(NativeEncodedValueKind::Uninitialized)
+            {
+                return Ok(Some(php_jit::jit_encode_constant(u32::MAX)));
+            }
+            return self.duplicate_dereferenced_native_value(encoded).map(Some);
+        }
         if matches!(self.inherited_globals.get(name), Some(Value::Uninitialized)) {
             return Ok(Some(php_jit::jit_encode_constant(u32::MAX)));
         }
@@ -3358,6 +3371,108 @@ impl<'a> NativeRequestColdState<'a> {
             return Ok(None);
         };
         self.duplicate_dereferenced_native_value(encoded).map(Some)
+    }
+
+    fn native_request_local_handle(&mut self, name: &str) -> Result<i64, String> {
+        self.ensure_native_global_references();
+        if let Some(encoded) = self
+            .native_global_reference_handles
+            .get(name)
+            .copied()
+            .filter(|encoded| self.native_reference_identity(*encoded).is_some())
+        {
+            return Ok(encoded);
+        }
+        if let Some(encoded) = self.native_global_reference_handle(name)? {
+            return Ok(encoded);
+        }
+
+        let reference = php_runtime::api::ReferenceCell::new(Value::Uninitialized);
+        let encoded = self.encode_native_reference_owner(reference)?;
+        if let Some(stale) = self
+            .native_global_reference_handles
+            .insert(name.to_owned(), encoded)
+        {
+            self.release(stale)?;
+        }
+        Ok(encoded)
+    }
+
+    fn rebind_native_request_local_reference(
+        &mut self,
+        name: &str,
+        encoded: i64,
+    ) -> Result<(), String> {
+        if self.native_reference_identity(encoded).is_none() {
+            return Err(format!(
+                "native request local ${name} was rebound to a non-reference value"
+            ));
+        }
+        let slot_indices = self
+            .unit
+            .functions
+            .iter()
+            .enumerate()
+            .flat_map(|(function, definition)| {
+                definition
+                    .locals
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(local, _)| {
+                        (native_request_local_name(definition, local) == Some(name))
+                            .then_some((function, local))
+                    })
+            })
+            .filter_map(|(function, local)| {
+                self.trusted_request_local_function_offsets
+                    .get(function)
+                    .copied()
+                    .and_then(|base| usize::try_from(base).ok())
+                    .and_then(|base| base.checked_add(local))
+                    .filter(|index| {
+                        self.trusted_request_local_slots
+                            .get(*index)
+                            .is_some_and(|slot| slot.encoded != encoded)
+                    })
+            })
+            .collect::<Vec<_>>();
+        let map_changed = self.native_global_reference_handles.get(name).copied() != Some(encoded);
+        let owner_count = slot_indices.len().saturating_add(usize::from(map_changed));
+        let mut retained = 0_usize;
+        for _ in 0..owner_count {
+            if let Err(error) = self.retain(encoded) {
+                for _ in 0..retained {
+                    let _ = self.release(encoded);
+                }
+                return Err(error);
+            }
+            retained = retained.saturating_add(1);
+        }
+
+        let mut replaced = Vec::with_capacity(owner_count);
+        if map_changed
+            && let Some(previous) = self
+                .native_global_reference_handles
+                .insert(name.to_owned(), encoded)
+        {
+            replaced.push(previous);
+        }
+        for index in slot_indices {
+            let previous = self.trusted_request_local_slots[index];
+            self.trusted_request_local_slots[index] = php_jit::JitNativeRequestLocalSlot {
+                encoded,
+                state: php_jit::JIT_NATIVE_REQUEST_LOCAL_PUBLISHED,
+                reserved: 0,
+            };
+            if previous.state == php_jit::JIT_NATIVE_REQUEST_LOCAL_PUBLISHED {
+                replaced.push(previous.encoded);
+            }
+        }
+        for previous in replaced {
+            self.release(previous)?;
+        }
+        self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+        Ok(())
     }
 
     fn prepare_trusted_request_locals(&mut self) {
@@ -3379,15 +3494,7 @@ impl<'a> NativeRequestColdState<'a> {
             })
             .collect::<Vec<_>>();
         for (function, local, name) in sites {
-            let missing = !self.inherited_globals.contains_key(&name)
-                || matches!(self.inherited_globals.get(&name), Some(Value::Uninitialized));
-            if missing {
-                self.inherited_globals.insert(
-                    name.clone(),
-                    Value::Reference(php_runtime::api::ReferenceCell::new(Value::Uninitialized)),
-                );
-            }
-            let Ok(Some(encoded)) = self.native_global_reference_handle(&name) else {
+            let Ok(encoded) = self.native_request_local_handle(&name) else {
                 continue;
             };
             let Some(index) = self
@@ -3419,6 +3526,32 @@ impl<'a> NativeRequestColdState<'a> {
                 let _ = self.release(previous.encoded);
             }
         }
+    }
+
+    fn materialize_native_request_global(&mut self, name: &str) -> Result<(), String> {
+        let Some(encoded) = self.native_global_reference_handles.get(name).copied() else {
+            return Ok(());
+        };
+        let Value::Reference(reference) = self.decode(encoded)? else {
+            return Err(format!(
+                "native request global ${name} lost its reference identity"
+            ));
+        };
+        self.inherited_globals
+            .insert(name.to_owned(), Value::Reference(reference));
+        Ok(())
+    }
+
+    fn materialize_native_request_globals(&mut self) -> Result<(), String> {
+        let names = self
+            .native_global_reference_handles
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in names {
+            self.materialize_native_request_global(&name)?;
+        }
+        Ok(())
     }
 
     fn clear_trusted_request_locals(&mut self) {
@@ -3720,10 +3853,14 @@ impl<'a> NativeRequestColdState<'a> {
         }
     }
 
-    fn materialize_native_globals_array(&self) -> Value {
+    fn materialize_native_globals_array(&mut self) -> Result<Value, String> {
+        self.materialize_native_request_globals()?;
         let mut globals = php_runtime::api::PhpArray::with_capacity(self.inherited_globals.len());
         for (name, value) in &self.inherited_globals {
-            if name == "GLOBALS" || matches!(value, Value::Uninitialized) {
+            if name == "GLOBALS"
+                || matches!(value, Value::Uninitialized)
+                || matches!(value, Value::Reference(reference) if matches!(reference.get(), Value::Uninitialized))
+            {
                 continue;
             }
             globals.insert(
@@ -3731,7 +3868,7 @@ impl<'a> NativeRequestColdState<'a> {
                 value.clone(),
             );
         }
-        Value::Array(globals)
+        Ok(Value::Array(globals))
     }
 
     fn encode_globals_proxy(&mut self) -> Result<i64, String> {
@@ -3758,13 +3895,23 @@ impl<'a> NativeRequestColdState<'a> {
         (name.as_ref() != "GLOBALS").then_some(name)
     }
 
-    fn fetch_native_global_dimension(&mut self, key: &php_runtime::api::ArrayKey) -> Option<Value> {
+    fn fetch_native_global_dimension(
+        &mut self,
+        key: &php_runtime::api::ArrayKey,
+    ) -> Result<Option<Value>, String> {
         self.ensure_native_global_references();
-        let name = Self::native_global_name(key)?;
-        self.inherited_globals
+        let Some(name) = Self::native_global_name(key) else {
+            return Ok(None);
+        };
+        self.materialize_native_request_global(name.as_ref())?;
+        Ok(self
+            .inherited_globals
             .get(name.as_ref())
-            .filter(|value| !matches!(value, Value::Uninitialized))
-            .cloned()
+            .filter(|value| {
+                !matches!(value, Value::Uninitialized)
+                    && !matches!(value, Value::Reference(reference) if matches!(reference.get(), Value::Uninitialized))
+            })
+            .cloned())
     }
 
     fn replace_direct_reference_cell_value(
@@ -3806,6 +3953,7 @@ impl<'a> NativeRequestColdState<'a> {
         let Some(name) = Self::native_global_name(key) else {
             return Ok(false);
         };
+        self.materialize_native_request_global(name.as_ref())?;
         if let Value::Reference(reference) = replacement {
             replacement = reference.get();
         }
@@ -3841,6 +3989,7 @@ impl<'a> NativeRequestColdState<'a> {
         let Some(name) = Self::native_global_name(key) else {
             return Ok(false);
         };
+        self.materialize_native_request_global(name.as_ref())?;
         if let Some(Value::Reference(reference)) = self.inherited_globals.get(name.as_ref()) {
             self.invalidate_native_global_reference(reference.gc_debug_id())?;
         }
@@ -3862,6 +4011,7 @@ impl<'a> NativeRequestColdState<'a> {
         let Some(name) = Self::native_global_name(key) else {
             return Ok(None);
         };
+        self.materialize_native_request_global(name.as_ref())?;
         if let Some(Value::Reference(reference)) = self.inherited_globals.get(name.as_ref()) {
             return Ok(Some(reference.clone()));
         }
@@ -5232,9 +5382,7 @@ impl<'a> NativeRequestColdState<'a> {
                 Some(NativeStoredValue::PreparedClosure(closure)) => {
                     Ok(Value::Callable(closure.callable.clone()))
                 }
-                Some(NativeStoredValue::GlobalsProxy) => {
-                    Ok(self.materialize_native_globals_array())
-                }
+                Some(NativeStoredValue::GlobalsProxy) => self.materialize_native_globals_array(),
                 Some(
                     NativeStoredValue::ArrayIterator(_)
                     | NativeStoredValue::Iterator(_)
@@ -5447,7 +5595,8 @@ impl<'a> NativeRequestColdState<'a> {
                 self.values.get(index).and_then(Option::as_ref),
                 Some(NativeStoredValue::GlobalsProxy)
             ) {
-                return self.encode(self.materialize_native_globals_array());
+                let globals = self.materialize_native_globals_array()?;
+                return self.encode(globals);
             }
             match self.values.get(index).and_then(Option::as_ref) {
                 Some(NativeStoredValue::Php(Value::Array(array))) => {
@@ -8831,6 +8980,7 @@ impl<'a> NativeRequestColdState<'a> {
 
     pub(super) fn publish_include_globals(&mut self) -> Result<(), String> {
         if self.include_child {
+            self.materialize_native_request_globals()?;
             let entry_file = self
                 .unit
                 .functions
@@ -9004,10 +9154,8 @@ pub(super) fn activate_native_context(
         .unwrap_or(u32::MAX),
         trusted_request_local_reserved: 0,
         trusted_request_local_slots: context.trusted_request_local_slots.as_ptr() as usize as u64,
-        trusted_request_local_slot_count: u32::try_from(
-            context.trusted_request_local_slots.len(),
-        )
-        .unwrap_or(u32::MAX),
+        trusted_request_local_slot_count: u32::try_from(context.trusted_request_local_slots.len())
+            .unwrap_or(u32::MAX),
         trusted_request_local_slot_reserved: 0,
         trusted_constant_views: deployment.constant_views.as_ptr() as usize as u64,
         trusted_constant_view_count: u32::try_from(deployment.constant_views.len())
@@ -13258,6 +13406,9 @@ fn execute_native_bind_global(
     let php_ir::InstructionKind::BindGlobal { name, .. } = &instruction.kind else {
         return None;
     };
+    if let Err(error) = context.materialize_native_request_global(name) {
+        return Some(Err(error));
+    }
     let current = context
         .inherited_globals
         .get(name)
