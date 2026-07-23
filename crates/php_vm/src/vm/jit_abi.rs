@@ -1714,6 +1714,19 @@ enum NativeEncodedValueKind {
     Reference,
 }
 
+fn native_special_value_class_is_a(kind: NativeEncodedValueKind, target: &str) -> Option<bool> {
+    let target = normalize_class_name(target);
+    match kind {
+        NativeEncodedValueKind::Callable => Some(target == "closure"),
+        NativeEncodedValueKind::Fiber => Some(target == "fiber"),
+        NativeEncodedValueKind::Generator => Some(matches!(
+            target.as_str(),
+            "generator" | "iterator" | "traversable"
+        )),
+        _ => None,
+    }
+}
+
 /// Structured control leaving one native PHP call. Successful calls carry the
 /// authoritative native encoding unchanged; exceptional control is kept
 /// typed until the ABI boundary instead of being serialized into `E_PHP_*`
@@ -7681,8 +7694,7 @@ impl<'a> NativeRequestColdState<'a> {
             Some(NativeEncodedValueKind::Float) => "float",
             Some(NativeEncodedValueKind::String) => "string",
             Some(NativeEncodedValueKind::Array) => "array",
-            Some(NativeEncodedValueKind::Object) => "object",
-            Some(NativeEncodedValueKind::Callable) => "callable",
+            Some(NativeEncodedValueKind::Object | NativeEncodedValueKind::Callable) => "object",
             Some(NativeEncodedValueKind::Resource) => "resource",
             Some(NativeEncodedValueKind::Generator) => "Generator",
             Some(NativeEncodedValueKind::Fiber) => "Fiber",
@@ -7770,11 +7782,22 @@ impl<'a> NativeRequestColdState<'a> {
             Ir::String => Some(kind == NativeEncodedValueKind::String),
             Ir::Array => Some(kind == NativeEncodedValueKind::Array),
             Ir::Callable => self.native_encoded_is_callable(encoded),
-            Ir::Iterable => Some(matches!(
+            Ir::Iterable => Some(match kind {
+                NativeEncodedValueKind::Array | NativeEncodedValueKind::Generator => true,
+                NativeEncodedValueKind::Object => {
+                    self.native_query_object(encoded).is_some_and(|object| {
+                        native_class_is_a(self, &object.class_name(), "traversable")
+                    })
+                }
+                _ => false,
+            }),
+            Ir::Object => Some(matches!(
                 kind,
-                NativeEncodedValueKind::Array | NativeEncodedValueKind::Object
+                NativeEncodedValueKind::Object
+                    | NativeEncodedValueKind::Callable
+                    | NativeEncodedValueKind::Generator
+                    | NativeEncodedValueKind::Fiber
             )),
-            Ir::Object => Some(kind == NativeEncodedValueKind::Object),
             Ir::Bool => Some(matches!(kind, NativeEncodedValueKind::Bool(_))),
             Ir::Null | Ir::Void => Some(kind == NativeEncodedValueKind::Null),
             Ir::Mixed => Some(true),
@@ -7782,8 +7805,10 @@ impl<'a> NativeRequestColdState<'a> {
             Ir::False => Some(kind == NativeEncodedValueKind::Bool(false)),
             Ir::True => Some(kind == NativeEncodedValueKind::Bool(true)),
             Ir::Class { name, .. } => Some(
-                self.native_query_object(encoded)
-                    .is_some_and(|object| native_class_is_a(self, &object.class_name(), name)),
+                native_special_value_class_is_a(kind, name).unwrap_or_else(|| {
+                    self.native_query_object(encoded)
+                        .is_some_and(|object| native_class_is_a(self, &object.class_name(), name))
+                }),
             ),
             Ir::Nullable { inner } => {
                 if kind == NativeEncodedValueKind::Null {
@@ -9932,6 +9957,7 @@ impl<'a> NativeRequestColdState<'a> {
             generator.lifecycle = php_runtime::api::GeneratorState::Running;
             generator.handle = Some(handle.clone());
         }
+        let invocation_handle = handle.clone();
         let outcome = self.run_in_native_generator_target(&target, |context| {
             let runtime = context.native_runtime_ptr();
             let outcome = if let Some(state) = saved_state.as_ref() {
@@ -9940,14 +9966,14 @@ impl<'a> NativeRequestColdState<'a> {
                         *function == state.function_id && *continuation == state.continuation_id
                     },
                 ) {
-                    handle.invoke_i64_same_artifact_transition_with_unwind_runtime(
+                    invocation_handle.invoke_i64_same_artifact_transition_with_unwind_runtime(
                         state,
                         php_jit::JIT_RUNTIME_ABI_HASH,
                         runtime,
                         |types, value| native_catch_matches(context, types, value),
                     )
                 } else {
-                    handle.invoke_i64_suspension_resume_with_native_unwind_runtime(
+                    invocation_handle.invoke_i64_suspension_resume_with_native_unwind_runtime(
                         &arguments,
                         state,
                         effective_resume_kind,
@@ -9958,13 +9984,19 @@ impl<'a> NativeRequestColdState<'a> {
                     )
                 }
             } else {
-                handle.invoke_i64_with_deopt_runtime(
+                invocation_handle.invoke_i64_with_deopt_runtime(
                     &arguments,
                     php_jit::JIT_RUNTIME_ABI_HASH,
                     runtime,
                 )
             };
-            resume_native_optimizing_exit(context, outcome)
+            resume_native_optimizing_exit_with_artifact(context, Some(invocation_handle), outcome)
+                .map(|(artifact, outcome)| {
+                    (
+                        artifact.expect("Generator invocation always has an active artifact"),
+                        outcome,
+                    )
+                })
                 .map_err(|error| format!("native Generator invocation failed: {error:?}"))
         });
         if self.completed_nested_fiber_call.as_ref().is_some_and(
@@ -9976,7 +10008,7 @@ impl<'a> NativeRequestColdState<'a> {
         ) {
             self.completed_nested_fiber_call = None;
         }
-        let outcome = match outcome {
+        let (handle, outcome) = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(generator) = self.direct_generator_mut(index) {
@@ -9988,6 +10020,9 @@ impl<'a> NativeRequestColdState<'a> {
                 return Err(error);
             }
         };
+        if let Some(generator) = self.direct_generator_mut(index) {
+            generator.handle = Some(handle);
+        }
         if starting && let Some(generator) = self.direct_generator_mut(index) {
             // First entry transferred the bound owners into its native frame.
             generator.arguments.clear();
@@ -11633,8 +11668,14 @@ fn native_value_matches_ir_type(value: &Value, type_: &php_ir::IrReturnType) -> 
         Ir::String => matches!(value, Value::String(_)),
         Ir::Array => matches!(value, Value::Array(_)),
         Ir::Callable => matches!(value, Value::Callable(_)),
-        Ir::Iterable => matches!(value, Value::Array(_) | Value::Object(_)),
-        Ir::Object | Ir::Class { .. } => matches!(value, Value::Object(_)),
+        Ir::Iterable => matches!(
+            value,
+            Value::Array(_) | Value::Object(_) | Value::Generator(_)
+        ),
+        Ir::Object | Ir::Class { .. } => matches!(
+            value,
+            Value::Object(_) | Value::Callable(_) | Value::Generator(_) | Value::Fiber(_)
+        ),
         Ir::Bool => matches!(value, Value::Bool(_)),
         Ir::Null | Ir::Void => matches!(value, Value::Null),
         Ir::Mixed => true,
@@ -11671,6 +11712,19 @@ fn native_value_matches_ir_type_in_context(
     match type_ {
         Ir::Class { name, .. } => match value {
             Value::Object(object) => native_class_is_a(context, &object.class_name(), name),
+            Value::Callable(_) => name.eq_ignore_ascii_case("Closure"),
+            Value::Generator(_) => matches!(
+                normalize_class_name(name).as_str(),
+                "generator" | "iterator" | "traversable"
+            ),
+            Value::Fiber(_) => name.eq_ignore_ascii_case("Fiber"),
+            _ => false,
+        },
+        Ir::Iterable => match value {
+            Value::Array(_) | Value::Generator(_) => true,
+            Value::Object(object) => {
+                native_class_is_a(context, &object.class_name(), "traversable")
+            }
             _ => false,
         },
         Ir::Nullable { inner } => {
@@ -13113,13 +13167,7 @@ fn native_coerce_call_argument(value: Value, type_: &php_ir::IrReturnType, stric
 }
 
 fn native_function_has_implicit_closure_this(function: &php_ir::IrFunction) -> bool {
-    function.flags.is_closure
-        && !function.flags.is_static
-        && function.locals.first().is_some_and(|name| name == "this")
-        && !function
-            .captures
-            .iter()
-            .any(|capture| capture.local == php_ir::LocalId::new(0))
+    function.implicit_closure_this_local().is_some()
 }
 
 #[cfg(test)]
@@ -13751,14 +13799,28 @@ fn invoke_native_method_with_prepared_trace_arguments(
 
 pub(super) fn resume_native_optimizing_exit(
     context: &mut NativeRequestColdState<'_>,
-    mut outcome: Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError>,
+    outcome: Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError>,
 ) -> Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError> {
+    resume_native_optimizing_exit_with_artifact(context, None, outcome).map(|(_, outcome)| outcome)
+}
+
+fn resume_native_optimizing_exit_with_artifact(
+    context: &mut NativeRequestColdState<'_>,
+    mut active_artifact: Option<php_jit::JitFunctionHandle>,
+    mut outcome: Result<php_jit::JitI64InvokeOutcome, php_jit::JitInvokeError>,
+) -> Result<
+    (
+        Option<php_jit::JitFunctionHandle>,
+        php_jit::JitI64InvokeOutcome,
+    ),
+    php_jit::JitInvokeError,
+> {
     loop {
         let Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. }) = &outcome else {
-            return outcome;
+            return outcome.map(|outcome| (active_artifact, outcome));
         };
         if *status != php_jit::JitCallStatus::RECOMPILE_REQUESTED.0 as i32 {
-            return outcome;
+            return outcome.map(|outcome| (active_artifact, outcome));
         }
         let transition_instruction =
             context.instruction_for_continuation(state.function_id, state.continuation_id);
@@ -13905,6 +13967,7 @@ pub(super) fn resume_native_optimizing_exit(
             runtime,
             |types, value| native_catch_matches(context, types, value),
         );
+        active_artifact = Some(baseline);
         if let Some(started) = transition_started {
             context.record_native_transition(transition_reason.as_ref(), started.elapsed(), 0);
         }

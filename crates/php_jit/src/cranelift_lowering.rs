@@ -17358,8 +17358,17 @@ fn optimizing_fact_satisfies_type(
             fact.class,
             SsaValueClass::ArrayHandle | SsaValueClass::ObjectHandle
         ),
+        php_ir::IrReturnType::Class { name, .. } => match name.trim_start_matches('\\') {
+            name if name.eq_ignore_ascii_case("Closure") => {
+                fact.class == SsaValueClass::CallableHandle
+            }
+            name if name.eq_ignore_ascii_case("Generator") => {
+                fact.class == SsaValueClass::GeneratorHandle
+            }
+            name if name.eq_ignore_ascii_case("Fiber") => fact.class == SsaValueClass::FiberHandle,
+            _ => false,
+        },
         php_ir::IrReturnType::Never
-        | php_ir::IrReturnType::Class { .. }
         | php_ir::IrReturnType::Intersection { .. }
         | php_ir::IrReturnType::Dnf { .. } => false,
     }
@@ -17388,9 +17397,12 @@ fn optimizing_type_has_direct_guard(type_: &php_ir::IrReturnType) -> bool {
         php_ir::IrReturnType::Union { members } => {
             members.iter().any(optimizing_type_has_direct_guard)
         }
+        php_ir::IrReturnType::Class { name, .. } => matches!(
+            name.trim_start_matches('\\').to_ascii_lowercase().as_str(),
+            "closure" | "generator" | "fiber"
+        ),
         php_ir::IrReturnType::Void
         | php_ir::IrReturnType::Never
-        | php_ir::IrReturnType::Class { .. }
         | php_ir::IrReturnType::Intersection { .. }
         | php_ir::IrReturnType::Dnf { .. } => false,
     }
@@ -17470,9 +17482,20 @@ fn lower_optimizing_type_guard(
                 (Some(accepted), Some(member)) => Some(builder.ins().bor(accepted, member)),
             }
         }),
+        php_ir::IrReturnType::Class { name, .. } => match name.trim_start_matches('\\') {
+            name if name.eq_ignore_ascii_case("Closure") => {
+                Some(has_kind(builder, crate::JIT_VALUE_RUNTIME_CALLABLE_TAG))
+            }
+            name if name.eq_ignore_ascii_case("Generator") => {
+                Some(has_kind(builder, crate::JIT_VALUE_RUNTIME_GENERATOR_TAG))
+            }
+            name if name.eq_ignore_ascii_case("Fiber") => {
+                Some(has_kind(builder, crate::JIT_VALUE_RUNTIME_FIBER_TAG))
+            }
+            _ => None,
+        },
         php_ir::IrReturnType::Void
         | php_ir::IrReturnType::Never
-        | php_ir::IrReturnType::Class { .. }
         | php_ir::IrReturnType::Intersection { .. }
         | php_ir::IrReturnType::Dnf { .. } => None,
     }

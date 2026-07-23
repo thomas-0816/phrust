@@ -2750,18 +2750,33 @@ pub(super) fn execute_native_fiber_method(
                     );
                 }
                 let callable = context.fiber_receiver_callable(&fiber)?;
-                let Some((closure, _implicit_this, captures)) =
+                let Some((closure, implicit_this, captures)) =
                     context.prepared_closure_invocation(callable)
                 else {
                     return Err("Fiber callback must resolve to a native closure".to_owned());
                 };
                 let function = php_ir::FunctionId::new(closure.function);
                 let handle = ensure_native_entry(context, function)?;
-                let mut arguments = Vec::with_capacity(captures.len() + encoded.len() - 1);
+                let has_implicit_this = closure
+                    .context
+                    .owner_unit
+                    .and_then(|unit| context.dynamic_units.get(unit))
+                    .map(|package| package.compiled.unit())
+                    .unwrap_or(&*context.unit)
+                    .functions
+                    .get(function.index())
+                    .and_then(php_ir::IrFunction::implicit_closure_this_local)
+                    .is_some();
+                let implicit_this = has_implicit_this.then(|| {
+                    implicit_this.unwrap_or_else(|| php_jit::jit_encode_constant(u32::MAX))
+                });
+                let mut arguments = Vec::with_capacity(
+                    usize::from(implicit_this.is_some()) + captures.len() + encoded.len() - 1,
+                );
                 let direct_fiber = matches!(&fiber, NativeFiberReceiver::Direct(_));
-                let start_arguments = captures
-                    .iter()
-                    .copied()
+                let start_arguments = implicit_this
+                    .into_iter()
+                    .chain(captures.iter().copied())
                     .map(|argument| (argument, false))
                     .chain(
                         encoded[1..]
@@ -2814,8 +2829,15 @@ pub(super) fn execute_native_fiber_method(
                     runtime,
                 );
                 context.active_fiber = previous_fiber;
-                let outcome = match outcome {
-                    Ok(outcome) => outcome,
+                let (handle, outcome) = match resume_native_optimizing_exit_with_artifact(
+                    context,
+                    Some(handle),
+                    outcome,
+                ) {
+                    Ok((handle, outcome)) => (
+                        handle.expect("Fiber invocation always has an active artifact"),
+                        outcome,
+                    ),
                     Err(error) => {
                         context.set_fiber_receiver_state(
                             &fiber,

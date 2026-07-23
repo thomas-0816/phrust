@@ -2385,10 +2385,30 @@ pub(in crate::vm) extern "C" fn jit_native_return_check_abi(
             };
         };
         let function_name = function.name.clone();
-        let Ok(value) = context.decode(encoded) else {
-            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+        let native_match = context.native_encoded_matches_ir_type(encoded, &type_);
+        if native_match == Some(true) {
+            return if write_native_value(out, encoded) {
+                0
+            } else {
+                php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+            };
+        }
+        let actual = if native_match == Some(false) {
+            context.native_encoded_type_name(encoded)
+        } else {
+            let Ok(value) = context.decode(encoded) else {
+                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+            };
+            if native_value_matches_ir_type_in_context(context, &value, &type_) {
+                return if write_native_value(out, encoded) {
+                    0
+                } else {
+                    php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                };
+            }
+            native_value_type_name(&value)
         };
-        if !native_value_matches_ir_type_in_context(context, &value, &type_) {
+        {
             context.diagnostic = Some(php_runtime::api::RuntimeDiagnostic::new(
                 "E_PHP_VM_RETURN_TYPE_MISMATCH",
                 php_runtime::api::RuntimeSeverity::RecoverableError,
@@ -2396,18 +2416,13 @@ pub(in crate::vm) extern "C" fn jit_native_return_check_abi(
                     "{}(): Return value must be of type {}, {} returned",
                     function_name,
                     native_ir_type_name(&type_),
-                    native_value_type_name(&value)
+                    actual
                 ),
                 php_runtime::api::RuntimeSourceSpan::default(),
                 Vec::new(),
                 None,
             ));
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-        }
-        if write_native_value(out, encoded) {
-            0
-        } else {
-            php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
         }
     })
     .unwrap_or(php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32)

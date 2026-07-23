@@ -1033,16 +1033,10 @@ struct KnownClosure {
 }
 
 fn closure_requires_implicit_this(unit: &IrUnit, closure_function: FunctionId) -> bool {
-    let Some(closure) = unit.functions.get(closure_function.index()) else {
-        return false;
-    };
-    closure.flags.is_closure
-        && !closure.flags.is_static
-        && closure.locals.first().is_some_and(|name| name == "this")
-        && !closure
-            .captures
-            .iter()
-            .any(|capture| capture.local == LocalId::new(0))
+    unit.functions
+        .get(closure_function.index())
+        .and_then(php_ir::IrFunction::implicit_closure_this_local)
+        .is_some()
 }
 
 fn native_method_class(unit: &IrUnit, function: FunctionId) -> Option<(u32, bool)> {
@@ -1078,14 +1072,15 @@ pub(crate) fn native_function_parameter_locals(
 ) -> Option<Vec<LocalId>> {
     let ir_function = unit.functions.get(function.index())?;
     let method_class = native_method_class(unit, function);
-    let has_implicit_receiver = if ir_function.flags.is_method {
-        method_class.is_some_and(|(_, is_static)| !is_static)
+    let implicit_receiver = if ir_function.flags.is_method {
+        method_class
+            .is_some_and(|(_, is_static)| !is_static)
+            .then_some(LocalId::new(0))
     } else {
-        closure_requires_implicit_this(unit, function)
+        ir_function.implicit_closure_this_local()
     };
     Some(
-        has_implicit_receiver
-            .then_some(LocalId::new(0))
+        implicit_receiver
             .into_iter()
             .chain(ir_function.captures.iter().map(|capture| capture.local))
             .chain(ir_function.params.iter().map(|parameter| parameter.local))
@@ -1115,7 +1110,7 @@ fn implicit_closure_bound_object(
         return None;
     }
     let closure = unit.functions.get(closure_function.index())?;
-    debug_assert!(closure.locals.first().is_some_and(|name| name == "this"));
+    debug_assert!(closure.implicit_closure_this_local().is_some());
     caller
         .locals
         .iter()

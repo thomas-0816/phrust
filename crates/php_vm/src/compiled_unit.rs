@@ -1197,13 +1197,7 @@ impl CompiledUnit {
                                 .map(|file| Arc::from(file.path.as_str())),
                             trace_line: self.source_display_line(function.span, false).unwrap_or(0),
                             capture_count: function.captures.len(),
-                            implicit_closure_this: function.flags.is_closure
-                                && !function.flags.is_static
-                                && function.locals.first().is_some_and(|name| name == "this")
-                                && !function
-                                    .captures
-                                    .iter()
-                                    .any(|capture| capture.local == php_ir::LocalId::new(0)),
+                            implicit_closure_this: function.implicit_closure_this_local().is_some(),
                             instance_method: method_metadata
                                 .get(&function_id)
                                 .is_some_and(|(_, call_type)| *call_type == "->"),

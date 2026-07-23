@@ -153,4 +153,23 @@ impl IrFunction {
             attributes: Vec::new(),
         }
     }
+
+    /// Returns the native entry slot for a Closure's bindable `$this`.
+    ///
+    /// Captures are allocated before other Closure locals, so `$this` is not
+    /// necessarily local zero. A captured outer `$this` is already carried by
+    /// the capture list and must not also become an implicit entry operand.
+    #[must_use]
+    pub fn implicit_closure_this_local(&self) -> Option<LocalId> {
+        if !self.flags.is_closure || self.flags.is_static {
+            return None;
+        }
+        let local = self
+            .locals
+            .iter()
+            .position(|name| name == "this")
+            .and_then(|index| u32::try_from(index).ok())
+            .map(LocalId::new)?;
+        (!self.captures.iter().any(|capture| capture.local == local)).then_some(local)
+    }
 }
