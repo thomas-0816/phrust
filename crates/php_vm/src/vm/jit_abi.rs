@@ -3414,20 +3414,41 @@ impl<'a> NativeRequestColdState<'a> {
     /// boundary. A namespace fallback is deliberately not cached: defining
     /// the primary name later in the request must change subsequent lookup.
     fn prepare_trusted_constant_fetches(&mut self) {
-        let names = self
-            .continuation_instructions
-            .iter()
-            .flat_map(|function| function.iter())
-            .filter_map(|instruction| {
-                let instruction = instruction.as_ref()?;
-                let php_ir::InstructionKind::FetchConst { name, .. } = &instruction.kind else {
-                    return None;
+        // Build exact publication sites in one pass. The former name set fed
+        // every distinct name back into `publish_trusted_constant_name`,
+        // which rescanned every function and continuation for each name.
+        let mut sites = std::collections::BTreeMap::<String, Vec<(u32, u32)>>::new();
+        for (function, instructions) in self.continuation_instructions.iter().enumerate() {
+            let Ok(function) = u32::try_from(function) else {
+                continue;
+            };
+            for (continuation, instruction) in instructions.iter().enumerate() {
+                let Some(instruction) = instruction.as_ref() else {
+                    continue;
                 };
-                Some(name.clone())
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        for name in names {
-            self.publish_trusted_constant_name(&name);
+                let php_ir::InstructionKind::FetchConst { name, .. } = &instruction.kind else {
+                    continue;
+                };
+                let Ok(continuation) = u32::try_from(continuation) else {
+                    continue;
+                };
+                sites
+                    .entry(name.clone())
+                    .or_default()
+                    .push((function, continuation));
+            }
+        }
+        for (name, sites) in sites {
+            let Ok(value) = self.lookup_constant(&name) else {
+                continue;
+            };
+            let Ok(encoded) = self.encode(value) else {
+                continue;
+            };
+            for (function, continuation) in sites {
+                let _ = self.publish_trusted_constant_fetch(function, continuation, encoded);
+            }
+            let _ = self.release(encoded);
         }
     }
 
@@ -3664,9 +3685,18 @@ impl<'a> NativeRequestColdState<'a> {
                 !class.flags.is_abstract && !class.flags.is_interface && !class.flags.is_trait
             })
             .filter_map(|(owner, class)| {
-                let runtime = native_runtime_class_with_owner(self, *owner, class).ok()?;
-                let layout_id =
-                    php_runtime::api::ObjectRef::prepared_layout_id(&runtime, &class.display_name);
+                let cached = {
+                    self.runtime_class_cache
+                        .borrow()
+                        .get(&(*owner, class.name.clone()))
+                        .map(|prepared| prepared.layout_id)
+                };
+                let layout_id = if let Some(layout_id) = cached {
+                    layout_id
+                } else {
+                    let runtime = native_runtime_class_with_owner(self, *owner, class).ok()?;
+                    php_runtime::api::ObjectRef::prepared_layout_id(&runtime, &class.display_name)
+                };
                 Some((class.name.clone(), layout_id))
             })
             .collect::<Vec<_>>();

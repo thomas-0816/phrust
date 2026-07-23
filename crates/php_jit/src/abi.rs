@@ -763,6 +763,10 @@ pub fn activate_native_runtime_view(mut view: JitNativeRuntimeView) -> JitNative
 
 pub(crate) fn current_native_runtime_view() -> JitNativeRuntimeView {
     let mut view = ACTIVE_NATIVE_RUNTIME_VIEW.with(Cell::get);
+    if view.trusted_literal_slots == 0 {
+        view.trusted_literal_slots = EMPTY_NATIVE_LITERAL_SLOTS.as_ptr() as usize as u64;
+        view.trusted_literal_slot_count = 1;
+    }
     let empty = EMPTY_NATIVE_FUNCTION_ENTRIES.as_ptr() as usize as u64;
     if view.trusted_function_entries == 0 {
         view.trusted_function_entries = empty;

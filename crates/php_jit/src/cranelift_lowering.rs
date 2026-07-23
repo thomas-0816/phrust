@@ -249,8 +249,8 @@ struct NativeOptimizingOperations {
     array_ensure_unique_symbol: FunctionId,
     array_child_entry: FuncId,
     array_child_entry_symbol: FunctionId,
-    array_insert_prepared: FuncId,
-    array_insert_prepared_symbol: FunctionId,
+    array_insert_admitted: FuncId,
+    array_insert_admitted_symbol: FunctionId,
     value_release_validate: FuncId,
     value_release_validate_symbol: FunctionId,
     value_release_commit: FuncId,
@@ -1184,6 +1184,29 @@ fn lower_native_storage_value(
 
 fn native_integer_fits_immediate(value: i64) -> bool {
     crate::jit_decode_runtime_value(value).is_none() && crate::jit_decode_constant(value).is_none()
+}
+
+fn prepared_call_constant_owns_temporary(constants: &[IrConstant], operand: RegionOperand) -> bool {
+    matches!(
+        operand,
+        RegionOperand::Constant(index)
+            if matches!(
+                constants.get(index as usize),
+                Some(IrConstant::Int(value)) if !native_integer_fits_immediate(*value)
+            )
+    )
+}
+
+fn prepared_call_operand_is_constant(operand: RegionOperand) -> bool {
+    matches!(operand, RegionOperand::Constant(_) | RegionOperand::I64(_))
+}
+
+fn optimizing_fact_may_be_reference(fact: SsaValueFact) -> bool {
+    fact.certainty == crate::region_ir::SsaCertainty::Unknown
+        || matches!(
+            fact.class,
+            SsaValueClass::ReferenceHandle | SsaValueClass::MixedHandle
+        )
 }
 
 fn lower_prepared_native_call_operand(
@@ -2558,7 +2581,7 @@ struct NativeOptimizingTransition<'a> {
     native_version: u32,
     value_release_validate: ir::FuncRef,
     value_release_commit: ir::FuncRef,
-    array_insert_prepared: ir::FuncRef,
+    array_insert_admitted: ir::FuncRef,
     emitted_transition: &'a Cell<bool>,
 }
 
@@ -3941,28 +3964,11 @@ fn lower_direct_array_insert(
     let key = lower_native_storage_value(builder, key, deopt_out).0;
     if !move_value && let NativeArrayAppendFallback::Optimizing(transition) = fallback {
         let value = lower_native_storage_value(builder, value, deopt_out).0;
-        let accepted = builder.create_block();
-        let rejected = builder.create_block();
-        let done = builder.create_block();
-        builder.append_block_param(done, types::I64);
         let call = builder.ins().call(
-            transition.array_insert_prepared,
+            transition.array_insert_admitted,
             &[deopt_out, array, key, value],
         );
-        let status = builder.inst_results(call)[0];
-        let updated = builder.inst_results(call)[1];
-        let succeeded = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-        builder.ins().brif(succeeded, accepted, &[], rejected, &[]);
-
-        builder.switch_to_block(accepted);
-        builder.ins().jump(done, &[updated.into()]);
-
-        builder.switch_to_block(rejected);
-        let placeholder = transition.emit_value(builder)?;
-        builder.ins().jump(done, &[placeholder.into()]);
-
-        builder.switch_to_block(done);
-        return Ok(builder.block_params(done)[0]);
+        return Ok(builder.inst_results(call)[0]);
     }
     if constant_string_key && matches!(fallback, NativeArrayAppendFallback::Baseline { .. }) {
         let value = lower_native_storage_value(builder, value, deopt_out).0;
@@ -6333,7 +6339,7 @@ fn lower_optimizing_pack_variadic_arguments(
 /// statically known. The exact native release entry is already part of the
 /// optimizing ABI; last-owner validation and a fallback transition would be
 /// redundant here and would incorrectly make the call operation-local.
-fn lower_optimizing_commit_owned_call_argument(
+fn lower_optimizing_commit_owned_value(
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
     transition: NativeOptimizingTransition<'_>,
@@ -17618,19 +17624,6 @@ fn optimizing_type_has_direct_guard(type_: &php_ir::IrReturnType) -> bool {
     }
 }
 
-fn optimizing_type_requires_integer_representation_guard(type_: &php_ir::IrReturnType) -> bool {
-    match type_ {
-        php_ir::IrReturnType::Int => true,
-        php_ir::IrReturnType::Nullable { inner } => {
-            optimizing_type_requires_integer_representation_guard(inner)
-        }
-        php_ir::IrReturnType::Union { members } => members
-            .iter()
-            .any(optimizing_type_requires_integer_representation_guard),
-        _ => false,
-    }
-}
-
 /// Emit the exact native-tag test for the subset of `type_` admitted by the
 /// optimizing ABI. This contains no runtime helper, name lookup, operation
 /// ID, or Rust `Value` conversion.
@@ -17767,8 +17760,8 @@ fn lower_optimizing_region_instruction(
         module.declare_func_in_func(optimizing_operations.value_release_validate, builder.func);
     let value_release_commit =
         module.declare_func_in_func(optimizing_operations.value_release_commit, builder.func);
-    let array_insert_prepared =
-        module.declare_func_in_func(optimizing_operations.array_insert_prepared, builder.func);
+    let array_insert_admitted =
+        module.declare_func_in_func(optimizing_operations.array_insert_admitted, builder.func);
     let transition = NativeOptimizingTransition {
         result_out,
         deopt_out,
@@ -17781,7 +17774,7 @@ fn lower_optimizing_region_instruction(
         native_version,
         value_release_validate,
         value_release_commit,
-        array_insert_prepared,
+        array_insert_admitted,
         emitted_transition: &emitted_transition,
     };
     // Integer array keys use the encoded native value domain just like array
@@ -20428,6 +20421,8 @@ fn lower_optimizing_region_instruction(
                 let mut call_args =
                     Vec::with_capacity(call.argument_operand_offset + parameters.len());
                 let mut owned_call_arguments = std::collections::BTreeSet::new();
+                let mut nonowning_call_arguments = std::collections::BTreeSet::new();
+                let mut authoritative_call_arguments = std::collections::BTreeSet::new();
                 if let Some(unpack) = trailing_unpack {
                     for (index, operand) in call
                         .operands
@@ -20436,9 +20431,15 @@ fn lower_optimizing_region_instruction(
                         .enumerate()
                     {
                         let operand = operand.expect("admitted unpack prefix has every operand");
-                        let value = if let Some((closure, bound_count, capture_count)) =
+                        let prepared_closure_argument =
+                            if let Some((_, bound_count, capture_count)) = prepared_closure {
+                                index < bound_count.saturating_add(capture_count)
+                            } else {
+                                false
+                            };
+                        let value = if let Some((closure, bound_count, _)) =
                             prepared_closure
-                            && index < bound_count.saturating_add(capture_count)
+                            && prepared_closure_argument
                         {
                             lower_optimizing_prepared_closure_argument(
                                 builder,
@@ -20452,11 +20453,27 @@ fn lower_optimizing_region_instruction(
                                 builder, locals, registers, constants, operand, transition,
                             )?
                         };
-                        let value = if index >= call.argument_operand_offset {
+                        let value = if index >= call.argument_operand_offset
+                            && (prepared_closure_argument
+                                || optimizing_fact_may_be_reference(lowering_operand_fact(
+                                    value_flow, constants, operand,
+                                )))
+                        {
                             lower_optimizing_reference_scalar(builder, value, false, transition)?
                         } else {
                             value
                         };
+                        let argument_index = call_args.len();
+                        if !prepared_closure_argument
+                            && prepared_call_operand_is_constant(operand)
+                        {
+                            authoritative_call_arguments.insert(argument_index);
+                            if prepared_call_constant_owns_temporary(constants, operand) {
+                                owned_call_arguments.insert(argument_index);
+                            } else {
+                                nonowning_call_arguments.insert(argument_index);
+                            }
+                        }
                         call_args.push(value);
                     }
                     let unpack_operand = call
@@ -20509,6 +20526,7 @@ fn lower_optimizing_region_instruction(
                         unpacked.push(lower_optimizing_reference_scalar(
                             builder, value, false, transition,
                         )?);
+                        authoritative_call_arguments.insert(call_args.len() + unpacked.len() - 1);
                     }
                     let unpack_admitted = builder.create_block();
                     let unpack_rejected = builder.create_block();
@@ -20564,9 +20582,15 @@ fn lower_optimizing_region_instruction(
                             };
                             call_args.push(reference);
                         } else {
-                            let value = if let Some((closure, bound_count, capture_count)) =
+                            let prepared_closure_argument =
+                                if let Some((_, bound_count, capture_count)) = prepared_closure {
+                                    index < bound_count.saturating_add(capture_count)
+                                } else {
+                                    false
+                                };
+                            let value = if let Some((closure, bound_count, _)) =
                                 prepared_closure
-                                && index < bound_count.saturating_add(capture_count)
+                                && prepared_closure_argument
                             {
                                 lower_optimizing_prepared_closure_argument(
                                     builder,
@@ -20580,7 +20604,12 @@ fn lower_optimizing_region_instruction(
                                     builder, locals, registers, constants, operand, transition,
                                 )?
                             };
-                            let value = if parameter.is_some() {
+                            let value = if parameter.is_some()
+                                && (prepared_closure_argument
+                                    || optimizing_fact_may_be_reference(lowering_operand_fact(
+                                        value_flow, constants, operand,
+                                    )))
+                            {
                                 // A by-value parameter observes a direct
                                 // reference payload while its caller slot
                                 // remains authoritative.
@@ -20590,6 +20619,17 @@ fn lower_optimizing_region_instruction(
                             } else {
                                 value
                             };
+                            let argument_index = call_args.len();
+                            if !prepared_closure_argument
+                                && prepared_call_operand_is_constant(operand)
+                            {
+                                authoritative_call_arguments.insert(argument_index);
+                                if prepared_call_constant_owns_temporary(constants, operand) {
+                                    owned_call_arguments.insert(argument_index);
+                                } else {
+                                    nonowning_call_arguments.insert(argument_index);
+                                }
+                            }
                             call_args.push(value);
                         }
                     }
@@ -20621,9 +20661,7 @@ fn lower_optimizing_region_instruction(
                                     type_,
                                 )
                             });
-                        if static_match
-                            && !optimizing_type_requires_integer_representation_guard(type_)
-                        {
+                        if static_match {
                             continue;
                         }
                         let guarded =
@@ -20661,7 +20699,6 @@ fn lower_optimizing_region_instruction(
                                 lowering_operand_fact(value_flow, constants, operand),
                                 type_,
                             )
-                            && !optimizing_type_requires_integer_representation_guard(type_)
                         {
                             continue;
                         }
@@ -20687,7 +20724,10 @@ fn lower_optimizing_region_instruction(
                         }));
                     }
                 }
-                for value in call_args.iter().copied() {
+                for (index, value) in call_args.iter().copied().enumerate() {
+                    if authoritative_call_arguments.contains(&index) {
+                        continue;
+                    }
                     let authoritative =
                         lower_optimizing_call_value_is_authoritative(builder, value);
                     arguments_match = Some(arguments_match.map_or(authoritative, |accepted| {
@@ -20717,9 +20757,24 @@ fn lower_optimizing_region_instruction(
                         &variadic_values,
                         transition,
                     )?;
+                    for (tail_index, value) in variadic_values.iter().copied().enumerate() {
+                        if owned_call_arguments
+                            .contains(&variadic_start.saturating_add(tail_index))
+                        {
+                            // Packing retained the value into the array. Drop
+                            // a fresh scalar temporary's original owner now;
+                            // ordinary SSA and literal operands keep their
+                            // pre-existing owner.
+                            lower_optimizing_commit_owned_value(builder, value, transition);
+                        }
+                    }
+                    owned_call_arguments.retain(|index| *index < variadic_start);
+                    nonowning_call_arguments.retain(|index| *index < variadic_start);
+                    authoritative_call_arguments.retain(|index| *index < variadic_start);
                     let index = call_args.len();
                     call_args.push(variadic_array);
                     owned_call_arguments.insert(index);
+                    authoritative_call_arguments.insert(index);
                 }
                 let expected_arity = function_params
                     .get(&target)
@@ -20759,7 +20814,9 @@ fn lower_optimizing_region_instruction(
                         .ins()
                         .atomic_load(pointer_type, MemFlagsData::new(), preferred_entry);
                 for (index, value) in call_args.iter().copied().enumerate() {
-                    if !owned_call_arguments.contains(&index) {
+                    if !owned_call_arguments.contains(&index)
+                        && !nonowning_call_arguments.contains(&index)
+                    {
                         lower_optimizing_retain(builder, value, deopt_out);
                     }
                 }
@@ -20803,8 +20860,6 @@ fn lower_optimizing_region_instruction(
                 );
                 let status = builder.inst_results(native_call)[0];
                 let returned = builder.create_block();
-                let inspect_status = builder.create_block();
-                let resume_callee = builder.create_block();
                 let propagate = builder.create_block();
                 builder.append_block_param(propagate, types::I32);
                 let is_return =
@@ -20813,106 +20868,15 @@ fn lower_optimizing_region_instruction(
                         .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status));
                 builder
                     .ins()
-                    .brif(is_return, returned, &[], inspect_status, &[]);
-
-                builder.switch_to_block(inspect_status);
-                let is_transition = builder.ins().icmp_imm(
-                    IntCC::Equal,
-                    status,
-                    i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
-                );
-                builder.ins().brif(
-                    is_transition,
-                    resume_callee,
-                    &[],
-                    propagate,
-                    &[status.into()],
-                );
-
-                builder.switch_to_block(resume_callee);
-                // A callee-local rejection resumes that callee's exact
-                // baseline continuation. This cold load is not tier
-                // selection for the call: the hot invocation above reads only
-                // the one preferred entry cell.
-                let baseline_entries = builder.ins().load(
-                    pointer_type,
-                    MemFlagsData::new(),
-                    deopt_out,
-                    runtime_view_offset
-                        + std::mem::offset_of!(
-                            crate::JitNativeRuntimeView,
-                            trusted_function_entries,
-                        ) as i32,
-                );
-                let rejected_function = builder.ins().load(
-                    types::I32,
-                    MemFlagsData::new(),
-                    deopt_out,
-                    std::mem::offset_of!(crate::JitDeoptState, function_id) as i32,
-                );
-                let rejected_function = builder.ins().uextend(pointer_type, rejected_function);
-                let rejected_offset = builder
-                    .ins()
-                    .imul_imm(rejected_function, i64::from(pointer_type.bytes()));
-                let rejected_entry = builder.ins().iadd(baseline_entries, rejected_offset);
-                let rejected_address =
-                    builder
-                        .ins()
-                        .atomic_load(pointer_type, MemFlagsData::new(), rejected_entry);
-                let rejected_continuation = builder.ins().load(
-                    types::I32,
-                    MemFlagsData::new(),
-                    deopt_out,
-                    std::mem::offset_of!(crate::JitDeoptState, continuation_id) as i32,
-                );
-                let rejected_resume_id = builder.ins().bor_imm(
-                    rejected_continuation,
-                    i64::from(crate::JIT_NATIVE_TRANSITION_RESUME_TAG),
-                );
-                let resumed = builder.ins().call_indirect(
-                    signature,
-                    rejected_address,
-                    &[
-                        runtime,
-                        arguments,
-                        callee_result_out,
-                        deopt_out,
-                        rejected_resume_id,
-                        deopt_out,
-                    ],
-                );
-                let resumed_status = builder.inst_results(resumed)[0];
-                let resumed_return = builder.ins().icmp_imm(
-                    IntCC::Equal,
-                    resumed_status,
-                    i64::from(expected_return_status),
-                );
-                let resumed_transition = builder.ins().icmp_imm(
-                    IntCC::Equal,
-                    resumed_status,
-                    i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
-                );
-                let inspect_resumed = builder.create_block();
-                builder
-                    .ins()
-                    .brif(resumed_return, returned, &[], inspect_resumed, &[]);
-
-                builder.switch_to_block(inspect_resumed);
-                builder.ins().brif(
-                    resumed_transition,
-                    resume_callee,
-                    &[],
-                    propagate,
-                    &[resumed_status.into()],
-                );
+                    .brif(is_return, returned, &[], propagate, &[status.into()]);
 
                 builder.switch_to_block(propagate);
                 let propagated_status = builder.block_params(propagate)[0];
                 let control = builder.ins().stack_load(types::I64, result_slot, 0);
                 for (index, argument) in call_args.iter().copied().enumerate() {
                     if owned_call_arguments.contains(&index) {
-                        lower_optimizing_commit_owned_call_argument(builder, argument, transition);
-                    } else {
+                        lower_optimizing_commit_owned_value(builder, argument, transition);
+                    } else if !nonowning_call_arguments.contains(&index) {
                         lower_optimizing_release_call_owner(builder, argument, deopt_out);
                     }
                 }
@@ -20970,8 +20934,8 @@ fn lower_optimizing_region_instruction(
                 let result = builder.ins().stack_load(types::I64, result_slot, 0);
                 for (index, argument) in call_args.iter().copied().enumerate() {
                     if owned_call_arguments.contains(&index) {
-                        lower_optimizing_commit_owned_call_argument(builder, argument, transition);
-                    } else {
+                        lower_optimizing_commit_owned_value(builder, argument, transition);
+                    } else if !nonowning_call_arguments.contains(&index) {
                         lower_optimizing_release_call_owner(builder, argument, deopt_out);
                     }
                 }
@@ -20992,7 +20956,7 @@ fn lower_optimizing_region_instruction(
                         result,
                     )?,
                     RegionCallResult::Discard => {
-                        lower_optimizing_release(builder, result, transition)?;
+                        lower_optimizing_commit_owned_value(builder, result, transition);
                     }
                     RegionCallResult::ReferenceLocal(destination) => {
                         define_local_variable(builder, locals, destination, result)?;

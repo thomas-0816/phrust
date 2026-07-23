@@ -2915,16 +2915,16 @@ pub(super) fn compile_region_graph_native(
                         )
                     })?;
                 functions.insert(array_child_entry_symbol, array_child_entry);
-                let array_insert_prepared_symbol = FunctionId::new(next_synthetic);
+                let array_insert_admitted_symbol = FunctionId::new(next_synthetic);
                 next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
                     CraneliftLoweringError::new(
                         "JIT_CRANELIFT_FRAGMENT_SYMBOL_LIMIT",
                         "native prepared array-insert symbol id overflowed",
                     )
                 })?;
-                let symbol = format!("{name}.native.array_insert_prepared");
-                let signature = direct_array_insert_prepared_signature(module);
-                let array_insert_prepared = module
+                let symbol = format!("{name}.native.array_insert_admitted");
+                let signature = direct_array_insert_admitted_signature(module);
+                let array_insert_admitted = module
                     .declare_function(&symbol, Linkage::Local, &signature)
                     .map_err(|error| {
                         CraneliftLoweringError::new(
@@ -2932,7 +2932,7 @@ pub(super) fn compile_region_graph_native(
                             format!("failed to declare {symbol}: {error}"),
                         )
                     })?;
-                functions.insert(array_insert_prepared_symbol, array_insert_prepared);
+                functions.insert(array_insert_admitted_symbol, array_insert_admitted);
                 let value_release_validate_symbol = FunctionId::new(next_synthetic);
                 next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
                     CraneliftLoweringError::new(
@@ -2989,8 +2989,8 @@ pub(super) fn compile_region_graph_native(
                         array_ensure_unique_symbol,
                         array_child_entry,
                         array_child_entry_symbol,
-                        array_insert_prepared,
-                        array_insert_prepared_symbol,
+                        array_insert_admitted,
+                        array_insert_admitted_symbol,
                         value_release_validate,
                         value_release_validate_symbol,
                         value_release_commit,
@@ -3218,6 +3218,7 @@ pub(super) fn compile_region_graph_native(
                     )?;
                 }
             }
+            let referenced_internal_functions = std::cell::RefCell::new(BTreeSet::new());
             let mut append_defined = |symbol: FunctionId,
                                       arity: u8,
                                       local_count: u32,
@@ -3243,6 +3244,13 @@ pub(super) fn compile_region_graph_native(
                     .max(defined.maximum_temporary_cache_entries);
                 relocatable_bytes.extend_from_slice(&defined.code);
                 for relocation in &mut defined.relocations {
+                    if let crate::JitRelocatableTarget::InternalFunction(function) =
+                        &relocation.target
+                    {
+                        referenced_internal_functions
+                            .borrow_mut()
+                            .insert(*function);
+                    }
                     relocation.offset = relocation.offset.saturating_add(code_offset);
                 }
                 relocatable_relocations.append(&mut defined.relocations);
@@ -3262,77 +3270,6 @@ pub(super) fn compile_region_graph_native(
             // Cranelift's allocation-heavy translation scratch sequentially;
             // `clear_context` preserves its backing allocations after every
             // fragment while regalloc still sees only one fragment at a time.
-            if let NativeTierOperations::Optimizing { operations } = tier_operations {
-                let defined = define_direct_array_ensure_unique_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.array_ensure_unique,
-                )?;
-                let _ = append_defined(
-                    operations.array_ensure_unique_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_array_child_entry_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.array_child_entry,
-                )?;
-                let _ = append_defined(
-                    operations.array_child_entry_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_value_release_validate_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.value_release_validate,
-                    operations.value_release_validate_symbol,
-                )?;
-                let _ = append_defined(
-                    operations.value_release_validate_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_value_release_commit_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.value_release_commit,
-                    operations.value_release_commit_symbol,
-                )?;
-                let _ = append_defined(
-                    operations.value_release_commit_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_array_insert_prepared_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.array_insert_prepared,
-                    operations.array_insert_prepared_symbol,
-                    operations.array_child_entry,
-                    operations.array_child_entry_symbol,
-                    operations.value_release_validate,
-                    operations.value_release_validate_symbol,
-                    operations.value_release_commit,
-                    operations.value_release_commit_symbol,
-                )?;
-                let _ = append_defined(
-                    operations.array_insert_prepared_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-            }
             for candidate in regions.values() {
                 if let Some(layout) = &active_fragment_layout {
                     let mut function_bytes = 0_u64;
@@ -3502,6 +3439,101 @@ pub(super) fn compile_region_graph_native(
                         defined,
                     )?;
                     function_code_metrics.insert(candidate.function, metrics);
+                }
+            }
+            if let NativeTierOperations::Optimizing { operations } = tier_operations {
+                // Optimizing support functions are part of an artifact only
+                // when its emitted CLIF actually relocates to them. The old
+                // unconditional bundle compiled and published all five
+                // bodies even for pure scalar functions. Keep the exact
+                // native dependency closure for the admitted insert.
+                let referenced = referenced_internal_functions.borrow().clone();
+                let needs_insert = referenced.contains(&operations.array_insert_admitted_symbol);
+                let needs_ensure =
+                    referenced.contains(&operations.array_ensure_unique_symbol);
+                let needs_child =
+                    needs_insert || referenced.contains(&operations.array_child_entry_symbol);
+                let needs_validate =
+                    referenced.contains(&operations.value_release_validate_symbol);
+                let needs_commit =
+                    needs_insert || referenced.contains(&operations.value_release_commit_symbol);
+
+                if needs_ensure {
+                    let defined = define_direct_array_ensure_unique_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.array_ensure_unique,
+                    )?;
+                    let _ = append_defined(
+                        operations.array_ensure_unique_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_child {
+                    let defined = define_direct_array_child_entry_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.array_child_entry,
+                    )?;
+                    let _ = append_defined(
+                        operations.array_child_entry_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_validate {
+                    let defined = define_direct_value_release_validate_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.value_release_validate,
+                        operations.value_release_validate_symbol,
+                    )?;
+                    let _ = append_defined(
+                        operations.value_release_validate_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_commit {
+                    let defined = define_direct_value_release_commit_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.value_release_commit,
+                        operations.value_release_commit_symbol,
+                    )?;
+                    let _ = append_defined(
+                        operations.value_release_commit_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_insert {
+                    let defined = define_direct_array_insert_admitted_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.array_insert_admitted,
+                        operations.array_insert_admitted_symbol,
+                        operations.array_child_entry,
+                        operations.array_child_entry_symbol,
+                        operations.value_release_commit,
+                        operations.value_release_commit_symbol,
+                    )?;
+                    let _ = append_defined(
+                        operations.array_insert_admitted_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
                 }
             }
             drop(append_defined);
@@ -4218,14 +4250,13 @@ fn direct_array_child_entry_signature(module: &JITModule) -> Signature {
     signature
 }
 
-fn direct_array_insert_prepared_signature(module: &JITModule) -> Signature {
+fn direct_array_insert_admitted_signature(module: &JITModule) -> Signature {
     let pointer_type = module.target_config().pointer_type();
     let mut signature = module.make_signature();
     signature.params.push(AbiParam::new(pointer_type));
     signature.params.push(AbiParam::new(types::I64));
     signature.params.push(AbiParam::new(types::I64));
     signature.params.push(AbiParam::new(types::I64));
-    signature.returns.push(AbiParam::new(types::I32));
     signature.returns.push(AbiParam::new(types::I64));
     signature
 }
@@ -6709,27 +6740,20 @@ fn lower_direct_array_child_entry_body(builder: &mut FunctionBuilder<'_>) {
     builder.ins().return_(&[zero_value, null_entry]);
 }
 
-fn lower_direct_array_insert_prepared_body(
+fn lower_direct_array_insert_admitted_body(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     child_entry: FuncId,
-    value_release_validate: FuncId,
     value_release_commit: FuncId,
 ) {
     let entry = builder.create_block();
-    let inspect_result = builder.create_block();
     let inspect_replace = builder.create_block();
-    let validate_replace = builder.create_block();
     let replace = builder.create_block();
-    let inspect_missing = builder.create_block();
     let append = builder.create_block();
     let succeeded = builder.create_block();
-    let failed = builder.create_block();
     builder.append_block_params_for_function_params(entry);
     builder.append_block_param(inspect_replace, types::I64);
     builder.append_block_param(inspect_replace, module.target_config().pointer_type());
-    builder.append_block_param(validate_replace, types::I64);
-    builder.append_block_param(validate_replace, module.target_config().pointer_type());
     builder.append_block_param(replace, types::I64);
     builder.append_block_param(replace, module.target_config().pointer_type());
 
@@ -6743,15 +6767,12 @@ fn lower_direct_array_insert_prepared_body(
     let lookup = builder.ins().call(child_entry, &[deopt_out, array, key]);
     let old = builder.inst_results(lookup)[0];
     let found_entry = builder.inst_results(lookup)[1];
-    builder.ins().jump(inspect_result, &[]);
-
-    builder.switch_to_block(inspect_result);
     let found = builder.ins().icmp_imm(IntCC::NotEqual, found_entry, 0);
     builder.ins().brif(
         found,
         inspect_replace,
         &[old.into(), found_entry.into()],
-        inspect_missing,
+        append,
         &[],
     );
 
@@ -6763,22 +6784,8 @@ fn lower_direct_array_insert_prepared_body(
         unchanged,
         succeeded,
         &[],
-        validate_replace,
-        &[old.into(), found_entry.into()],
-    );
-
-    builder.switch_to_block(validate_replace);
-    let old = builder.block_params(validate_replace)[0];
-    let found_entry = builder.block_params(validate_replace)[1];
-    let validate = module.declare_func_in_func(value_release_validate, builder.func);
-    let validation = builder.ins().call(validate, &[deopt_out, old]);
-    let valid = builder.inst_results(validation)[0];
-    builder.ins().brif(
-        valid,
         replace,
         &[old.into(), found_entry.into()],
-        failed,
-        &[],
     );
 
     builder.switch_to_block(replace);
@@ -6792,67 +6799,24 @@ fn lower_direct_array_insert_prepared_body(
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
     let commit = module.declare_func_in_func(value_release_commit, builder.func);
-    let release = builder.ins().call(commit, &[deopt_out, old]);
-    let released = builder.inst_results(release)[0];
-    builder.ins().brif(released, succeeded, &[], failed, &[]);
+    let _ = builder.ins().call(commit, &[deopt_out, old]);
+    builder.ins().jump(succeeded, &[]);
 
-    builder.switch_to_block(inspect_missing);
-    let array_tag = lower_value_has_tag(builder, array, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
-    let encoded_index = builder.ins().ireduce(types::I32, array);
-    let direct_index = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        encoded_index,
-        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
-    );
-    let direct = builder.ins().band(array_tag, direct_index);
-    let inspect_array = builder.create_block();
-    builder.ins().brif(direct, inspect_array, &[], failed, &[]);
-
-    builder.switch_to_block(inspect_array);
+    // The caller has already admitted a direct, unique array with room for
+    // one entry and an integer/string key. Repeating those engine-integrity
+    // checks here would recreate an operation-local fallback after the exact
+    // native boundary. This compiled function therefore commits the admitted
+    // mutation directly; PHP-visible COW/key semantics remain in the caller's
+    // single guard and continuation.
+    builder.switch_to_block(append);
     let slot = lower_optimizing_slot_address(builder, array, deopt_out);
-    let kind = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-    );
-    let refcount = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
-    );
     let length = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
         slot,
         std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
     );
-    let capacity = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
-    );
-    let direct_kind = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
-    );
-    let unique = builder.ins().icmp_imm(IntCC::Equal, refcount, 1);
-    let capacity = builder.ins().uextend(types::I64, capacity);
-    let room = builder
-        .ins()
-        .icmp(IntCC::UnsignedLessThan, length, capacity);
     let (integer_key, integer_raw) = lower_optimizing_integer_candidate(builder, key, deopt_out);
-    let (string_key, _, _) = lower_native_string_key_descriptor(builder, key, deopt_out);
-    let supported_key = builder.ins().bor(integer_key, string_key);
-    let admitted = builder.ins().band(direct_kind, unique);
-    let admitted = builder.ins().band(admitted, room);
-    let admitted = builder.ins().band(admitted, supported_key);
-    builder.ins().brif(admitted, append, &[], failed, &[]);
-
-    builder.switch_to_block(append);
     let entries = builder.ins().load(
         pointer_type,
         MemFlagsData::new(),
@@ -6955,12 +6919,7 @@ fn lower_direct_array_insert_prepared_body(
     builder.ins().jump(succeeded, &[]);
 
     builder.switch_to_block(succeeded);
-    let ok = builder.ins().iconst(types::I32, 0);
-    builder.ins().return_(&[ok, array]);
-
-    builder.switch_to_block(failed);
-    let error = builder.ins().iconst(types::I32, 1);
-    builder.ins().return_(&[error, array]);
+    builder.ins().return_(&[array]);
 }
 
 fn lower_direct_value_release_validate_body(
@@ -8087,7 +8046,7 @@ fn define_direct_array_child_entry_function(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn define_direct_array_insert_prepared_function(
+fn define_direct_array_insert_admitted_function(
     module: &mut JITModule,
     ctx: &mut cranelift_codegen::Context,
     builder_context: &mut FunctionBuilderContext,
@@ -8095,20 +8054,17 @@ fn define_direct_array_insert_prepared_function(
     symbol: FunctionId,
     child_entry: FuncId,
     child_entry_symbol: FunctionId,
-    value_release_validate: FuncId,
-    value_release_validate_symbol: FunctionId,
     value_release_commit: FuncId,
     value_release_commit_symbol: FunctionId,
 ) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
-    ctx.func.signature = direct_array_insert_prepared_signature(module);
+    ctx.func.signature = direct_array_insert_admitted_signature(module);
     ctx.func.name = UserFuncName::user(0, func_id.as_u32());
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
-        lower_direct_array_insert_prepared_body(
+        lower_direct_array_insert_admitted_body(
             module,
             &mut builder,
             child_entry,
-            value_release_validate,
             value_release_commit,
         );
         builder.seal_all_blocks();
@@ -8162,7 +8118,6 @@ fn define_direct_array_insert_prepared_function(
     let relocation_functions = BTreeMap::from([
         (symbol, func_id),
         (child_entry_symbol, child_entry),
-        (value_release_validate_symbol, value_release_validate),
         (value_release_commit_symbol, value_release_commit),
     ]);
     let relocations = compiled
