@@ -2815,6 +2815,210 @@ fn execute_exact_native_array_fill_keys(
     Some(context.publish_owned_direct_array_entries(entries))
 }
 
+fn execute_native_call_user_func_array_control(
+    context: &mut NativeRequestColdState<'_>,
+    arguments: &[i64],
+    source: &php_ir::Instruction,
+    caller_locals: Option<(u32, &[php_jit::JitAbiSlot])>,
+) -> NativeCallResult {
+    let [callback, arguments] = arguments else {
+        return Err("call_user_func_array() expects exactly 2 arguments".into());
+    };
+    let callback_handle = *callback;
+    if let Some(result) = execute_native_call_user_func_array_direct(
+        context,
+        callback_handle,
+        *arguments,
+        source,
+        caller_locals.map(|(function, _)| function),
+        NativeCallableBuiltinPolicy::ExecuteBaseline,
+    ) {
+        return result;
+    }
+    let callback = match context.decode(*callback)? {
+        Value::Reference(reference) => reference.get(),
+        value => value,
+    };
+    let arguments = match context.decode(*arguments)? {
+        Value::Reference(reference) => reference.get(),
+        value => value,
+    };
+    let Value::Array(arguments) = arguments else {
+        return Err("call_user_func_array(): argument #2 must be an array".into());
+    };
+    if native_callable_has_no_by_ref_parameters(context, &callback) == Some(true) {
+        let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
+        encoded.clear();
+        encoded.reserve(arguments.len() + 1);
+        encoded.push(callback_handle);
+        let result = (|| -> NativeCallResult {
+            let mut metadata: Option<Vec<php_ir::instruction::IrCallArg>> = None;
+            for (key, value) in arguments.iter() {
+                encoded.push(context.encode_baseline_call_value(value.clone())?);
+                let name = match key {
+                    php_runtime::api::ArrayKey::Int(_) => None,
+                    php_runtime::api::ArrayKey::String(name) => Some(name.to_string_lossy()),
+                };
+                if name.is_some() && metadata.is_none() {
+                    metadata = Some(
+                        (0..encoded.len().saturating_sub(2))
+                            .map(|_| positional_native_call_argument())
+                            .collect(),
+                    );
+                }
+                if let Some(metadata) = metadata.as_mut() {
+                    let mut argument = positional_native_call_argument();
+                    argument.name = name;
+                    metadata.push(argument);
+                }
+            }
+            invoke_native_encoded_callable_value_from(
+                context,
+                &encoded,
+                source,
+                metadata,
+                caller_locals.map(|(function, _)| function),
+                NativeCallableBuiltinPolicy::ExecuteBaseline,
+            )
+        })();
+        encoded.clear();
+        context.native_call_encoded_scratch = encoded;
+        return result;
+    }
+    let mut values = Vec::with_capacity(arguments.len());
+    let mut metadata = Vec::with_capacity(arguments.len());
+    for (key, value) in arguments.iter() {
+        values.push(value.clone());
+        metadata.push(php_ir::instruction::IrCallArg {
+            name: match key {
+                php_runtime::api::ArrayKey::Int(_) => None,
+                php_runtime::api::ArrayKey::String(name) => Some(name.to_string_lossy()),
+            },
+            value: php_ir::Operand::Register(php_ir::RegId::new(0)),
+            unpack: false,
+            value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+            by_ref_local: None,
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        });
+    }
+    if let Value::String(name) = &callback {
+        let name = name.to_string_lossy();
+        let by_ref_parameters = context
+            .function_id(&name)
+            .and_then(|function| context.unit.functions.get(function.index()))
+            .map(|function| {
+                function
+                    .params
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, parameter)| parameter.by_ref)
+                    .map(|(index, parameter)| {
+                        (index, function.name.clone(), parameter.name.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (index, function_name, parameter_name) in by_ref_parameters {
+            if values
+                .get(index)
+                .is_some_and(|value| !matches!(value, Value::Reference(_)))
+            {
+                emit_native_php_warning(
+                    context,
+                    php_runtime::api::PHP_E_WARNING,
+                    &format!(
+                        "{function_name}(): Argument #{} (${}) must be passed by reference, value given",
+                        index + 1,
+                        parameter_name,
+                    ),
+                    source,
+                )?;
+                if let Some(value) = values.get_mut(index) {
+                    *value = Value::Reference(php_runtime::api::ReferenceCell::new(value.clone()));
+                }
+            }
+        }
+    }
+    let callback_label = match &callback {
+        Value::String(name) => name.to_string_lossy(),
+        Value::Callable(callable) => match callable.as_ref() {
+            php_runtime::api::CallableValue::UserFunction { name }
+            | php_runtime::api::CallableValue::InternalBuiltin { name } => name.clone(),
+            php_runtime::api::CallableValue::BoundMethod { method, .. } => method.clone(),
+            php_runtime::api::CallableValue::Closure(_) => "Closure".to_owned(),
+            php_runtime::api::CallableValue::MethodPlaceholder { target }
+            | php_runtime::api::CallableValue::UnresolvedDynamic { target } => target.clone(),
+        },
+        _ => "dynamic callable".to_owned(),
+    };
+    let mut encoded = Vec::with_capacity(values.len() + 1);
+    encoded.push(context.encode(callback)?);
+    for value in values {
+        encoded.push(context.encode_baseline_call_value(value)?);
+    }
+    invoke_native_encoded_callable_value_from(
+        context,
+        &encoded,
+        source,
+        Some(metadata),
+        caller_locals.map(|(function, _)| function),
+        NativeCallableBuiltinPolicy::ExecuteBaseline,
+    )
+    .map_err(|control| match control {
+        NativeCallControl::RuntimeError(error) if error.starts_with("native runtime value ") => {
+            NativeCallControl::RuntimeError(format!(
+                "native callback {callback_label} failed: {error}"
+            ))
+        }
+        control => control,
+    })
+}
+
+pub(super) fn execute_native_callback_builtin_control(
+    context: &mut NativeRequestColdState<'_>,
+    name: &str,
+    arguments: &[i64],
+    source: &php_ir::Instruction,
+    caller_locals: Option<(u32, &[php_jit::JitAbiSlot])>,
+) -> Option<NativeCallResult> {
+    match name {
+        "call_user_func" | "forward_static_call" => Some(execute_native_call_user_func_encoded(
+            context,
+            arguments,
+            source,
+            caller_locals.map(|(function, _)| function),
+            NativeCallableBuiltinPolicy::ExecuteBaseline,
+        )),
+        "call_user_func_array" => Some(execute_native_call_user_func_array_control(
+            context,
+            arguments,
+            source,
+            caller_locals,
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn execute_baseline_native_builtin_control(
+    context: &mut NativeRequestColdState<'_>,
+    name: &str,
+    arguments: &[i64],
+    source: &php_ir::Instruction,
+    caller_locals: Option<(u32, &[php_jit::JitAbiSlot])>,
+    prepared: Option<crate::compiled_unit::PreparedNativeBuiltin>,
+) -> NativeCallResult {
+    if let Some(outcome) =
+        execute_native_callback_builtin_control(context, name, arguments, source, caller_locals)
+    {
+        outcome
+    } else {
+        execute_baseline_native_builtin(context, name, arguments, source, caller_locals, prepared)
+            .map_err(NativeCallControl::from_baseline_error)
+    }
+}
+
 /// Baseline-native compatibility executor for builtins without an admitted
 /// exact handler. This must not be imported by optimizing artifacts.
 pub(super) fn execute_baseline_native_builtin(
@@ -3769,13 +3973,14 @@ pub(super) fn execute_baseline_native_builtin(
                 .map_err(|error| error.to_string())?;
             context.encode(Value::Bool(true))
         }
-        "call_user_func" | "forward_static_call" => execute_native_call_user_func_encoded(
+        "call_user_func" | "forward_static_call" => execute_native_callback_builtin_control(
             context,
+            normalized.as_ref(),
             arguments,
             source,
-            caller_locals.map(|(function, _)| function),
-            NativeCallableBuiltinPolicy::ExecuteBaseline,
+            caller_locals,
         )
+        .expect("callback builtin arm must be typed")
         .map_err(String::from),
         "spl_autoload_register" => {
             let Some(callback) = arguments.first() else {
@@ -4090,167 +4295,15 @@ pub(super) fn execute_baseline_native_builtin(
             }
             context.encode(Value::Bool(exists))
         }
-        "call_user_func_array" => {
-            let [callback, arguments] = arguments else {
-                return Err("call_user_func_array() expects exactly 2 arguments".to_owned());
-            };
-            let callback_handle = *callback;
-            if let Some(result) = execute_native_call_user_func_array_direct(
-                context,
-                callback_handle,
-                *arguments,
-                source,
-                caller_locals.map(|(function, _)| function),
-                NativeCallableBuiltinPolicy::ExecuteBaseline,
-            ) {
-                return result.map_err(String::from);
-            }
-            let callback = match context.decode(*callback)? {
-                Value::Reference(reference) => reference.get(),
-                value => value,
-            };
-            let arguments = match context.decode(*arguments)? {
-                Value::Reference(reference) => reference.get(),
-                value => value,
-            };
-            let Value::Array(arguments) = arguments else {
-                return Err("call_user_func_array(): argument #2 must be an array".to_owned());
-            };
-            if native_callable_has_no_by_ref_parameters(context, &callback) == Some(true) {
-                let mut encoded = std::mem::take(&mut context.native_call_encoded_scratch);
-                encoded.clear();
-                encoded.reserve(arguments.len() + 1);
-                encoded.push(callback_handle);
-                let result = (|| {
-                    let mut metadata: Option<Vec<php_ir::instruction::IrCallArg>> = None;
-                    for (key, value) in arguments.iter() {
-                        encoded.push(context.encode_baseline_call_value(value.clone())?);
-                        let name = match key {
-                            php_runtime::api::ArrayKey::Int(_) => None,
-                            php_runtime::api::ArrayKey::String(name) => {
-                                Some(name.to_string_lossy())
-                            }
-                        };
-                        if name.is_some() && metadata.is_none() {
-                            metadata = Some(
-                                (0..encoded.len().saturating_sub(2))
-                                    .map(|_| positional_native_call_argument())
-                                    .collect(),
-                            );
-                        }
-                        if let Some(metadata) = metadata.as_mut() {
-                            let mut argument = positional_native_call_argument();
-                            argument.name = name;
-                            metadata.push(argument);
-                        }
-                    }
-                    invoke_native_encoded_callable_value_from(
-                        context,
-                        &encoded,
-                        source,
-                        metadata,
-                        caller_locals.map(|(function, _)| function),
-                        NativeCallableBuiltinPolicy::ExecuteBaseline,
-                    )
-                })();
-                encoded.clear();
-                context.native_call_encoded_scratch = encoded;
-                return Ok(result?);
-            }
-            let mut values = Vec::with_capacity(arguments.len());
-            let mut metadata = Vec::with_capacity(arguments.len());
-            for (key, value) in arguments.iter() {
-                values.push(value.clone());
-                metadata.push(php_ir::instruction::IrCallArg {
-                    name: match key {
-                        php_runtime::api::ArrayKey::Int(_) => None,
-                        php_runtime::api::ArrayKey::String(name) => Some(name.to_string_lossy()),
-                    },
-                    value: php_ir::Operand::Register(php_ir::RegId::new(0)),
-                    unpack: false,
-                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
-                    by_ref_local: None,
-                    by_ref_dim: None,
-                    by_ref_property: None,
-                    by_ref_property_dim: None,
-                });
-            }
-            if let Value::String(name) = &callback {
-                let name = name.to_string_lossy();
-                let by_ref_parameters = context
-                    .function_id(&name)
-                    .and_then(|function| context.unit.functions.get(function.index()))
-                    .map(|function| {
-                        function
-                            .params
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, parameter)| parameter.by_ref)
-                            .map(|(index, parameter)| {
-                                (index, function.name.clone(), parameter.name.clone())
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                for (index, function_name, parameter_name) in by_ref_parameters {
-                    if values
-                        .get(index)
-                        .is_some_and(|value| !matches!(value, Value::Reference(_)))
-                    {
-                        emit_native_php_warning(
-                            context,
-                            php_runtime::api::PHP_E_WARNING,
-                            &format!(
-                                "{function_name}(): Argument #{} (${}) must be passed by reference, value given",
-                                index + 1,
-                                parameter_name,
-                            ),
-                            source,
-                        )?;
-                        if let Some(value) = values.get_mut(index) {
-                            *value = Value::Reference(php_runtime::api::ReferenceCell::new(
-                                value.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
-            let callback_label = match &callback {
-                Value::String(name) => name.to_string_lossy(),
-                Value::Callable(callable) => match callable.as_ref() {
-                    php_runtime::api::CallableValue::UserFunction { name }
-                    | php_runtime::api::CallableValue::InternalBuiltin { name } => name.clone(),
-                    php_runtime::api::CallableValue::BoundMethod { method, .. } => method.clone(),
-                    php_runtime::api::CallableValue::Closure(_) => "Closure".to_owned(),
-                    php_runtime::api::CallableValue::MethodPlaceholder { target }
-                    | php_runtime::api::CallableValue::UnresolvedDynamic { target } => {
-                        target.clone()
-                    }
-                },
-                _ => "dynamic callable".to_owned(),
-            };
-            let mut encoded = Vec::with_capacity(values.len() + 1);
-            encoded.push(context.encode(callback)?);
-            for value in values {
-                encoded.push(context.encode_baseline_call_value(value)?);
-            }
-            invoke_native_encoded_callable_value_from(
-                context,
-                &encoded,
-                source,
-                Some(metadata),
-                caller_locals.map(|(function, _)| function),
-                NativeCallableBuiltinPolicy::ExecuteBaseline,
-            )
-            .map_err(String::from)
-            .map_err(|error| {
-                if error.starts_with("native runtime value ") {
-                    format!("native callback {callback_label} failed: {error}")
-                } else {
-                    error
-                }
-            })
-        }
+        "call_user_func_array" => execute_native_callback_builtin_control(
+            context,
+            normalized.as_ref(),
+            arguments,
+            source,
+            caller_locals,
+        )
+        .expect("callback builtin arm must be typed")
+        .map_err(String::from),
         "func_num_args" => {
             let count = context
                 .call_frames

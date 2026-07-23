@@ -990,14 +990,14 @@ pub(super) fn invoke_native_named_callable(
         name.rsplit('\\').next().unwrap_or(name)
     };
     let expanded = bind_native_builtin_arguments(context, builtin_name, arguments, metadata)?;
-    Ok(execute_baseline_native_builtin(
+    execute_baseline_native_builtin_control(
         context,
         builtin_name,
         &expanded,
         instruction,
         None,
         None,
-    )?)
+    )
 }
 
 pub(super) fn expand_native_unpack_arguments(
@@ -2013,6 +2013,7 @@ pub(super) fn finish_native_fiber_outcome(
             value,
             ..
         } => {
+            context.discard_native_fiber_suspension_states();
             context.terminate_fiber_receiver(fiber, Some(value))?;
             let fiber_id = context.fiber_receiver_id(fiber)?;
             if let Some(stale) = context.fiber_executions.remove(&fiber_id) {
@@ -2028,7 +2029,13 @@ pub(super) fn finish_native_fiber_outcome(
             context.set_fiber_receiver_state(fiber, php_runtime::api::FiberState::Suspended)?;
             let fiber_id = context.fiber_receiver_id(fiber)?;
             let suspension_link = std::mem::take(&mut state.delegation_handle);
-            let nested = take_captured_native_fiber_execution(context, suspension_link)?;
+            let nested = match take_captured_native_fiber_execution(context, suspension_link) {
+                Ok(nested) => nested,
+                Err(error) => {
+                    context.discard_native_fiber_suspension_states();
+                    return Err(error);
+                }
+            };
             context.fiber_executions.insert(
                 fiber_id,
                 NativeFiberExecution {
@@ -2043,6 +2050,7 @@ pub(super) fn finish_native_fiber_outcome(
         php_jit::JitI64InvokeOutcome::SideExit { status, value, .. }
             if status == php_jit::JitCallStatus::THROW.0 as i32 =>
         {
+            context.discard_native_fiber_suspension_states();
             context.set_fiber_receiver_state(fiber, php_runtime::api::FiberState::Errored)?;
             let (class, message, _) = context
                 .decode(value)
@@ -2058,6 +2066,7 @@ pub(super) fn finish_native_fiber_outcome(
             Err(format!("E_PHP_THROW:{class}:{message}"))
         }
         php_jit::JitI64InvokeOutcome::SideExit { status, .. } => {
+            context.discard_native_fiber_suspension_states();
             context.set_fiber_receiver_state(fiber, php_runtime::api::FiberState::Errored)?;
             Err(format!("native fiber returned status {status}"))
         }
@@ -2317,8 +2326,43 @@ pub(super) fn execute_native_fiber_method(
                 let function = php_ir::FunctionId::new(closure.function);
                 let handle = ensure_native_entry(context, function)?;
                 let mut arguments = Vec::with_capacity(captures.len() + encoded.len() - 1);
-                for argument in captures.iter().copied().chain(encoded[1..].iter().copied()) {
-                    match context.duplicate_baseline_call_argument(argument) {
+                let direct_fiber = matches!(&fiber, NativeFiberReceiver::Direct(_));
+                let start_arguments = captures
+                    .iter()
+                    .copied()
+                    .map(|argument| (argument, false))
+                    .chain(
+                        encoded[1..]
+                            .iter()
+                            .copied()
+                            .map(|argument| (argument, true)),
+                    );
+                for (argument, by_value) in start_arguments {
+                    let duplicated = match (direct_fiber, by_value) {
+                        (true, true) => {
+                            match context
+                                .duplicate_authoritative_dereferenced_native_value(argument)
+                            {
+                                Ok(Some(argument)) => Ok(argument),
+                                // A direct Fiber may be started from the
+                                // baseline-native tier with a materialized
+                                // top-level lvalue. This is the already-taken
+                                // cold continuation, not an optimizing path.
+                                Ok(None) => context.duplicate_dereferenced_native_value(argument),
+                                Err(error) => Err(error),
+                            }
+                        }
+                        (true, false) => {
+                            match context.duplicate_authoritative_native_value(argument) {
+                                Ok(Some(argument)) => Ok(argument),
+                                Ok(None) => context.duplicate_baseline_call_argument(argument),
+                                Err(error) => Err(error),
+                            }
+                        }
+                        (false, true) => context.duplicate_dereferenced_native_value(argument),
+                        (false, false) => context.duplicate_baseline_call_argument(argument),
+                    };
+                    match duplicated {
                         Ok(argument) => arguments.push(argument),
                         Err(error) => {
                             for argument in arguments {

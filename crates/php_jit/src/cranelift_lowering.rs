@@ -2480,6 +2480,17 @@ impl NativeOptimizingTransition<'_> {
         detail: ir::Value,
         value: ir::Value,
     ) -> Result<(), CraneliftLoweringError> {
+        self.emit_control_with_fiber_link(builder, status, detail, value, None)
+    }
+
+    fn emit_control_with_fiber_link(
+        self,
+        builder: &mut FunctionBuilder<'_>,
+        status: ir::Value,
+        detail: ir::Value,
+        value: ir::Value,
+        fiber_link: Option<ir::Value>,
+    ) -> Result<(), CraneliftLoweringError> {
         publish_native_call_state(
             builder,
             self.deopt_out,
@@ -2490,6 +2501,9 @@ impl NativeOptimizingTransition<'_> {
             self.native_version,
         )?;
         publish_native_register_values(builder, self.deopt_out, self.live_values)?;
+        if let Some(fiber_link) = fiber_link {
+            publish_native_fiber_suspension_link(builder, self.deopt_out, fiber_link);
+        }
         builder.ins().store(
             MemFlagsData::new(),
             detail,
@@ -6694,6 +6708,9 @@ fn lower_optimizing_exact_callback_builtin(
     helper: Option<NativeHelper>,
     caller: FunctionId,
     arguments: &[ir::Value],
+    pending_status: Variable,
+    pending_value: Variable,
+    resume_state: ir::Value,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let helper = helper.ok_or_else(|| {
@@ -6726,7 +6743,16 @@ fn lower_optimizing_exact_callback_builtin(
     let missing = builder
         .ins()
         .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-    let mut exact_arguments = Vec::with_capacity(11);
+    let completed_call = begin_native_call_or_resume(
+        builder,
+        pending_status,
+        pending_value,
+        crate::JitCallStatus::RETURN.0,
+        transition.result_out,
+        resume_state,
+        transition.deopt_out,
+    );
+    let mut exact_arguments = Vec::with_capacity(12);
     exact_arguments.extend([
         caller,
         source_file,
@@ -6735,6 +6761,7 @@ fn lower_optimizing_exact_callback_builtin(
         argument_count,
     ]);
     exact_arguments.extend((0..6).map(|index| arguments.get(index).copied().unwrap_or(missing)));
+    exact_arguments.push(transition.deopt_out);
     let call = call_native_helper(module, builder, helper, &exact_arguments);
     let control = builder.inst_results(call)[0];
     let value = builder.inst_results(call)[1];
@@ -6753,10 +6780,25 @@ fn lower_optimizing_exact_callback_builtin(
         .brif(is_return, returned, &[], control_exit, &[]);
 
     builder.switch_to_block(control_exit);
-    transition.emit_control(builder, status, detail, value)?;
+    let suspension_link = capture_native_fiber_callee_if_suspended(
+        module,
+        builder,
+        status,
+        transition.deopt_out,
+        transition.result_out,
+    );
+    transition.emit_control_with_fiber_link(
+        builder,
+        status,
+        detail,
+        value,
+        Some(suspension_link),
+    )?;
 
     builder.switch_to_block(returned);
-    Ok(value)
+    builder.ins().jump(completed_call, &[value.into()]);
+    builder.switch_to_block(completed_call);
+    Ok(builder.block_params(completed_call)[0])
 }
 
 fn lower_optimizing_reference_scalar(
@@ -20955,6 +20997,9 @@ fn lower_optimizing_region_instruction(
                     optimizing_operations.exact_callback[builtin.index()],
                     function,
                     &arguments,
+                    pending_status,
+                    pending_value,
+                    resume_state,
                     transition,
                 )?;
                 define_optimizing_call_result(
@@ -23066,6 +23111,9 @@ fn lower_baseline_region_instruction(
                     streaming_call_exit,
                     result_out,
                     deopt_out,
+                    resume_state,
+                    pending_status,
+                    pending_value,
                     function,
                     local_count,
                     native_version,
@@ -25573,6 +25621,7 @@ fn lower_direct_semantic_call(
             operation_id,
             operands_ptr,
             operand_count,
+            deopt_out,
             out_ptr,
         ],
     );
@@ -25680,6 +25729,9 @@ fn lower_direct_builtin_call(
     streaming_call_exit: Option<NativeStreamingCallExit>,
     result_out: ir::Value,
     deopt_out: ir::Value,
+    resume_state: ir::Value,
+    pending_status: Variable,
+    pending_value: Variable,
     function: FunctionId,
     local_count: u32,
     native_version: u32,
@@ -25789,6 +25841,15 @@ fn lower_direct_builtin_call(
     let local_count_value = builder
         .ins()
         .iconst(types::I32, i64::from(published_local_count));
+    let completed_call = begin_native_call_or_resume(
+        builder,
+        pending_status,
+        pending_value,
+        crate::JitCallStatus::RETURN.0,
+        result_out,
+        resume_state,
+        deopt_out,
+    );
     let helper_call = call_native_helper(
         module,
         builder,
@@ -25803,6 +25864,7 @@ fn lower_direct_builtin_call(
             argument_count_value,
             local_slots_ptr,
             local_count_value,
+            deopt_out,
             out_ptr,
         ],
     );
@@ -25855,6 +25917,11 @@ fn lower_direct_builtin_call(
     }
 
     builder.switch_to_block(ok);
+    let value = builder.ins().stack_load(types::I64, out_slot, 16);
+    builder.ins().jump(completed_call, &[value.into()]);
+
+    builder.switch_to_block(completed_call);
+    let value = builder.block_params(completed_call)[0];
     for argument in consumed_arguments {
         let _ = lower_guarded_value_release(
             module,
@@ -25866,7 +25933,6 @@ fn lower_direct_builtin_call(
             deopt_out,
         )?;
     }
-    let value = builder.ins().stack_load(types::I64, out_slot, 16);
     match call.result {
         RegionCallResult::Register(register) => {
             define_region_register(builder, register_variables, registers, register, value)?;

@@ -54,10 +54,11 @@ use native_builtins::{
     NativeDimensionOperation, emit_native_array_dimension_conversion_diagnostic,
     emit_native_deprecated_call, emit_native_dimension_conversion_diagnostic,
     emit_native_php_diagnostic, emit_native_php_warning, exact_native_callback_is_admitted,
-    execute_baseline_native_builtin, execute_baseline_prepared_runtime_builtin,
-    execute_native_call_user_func_array_direct, execute_native_call_user_func_encoded,
-    native_builtin_class_lineage, native_internal_class_constant_exists,
-    native_php_function_exists, native_source_line, native_source_line_for_span, native_string,
+    execute_baseline_native_builtin, execute_baseline_native_builtin_control,
+    execute_baseline_prepared_runtime_builtin, execute_native_call_user_func_array_direct,
+    execute_native_call_user_func_encoded, native_builtin_class_lineage,
+    native_internal_class_constant_exists, native_php_function_exists, native_source_line,
+    native_source_line_for_span, native_string,
 };
 use object_support::*;
 use request_state::{
@@ -2190,6 +2191,12 @@ impl<'a> NativeRequestColdState<'a> {
         Ok(Some(self.fiber_suspension_states[index]))
     }
 
+    fn discard_native_fiber_suspension_states(&mut self) {
+        // Stack entries are snapshots of owners already carried by generated
+        // activation state; the arena itself owns no encoded values.
+        *self.fiber_suspension_next = 0;
+    }
+
     /// Releases the owners captured in a suspended native activation when no
     /// generated continuation will ever resume it. Normal return/unwind runs
     /// the generated epilogue and must not pass through this path.
@@ -3395,6 +3402,7 @@ impl<'a> NativeRequestColdState<'a> {
         if let Some((_, _, _, value)) = self.completed_nested_fiber_call.take() {
             let _ = self.release_if_live(value);
         }
+        self.discard_native_fiber_suspension_states();
         self.active_fiber = None;
         // ObjectRef identities may escape an include/nested VM through
         // globals or returned symbols. Their native property cells point into
@@ -9551,6 +9559,75 @@ impl<'a> NativeRequestColdState<'a> {
         )
     }
 
+    fn iterator_next_encoded(&mut self, encoded: i64) -> Result<Option<(i64, i64)>, String> {
+        if let Some(index) = Self::direct_value_index(encoded) {
+            let iterator = *self
+                .direct_value_slots
+                .get(index)
+                .ok_or_else(|| "direct foreach iterator slot is missing".to_owned())?;
+            if iterator.refcount != 0
+                && iterator.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH
+            {
+                let cursor = usize::try_from(iterator.aux)
+                    .map_err(|_| "direct foreach cursor is invalid".to_owned())?;
+                let length = iterator.reserved as usize;
+                if cursor >= length {
+                    return Ok(None);
+                }
+                let source_index = Self::direct_value_index(iterator.payload as i64)
+                    .ok_or_else(|| "direct foreach source handle is invalid".to_owned())?;
+                let source = *self
+                    .direct_value_slots
+                    .get(source_index)
+                    .ok_or_else(|| "direct foreach source slot is missing".to_owned())?;
+                let base = self.direct_array_entries.as_ptr() as usize;
+                let address = usize::try_from(source.aux)
+                    .map_err(|_| "direct foreach entry address is invalid".to_owned())?;
+                let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+                let start = address
+                    .checked_sub(base)
+                    .map(|offset| offset / entry_size)
+                    .ok_or_else(|| "direct foreach entry range is invalid".to_owned())?;
+                let entry = *self
+                    .direct_array_entries
+                    .get(start.saturating_add(cursor))
+                    .ok_or_else(|| "direct foreach entry is missing".to_owned())?;
+                let key = self
+                    .duplicate_authoritative_native_value(entry.key)?
+                    .ok_or_else(|| "direct foreach key is not authoritative".to_owned())?;
+                let value =
+                    match self.duplicate_authoritative_dereferenced_native_value(entry.value) {
+                        Ok(Some(value)) => value,
+                        Ok(None) => match self.duplicate_dereferenced_native_value(entry.value) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                self.release(key)?;
+                                return Err(error);
+                            }
+                        },
+                        Err(error) => {
+                            self.release(key)?;
+                            return Err(error);
+                        }
+                    };
+                self.direct_value_slots[index].aux = iterator.aux.saturating_add(1);
+                return Ok(Some((key, value)));
+            }
+        }
+        self.iterator_next(encoded)?
+            .map(|(key, value)| {
+                let key = self.encode(key)?;
+                match self.encode(value) {
+                    Ok(value) => Ok((key, value)),
+                    Err(error) => {
+                        self.release(key)?;
+                        Err(error)
+                    }
+                }
+            })
+            .transpose()
+    }
+
     fn array_iterator_next(&mut self, encoded: i64) -> Option<Option<(Value, Value)>> {
         if let Some(index) = Self::direct_value_index(encoded) {
             let iterator = *self.direct_value_slots.get(index)?;
@@ -14200,18 +14277,28 @@ fn native_external_method_access_error(
     None
 }
 
-fn encode_native_call_arguments_array(
+/// Packs the already-bound operands for `__call`/`__callStatic` into one
+/// authoritative direct array. The generic dispatcher is the explicit
+/// baseline-native continuation, so only a legacy operand that reached that
+/// tier may use the compatibility duplication branch.
+fn encode_native_magic_call_arguments_array(
     context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],
 ) -> Result<i64, String> {
     let mut entries = Vec::<php_jit::JitNativeDirectArrayEntry>::with_capacity(arguments.len());
     for (index, argument) in arguments.iter().enumerate() {
-        let value = match context
-            .duplicate_authoritative_native_value(*argument)
-            .and_then(|native| {
-                native.map_or_else(|| context.duplicate_baseline_call_argument(*argument), Ok)
-            }) {
-            Ok(value) => value,
+        let value = match context.duplicate_authoritative_native_value(*argument) {
+            Ok(Some(value)) => value,
+            Ok(None) => match context.duplicate_baseline_call_argument(*argument) {
+                Ok(value) => value,
+                Err(error) => {
+                    for entry in entries {
+                        let _ = context.release(entry.key);
+                        let _ = context.release(entry.value);
+                    }
+                    return Err(error);
+                }
+            },
             Err(error) => {
                 for entry in entries {
                     let _ = context.release(entry.key);

@@ -2388,6 +2388,7 @@ pub(super) fn compile_region_graph_native(
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
+                signature.params.push(AbiParam::new(pointer_type));
                 signature.returns.push(AbiParam::new(types::I64));
                 signature.returns.push(AbiParam::new(types::I64));
                 exact_callback[builtin.index()] = Some(declare_native_helper(
@@ -2512,6 +2513,7 @@ pub(super) fn compile_region_graph_native(
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(types::I32));
                 signature.params.push(AbiParam::new(pointer_type));
+                signature.params.push(AbiParam::new(pointer_type));
                 signature.returns.push(AbiParam::new(types::I32));
                 native_operations.builtin_dispatch = Some(declare_native_helper(
                     module,
@@ -2528,6 +2530,7 @@ pub(super) fn compile_region_graph_native(
                 signature.params.push(AbiParam::new(types::I32));
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.returns.push(AbiParam::new(types::I32));
                 native_operations.semantic_dispatch = Some(declare_native_helper(

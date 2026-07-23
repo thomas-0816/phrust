@@ -1476,10 +1476,12 @@ exact_native_path_abi!(jit_native_dirname_abi, 1);
 exact_native_path_abi!(jit_native_realpath_abi, 2);
 exact_native_path_abi!(jit_native_file_exists_abi, 3);
 
+#[allow(unsafe_code)]
 fn exact_callback_control_result(
     context: &mut NativeRequestColdState<'_>,
     outcome: NativeCallResult,
     span: php_ir::IrSpan,
+    transition_state: *mut php_jit::JitDeoptState,
 ) -> php_jit::JitNativeControlResult {
     match outcome {
         Ok(value) => php_jit::JitNativeControlResult::returning(value),
@@ -1513,7 +1515,15 @@ fn exact_callback_control_result(
         Err(NativeCallControl::Propagate { status, value }) => {
             php_jit::JitNativeControlResult::control(status, 0, value)
         }
-        Err(NativeCallControl::SuspendFiber { state: _ }) => {
+        Err(NativeCallControl::SuspendFiber { state }) => {
+            if let Some(state) = state
+                && !transition_state.is_null()
+            {
+                // SAFETY: optimizing generated code owns this deopt-state
+                // buffer for the complete synchronous exact callback. It
+                // copies the callee state before publishing its caller state.
+                unsafe { transition_state.write(*state) };
+            }
             let value = context
                 .pending_fiber_suspension_value
                 .take()
@@ -1547,6 +1557,7 @@ fn exact_native_callback<const ARRAY_ARGUMENTS: bool>(
     source_end: u32,
     argument_count: u32,
     arguments: [i64; 6],
+    transition_state: *mut php_jit::JitDeoptState,
 ) -> php_jit::JitNativeControlResult {
     let arity_ok = if ARRAY_ARGUMENTS {
         argument_count == 2
@@ -1587,7 +1598,7 @@ fn exact_native_callback<const ARRAY_ARGUMENTS: bool>(
                 NativeCallableBuiltinPolicy::RequireBaseline,
             )
         };
-        exact_callback_control_result(context, outcome, span)
+        exact_callback_control_result(context, outcome, span, transition_state)
     })
     .unwrap_or_else(exact_query_baseline)
 }
@@ -1607,6 +1618,7 @@ macro_rules! exact_native_callback_abi {
             argument_3: i64,
             argument_4: i64,
             argument_5: i64,
+            transition_state: *mut php_jit::JitDeoptState,
         ) -> php_jit::JitNativeControlResult {
             exact_native_callback::<$array_arguments>(
                 runtime,
@@ -1618,6 +1630,7 @@ macro_rules! exact_native_callback_abi {
                 [
                     argument_0, argument_1, argument_2, argument_3, argument_4, argument_5,
                 ],
+                transition_state,
             )
         }
     };
@@ -1641,6 +1654,7 @@ pub(in crate::vm) extern "C" fn jit_baseline_native_builtin_dispatch_abi(
     argument_count: u32,
     local_slots: *const php_jit::JitAbiSlot,
     local_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     // SAFETY: production publication validates the immutable callsite and
@@ -1657,6 +1671,7 @@ pub(in crate::vm) extern "C" fn jit_baseline_native_builtin_dispatch_abi(
             argument_count,
             local_slots,
             local_count,
+            transition_state,
             out,
         )
     }
@@ -1676,6 +1691,7 @@ pub(in crate::vm) extern "C" fn jit_baseline_native_builtin_dispatch_diagnostic_
     argument_count: u32,
     local_slots: *const php_jit::JitAbiSlot,
     local_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     // SAFETY: diagnostic publication validates the same generated ABI.
@@ -1691,6 +1707,7 @@ pub(in crate::vm) extern "C" fn jit_baseline_native_builtin_dispatch_diagnostic_
             argument_count,
             local_slots,
             local_count,
+            transition_state,
             out,
         )
     }
@@ -1708,6 +1725,7 @@ unsafe fn jit_baseline_native_builtin_dispatch_impl<const DIAGNOSTIC: bool>(
     argument_count: u32,
     local_slots: *const php_jit::JitAbiSlot,
     local_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     debug_assert!(!out.is_null());
@@ -1778,13 +1796,14 @@ unsafe fn jit_baseline_native_builtin_dispatch_impl<const DIAGNOSTIC: bool>(
             php_runtime::api::BuiltinExecutionKind::Runtime
         ) {
             execute_baseline_prepared_runtime_builtin(context, arguments, callsite_span, prepared)
+                .map_err(NativeCallControl::from_baseline_error)
         } else {
             let instruction = php_ir::Instruction {
                 id: php_ir::InstrId::new(0),
                 span: callsite_span,
                 kind: php_ir::InstructionKind::Nop,
             };
-            execute_baseline_native_builtin(
+            execute_baseline_native_builtin_control(
                 context,
                 entry.name(),
                 arguments,
@@ -1813,8 +1832,7 @@ unsafe fn jit_baseline_native_builtin_dispatch_impl<const DIAGNOSTIC: bool>(
         result
     });
 
-    let outcome = outcome.map(|result| result.map_err(NativeCallControl::from_baseline_error));
-    finish_native_dispatch_outcome(runtime, outcome, Some(callsite_span), out)
+    finish_native_dispatch_outcome(runtime, outcome, Some(callsite_span), transition_state, out)
 }
 
 // Converts one trusted internal dispatch outcome into the stable native
@@ -1826,6 +1844,7 @@ pub(super) fn finish_native_dispatch_outcome(
     runtime: *mut NativeRequestFastState,
     outcome: Option<NativeCallResult>,
     callsite_span: Option<php_ir::IrSpan>,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     debug_assert!(!out.is_null());
@@ -1854,7 +1873,14 @@ pub(super) fn finish_native_dispatch_outcome(
             (php_jit::JitCallStatus::THROW, value)
         }
         Some(Err(NativeCallControl::Propagate { status, value })) => (status, Some(value)),
-        Some(Err(NativeCallControl::SuspendFiber { state: _ })) => {
+        Some(Err(NativeCallControl::SuspendFiber { state })) => {
+            if let Some(state) = state
+                && !transition_state.is_null()
+            {
+                // SAFETY: generated code owns this state buffer for the
+                // complete synchronous baseline-native dispatch.
+                unsafe { transition_state.write(*state) };
+            }
             let value = with_native_context_for(runtime, "call_dispatch", |context| {
                 context.pending_fiber_suspension_value.take()
             })
@@ -2219,14 +2245,14 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     &encoded,
                     Some(descriptor.arguments.as_ref()),
                 )?;
-                return Ok(execute_baseline_native_builtin(
+                return execute_baseline_native_builtin_control(
                     context,
                     entry.entry.name(),
                     &expanded,
                     instruction,
                     Some((frame.function_id, local_values)),
                     Some(entry),
-                )?);
+                );
             }
             if let Some(operation) = semantic_operation {
                 return Ok(execute_native_semantic_operation(
@@ -2640,7 +2666,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                                 PhpString::from_bytes(method.as_bytes().to_vec()),
                             )?;
                             let call_arguments =
-                                encode_native_call_arguments_array(context, &encoded[1..])?;
+                                encode_native_magic_call_arguments_array(context, &encoded[1..])?;
                             return Ok(invoke_native_function(
                                 context,
                                 magic,
@@ -2738,7 +2764,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         method.as_bytes().to_vec(),
                     ))?;
                     let call_arguments =
-                        encode_native_call_arguments_array(context, &encoded[1..])?;
+                        encode_native_magic_call_arguments_array(context, &encoded[1..])?;
                     return Ok(invoke_native_function(
                         context,
                         function,
@@ -2760,7 +2786,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                         method.as_bytes().to_vec(),
                     ))?;
                     let call_arguments =
-                        encode_native_call_arguments_array(context, &encoded[1..])?;
+                        encode_native_magic_call_arguments_array(context, &encoded[1..])?;
                     return Ok(invoke_native_external_function(
                         context,
                         function,
@@ -2910,7 +2936,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                                 PhpString::from_bytes(method.as_bytes().to_vec()),
                             )?;
                             let call_arguments =
-                                encode_native_call_arguments_array(context, &encoded)?;
+                                encode_native_magic_call_arguments_array(context, &encoded)?;
                             return Ok(invoke_native_function(
                                 context,
                                 magic,
@@ -3050,7 +3076,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     let method_name = context.encode_native_string_owner(PhpString::from_bytes(
                         method.as_bytes().to_vec(),
                     ))?;
-                    let call_arguments = encode_native_call_arguments_array(context, &encoded)?;
+                    let call_arguments =
+                        encode_native_magic_call_arguments_array(context, &encoded)?;
                     if let Some(function) =
                         native_method_in_hierarchy(context, &class, "__callStatic")
                     {
@@ -3417,14 +3444,14 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
             };
             let expanded =
                 bind_native_builtin_arguments(context, builtin_name, &encoded, metadata)?;
-            Ok(execute_baseline_native_builtin(
+            execute_baseline_native_builtin_control(
                 context,
                 builtin_name,
                 &expanded,
                 instruction,
                 Some((frame.function_id, local_values)),
                 None,
-            )?)
+            )
             })()
             .map_err(|control| match control {
                 NativeCallControl::RuntimeError(message)

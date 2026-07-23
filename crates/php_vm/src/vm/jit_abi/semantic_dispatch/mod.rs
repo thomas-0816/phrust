@@ -18,6 +18,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_abi(
     operation: u32,
     operands: *const i64,
     operand_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     // SAFETY: this is the production instantiation; publication validated the
@@ -31,6 +32,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_abi(
             operation,
             operands,
             operand_count,
+            transition_state,
             out,
         )
     }
@@ -48,6 +50,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_diagnostic_abi(
     operation: u32,
     operands: *const i64,
     operand_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     // SAFETY: diagnostic publication validates the same generated ABI.
@@ -60,6 +63,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_diagnostic_abi(
             operation,
             operands,
             operand_count,
+            transition_state,
             out,
         )
     }
@@ -74,6 +78,7 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
     operation: u32,
     operands: *const i64,
     operand_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     debug_assert!(!runtime.is_null());
@@ -136,6 +141,7 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
         runtime,
         Some(outcome.map_err(NativeCallControl::from_baseline_error)),
         Some(descriptor.span),
+        transition_state,
         out,
     )
 }

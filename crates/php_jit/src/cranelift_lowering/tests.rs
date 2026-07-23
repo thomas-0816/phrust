@@ -766,8 +766,10 @@ extern "C" fn return_exact_callback_argument(
     _argument_3: i64,
     _argument_4: i64,
     _argument_5: i64,
+    transition_state: *mut crate::JitDeoptState,
 ) -> crate::JitNativeControlResult {
     assert_eq!(argument_count, 2);
+    assert!(!transition_state.is_null());
     EXACT_CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::JitNativeControlResult::returning(argument)
 }

@@ -4978,16 +4978,11 @@ pub(in crate::vm) extern "C" fn jit_native_foreach_next_abi(
     has_out: *mut i64,
 ) -> i32 {
     with_native_context_for(runtime, "foreach_next", |context| {
-        let Ok(entry) = context.iterator_next(iterator) else {
+        let Ok(entry) = context.iterator_next_encoded(iterator) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
         let (key, value, has_value) = match entry {
-            Some((key, value)) => {
-                let (Ok(key), Ok(value)) = (context.encode(key), context.encode(value)) else {
-                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-                };
-                (key, value, 1)
-            }
+            Some((key, value)) => (key, value, 1),
             None => (
                 php_jit::jit_encode_constant(u32::MAX),
                 php_jit::jit_encode_constant(u32::MAX),
