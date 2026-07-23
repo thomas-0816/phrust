@@ -1417,17 +1417,21 @@ pub(super) fn compile_region_graph_native(
         })
     });
     let needs_local_store = regions.values().any(|region| {
-        region_contains(region, |kind| {
-            matches!(
-                kind,
-                RegionInstructionKind::StoreLocal { .. }
-                    | RegionInstructionKind::AssignLocalResult { .. }
-                    | RegionInstructionKind::AssignDim { .. }
-                    | RegionInstructionKind::AppendDim { .. }
-                    | RegionInstructionKind::UnsetDim { .. }
-                    | RegionInstructionKind::BindReferenceDim { .. }
-            )
-        })
+        region
+            .exception_regions
+            .iter()
+            .any(|handler| handler.catch.is_some() && handler.exception_local.is_some())
+            || region_contains(region, |kind| {
+                matches!(
+                    kind,
+                    RegionInstructionKind::StoreLocal { .. }
+                        | RegionInstructionKind::AssignLocalResult { .. }
+                        | RegionInstructionKind::AssignDim { .. }
+                        | RegionInstructionKind::AppendDim { .. }
+                        | RegionInstructionKind::UnsetDim { .. }
+                        | RegionInstructionKind::BindReferenceDim { .. }
+                )
+            })
     });
     let needs_value_release = true;
     // Local publication is part of the native frame ABI, not just explicit
@@ -5528,66 +5532,85 @@ fn define_region_graph_function(
             // uninitialized snapshot slot here previously replaced every
             // caught Error with NULL.
             if let Some(exception_locals) = handler_exception_locals.get(&target) {
-                for local in exception_locals {
-                    if region.flags.is_top_level
-                        && let NativeTierOperations::Optimizing { operations } = tier_operations
-                    {
-                        let instruction = target_block.instructions.first().ok_or_else(|| {
-                            CraneliftLoweringError::new(
-                                "JIT_CRANELIFT_REJECT_NATIVE_HANDLER",
-                                format!(
-                                    "optimizing handler block {} has no transition instruction",
-                                    target.raw()
-                                ),
-                            )
-                        })?;
-                        let current = lower_trusted_request_local_reference(
+                if matches!(tier_operations, NativeTierOperations::Optimizing { .. }) {
+                    // Catch binding can overwrite an object whose destructor
+                    // re-enters PHP. Exception paths are cold, so hand the
+                    // complete pre-bind frame and pending throwable to the
+                    // exact baseline handler entry once instead of embedding
+                    // a partial release/store sequence in optimizing code.
+                    let transition_locals = target_block
+                        .entry_live_locals
+                        .iter()
+                        .copied()
+                        .chain(exception_locals.iter().copied())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    publish_native_continuation_state(
+                        &mut builder,
+                        deopt_out,
+                        region.function,
+                        region.local_count,
+                        // Catch-bind transitions resume by exact handler block,
+                        // including an empty handler with no instruction
+                        // continuation of its own.
+                        target.raw(),
+                        &transition_locals,
+                        &locals,
+                        native_version,
+                    )?;
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        status,
+                        deopt_out,
+                        std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
+                    );
+                    let detail = builder.ins().iconst(
+                        types::I32,
+                        i64::from(crate::JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL),
+                    );
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        detail,
+                        deopt_out,
+                        std::mem::offset_of!(crate::JitDeoptState, control_reserved) as i32,
+                    );
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        value,
+                        deopt_out,
+                        std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
+                    );
+                    let empty = builder
+                        .ins()
+                        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                    builder
+                        .ins()
+                        .store(MemFlagsData::new(), empty, result_out, 0);
+                    let transition = builder.ins().iconst(
+                        types::I32,
+                        i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+                    );
+                    builder.ins().return_(&[transition]);
+                    let unreachable = builder.create_block();
+                    builder.switch_to_block(unreachable);
+                    builder.seal_block(unreachable);
+                } else {
+                    for local in exception_locals {
+                        let current = use_local_variable(&mut builder, &locals, *local)?;
+                        let function = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(region.function.raw()));
+                        let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
+                        let stored = lower_native_value_operation(
+                            module,
                             &mut builder,
-                            deopt_out,
-                            region.function,
-                            *local,
-                        );
-                        let value_release_validate = module
-                            .declare_func_in_func(operations.value_release_validate, builder.func);
-                        let value_release_commit = module
-                            .declare_func_in_func(operations.value_release_commit, builder.func);
-                        let emitted_transition = Cell::new(false);
-                        let live_values = Vec::new();
-                        let transition = NativeOptimizingTransition {
+                            native_operations.local_store,
+                            crate::JIT_LOCAL_STORE_MOVE_INPUT,
+                            &[current, value, function, local_value],
                             result_out,
-                            deopt_out,
-                            function: region.function,
-                            local_count: region.local_count,
-                            instruction,
-                            locals: &locals,
-                            live_values: &live_values,
-                            native_version,
-                            value_release_validate,
-                            value_release_commit,
-                            emitted_transition: &emitted_transition,
-                        };
-                        let stored = lower_optimizing_store_reference_scalar(
-                            &mut builder,
-                            current,
-                            value,
-                            false,
-                            false,
-                            transition,
                         )?;
                         define_local_variable(&mut builder, &locals, *local, stored)?;
-                    } else {
-                        define_local_variable(&mut builder, &locals, *local, value)?;
-                        if region.flags.is_top_level {
-                            publish_native_reference_local(
-                                module,
-                                &mut builder,
-                                native_operations.reference_bind,
-                                value,
-                                region.function,
-                                *local,
-                                result_out,
-                            )?;
-                        }
                     }
                 }
             }

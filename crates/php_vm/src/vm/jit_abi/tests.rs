@@ -29,6 +29,7 @@ fn nested_native_activation_restores_the_outer_fast_state_view() {
         _runtime_view: php_jit::activate_native_runtime_view(inner_view),
         fast_state: std::ptr::from_mut(&mut fast_state),
         previous_header: outer_header,
+        previous_execution_scope: std::ptr::null(),
     };
     drop(inner);
 

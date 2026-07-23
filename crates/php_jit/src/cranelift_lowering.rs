@@ -2427,7 +2427,8 @@ struct NativeOptimizingTransition<'a> {
     deopt_out: ir::Value,
     function: FunctionId,
     local_count: u32,
-    instruction: &'a RegionInstruction,
+    continuation_id: u32,
+    live_locals: &'a [LocalId],
     locals: &'a NativeLocalMap,
     live_values: &'a [(RegId, ir::Value)],
     native_version: u32,
@@ -2450,12 +2451,13 @@ impl NativeOptimizingTransition<'_> {
         detail: u32,
     ) -> Result<ir::Value, CraneliftLoweringError> {
         self.emitted_transition.set(true);
-        publish_native_call_state(
+        publish_native_continuation_state(
             builder,
             self.deopt_out,
             self.function,
             self.local_count,
-            self.instruction,
+            self.continuation_id,
+            self.live_locals,
             self.locals,
             self.native_version,
         )?;
@@ -2505,12 +2507,13 @@ impl NativeOptimizingTransition<'_> {
         value: ir::Value,
         fiber_link: Option<ir::Value>,
     ) -> Result<(), CraneliftLoweringError> {
-        publish_native_call_state(
+        publish_native_continuation_state(
             builder,
             self.deopt_out,
             self.function,
             self.local_count,
-            self.instruction,
+            self.continuation_id,
+            self.live_locals,
             self.locals,
             self.native_version,
         )?;
@@ -5545,7 +5548,7 @@ fn lower_optimizing_foreach_reference_init(
         Some(transition),
         None,
         transition.function,
-        transition.instruction.continuation_id,
+        transition.continuation_id,
     )
 }
 
@@ -17502,7 +17505,8 @@ fn lower_optimizing_region_instruction(
         deopt_out,
         function,
         local_count,
-        instruction,
+        continuation_id: instruction.continuation_id,
+        live_locals: &instruction.live_locals,
         locals,
         live_values: &transition_live_values,
         native_version,
@@ -22462,7 +22466,11 @@ fn lower_baseline_region_instruction(
                         function_is_top_level,
                         function_local_names,
                         *local,
-                    ),
+                    ) | if value_flow.moves_value_into_local(instruction.continuation_id) {
+                        crate::JIT_LOCAL_STORE_MOVE_INPUT
+                    } else {
+                        0
+                    },
                     &[current, src, function_value, local_value],
                     result_out,
                 )?
@@ -26016,7 +26024,7 @@ fn lower_optimizing_trusted_static_local(
         .load(types::I32, MemFlagsData::new(), function_entry, 0);
     let plan_index = builder
         .ins()
-        .iadd_imm(plan_base, i64::from(transition.instruction.continuation_id));
+        .iadd_imm(plan_base, i64::from(transition.continuation_id));
     let wide_plan_index = builder.ins().uextend(pointer_type, plan_index);
     let plan_offset = builder.ins().ishl_imm(wide_plan_index, 4);
     let plan = builder.ins().iadd(plans, plan_offset);

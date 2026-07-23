@@ -1553,8 +1553,9 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
     if op & !(php_jit::JIT_LOCAL_STORE_PLAIN_LOCAL | php_jit::JIT_LOCAL_STORE_MOVE_INPUT) != 0 {
         return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
     }
-    let move_input = op & php_jit::JIT_LOCAL_STORE_MOVE_INPUT != 0;
     with_native_context_for(runtime, "local_store", |context| {
+        let move_input = op & php_jit::JIT_LOCAL_STORE_MOVE_INPUT != 0
+            || std::mem::take(&mut context.baseline_transition_store_owner_pending);
         context.attribute_active_helper("store_local", u32::try_from(function).ok());
         if op & php_jit::JIT_LOCAL_STORE_PLAIN_LOCAL != 0 && !move_input {
             match context.replace_plain_php_handle(current, value) {
@@ -1757,13 +1758,6 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
                     context.synchronize_request_roots();
                 }
             }
-            if let Err(error) = context.finalize_replaced_value(previous) {
-                record_native_helper_failure(
-                    context,
-                    format!("local store could not finalize replaced value: {error}"),
-                );
-                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-            }
             if move_input && let Err(error) = context.release_if_live(value) {
                 record_native_helper_failure(
                     context,
@@ -1807,6 +1801,18 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
                     _ => current,
                 }
             };
+            // A top-level continuation may restore the dereferenced payload
+            // in its frame slot while the canonical global already owns the
+            // reference. Drop that stale frame owner before deciding whether
+            // the replaced object remains rooted; otherwise the temporary
+            // suppresses its destructor until request shutdown.
+            if let Err(error) = context.finalize_replaced_value(previous) {
+                record_native_helper_failure(
+                    context,
+                    format!("local store could not finalize replaced value: {error}"),
+                );
+                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+            }
             if write_native_value(out, stored) {
                 0
             } else {
@@ -2643,33 +2649,11 @@ pub(in crate::vm) extern "C" fn jit_native_exception_new_abi(
         let php_ir::InstructionKind::MakeException { ref class_name, .. } = source.kind else {
             return php_jit::JitCallStatus::ABI_MISMATCH.0 as i32;
         };
-        let Ok(message) = context.decode(message) else {
+        let Ok(message) = context.decode(message).and_then(native_string) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
-        let mut exception = php_runtime::api::PhpArray::new();
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"class".to_vec())),
-            Value::String(PhpString::from_bytes(class_name.as_bytes().to_vec())),
-        );
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"message".to_vec())),
-            message,
-        );
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"file".to_vec())),
-            Value::String(PhpString::from_bytes(
-                context
-                    .unit
-                    .files
-                    .get(source.span.file.index())
-                    .map_or_else(Vec::new, |file| file.path.as_bytes().to_vec()),
-            )),
-        );
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"line".to_vec())),
-            Value::Int(i64::try_from(native_source_line(context, &source)).unwrap_or(i64::MAX)),
-        );
-        match context.encode_native_array_owner(exception) {
+        let message = String::from_utf8_lossy(&message).into_owned();
+        match encode_native_throwable_at(context, class_name, &message, source.span) {
             Ok(value) if write_native_value(out, value) => 0,
             _ => php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
         }

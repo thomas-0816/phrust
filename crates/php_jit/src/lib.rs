@@ -135,6 +135,10 @@ const JIT_NATIVE_HANDLER_RESUME_TAG: u32 = 0x8000_0000;
 const JIT_NATIVE_SUSPENSION_RESUME_TAG: u32 = 0x4000_0000;
 pub const JIT_NATIVE_TRANSITION_RESUME_TAG: u32 = 0x2000_0000;
 pub const JIT_NATIVE_OPTIMIZING_BLOCK_RESUME_TAG: u32 = 0x1000_0000;
+/// Optimizing catch-entry binding deliberately resumes at the baseline
+/// handler entry so the overwritten local is finalized exactly once before
+/// the catch body executes.
+pub const JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL: u32 = 0x4341_5443;
 /// Cranelift release included in restart-persistent native cache identity.
 pub const CRANELIFT_VERSION: &str = "0.133.1";
 
@@ -1449,6 +1453,43 @@ impl JitFunctionHandle {
         if require_baseline && metadata.compiler_tier != region_ir::NativeCompilerTier::Baseline {
             return Err(JitInvokeError::NativeTransitionRequiresBaseline);
         }
+        if state.control_reserved == JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL {
+            let block = BlockId::new(state.continuation_id);
+            let handler_exists = metadata.exception_handlers.iter().any(|entry| {
+                entry.function.raw() == state.function_id
+                    && (entry.catch == Some(block) || entry.finally == Some(block))
+            });
+            if !handler_exists {
+                return Err(JitInvokeError::MissingNativeTransition {
+                    function: state.function_id,
+                    continuation: state.continuation_id,
+                });
+            }
+            let function_entry = metadata
+                .function_entries
+                .iter()
+                .find(|entry| entry.function.raw() == state.function_id)
+                .ok_or(JitInvokeError::MissingNativeTransition {
+                    function: state.function_id,
+                    continuation: state.continuation_id,
+                })?;
+            let Some(mut entry) = self.native_entry else {
+                return Err(JitInvokeError::MissingNativeEntry);
+            };
+            entry.address = function_entry.address;
+            entry.arity = function_entry.arity;
+            let args = vec![0_i64; usize::from(function_entry.arity)];
+            let mut resume_state = *state;
+            resume_state.control_reserved = 0;
+            return entry.invoke_i64_handler_resume(
+                &args,
+                block,
+                state.control_status,
+                state.control_value,
+                resume_state,
+                runtime,
+            );
+        }
         let transition = metadata
             .native_transitions
             .iter()
@@ -1665,22 +1706,15 @@ impl JitFunctionHandle {
             ) {
                 JitNativeUnwindTarget::Catch {
                     block,
-                    exception_local,
+                    exception_local: _,
                     handler_index: _,
                 } => {
-                    let mut resume_state = state;
-                    if let Some(local) = exception_local
-                        && local.index() < JIT_DEOPT_MAX_SLOTS
-                    {
-                        resume_state.slots[local.index()] = value;
-                        resume_state.mark_local_initialized(local);
-                    }
                     outcome = entry.invoke_i64_handler_resume(
                         args,
                         block,
                         JitCallStatus::CONTINUE,
                         value,
-                        resume_state,
+                        state,
                         runtime,
                     )?;
                 }
@@ -1868,22 +1902,15 @@ impl JitFunctionHandle {
             ) {
                 JitNativeUnwindTarget::Catch {
                     block,
-                    exception_local,
+                    exception_local: _,
                     handler_index: _,
                 } => {
-                    let mut resume_state = state;
-                    if let Some(local) = exception_local
-                        && local.index() < JIT_DEOPT_MAX_SLOTS
-                    {
-                        resume_state.slots[local.index()] = value;
-                        resume_state.mark_local_initialized(local);
-                    }
                     outcome = entry.invoke_i64_handler_resume(
                         args,
                         block,
                         JitCallStatus::CONTINUE,
                         value,
-                        resume_state,
+                        state,
                         runtime,
                     )?;
                 }

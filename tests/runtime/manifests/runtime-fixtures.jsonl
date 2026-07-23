@@ -101,6 +101,7 @@
 {"id":"objects-clone-independent","path":"fixtures/runtime/valid/objects/clone-independent.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"1|2\n"}}
 {"id":"objects-clone-with","path":"fixtures/runtime/valid/objects/clone-with.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"old:1|new:2\n"}}
 {"id":"exceptions-catch-exception","path":"fixtures/runtime/valid/exceptions/catch-exception.php","tags":["runtime","exceptions"],"expect":{"exit":0,"stdout":"caught\n"}}
+{"id":"exceptions-native-catch-ownership","path":"fixtures/runtime/valid/exceptions/native-catch-ownership.php","tags":["runtime","exceptions","objects","ownership","native"],"expect":{"exit":0,"stdout":"drop:Exception\nException:boom:throwable\nalias-catch\nalias-held\ndrop:Exception\nalias-released\n"}}
 {"id":"exceptions-finally-return","path":"fixtures/runtime/valid/exceptions/finally-return.php","tags":["runtime","exceptions"],"expect":{"exit":0,"stdout":"finally|body\n"}}
 {"id":"exceptions-catch-finally","path":"fixtures/runtime/valid/exceptions/catch-finally.php","tags":["runtime","exceptions"],"expect":{"exit":0,"stdout":"catch|finally\n"}}
 {"id":"runtime-types-param-int","path":"fixtures/runtime/valid/runtime_types/param-int.php","tags":["runtime","types"],"expect":{"exit":0,"stdout":"5\n"}}

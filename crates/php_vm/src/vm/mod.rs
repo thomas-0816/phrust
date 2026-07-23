@@ -1479,19 +1479,21 @@ fn native_exception_detailed_output(
     message: &str,
     file: &str,
 ) -> Option<String> {
-    let Value::Array(exception) = value else {
-        return None;
-    };
     let key = |name: &str| {
         php_runtime::api::ArrayKey::String(php_runtime::api::PhpString::from_bytes(
             name.as_bytes().to_vec(),
         ))
     };
-    let Value::Int(line) = exception.get(&key("line"))? else {
+    let field = |name: &str| match value {
+        Value::Array(exception) => exception.get(&key(name)).cloned(),
+        Value::Object(exception) => exception.get_property(name),
+        _ => None,
+    };
+    let Value::Int(line) = field("line")? else {
         return None;
     };
-    let line = usize::try_from(*line).ok()?;
-    let trace = match exception.get(&key("trace")) {
+    let line = usize::try_from(line).ok()?;
+    let trace = match field("trace") {
         Some(Value::Array(trace)) => trace,
         _ => {
             return Some(format!(

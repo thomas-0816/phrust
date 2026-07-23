@@ -1649,6 +1649,10 @@ pub(super) struct NativeRequestColdState<'a> {
         std::sync::Arc<std::collections::BTreeMap<php_ir::FunctionId, php_jit::JitFunctionHandle>>,
     native_call_encoded_scratch: Vec<i64>,
     native_frame_arena: NativeFrameArena,
+    /// One optimizing StoreLocal continuation has transferred its source
+    /// owner into the baseline replay frame. The replaying store consumes
+    /// that owner exactly once instead of retaining a second hidden copy.
+    baseline_transition_store_owner_pending: bool,
     /// Demand-backed native continuation stack used only when a compiled
     /// caller observes `SUSPEND_FIBER`. Generated code writes these records
     /// through the fast-state view; cold code consumes them exactly once when
@@ -3040,6 +3044,7 @@ impl<'a> NativeRequestColdState<'a> {
             native_entries,
             native_call_encoded_scratch: Vec::with_capacity(native_call_argument_capacity),
             native_frame_arena: NativeFrameArena::default(),
+            baseline_transition_store_owner_pending: false,
             fiber_suspension_states: php_runtime::api::StableNativeArena::new(
                 php_jit::JIT_NATIVE_FIBER_SUSPENSION_CAPACITY,
             ),
@@ -14757,12 +14762,17 @@ fn resume_native_optimizing_exit_with_artifact(
             }
         })?;
         let runtime = context.native_runtime_ptr();
+        let replays_store = transition_instruction.as_ref().is_some_and(|instruction| {
+            matches!(instruction.kind, php_ir::InstructionKind::StoreLocal { .. })
+        });
+        context.baseline_transition_store_owner_pending = replays_store;
         outcome = baseline.invoke_i64_native_transition_with_unwind_runtime(
             state,
             php_jit::JIT_RUNTIME_ABI_HASH,
             runtime,
             |types, value| native_catch_matches(context, types, value),
         );
+        context.baseline_transition_store_owner_pending = false;
         active_artifact = Some(baseline);
         if let Some(started) = transition_started {
             context.record_native_transition(transition_reason.as_ref(), started.elapsed(), 0);
@@ -16104,6 +16114,19 @@ fn native_class_is_a(context: &NativeRequestColdState<'_>, class_name: &str, tar
             }
             pending.extend(
                 class
+                    .interfaces
+                    .iter()
+                    .map(|interface| normalize_class_name(interface)),
+            );
+        } else if let Some(class) =
+            php_std::ExtensionRegistry::standard_library().enabled_class(&candidate)
+            && let Some(metadata) = class.source_metadata()
+        {
+            if let Some(parent) = metadata.parent {
+                pending.push(normalize_class_name(parent));
+            }
+            pending.extend(
+                metadata
                     .interfaces
                     .iter()
                     .map(|interface| normalize_class_name(interface)),
