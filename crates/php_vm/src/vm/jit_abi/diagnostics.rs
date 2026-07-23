@@ -156,16 +156,6 @@ pub(super) fn encode_native_throwable_at(
     encode_native_throwable_fields(context, class, message, Some(span), None)
 }
 
-pub(super) fn encode_native_throwable_at_with_code(
-    context: &mut NativeRequestColdState<'_>,
-    class: &str,
-    message: &str,
-    span: php_ir::IrSpan,
-    code: i64,
-) -> Result<i64, String> {
-    encode_native_throwable_fields(context, class, message, Some(span), Some(code))
-}
-
 pub(super) fn initialize_native_throwable_parent(
     context: &mut NativeRequestColdState<'_>,
     class: &str,

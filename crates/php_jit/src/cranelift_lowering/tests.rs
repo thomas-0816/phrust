@@ -768,9 +768,6 @@ extern "C" fn passthrough_release(_runtime: *mut std::ffi::c_void, _value: i64) 
 
 extern "C" fn return_exact_builtin_first_argument(
     _runtime: *mut std::ffi::c_void,
-    _source_file: u32,
-    _source_start: u32,
-    _source_end: u32,
     _argument_count: u32,
     argument: i64,
     _argument_1: i64,

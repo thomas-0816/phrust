@@ -6713,16 +6713,6 @@ fn lower_optimizing_exact_runtime_builtin(
             "prepared runtime builtin exceeds the exact six-argument ABI",
         ));
     }
-    let source_file = builder.ins().iconst(
-        types::I32,
-        i64::from(transition.instruction.span.file.raw()),
-    );
-    let source_start = builder
-        .ins()
-        .iconst(types::I32, i64::from(transition.instruction.span.start));
-    let source_end = builder
-        .ins()
-        .iconst(types::I32, i64::from(transition.instruction.span.end));
     let argument_count = builder.ins().iconst(
         types::I32,
         i64::try_from(arguments.len()).unwrap_or(i64::MAX),
@@ -6730,8 +6720,8 @@ fn lower_optimizing_exact_runtime_builtin(
     let missing = builder
         .ins()
         .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-    let mut exact_arguments = Vec::with_capacity(10);
-    exact_arguments.extend([source_file, source_start, source_end, argument_count]);
+    let mut exact_arguments = Vec::with_capacity(7);
+    exact_arguments.push(argument_count);
     exact_arguments.extend((0..6).map(|index| arguments.get(index).copied().unwrap_or(missing)));
     let call = call_native_helper(module, builder, helper, &exact_arguments);
     // `JitNativeControlResult` is two ABI words: status/detail followed by the
@@ -21404,7 +21394,7 @@ fn lower_optimizing_region_instruction(
                     result,
                 )?;
             } else if let Some(builtin) = stable_builtin_pcre(&call.target)
-                && call.args.len() <= 6
+                && builtin.accepts_arity(call.args.len())
                 && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
                 && call.args.iter().enumerate().all(|(index, argument)| {
                     !builtin.argument_is_by_reference(index)
@@ -21448,7 +21438,7 @@ fn lower_optimizing_region_instruction(
                     result,
                 )?;
             } else if let Some(builtin) = stable_builtin_json(&call.target)
-                && call.args.len() <= 6
+                && builtin.accepts_arity(call.args.len())
                 && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
             {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
@@ -21474,7 +21464,7 @@ fn lower_optimizing_region_instruction(
                     result,
                 )?;
             } else if let Some(builtin) = stable_builtin_format(&call.target)
-                && call.args.len() <= 6
+                && builtin.accepts_arity(call.args.len())
                 && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
             {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;

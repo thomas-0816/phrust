@@ -256,6 +256,17 @@ impl StablePcreBuiltin {
         )
     }
 
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Match | Self::MatchAll => arity >= 2 && arity <= 5,
+            Self::Replace | Self::Filter => arity >= 3 && arity <= 5,
+            Self::Split => arity >= 2 && arity <= 4,
+            Self::Grep => arity == 2 || arity == 3,
+            Self::Quote => arity == 1 || arity == 2,
+            Self::LastError | Self::LastErrorMessage => arity == 0,
+        }
+    }
+
     pub(super) const fn all() -> [Self; Self::COUNT] {
         [
             Self::Match,
@@ -337,6 +348,14 @@ impl StableJsonBuiltin {
             Self::LastErrorMessage,
         ]
     }
+
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Encode | Self::Validate => arity >= 1 && arity <= 3,
+            Self::Decode => arity >= 2 && arity <= 4,
+            Self::LastError | Self::LastErrorMessage => arity == 0,
+        }
+    }
 }
 
 pub(super) fn stable_builtin_json(target: &RegionCallTarget) -> Option<StableJsonBuiltin> {
@@ -388,6 +407,13 @@ impl StableFormatBuiltin {
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
         [Self::Sprintf, Self::Printf, Self::Vsprintf, Self::Vprintf]
+    }
+
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Sprintf | Self::Printf => arity >= 1 && arity <= 6,
+            Self::Vsprintf | Self::Vprintf => arity == 2,
+        }
     }
 }
 

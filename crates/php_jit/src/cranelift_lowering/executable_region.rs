@@ -2275,9 +2275,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2296,9 +2294,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2317,9 +2313,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2338,9 +2332,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2359,9 +2351,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }

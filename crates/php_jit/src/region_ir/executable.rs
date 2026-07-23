@@ -1183,6 +1183,7 @@ impl BaselineRegionBuilder {
             let mut known_register_strings = BTreeMap::<RegId, String>::new();
             let mut known_local_strings = BTreeMap::<LocalId, String>::new();
             let mut known_callables = BTreeMap::<RegId, String>::new();
+            let mut known_callable_locals = BTreeMap::<LocalId, String>::new();
             let mut known_null_registers = BTreeSet::<RegId>::new();
             let mut known_closure_registers = BTreeMap::<RegId, KnownClosure>::new();
             let mut known_closure_locals = BTreeMap::<LocalId, KnownClosure>::new();
@@ -1234,6 +1235,11 @@ impl BaselineRegionBuilder {
                             known_closure_registers.insert(*dst, closure.clone());
                         }
                         if let Operand::Register(register) = src
+                            && let Some(name) = known_callables.get(register)
+                        {
+                            known_callables.insert(*dst, name.clone());
+                        }
+                        if let Operand::Register(register) = src
                             && known_null_registers.contains(register)
                         {
                             known_null_registers.insert(*dst);
@@ -1261,6 +1267,9 @@ impl BaselineRegionBuilder {
                         }
                         if let Some(closure) = known_closure_locals.get(local) {
                             known_closure_registers.insert(*dst, closure.clone());
+                        }
+                        if let Some(name) = known_callable_locals.get(local) {
+                            known_callables.insert(*dst, name.clone());
                         }
                         if let Some(class) = known_object_locals.get(local) {
                             known_object_registers.insert(*dst, *class);
@@ -1290,6 +1299,13 @@ impl BaselineRegionBuilder {
                             known_closure_locals.insert(*local, closure.clone());
                         } else {
                             known_closure_locals.remove(local);
+                        }
+                        if let Operand::Register(register) = src
+                            && let Some(name) = known_callables.get(register)
+                        {
+                            known_callable_locals.insert(*local, name.clone());
+                        } else {
+                            known_callable_locals.remove(local);
                         }
                         if let Operand::Register(register) = src
                             && let Some(class) = known_object_registers.get(register)
@@ -1856,20 +1872,50 @@ impl BaselineRegionBuilder {
                     {
                         let callee = args[0].value;
                         let callback_args = args[1..].to_vec();
-                        let mut operands = vec![Some(lower_operand(unit, callee))];
-                        operands.extend(lower_call_operands(unit, &callback_args));
-                        fast_path_operations = fast_path_operations.saturating_add(1);
-                        RegionInstructionKind::NativeCall(RegionNativeCall {
-                            result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Callable { callee },
-                            args: callback_args,
-                            argument_operand_offset: 1,
-                            operands,
-                            direct_arity: None,
-                            variadic: false,
-                            returns_by_reference: false,
-                            caller_strict_types: unit.strict_types,
-                        })
+                        let closure = match callee {
+                            Operand::Register(register) => {
+                                known_closure_registers.get(&register).cloned()
+                            }
+                            _ => None,
+                        }
+                        .filter(|closure| !closure.requires_runtime_context);
+                        if let Some(closure) = closure {
+                            fast_path_operations = fast_path_operations.saturating_add(1);
+                            lower_direct_closure_call(
+                                unit,
+                                *dst,
+                                closure,
+                                &callback_args,
+                                semantic_context,
+                            )
+                        } else if let Some(name) = known_callable_operand_name(
+                            unit,
+                            callee,
+                            &known_register_strings,
+                            &known_local_strings,
+                            &known_callables,
+                            &known_callable_locals,
+                        ) {
+                            let (call, direct) =
+                                lower_stable_named_callable(unit, *dst, name, &callback_args);
+                            fast_path_operations =
+                                fast_path_operations.saturating_add(u64::from(direct));
+                            call
+                        } else {
+                            let mut operands = vec![Some(lower_operand(unit, callee))];
+                            operands.extend(lower_call_operands(unit, &callback_args));
+                            RegionInstructionKind::NativeCall(RegionNativeCall {
+                                result: RegionCallResult::Register(*dst),
+                                target: RegionCallTarget::Callable { callee },
+                                args: callback_args,
+                                argument_operand_offset: 1,
+                                operands,
+                                direct_arity: None,
+                                variadic: false,
+                                returns_by_reference: false,
+                                caller_strict_types: unit.strict_types,
+                            })
+                        }
                     }
                     InstructionKind::CallFunction { dst, name, args }
                         if name
@@ -1884,22 +1930,32 @@ impl BaselineRegionBuilder {
                         let mut unpacked = args[1].clone();
                         unpacked.unpack = true;
                         let callback_args = vec![unpacked];
-                        let operands = vec![
-                            Some(lower_operand(unit, callee)),
-                            Some(lower_operand(unit, args[1].value)),
-                        ];
-                        fast_path_operations = fast_path_operations.saturating_add(1);
-                        RegionInstructionKind::NativeCall(RegionNativeCall {
-                            result: RegionCallResult::Register(*dst),
-                            target: RegionCallTarget::Callable { callee },
-                            args: callback_args,
-                            argument_operand_offset: 1,
-                            operands,
-                            direct_arity: None,
-                            variadic: false,
-                            returns_by_reference: false,
-                            caller_strict_types: unit.strict_types,
-                        })
+                        if let Some(name) = known_callable_operand_name(
+                            unit,
+                            callee,
+                            &known_register_strings,
+                            &known_local_strings,
+                            &known_callables,
+                            &known_callable_locals,
+                        ) {
+                            lower_stable_named_callable(unit, *dst, name, &callback_args).0
+                        } else {
+                            let operands = vec![
+                                Some(lower_operand(unit, callee)),
+                                Some(lower_operand(unit, args[1].value)),
+                            ];
+                            RegionInstructionKind::NativeCall(RegionNativeCall {
+                                result: RegionCallResult::Register(*dst),
+                                target: RegionCallTarget::Callable { callee },
+                                args: callback_args,
+                                argument_operand_offset: 1,
+                                operands,
+                                direct_arity: None,
+                                variadic: false,
+                                returns_by_reference: false,
+                                caller_strict_types: unit.strict_types,
+                            })
+                        }
                     }
                     InstructionKind::CallFunction { dst, name, args } => {
                         let args = prepared_call_args.as_deref().unwrap_or(args);
@@ -2148,71 +2204,34 @@ impl BaselineRegionBuilder {
                         class_name,
                         method,
                         args,
-                    } => find_class(unit, class_name)
-                        .and_then(|(_, class)| {
-                            class
-                                .methods
-                                .iter()
-                                .find(|entry| {
-                                    entry.name.eq_ignore_ascii_case(method)
-                                        && entry.flags.is_static
-                                        && !entry.flags.is_private
-                                        && !entry.flags.is_protected
-                                })
-                                .map(|entry| entry.function)
-                        })
-                        .filter(|_| !class_name.eq_ignore_ascii_case("static"))
-                        .filter(|function| {
-                            unit.functions
-                                .get(function.index())
-                                .is_some_and(|function| {
-                                    !function
-                                        .blocks
-                                        .iter()
-                                        .flat_map(|block| &block.instructions)
-                                        .any(|instruction| {
-                                            matches!(
-                                                &instruction.kind,
-                                                InstructionKind::FetchClassConstant {
-                                                    class_name,
-                                                    ..
-                                                }
-                                                    | InstructionKind::CallStaticMethod {
-                                                        class_name,
-                                                        ..
-                                                    } if class_name.eq_ignore_ascii_case("static")
-                                            )
-                                        })
-                                })
-                        })
-                        .map_or_else(
-                            || {
-                                RegionInstructionKind::NativeCall(RegionNativeCall {
-                                    result: RegionCallResult::Register(*dst),
-                                    target: RegionCallTarget::StaticMethod {
-                                        class_name: class_name.clone(),
-                                        method: method.clone(),
-                                    },
-                                    args: args.to_vec(),
-                                    argument_operand_offset: 0,
-                                    operands: lower_call_operands(unit, args),
-                                    direct_arity: None,
-                                    variadic: false,
-                                    returns_by_reference: false,
-                                    caller_strict_types: unit.strict_types,
-                                })
-                            },
-                            |function| {
-                                fast_path_operations = fast_path_operations.saturating_add(1);
-                                lower_direct_function_call(
-                                    unit,
-                                    *dst,
-                                    unit.functions[function.index()].name.clone(),
-                                    function,
-                                    args,
-                                )
-                            },
-                        ),
+                    } => find_direct_static_method(unit, class_name, method).map_or_else(
+                        || {
+                            RegionInstructionKind::NativeCall(RegionNativeCall {
+                                result: RegionCallResult::Register(*dst),
+                                target: RegionCallTarget::StaticMethod {
+                                    class_name: class_name.clone(),
+                                    method: method.clone(),
+                                },
+                                args: args.to_vec(),
+                                argument_operand_offset: 0,
+                                operands: lower_call_operands(unit, args),
+                                direct_arity: None,
+                                variadic: false,
+                                returns_by_reference: false,
+                                caller_strict_types: unit.strict_types,
+                            })
+                        },
+                        |function| {
+                            fast_path_operations = fast_path_operations.saturating_add(1);
+                            lower_direct_function_call(
+                                unit,
+                                *dst,
+                                unit.functions[function.index()].name.clone(),
+                                function,
+                                args,
+                            )
+                        },
+                    ),
                     InstructionKind::CallClosure { dst, callee, args } => {
                         let closure = match callee {
                             Operand::Register(register) => {
@@ -4346,6 +4365,27 @@ fn known_string_operand(
     }
 }
 
+fn known_callable_operand_name(
+    unit: &IrUnit,
+    operand: Operand,
+    register_strings: &BTreeMap<RegId, String>,
+    local_strings: &BTreeMap<LocalId, String>,
+    register_callables: &BTreeMap<RegId, String>,
+    local_callables: &BTreeMap<LocalId, String>,
+) -> Option<String> {
+    match operand {
+        Operand::Register(register) => register_callables
+            .get(&register)
+            .or_else(|| register_strings.get(&register))
+            .cloned(),
+        Operand::Local(local) => local_callables
+            .get(&local)
+            .or_else(|| local_strings.get(&local))
+            .cloned(),
+        Operand::Constant(_) => known_string_operand(unit, operand, register_strings),
+    }
+}
+
 fn native_global_site_name(
     unit: &IrUnit,
     function: &php_ir::IrFunction,
@@ -4402,6 +4442,46 @@ fn find_class<'a>(unit: &'a IrUnit, name: &str) -> Option<(u32, &'a php_ir::modu
         .enumerate()
         .find(|(_, class)| php_ir::module::normalize_class_name(&class.name) == normalized)
         .and_then(|(index, class)| u32::try_from(index).ok().map(|index| (index, class)))
+}
+
+fn find_direct_static_method(unit: &IrUnit, class_name: &str, method: &str) -> Option<FunctionId> {
+    find_class(unit, class_name)
+        .and_then(|(_, class)| {
+            class
+                .methods
+                .iter()
+                .find(|entry| {
+                    entry.name.eq_ignore_ascii_case(method)
+                        && entry.flags.is_static
+                        && !entry.flags.is_private
+                        && !entry.flags.is_protected
+                })
+                .map(|entry| entry.function)
+        })
+        .filter(|_| !class_name.eq_ignore_ascii_case("static"))
+        .filter(|function| {
+            unit.functions
+                .get(function.index())
+                .is_some_and(|function| {
+                    !function
+                        .blocks
+                        .iter()
+                        .flat_map(|block| &block.instructions)
+                        .any(|instruction| {
+                            matches!(
+                                &instruction.kind,
+                                InstructionKind::FetchClassConstant {
+                                    class_name,
+                                    ..
+                                }
+                                    | InstructionKind::CallStaticMethod {
+                                        class_name,
+                                        ..
+                                    } if class_name.eq_ignore_ascii_case("static")
+                            )
+                        })
+                })
+        })
 }
 
 fn publication_constant_is_stable(constant: &IrConstant) -> bool {
@@ -4613,6 +4693,72 @@ fn lower_direct_function_call(
         returns_by_reference: target.returns_by_ref,
         caller_strict_types: unit.strict_types,
     })
+}
+
+fn lower_stable_named_callable(
+    unit: &IrUnit,
+    dst: RegId,
+    name: String,
+    args: &[IrCallArg],
+) -> (RegionInstructionKind, bool) {
+    let direct_shape = args
+        .iter()
+        .all(|argument| argument.name.is_none() && !argument.unpack);
+    if let Some((class_name, method)) = name.split_once("::") {
+        if direct_shape && let Some(function) = find_direct_static_method(unit, class_name, method)
+        {
+            return (
+                lower_direct_function_call(
+                    unit,
+                    dst,
+                    unit.functions[function.index()].name.clone(),
+                    function,
+                    args,
+                ),
+                true,
+            );
+        }
+        return (
+            RegionInstructionKind::NativeCall(RegionNativeCall {
+                result: RegionCallResult::Register(dst),
+                target: RegionCallTarget::StaticMethod {
+                    class_name: class_name.to_owned(),
+                    method: method.to_owned(),
+                },
+                args: args.to_vec(),
+                argument_operand_offset: 0,
+                operands: lower_call_operands(unit, args),
+                direct_arity: None,
+                variadic: false,
+                returns_by_reference: false,
+                caller_strict_types: unit.strict_types,
+            }),
+            false,
+        );
+    }
+    if direct_shape && let Some(function) = find_function(unit, &name) {
+        return (
+            lower_direct_function_call(unit, dst, name, function, args),
+            true,
+        );
+    }
+    (
+        RegionInstructionKind::NativeCall(RegionNativeCall {
+            result: RegionCallResult::Register(dst),
+            target: RegionCallTarget::Function {
+                name,
+                function: None,
+            },
+            args: args.to_vec(),
+            argument_operand_offset: 0,
+            operands: lower_call_operands(unit, args),
+            direct_arity: None,
+            variadic: false,
+            returns_by_reference: false,
+            caller_strict_types: unit.strict_types,
+        }),
+        false,
+    )
 }
 
 fn lower_direct_method_call(
