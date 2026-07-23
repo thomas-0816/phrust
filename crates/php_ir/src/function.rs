@@ -3,6 +3,16 @@
 use crate::block::BasicBlock;
 use crate::constants::IrConstant;
 use crate::ids::LocalId;
+
+/// Returns whether a local name belongs to an IR-only compiler slot.
+///
+/// PHP variable names cannot contain `:`, so the lowering-owned namespace
+/// cannot collide with a PHP-visible local. These slots are frame-local even
+/// when they are emitted in a top-level function.
+#[must_use]
+pub fn is_compiler_generated_local_name(name: &str) -> bool {
+    name.starts_with("__phrust:")
+}
 use crate::module::AttributeEntry;
 use crate::source_map::IrSpan;
 use serde::{Deserialize, Serialize};

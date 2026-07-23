@@ -354,7 +354,8 @@ impl NativeRequestFastState {
                 }
                 php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                     if slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                        && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                        && native_reference_state(slot.reserved)
+                            != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
                 {
                     encoded = slot.payload as i64;
                 }
@@ -527,7 +528,8 @@ impl NativeRequestFastState {
             };
             if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                && native_reference_state(slot.reserved)
+                    != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
             {
                 encoded = slot.payload as i64;
                 continue;
@@ -544,7 +546,8 @@ impl NativeRequestFastState {
             let (_, slot) = self.direct_slot(encoded)?;
             if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                && native_reference_state(slot.reserved)
+                    != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
             {
                 encoded = slot.payload as i64;
                 continue;
@@ -578,7 +581,8 @@ impl NativeRequestFastState {
                         .ok();
                     }
                     php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
-                        if slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                        if native_reference_state(slot.reserved)
+                            != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
                     {
                         encoded = slot.payload as i64;
                         continue;
@@ -1255,7 +1259,8 @@ impl NativeRequestFastState {
             as *mut php_jit::JitNativeValueSlot;
         unsafe {
             (*slots.add(index)).payload = value as u64;
-            (*slots.add(index)).reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+            (*slots.add(index)).reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED
+                | (slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD);
         }
         true
     }
@@ -1287,7 +1292,8 @@ impl NativeRequestFastState {
                         )));
                     }
                     php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
-                        if slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                        if native_reference_state(slot.reserved)
+                            != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
                     {
                         encoded = slot.payload as i64;
                         continue;
@@ -1486,7 +1492,12 @@ struct NativeIncludeSymbols {
     class_aliases: std::collections::BTreeMap<String, String>,
     autoload_callbacks: Vec<Value>,
     shutdown_callbacks: Vec<NativeShutdownCallback>,
-    static_properties: std::collections::BTreeMap<(String, String), Value>,
+    /// Materialized transfer format used only while native arenas move across
+    /// an include/eval ownership boundary. Active execution promotes each
+    /// entry back into one authoritative stable static-property slot.
+    static_property_transfer: std::collections::BTreeMap<(String, String), Value>,
+    typed_static_reference_constraints:
+        std::collections::BTreeMap<u64, Vec<NativeTypedStaticReferenceConstraint>>,
     static_locals: std::collections::BTreeMap<(u64, u32, u32), php_runtime::api::ReferenceCell>,
     enum_cases: std::collections::BTreeMap<(String, String), php_runtime::api::ObjectRef>,
     destroyed_objects: std::collections::BTreeMap<u64, WeakObjectHandle>,
@@ -1495,6 +1506,13 @@ struct NativeIncludeSymbols {
     error_handlers: Vec<NativeErrorHandler>,
     exception_handlers: Vec<Value>,
     last_error: Option<NativeLastError>,
+}
+
+#[derive(Clone)]
+struct NativeTypedStaticReferenceConstraint {
+    owner_display_name: String,
+    property: String,
+    type_: php_ir::IrReturnType,
 }
 
 #[derive(Clone)]
@@ -1765,7 +1783,16 @@ pub(super) struct NativeRequestColdState<'a> {
     external_signature_epoch: u64,
     dynamic_units: Vec<NativeDynamicUnit>,
     current_dynamic_unit: Option<usize>,
-    static_properties: std::collections::BTreeMap<(String, String), Value>,
+    /// Cold ownership-transfer plane for include/eval. This is never an
+    /// alternative active-execution store: the first semantic access removes
+    /// the entry and publishes it in `static_property_slots`.
+    static_property_transfer: std::collections::BTreeMap<(String, String), Value>,
+    /// PHP type guards attached to references held by static properties.
+    /// Reference identity is stable across calls and include transfer, so
+    /// every write observes the property constraint without re-resolving a
+    /// class or property at the assignment site.
+    typed_static_reference_constraints:
+        std::collections::BTreeMap<u64, Vec<NativeTypedStaticReferenceConstraint>>,
     static_locals: std::collections::BTreeMap<(u64, u32, u32), php_runtime::api::ReferenceCell>,
     enum_cases: std::collections::BTreeMap<(String, String), php_runtime::api::ObjectRef>,
     class_constant_cache: std::collections::HashMap<
@@ -2098,6 +2125,10 @@ enum NativeEncodedValueKind {
     Generator,
     Fiber,
     Reference,
+}
+
+const fn native_reference_state(state: u32) -> u32 {
+    state & !php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD
 }
 
 fn native_special_value_class_is_a(kind: NativeEncodedValueKind, target: &str) -> Option<bool> {
@@ -2537,8 +2568,11 @@ fn native_request_local_name(function: &php_ir::IrFunction, local: usize) -> Opt
         "_GET", "_POST", "_COOKIE", "_REQUEST", "_SERVER", "_ENV", "_FILES", "_SESSION",
     ];
     let name = function.locals.get(local)?.as_str();
-    ((function.flags.is_top_level && name != "GLOBALS") || SUPERGLOBALS.contains(&name))
-        .then_some(name)
+    ((function.flags.is_top_level
+        && name != "GLOBALS"
+        && !php_ir::is_compiler_generated_local_name(name))
+        || SUPERGLOBALS.contains(&name))
+    .then_some(name)
 }
 
 fn stored_value_identity(value: &NativeStoredValue) -> Option<NativeValueIdentity> {
@@ -2848,7 +2882,7 @@ impl<'a> NativeRequestColdState<'a> {
 
     fn request_root_values(&self) -> Vec<Value> {
         let mut roots = self
-            .static_properties
+            .static_property_transfer
             .values()
             .chain(self.dynamic_constants.values())
             .chain(self.inherited_globals.values())
@@ -3127,7 +3161,9 @@ impl<'a> NativeRequestColdState<'a> {
             external_signature_epoch: inherited_symbols.external_signature_epoch,
             dynamic_units: inherited_symbols.dynamic_units,
             current_dynamic_unit: None,
-            static_properties: inherited_symbols.static_properties,
+            static_property_transfer: inherited_symbols.static_property_transfer,
+            typed_static_reference_constraints: inherited_symbols
+                .typed_static_reference_constraints,
             static_locals: inherited_symbols.static_locals,
             enum_cases: inherited_symbols.enum_cases,
             class_constant_cache: std::collections::HashMap::new(),
@@ -3723,7 +3759,7 @@ impl<'a> NativeRequestColdState<'a> {
                     if index >= self.static_property_slots.capacity() {
                         continue;
                     }
-                    let inherited = self.static_properties.remove(&key);
+                    let inherited = self.static_property_transfer.remove(&key);
                     let default = declaration
                         .default
                         .and_then(|constant| self.unit.constants.get(constant.index()))
@@ -3741,7 +3777,7 @@ impl<'a> NativeRequestColdState<'a> {
                     let encoded = match self.encode(value.clone()) {
                         Ok(encoded) => encoded,
                         Err(_) => {
-                            self.static_properties.insert(key.clone(), value);
+                            self.static_property_transfer.insert(key.clone(), value);
                             continue;
                         }
                     };
@@ -3922,7 +3958,7 @@ impl<'a> NativeRequestColdState<'a> {
             let Ok(value) = self.decode(slot.value) else {
                 continue;
             };
-            self.static_properties.insert(key, value);
+            self.static_property_transfer.insert(key, value);
             self.static_property_slots[index] = php_jit::JitNativeStaticPropertySlot::default();
             let _ = self.release(slot.value);
         }
@@ -4232,7 +4268,8 @@ impl<'a> NativeRequestColdState<'a> {
         self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
             kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
             flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED
+                | (slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD),
             payload: php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED) as u64,
             aux: 0,
             ..slot
@@ -4879,14 +4916,16 @@ impl<'a> NativeRequestColdState<'a> {
             slot.refcount != 0
                 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                && native_reference_state(slot.reserved)
+                    != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
         }) else {
             return Ok(None);
         };
         let encoded = self.encode(replacement.clone())?;
         self.direct_value_slots[index].payload = encoded as u64;
         self.direct_value_slots[index].reserved =
-            php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+            php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED
+                | (slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD);
         reference.set(replacement);
         let previous = self.decode(slot.payload as i64)?;
         self.release(slot.payload as i64)?;
@@ -5848,6 +5887,11 @@ impl<'a> NativeRequestColdState<'a> {
         &mut self,
         reference: php_runtime::api::ReferenceCell,
     ) -> Result<i64, String> {
+        let typed_guard = self
+            .typed_static_reference_constraints
+            .contains_key(&reference.gc_debug_id())
+            .then_some(php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD)
+            .unwrap_or(0);
         if let Some(index) = self
             .direct_reference_cells
             .iter()
@@ -5864,6 +5908,7 @@ impl<'a> NativeRequestColdState<'a> {
                 .refcount
                 .checked_add(1)
                 .ok_or_else(|| "direct native reference refcount overflow".to_owned())?;
+            slot.reserved |= typed_guard;
             let runtime_index = u32::try_from(index)
                 .ok()
                 .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
@@ -5881,7 +5926,7 @@ impl<'a> NativeRequestColdState<'a> {
             refcount: 1,
             kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
             flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
+            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY | typed_guard,
             ..php_jit::JitNativeValueSlot::default()
         };
         self.direct_reference_cells.insert(index, reference.clone());
@@ -5898,7 +5943,7 @@ impl<'a> NativeRequestColdState<'a> {
             .direct_value_slots
             .get_mut(index)
             .ok_or_else(|| format!("direct native reference {index} slot disappeared"))?;
-        slot.reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+        slot.reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED | typed_guard;
         slot.payload = payload as u64;
 
         let runtime_index = u32::try_from(index)
@@ -6799,7 +6844,8 @@ impl<'a> NativeRequestColdState<'a> {
         }
         if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR {
             if slot.flags != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                || slot.reserved == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                || native_reference_state(slot.reserved)
+                    == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
             {
                 return Err(format!(
                     "direct native reference {index} has no published scalar"
@@ -6815,7 +6861,7 @@ impl<'a> NativeRequestColdState<'a> {
             self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
                 kind: php_jit::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
                 flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-                reserved: 0,
+                reserved: slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD,
                 payload: reference.native_scalar_view_address() as u64,
                 aux: reference.native_array_view_address() as u64,
                 ..slot
@@ -8157,7 +8203,8 @@ impl<'a> NativeRequestColdState<'a> {
             }
             if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                && native_reference_state(slot.reserved)
+                    != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
             {
                 encoded = slot.payload as i64;
                 continue;
@@ -8176,7 +8223,8 @@ impl<'a> NativeRequestColdState<'a> {
                 self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
                     kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
                     flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-                    reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+                    reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED
+                        | (slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD),
                     payload: payload as u64,
                     ..slot
                 };
@@ -8225,7 +8273,8 @@ impl<'a> NativeRequestColdState<'a> {
             match slot.kind {
                 php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                     if slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                        && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                        && native_reference_state(slot.reserved)
+                            != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
                 {
                     encoded = slot.payload as i64;
                 }
@@ -8265,7 +8314,8 @@ impl<'a> NativeRequestColdState<'a> {
         (slot.refcount != 0
             && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
             && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-            && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY)
+            && native_reference_state(slot.reserved)
+                != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY)
             .then_some(slot.payload as i64)
     }
 
@@ -8757,15 +8807,274 @@ impl<'a> NativeRequestColdState<'a> {
             slot.refcount != 0
                 && slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                && native_reference_state(slot.reserved)
+                    != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
         }) else {
             return Ok(false);
         };
         self.direct_value_slots[index].payload = replacement as u64;
         self.direct_value_slots[index].reserved =
-            php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
+            php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED
+                | (slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD);
         self.release(slot.payload as i64)?;
         Ok(true)
+    }
+
+    fn register_typed_static_reference(
+        &mut self,
+        reference: &php_runtime::api::ReferenceCell,
+        declaration: &NativeStaticPropertyDeclaration,
+        property: &str,
+    ) {
+        let Some(type_) = declaration.type_.clone() else {
+            return;
+        };
+        let constraint = NativeTypedStaticReferenceConstraint {
+            owner_display_name: declaration.owner_display_name.clone(),
+            property: property.to_owned(),
+            type_,
+        };
+        let constraints = self
+            .typed_static_reference_constraints
+            .entry(reference.gc_debug_id())
+            .or_default();
+        if !constraints.iter().any(|candidate| {
+            candidate.owner_display_name == constraint.owner_display_name
+                && candidate.property == constraint.property
+                && candidate.type_ == constraint.type_
+        }) {
+            constraints.push(constraint);
+        }
+        if let Some(index) = self
+            .direct_reference_cells
+            .iter()
+            .find_map(|(index, candidate)| candidate.ptr_eq(reference).then_some(*index))
+            && let Some(slot) = self.direct_value_slots.get_mut(index)
+        {
+            slot.reserved |= php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD;
+        }
+    }
+
+    fn bind_typed_static_reference(
+        &mut self,
+        reference: &php_runtime::api::ReferenceCell,
+        declaration: &NativeStaticPropertyDeclaration,
+        property: &str,
+    ) -> Result<(), String> {
+        let Some(type_) = declaration.type_.as_ref() else {
+            return Ok(());
+        };
+        let current = reference.get();
+        let actual = native_assignment_type_name(&current);
+        let effective = native_coerce_call_argument(current.clone(), type_, self.unit.strict_types);
+        let existing = self
+            .typed_static_reference_constraints
+            .get(&reference.gc_debug_id())
+            .and_then(|constraints| {
+                constraints.iter().find(|constraint| {
+                    constraint.owner_display_name != declaration.owner_display_name
+                        || constraint.property != property
+                        || constraint.type_ != *type_
+                })
+            });
+        if let Some(existing) = existing
+            && (effective != current
+                || !native_value_matches_ir_type_in_context(self, &effective, type_))
+        {
+            return Err(format!(
+                "E_PHP_THROW:TypeError:Reference with value of type {actual} held by {} is not compatible with {}",
+                typed_static_reference_constraint_description(existing),
+                typed_static_property_description(declaration, property)
+            ));
+        }
+        if !native_value_matches_ir_type_in_context(self, &effective, type_) {
+            return Err(format!(
+                "E_PHP_THROW:TypeError:Cannot assign {actual} to property {}::${property} of type {}",
+                declaration.owner_display_name,
+                native_ir_type_name(type_)
+            ));
+        }
+        if existing.is_none() && effective != current {
+            reference.set(effective);
+        }
+        self.register_typed_static_reference(reference, declaration, property);
+        Ok(())
+    }
+
+    fn native_encoded_values_identical(&self, left: i64, right: i64) -> Option<bool> {
+        let left = self.dereference_direct_encoding(left);
+        let right = self.dereference_direct_encoding(right);
+        if left == right {
+            return Some(true);
+        }
+        let left_kind = self.native_encoded_value_kind(left)?;
+        let right_kind = self.native_encoded_value_kind(right)?;
+        if left_kind != right_kind {
+            return Some(false);
+        }
+        match left_kind {
+            NativeEncodedValueKind::Null
+            | NativeEncodedValueKind::Uninitialized
+            | NativeEncodedValueKind::Bool(_) => Some(true),
+            NativeEncodedValueKind::Int => {
+                Some(self.native_encoded_int(left)? == self.native_encoded_int(right)?)
+            }
+            NativeEncodedValueKind::Float => Some(
+                self.native_encoded_float(left)?.to_bits()
+                    == self.native_encoded_float(right)?.to_bits(),
+            ),
+            NativeEncodedValueKind::String => {
+                Some(self.native_string_name_bytes(left)? == self.native_string_name_bytes(right)?)
+            }
+            // Coercion never manufactures containers, objects, resources, or
+            // executable identities. Equal values of these kinds therefore
+            // retain the same authoritative handle and were caught above.
+            NativeEncodedValueKind::Array
+            | NativeEncodedValueKind::Object
+            | NativeEncodedValueKind::Resource
+            | NativeEncodedValueKind::Callable
+            | NativeEncodedValueKind::Generator
+            | NativeEncodedValueKind::Fiber
+            | NativeEncodedValueKind::Reference => Some(false),
+        }
+    }
+
+    fn coerce_typed_static_reference_encoded(
+        &mut self,
+        reference: &php_runtime::api::ReferenceCell,
+        encoded: i64,
+    ) -> Result<Option<i64>, String> {
+        let Some(constraints) = self
+            .typed_static_reference_constraints
+            .get(&reference.gc_debug_id())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let actual = self.native_encoded_type_name(encoded);
+        let mut selected: Option<(i64, NativeTypedStaticReferenceConstraint)> = None;
+        for constraint in constraints {
+            let candidate = self.coerce_native_call_argument_encoded(
+                encoded,
+                &constraint.type_,
+                self.unit.strict_types,
+            )?;
+            let Some(candidate) = candidate else {
+                if let Some((selected, _)) = selected {
+                    self.release_if_live(selected)?;
+                }
+                return Ok(None);
+            };
+            if self.native_encoded_matches_ir_type(candidate, &constraint.type_) != Some(true) {
+                self.release_if_live(candidate)?;
+                if let Some((selected, _)) = selected {
+                    self.release_if_live(selected)?;
+                }
+                return Err(format!(
+                    "E_PHP_THROW:TypeError:Cannot assign {actual} to reference held by property {}::${} of type {}",
+                    constraint.owner_display_name,
+                    constraint.property,
+                    native_ir_type_name(&constraint.type_)
+                ));
+            }
+            if let Some((selected_value, selected_constraint)) = selected.as_ref() {
+                if self.native_encoded_values_identical(*selected_value, candidate) != Some(true) {
+                    self.release_if_live(candidate)?;
+                    let error = inconsistent_typed_static_reference_assignment(
+                        actual,
+                        selected_constraint,
+                        &constraint,
+                    );
+                    let selected_value = selected
+                        .take()
+                        .expect("selected typed reference candidate disappeared")
+                        .0;
+                    self.release_if_live(selected_value)?;
+                    return Err(error);
+                }
+                self.release_if_live(candidate)?;
+            } else {
+                selected = Some((candidate, constraint));
+            }
+        }
+        Ok(selected.map(|(candidate, _)| candidate))
+    }
+
+    fn coerce_typed_static_reference_value(
+        &self,
+        reference: &php_runtime::api::ReferenceCell,
+        value: Value,
+    ) -> Result<Value, String> {
+        let Some(constraints) = self
+            .typed_static_reference_constraints
+            .get(&reference.gc_debug_id())
+        else {
+            return Ok(value);
+        };
+        let actual = native_assignment_type_name(&value);
+        let mut selected: Option<(Value, &NativeTypedStaticReferenceConstraint)> = None;
+        for constraint in constraints {
+            let candidate = native_coerce_call_argument(
+                value.clone(),
+                &constraint.type_,
+                self.unit.strict_types,
+            );
+            if !native_value_matches_ir_type_in_context(self, &candidate, &constraint.type_) {
+                return Err(format!(
+                    "E_PHP_THROW:TypeError:Cannot assign {actual} to reference held by property {}::${} of type {}",
+                    constraint.owner_display_name,
+                    constraint.property,
+                    native_ir_type_name(&constraint.type_)
+                ));
+            }
+            if let Some((selected_value, selected_constraint)) = selected.as_ref() {
+                if *selected_value != candidate {
+                    return Err(inconsistent_typed_static_reference_assignment(
+                        &actual,
+                        selected_constraint,
+                        constraint,
+                    ));
+                }
+            } else {
+                selected = Some((candidate, constraint));
+            }
+        }
+        Ok(selected.map_or(value, |(candidate, _)| candidate))
+    }
+
+    fn set_native_reference_value(
+        &mut self,
+        reference: &php_runtime::api::ReferenceCell,
+        value: Value,
+    ) -> Result<(), String> {
+        let value = self.coerce_typed_static_reference_value(reference, value)?;
+        reference.set(value);
+        Ok(())
+    }
+
+    fn typed_static_reference_auto_array_error(
+        &self,
+        reference: &php_runtime::api::ReferenceCell,
+    ) -> Option<String> {
+        let constraints = self
+            .typed_static_reference_constraints
+            .get(&reference.gc_debug_id())?;
+        let empty_array = Value::Array(php_runtime::api::PhpArray::new());
+        constraints.iter().find_map(|constraint| {
+            (!native_value_matches_ir_type_in_context(
+                self,
+                &empty_array,
+                &constraint.type_,
+            ))
+            .then(|| {
+                format!(
+                    "E_PHP_THROW:TypeError:Cannot auto-initialize an array inside a reference held by property {}::${} of type {}",
+                    constraint.owner_display_name,
+                    constraint.property,
+                    native_ir_type_name(&constraint.type_)
+                )
+            })
+        })
     }
 
     /// Replaces one authoritative direct-reference payload from a borrowed
@@ -8783,16 +9092,33 @@ impl<'a> NativeRequestColdState<'a> {
         if self.direct_reference_payload(reference).is_none() {
             return Ok(false);
         }
-        let Some(replacement) = self.duplicate_authoritative_dereferenced_native_value(value)?
-        else {
-            return Ok(false);
+        let reference_cell = self.direct_reference_cells.get(&index).cloned();
+        let replacement = if let Some(reference_cell) = reference_cell.as_ref() {
+            match self.coerce_typed_static_reference_encoded(reference_cell, value)? {
+                Some(replacement) => replacement,
+                None => {
+                    let Some(replacement) =
+                        self.duplicate_authoritative_dereferenced_native_value(value)?
+                    else {
+                        return Ok(false);
+                    };
+                    replacement
+                }
+            }
+        } else {
+            let Some(replacement) =
+                self.duplicate_authoritative_dereferenced_native_value(value)?
+            else {
+                return Ok(false);
+            };
+            replacement
         };
 
         // A direct descriptor is authoritative. Its ReferenceCell exists only
         // as a stable identity for a later cold boundary; clear any previously
         // materialized payload so root traversal cannot mistake that stale
         // graph for the current lvalue contents.
-        if let Some(reference) = self.direct_reference_cells.get(&index) {
+        if let Some(reference) = reference_cell {
             reference.set(Value::Uninitialized);
         }
         self.mark_roots_dirty(RootMutationReason::RootedContainer);
@@ -9151,7 +9477,8 @@ impl<'a> NativeRequestColdState<'a> {
                 )
             } else if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                && native_reference_state(slot.reserved)
+                    != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
             {
                 (vec![slot.payload as i64], None)
             } else {
@@ -9663,7 +9990,10 @@ impl<'a> NativeRequestColdState<'a> {
             class_aliases: std::mem::take(&mut self.class_aliases),
             autoload_callbacks: std::mem::take(&mut self.autoload_callbacks),
             shutdown_callbacks: std::mem::take(&mut self.shutdown_callbacks),
-            static_properties: std::mem::take(&mut self.static_properties),
+            static_property_transfer: std::mem::take(&mut self.static_property_transfer),
+            typed_static_reference_constraints: std::mem::take(
+                &mut self.typed_static_reference_constraints,
+            ),
             static_locals: std::mem::take(&mut self.static_locals),
             enum_cases: std::mem::take(&mut self.enum_cases),
             destroyed_objects: std::mem::take(&mut self.destroyed_objects),
@@ -9686,7 +10016,8 @@ impl<'a> NativeRequestColdState<'a> {
         self.class_aliases = symbols.class_aliases;
         self.autoload_callbacks = symbols.autoload_callbacks;
         self.shutdown_callbacks = symbols.shutdown_callbacks;
-        self.static_properties = symbols.static_properties;
+        self.static_property_transfer = symbols.static_property_transfer;
+        self.typed_static_reference_constraints = symbols.typed_static_reference_constraints;
         self.static_locals = symbols.static_locals;
         self.enum_cases = symbols.enum_cases;
         self.destroyed_objects = symbols.destroyed_objects;
@@ -10530,7 +10861,8 @@ impl<'a> NativeRequestColdState<'a> {
                     .ok_or_else(|| format!("direct native reference {index} is missing"))?;
                 if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                     && slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                    && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
+                    && native_reference_state(slot.reserved)
+                        != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY
                 {
                     // The direct payload, not the cold ReferenceCell sidecar,
                     // is authoritative until materialization. Mutate that
@@ -12874,11 +13206,12 @@ fn native_ir_type_name(type_: &php_ir::IrReturnType) -> String {
         Ir::Nullable { inner } => format!("?{}", native_ir_type_name(inner)),
         Ir::Union { members } => {
             let mut names = members.iter().map(native_ir_type_name).collect::<Vec<_>>();
-            if names.len() == 2
-                && names.iter().any(|name| name == "int")
-                && names.iter().any(|name| name == "string")
+            if let (Some(int), Some(string)) = (
+                names.iter().position(|name| name == "int"),
+                names.iter().position(|name| name == "string"),
+            ) && int < string
             {
-                names = vec!["string".to_owned(), "int".to_owned()];
+                names.swap(int, string);
             }
             names.join("|")
         }
@@ -12893,6 +13226,44 @@ fn native_ir_type_name(type_: &php_ir::IrReturnType) -> String {
             .collect::<Vec<_>>()
             .join("|"),
     }
+}
+
+fn typed_static_reference_constraint_description(
+    constraint: &NativeTypedStaticReferenceConstraint,
+) -> String {
+    format!(
+        "property {}::${} of type {}",
+        constraint.owner_display_name,
+        constraint.property,
+        native_ir_type_name(&constraint.type_)
+    )
+}
+
+fn typed_static_property_description(
+    declaration: &NativeStaticPropertyDeclaration,
+    property: &str,
+) -> String {
+    format!(
+        "property {}::${property} of type {}",
+        declaration.owner_display_name,
+        declaration
+            .type_
+            .as_ref()
+            .map(native_ir_type_name)
+            .unwrap_or_else(|| "mixed".to_owned())
+    )
+}
+
+fn inconsistent_typed_static_reference_assignment(
+    actual: &str,
+    first: &NativeTypedStaticReferenceConstraint,
+    second: &NativeTypedStaticReferenceConstraint,
+) -> String {
+    format!(
+        "E_PHP_THROW:TypeError:Cannot assign {actual} to reference held by {} and {}, as this would result in an inconsistent type conversion",
+        typed_static_reference_constraint_description(first),
+        typed_static_reference_constraint_description(second)
+    )
 }
 
 fn native_publication_constant_is_stable(constant: &php_ir::IrConstant) -> bool {
@@ -13292,6 +13663,41 @@ fn native_static_property_declaration(
     None
 }
 
+fn native_static_property_initial_value(
+    context: &mut NativeRequestColdState<'_>,
+    declaration: &NativeStaticPropertyDeclaration,
+) -> Result<Value, String> {
+    let constant = declaration.default.and_then(|constant| {
+        if declaration.owner_unit.is_none() {
+            context.unit.constants.get(constant.index())
+        } else {
+            declaration.owner_unit.and_then(|unit| {
+                context
+                    .dynamic_units
+                    .get(unit)
+                    .and_then(|package| package.compiled.unit().constants.get(constant.index()))
+            })
+        }
+    });
+    match constant {
+        Some(constant) => native_runtime_constant_value(context, constant),
+        None if declaration.type_.is_some() || declaration.flags.is_typed => {
+            Ok(Value::Uninitialized)
+        }
+        None => Ok(Value::Null),
+    }
+}
+
+fn uninitialized_static_property_fetch_error(
+    declaration: &NativeStaticPropertyDeclaration,
+    property: &str,
+) -> String {
+    format!(
+        "E_PHP_THROW:Error:Typed static property {}::${property} must not be accessed before initialization",
+        declaration.owner_display_name
+    )
+}
+
 fn native_nested_array_reference(
     value: &mut Value,
     keys: &[php_runtime::api::ArrayKey],
@@ -13393,39 +13799,51 @@ fn execute_native_static_property(
                 "E_PHP_THROW:Error:Access to undeclared static property {resolved_class}::${property}"
             )));
         };
-        let key = (declaration.owner_name, property.clone());
-        let current = match context.direct_static_property_value(&key) {
+        let key = (declaration.owner_name.clone(), property.clone());
+        let mut current = match context.direct_static_property_value(&key) {
             Some(Ok(value)) => Some(value),
             Some(Err(error)) => return Some(Err(error)),
-            None => context.static_properties.get(&key).cloned().or_else(|| {
-                declaration
-                    .default
-                    .and_then(|constant| {
-                        if declaration.owner_unit.is_none() {
-                            context.unit.constants.get(constant.index())
-                        } else {
-                            declaration.owner_unit.and_then(|unit| {
-                                context.dynamic_units.get(unit).and_then(|package| {
-                                    package.compiled.unit().constants.get(constant.index())
-                                })
-                            })
-                        }
-                    })
-                    .and_then(|constant| ir_constant_value(constant).ok())
-            }),
+            None => match context.static_property_transfer.remove(&key) {
+                Some(value) => Some(value),
+                None => match native_static_property_initial_value(context, &declaration) {
+                    Ok(value) => Some(value),
+                    Err(error) => return Some(Err(error)),
+                },
+            },
         };
+        if matches!(current, Some(Value::Uninitialized)) && declaration.type_.is_some() {
+            let nullable_reference = declaration.type_.as_ref().is_some_and(|type_| {
+                native_value_matches_ir_type_in_context(context, &Value::Null, type_)
+            });
+            if nullable_reference {
+                current = Some(Value::Null);
+            } else {
+                return Some(Err(format!(
+                    "E_PHP_THROW:Error:Cannot access uninitialized non-nullable property {}::${property} by reference",
+                    declaration.owner_display_name
+                )));
+            }
+        }
         if keys.is_empty() {
             let reference = match current.unwrap_or(Value::Null) {
                 Value::Reference(reference) => reference,
                 value => php_runtime::api::ReferenceCell::new(value),
             };
+            if let Err(error) =
+                context.bind_typed_static_reference(&reference, &declaration, property)
+            {
+                return Some(Err(error));
+            }
             let replacement = Value::Reference(reference.clone());
             match context.store_direct_static_property_value(&key, replacement.clone()) {
                 Some(Ok(())) => {}
                 Some(Err(error)) => return Some(Err(error)),
                 None => {
-                    context.static_properties.insert(key, replacement);
-                    context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                    if let Err(error) =
+                        context.ensure_direct_static_property_encoded(&key, replacement)
+                    {
+                        return Some(Err(error));
+                    }
                 }
             }
             return Some(context.encode_native_reference_owner(reference));
@@ -13444,8 +13862,9 @@ fn execute_native_static_property(
             Some(Ok(())) => {}
             Some(Err(error)) => return Some(Err(error)),
             None => {
-                context.static_properties.insert(key, root);
-                context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                if let Err(error) = context.ensure_direct_static_property_encoded(&key, root) {
+                    return Some(Err(error));
+                }
             }
         }
         return Some(context.encode_native_reference_owner(reference));
@@ -13621,7 +14040,7 @@ fn execute_native_static_property(
             "E_PHP_THROW:Error:Access to undeclared static property {requested_display_name}::${property}"
         )));
     };
-    let display_name = declaration.owner_display_name;
+    let display_name = declaration.owner_display_name.clone();
     if (declaration.flags.is_private || declaration.flags.is_protected)
         && !declaration.caller_owns_scope
     {
@@ -13635,10 +14054,22 @@ fn execute_native_static_property(
             display_name
         )));
     }
-    let key = (declaration.owner_name, property.clone());
+    let key = (declaration.owner_name.clone(), property.clone());
     if assigned.is_none()
         && let Some(encoded) = context.direct_static_property_encoded(&key)
     {
+        if matches!(
+            instruction.kind,
+            php_ir::InstructionKind::FetchStaticProperty { .. }
+                | php_ir::InstructionKind::FetchDynamicStaticProperty { .. }
+        ) && declaration.type_.is_some()
+            && context.php_handle_is_uninitialized(encoded)
+        {
+            return Some(Err(uninitialized_static_property_fetch_error(
+                &declaration,
+                &property,
+            )));
+        }
         let direct = match &instruction.kind {
             php_ir::InstructionKind::FetchStaticProperty { .. }
             | php_ir::InstructionKind::FetchDynamicStaticProperty { .. } => {
@@ -13691,26 +14122,16 @@ fn execute_native_static_property(
             Value::Reference(reference) => reference,
             value => php_runtime::api::ReferenceCell::new(value),
         };
-        if let Some(type_) = &declaration.type_ {
-            let effective =
-                native_coerce_call_argument(reference.get(), type_, context.unit.strict_types);
-            if !native_value_matches_ir_type_in_context(context, &effective, type_) {
-                return Some(Err(format!(
-                    "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
-                    native_assignment_type_name(&effective),
-                    display_name,
-                    property,
-                    native_ir_type_name(type_)
-                )));
-            }
-            reference.set(effective);
+        if let Err(error) = context.bind_typed_static_reference(&reference, &declaration, &property)
+        {
+            return Some(Err(error));
         }
         let replacement = Value::Reference(reference.clone());
         let previous = match context.store_direct_static_property_value(&key, replacement.clone()) {
             Some(Ok(())) => None,
             Some(Err(error)) => return Some(Err(error)),
             None => {
-                let previous = context.static_properties.remove(&key);
+                let previous = context.static_property_transfer.remove(&key);
                 if let Err(error) = context.ensure_direct_static_property_encoded(&key, replacement)
                 {
                     return Some(Err(error));
@@ -13747,20 +14168,23 @@ fn execute_native_static_property(
                 )));
             }
         }
+        if context.direct_static_property_encoded(&key).is_none()
+            && let Some(transferred) = context.static_property_transfer.remove(&key)
+            && let Err(error) = context.ensure_direct_static_property_encoded(&key, transferred)
+        {
+            return Some(Err(error));
+        }
         let direct_current = match context.direct_static_property_value(&key) {
             Some(Ok(value)) => Some(value),
             Some(Err(error)) => return Some(Err(error)),
             None => None,
         };
-        let existing_reference = direct_current
-            .as_ref()
-            .or_else(|| context.static_properties.get(&key))
-            .and_then(|current| {
-                let Value::Reference(reference) = current else {
-                    return None;
-                };
-                Some(reference.clone())
-            });
+        let existing_reference = direct_current.as_ref().and_then(|current| {
+            let Value::Reference(reference) = current else {
+                return None;
+            };
+            Some(reference.clone())
+        });
         let previous = if let Some(reference) = existing_reference {
             let previous = reference.get();
             reference.set(value.clone());
@@ -13778,11 +14202,10 @@ fn execute_native_static_property(
                 None => unreachable!("direct static value lost its published slot"),
             }
         } else {
-            let previous = context.static_properties.remove(&key);
             if let Err(error) = context.ensure_direct_static_property_encoded(&key, value.clone()) {
                 return Some(Err(error));
             }
-            previous
+            None
         };
         context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
         if let Some(Value::Object(previous)) = previous
@@ -13797,29 +14220,28 @@ fn execute_native_static_property(
             Ok(value) => value,
             Err(error) => return Some(Err(error)),
         }
-    } else if let Some(value) = context.static_properties.get(&key).cloned() {
+    } else if let Some(value) = context.static_property_transfer.remove(&key) {
         value
     } else {
-        let value = declaration.default.and_then(|constant| {
-            if declaration.owner_unit.is_none() {
-                context.unit.constants.get(constant.index())
-            } else {
-                declaration.owner_unit.and_then(|unit| {
-                    context
-                        .dynamic_units
-                        .get(unit)
-                        .and_then(|package| package.compiled.unit().constants.get(constant.index()))
-                })
-            }
-        });
-        let value = value.map_or(Ok(Value::Null), |value| {
-            native_runtime_constant_value(context, value)
-        });
-        match value {
+        match native_static_property_initial_value(context, &declaration) {
             Ok(value) => value,
             Err(error) => return Some(Err(error)),
         }
     };
+    if assigned.is_none()
+        && matches!(
+            instruction.kind,
+            php_ir::InstructionKind::FetchStaticProperty { .. }
+                | php_ir::InstructionKind::FetchDynamicStaticProperty { .. }
+        )
+        && declaration.type_.is_some()
+        && matches!(result, Value::Uninitialized)
+    {
+        return Some(Err(uninitialized_static_property_fetch_error(
+            &declaration,
+            &property,
+        )));
+    }
     if assigned.is_none()
         && !bind_reference
         && !matches!(
@@ -13948,8 +14370,11 @@ fn execute_native_static_property(
                             Some(Ok(())) => {}
                             Some(Err(error)) => return Some(Err(error)),
                             None => {
-                                context.static_properties.insert(key.clone(), value);
-                                context.mark_roots_dirty(RootMutationReason::EnumOrStaticObject);
+                                if let Err(error) =
+                                    context.ensure_direct_static_property_encoded(&key, value)
+                                {
+                                    return Some(Err(error));
+                                }
                             }
                         }
                     }

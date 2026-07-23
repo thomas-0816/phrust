@@ -7130,6 +7130,17 @@ fn lower_optimizing_store_reference_scalar(
         slot,
         std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
     );
+    let reference_state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    let typed_guard = builder.ins().band_imm(
+        reference_state,
+        i64::from(crate::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD),
+    );
+    let untyped = builder.ins().icmp_imm(IntCC::Equal, typed_guard, 0);
     let kind_ok = builder.ins().icmp_imm(
         IntCC::Equal,
         kind,
@@ -7148,24 +7159,20 @@ fn lower_optimizing_store_reference_scalar(
     let view_present = builder.ins().icmp_imm(IntCC::NotEqual, view, 0);
     let admitted = builder.ins().band(kind_ok, flags_ok);
     let admitted = builder.ins().band(admitted, view_present);
+    let admitted = builder.ins().band(admitted, untyped);
     builder
         .ins()
         .brif(admitted, inspect_view, &[], inspect_direct, &[]);
 
     builder.switch_to_block(inspect_direct);
-    let direct_state = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
-    );
     let direct_published = builder.ins().icmp_imm(
         IntCC::NotEqual,
-        direct_state,
+        reference_state,
         i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
     );
     let direct_admitted = builder.ins().band(direct_kind_ok, flags_ok);
     let direct_admitted = builder.ins().band(direct_admitted, direct_published);
+    let direct_admitted = builder.ins().band(direct_admitted, untyped);
     builder.ins().brif(
         direct_admitted,
         direct_write,
@@ -13608,89 +13615,6 @@ fn lower_optimizing_static_property_assign(
 /// storage slot. The old owner is validated before the source is wrapped, so
 /// an exceptional destructor shape reaches its exact continuation before any
 /// PHP-visible mutation.
-fn lower_optimizing_bind_reference_static_property(
-    builder: &mut FunctionBuilder<'_>,
-    source: ir::Value,
-    function: FunctionId,
-    continuation: u32,
-    transition: NativeOptimizingTransition<'_>,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let (slot, rejected) = lower_optimizing_trusted_static_property_slot(
-        builder,
-        function,
-        continuation,
-        crate::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_WRITABLE,
-        transition,
-    );
-    let inspect_old = builder.create_block();
-    let bind = builder.create_block();
-    let store = builder.create_block();
-    let release_old = builder.create_block();
-    let done = builder.create_block();
-    builder.append_block_param(done, types::I64);
-
-    let old = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
-    );
-    let source_reference =
-        lower_value_has_tag(builder, source, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    let same_value = builder.ins().icmp(IntCC::Equal, old, source);
-    let same_reference = builder.ins().band(source_reference, same_value);
-    builder
-        .ins()
-        .brif(same_reference, done, &[source.into()], inspect_old, &[]);
-
-    builder.switch_to_block(inspect_old);
-    let old_runtime = lower_is_runtime_handle(builder, old);
-    let old_immediate = builder.ins().icmp_imm(IntCC::Equal, old_runtime, 0);
-    let validate_old = builder.create_block();
-    builder
-        .ins()
-        .brif(old_immediate, bind, &[], validate_old, &[]);
-
-    builder.switch_to_block(validate_old);
-    let validate = builder.ins().call(
-        transition.value_release_validate,
-        &[transition.deopt_out, old],
-    );
-    let releasable = builder.inst_results(validate)[0];
-    builder.ins().brif(releasable, bind, &[], rejected, &[]);
-
-    builder.switch_to_block(bind);
-    let reference = lower_optimizing_bind_direct_local_reference(builder, source, transition)?;
-    lower_optimizing_retain(builder, reference, transition.deopt_out);
-    builder.ins().jump(store, &[]);
-
-    builder.switch_to_block(store);
-    builder.ins().store(
-        MemFlagsData::new(),
-        reference,
-        slot,
-        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
-    );
-    lower_mark_native_roots_dirty(builder, transition.deopt_out);
-    builder
-        .ins()
-        .brif(old_runtime, release_old, &[], done, &[reference.into()]);
-
-    builder.switch_to_block(release_old);
-    let _ = builder.ins().call(
-        transition.value_release_commit,
-        &[transition.deopt_out, old],
-    );
-    builder.ins().jump(done, &[reference.into()]);
-
-    builder.switch_to_block(rejected);
-    let placeholder = transition.emit_value_with_detail(builder, 0x1404)?;
-    builder.ins().jump(done, &[placeholder.into()]);
-
-    builder.switch_to_block(done);
-    Ok(builder.block_params(done)[0])
-}
-
 #[allow(clippy::too_many_arguments)]
 fn lower_optimizing_bind_direct_array_dimension_reference(
     module: &mut JITModule,
@@ -17198,9 +17122,9 @@ fn ordinary_local_fast_path(
     local_names: &[String],
     local: LocalId,
 ) -> bool {
-    !function_is_top_level
-        && local_names.get(local.index()).is_none_or(|name| {
-            !matches!(
+    local_names.get(local.index()).is_none_or(|name| {
+        (!function_is_top_level || php_ir::is_compiler_generated_local_name(name))
+            && !matches!(
                 name.as_str(),
                 "GLOBALS"
                     | "_SERVER"
@@ -17212,7 +17136,7 @@ fn ordinary_local_fast_path(
                     | "_REQUEST"
                     | "_ENV"
             )
-        })
+    })
 }
 
 fn native_local_store_operation(
@@ -19838,18 +19762,6 @@ fn lower_optimizing_region_instruction(
 
             builder.switch_to_block(done);
         }
-        RegionInstructionKind::BindReferenceStaticProperty { source } => {
-            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            let source_value = use_local_variable(builder, locals, *source)?;
-            let reference = lower_optimizing_bind_reference_static_property(
-                builder,
-                source_value,
-                function,
-                instruction.continuation_id,
-                transition,
-            )?;
-            define_local_variable(builder, locals, *source, reference)?;
-        }
         RegionInstructionKind::FetchConst { dst } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let value = lower_optimizing_constant_fetch(
@@ -20597,6 +20509,7 @@ fn lower_optimizing_region_instruction(
                     crate::region_ir::RegionSemanticOp::StaticPropertyReference {
                         class_name: crate::region_ir::RegionClassName::Static(_),
                         dimensions,
+                        bind_source_into_property: false,
                         ..
                     },
             } = &call.target
@@ -23194,46 +23107,6 @@ fn lower_baseline_region_instruction(
                     result_out,
                 )?;
             }
-        }
-        RegionInstructionKind::BindReferenceStaticProperty { source } => {
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            let source_value = use_local_variable(builder, locals, *source)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                5,
-                &[source_value, function_value, instruction_id],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *source, reference)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *source,
-                result_out,
-            )?;
         }
         RegionInstructionKind::InitStaticLocal { local, default } => {
             let default = lower_region_operand(builder, locals, registers, *default)?;

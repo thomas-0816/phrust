@@ -2369,6 +2369,7 @@ impl LoweringContext<'_> {
         let mut current = site.block;
         let mut operands = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
+            let reference_required = use_null_placeholder(index, arg);
             let direct_by_ref_local = (!arg.unpack)
                 .then(|| self.variable_local(builder, site.function, arg.value))
                 .flatten();
@@ -2387,7 +2388,7 @@ impl LoweringContext<'_> {
                 .then(|| self.static_property_target(arg.value))
                 .flatten();
             let (value, by_ref_local, by_ref_dim, by_ref_property, by_ref_property_dim) =
-                if direct_by_ref_local.is_some() && use_null_placeholder(index, arg) {
+                if direct_by_ref_local.is_some() && reference_required {
                     (
                         Operand::Constant(builder.intern_constant(IrConstant::Null)),
                         direct_by_ref_local,
@@ -2395,7 +2396,7 @@ impl LoweringContext<'_> {
                         None,
                         None,
                     )
-                } else if let Some(target) = dim_target {
+                } else if reference_required && let Some(target) = dim_target {
                     let mut dims = Vec::with_capacity(target.dims.len());
                     for dim in &target.dims {
                         let dim_value =
@@ -2442,7 +2443,7 @@ impl LoweringContext<'_> {
                         None,
                         None,
                     )
-                } else if let Some(target) = property_dim_target {
+                } else if reference_required && let Some(target) = property_dim_target {
                     let object = self.lower_expr_to_register(
                         builder,
                         site.function,
@@ -2517,7 +2518,7 @@ impl LoweringContext<'_> {
                             dims,
                         }),
                     )
-                } else if let Some(target) = property_target {
+                } else if reference_required && let Some(target) = property_target {
                     let object = self.lower_expr_to_register(
                         builder,
                         site.function,
@@ -2555,45 +2556,68 @@ impl LoweringContext<'_> {
                         None,
                     )
                 } else if let Some(target) = static_property_target {
-                    let local = builder.intern_local(
-                        site.function,
-                        format!("__phrust:by-ref-static-property:{}", arg.value.raw()),
-                    );
-                    let bind = builder.emit(
-                        site.function,
-                        current,
-                        InstructionKind::BindReferenceFromStaticPropertyDim {
-                            target: local,
-                            class_name: target.class_name,
-                            property: target.property,
-                            dims: Vec::new(),
-                        },
-                        site.span,
-                    );
-                    self.add_expr_source_map(
-                        builder,
-                        site.function,
-                        current,
-                        bind,
-                        arg.value,
-                        site.span,
-                    );
-                    let dst = builder.alloc_register(site.function);
-                    let load = builder.emit(
-                        site.function,
-                        current,
-                        InstructionKind::LoadLocal { dst, local },
-                        site.span,
-                    );
-                    self.add_expr_source_map(
-                        builder,
-                        site.function,
-                        current,
-                        load,
-                        arg.value,
-                        site.span,
-                    );
-                    (Operand::Register(dst), Some(local), None, None, None)
+                    if reference_required {
+                        let local = builder.intern_local(
+                            site.function,
+                            format!("__phrust:by-ref-static-property:{}", arg.value.raw()),
+                        );
+                        let bind = builder.emit(
+                            site.function,
+                            current,
+                            InstructionKind::BindReferenceFromStaticPropertyDim {
+                                target: local,
+                                class_name: target.class_name,
+                                property: target.property,
+                                dims: Vec::new(),
+                            },
+                            site.span,
+                        );
+                        self.add_expr_source_map(
+                            builder,
+                            site.function,
+                            current,
+                            bind,
+                            arg.value,
+                            site.span,
+                        );
+                        let dst = builder.alloc_register(site.function);
+                        let load = builder.emit(
+                            site.function,
+                            current,
+                            InstructionKind::LoadLocal { dst, local },
+                            site.span,
+                        );
+                        self.add_expr_source_map(
+                            builder,
+                            site.function,
+                            current,
+                            load,
+                            arg.value,
+                            site.span,
+                        );
+                        (Operand::Register(dst), Some(local), None, None, None)
+                    } else {
+                        let dst = builder.alloc_register(site.function);
+                        let fetch = builder.emit(
+                            site.function,
+                            current,
+                            InstructionKind::FetchStaticProperty {
+                                dst,
+                                class_name: target.class_name,
+                                property: target.property,
+                            },
+                            site.span,
+                        );
+                        self.add_expr_source_map(
+                            builder,
+                            site.function,
+                            current,
+                            fetch,
+                            arg.value,
+                            site.span,
+                        );
+                        (Operand::Register(dst), None, None, None, None)
+                    }
                 } else {
                     let value =
                         self.lower_expr_to_register(builder, site.function, current, arg.value)?;
@@ -7531,8 +7555,16 @@ impl LoweringContext<'_> {
         }
         if let Some(target) =
             left.and_then(|left| self.variable_local(builder, site.function, left))
-            && let Some(source_target) =
-                right.and_then(|right| self.static_property_dim_target(right))
+            && let Some(source_target) = right.and_then(|right| {
+                self.static_property_target(right)
+                    .map(|property| StaticPropertyDimTarget {
+                        class_name: property.class_name,
+                        property: property.property,
+                        dims: Vec::new(),
+                        append: false,
+                    })
+                    .or_else(|| self.static_property_dim_target(right))
+            })
         {
             if source_target.append {
                 self.unsupported(

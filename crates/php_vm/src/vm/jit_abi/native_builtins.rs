@@ -811,7 +811,7 @@ fn execute_native_key_sort(
     for (key, value) in entries {
         sorted.insert(key, value);
     }
-    reference.set(Value::Array(sorted));
+    context.set_native_reference_value(&reference, Value::Array(sorted))?;
     context.encode(Value::Bool(true))
 }
 
@@ -881,7 +881,7 @@ fn execute_native_callback_sort(
             sorted.append(value);
         }
     }
-    reference.set(Value::Array(sorted));
+    context.set_native_reference_value(&reference, Value::Array(sorted))?;
     context.encode(Value::Bool(true))
 }
 
@@ -1123,7 +1123,7 @@ fn walk_native_array_recursive(
             Value::Reference(reference) => match reference.get() {
                 Value::Array(mut nested) => {
                     walk_native_array_recursive(context, &mut nested, callback, userdata, source)?;
-                    reference.set(Value::Array(nested));
+                    context.set_native_reference_value(&reference, Value::Array(nested))?;
                 }
                 _ => {
                     let mut values =
@@ -1481,7 +1481,7 @@ fn execute_native_value_sort(
             sorted.append(value);
         }
     }
-    reference.set(Value::Array(sorted));
+    context.set_native_reference_value(&reference, Value::Array(sorted))?;
     context.encode(Value::Bool(true))
 }
 
@@ -1715,7 +1715,7 @@ fn execute_native_preg_replace_callback(
     if let Some(count_argument) = arguments.get(4)
         && let Value::Reference(reference) = context.decode(*count_argument)?
     {
-        reference.set(Value::Int(count));
+        context.set_native_reference_value(&reference, Value::Int(count))?;
     }
     context.encode(result)
 }
@@ -1740,7 +1740,7 @@ fn execute_native_preg_replace_callback_array(
     if let Some(count) = arguments.get(3)
         && let Value::Reference(reference) = context.decode(*count)?
     {
-        reference.set(Value::Int(0));
+        context.set_native_reference_value(&reference, Value::Int(0))?;
     }
     let subject = match context.decode(arguments[1])? {
         Value::Reference(reference) => reference.get(),
@@ -4829,7 +4829,7 @@ pub(super) fn execute_baseline_native_builtin(
                     );
                 }
             };
-            target.set(replacement);
+            context.set_native_reference_value(&target, replacement)?;
             context.encode(Value::Bool(true))
         }
         "set_time_limit" => {

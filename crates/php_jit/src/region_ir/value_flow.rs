@@ -1038,7 +1038,6 @@ fn instruction_mutated_locals(kind: &RegionInstructionKind) -> Vec<LocalId> {
             ..
         } => locals.extend([*array, *source]),
         RegionInstructionKind::BindReferenceProperty { source, .. }
-        | RegionInstructionKind::BindReferenceStaticProperty { source }
         | RegionInstructionKind::BindReferenceIntoPropertyDim { source, .. } => {
             locals.push(*source);
         }
@@ -1119,7 +1118,6 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
                     references.insert(*source);
                 }
                 RegionInstructionKind::BindReferenceProperty { source, .. }
-                | RegionInstructionKind::BindReferenceStaticProperty { source }
                 | RegionInstructionKind::BindReferenceIntoPropertyDim { source, .. } => {
                     references.insert(*source);
                 }
@@ -1169,11 +1167,12 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
         .map(LocalId::new)
         .map(|local| {
             let name = region.locals.get(local.index()).map(String::as_str);
+            let compiler_generated = name.is_some_and(php_ir::is_compiler_generated_local_name);
             let storage = if name == Some("GLOBALS") {
                 LocalStorageClass::Globals
             } else if name.is_some_and(|name| SUPERGLOBALS.contains(&name)) {
                 LocalStorageClass::Superglobal
-            } else if region.flags.is_top_level {
+            } else if region.flags.is_top_level && !compiler_generated {
                 LocalStorageClass::RequestGlobal
             } else if references.contains(&local) {
                 LocalStorageClass::MemoryReference
@@ -1673,6 +1672,46 @@ mod tests {
         assert_eq!(flow.local_fact(local).class, SsaValueClass::Int);
         assert_eq!(flow.register_fact(loaded).class, SsaValueClass::Int);
         assert_eq!(flow.promoted_local_count(), 1);
+    }
+
+    #[test]
+    fn keeps_compiler_generated_top_level_reference_in_native_frame() {
+        let mut builder = IrBuilder::new(UnitId::new(4_200));
+        let file = builder.add_file("top-level-compiler-local.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function(
+            "{main}",
+            FunctionFlags {
+                is_top_level: true,
+                ..FunctionFlags::default()
+            },
+            span,
+        );
+        let visible = builder.intern_local(function, "visible");
+        let compiler = builder.intern_local(function, "__phrust:by-ref-static-property:1");
+        let block = builder.append_block(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::BindReference {
+                target: compiler,
+                source: visible,
+            },
+            span,
+        );
+        builder.terminate_return(function, block, None, span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_eq!(
+            flow.local_storage(compiler),
+            LocalStorageClass::MemoryReference
+        );
+        assert_eq!(
+            flow.local_storage(visible),
+            LocalStorageClass::RequestGlobal
+        );
     }
 
     #[test]

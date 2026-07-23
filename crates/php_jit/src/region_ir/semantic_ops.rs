@@ -153,6 +153,9 @@ pub enum RegionSemanticOp {
         class_name: RegionClassName,
         property: String,
         dimensions: Vec<RegionOperand>,
+        /// `true` for `Class::$property =& $target`; `false` for
+        /// `$target =& Class::$property[...]`.
+        bind_source_into_property: bool,
     },
     ClassConstantFetch {
         context: RegionSemanticContext,

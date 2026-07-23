@@ -600,9 +600,6 @@ pub enum RegionInstructionKind {
         property: String,
         prepared_class: Option<u32>,
     },
-    BindReferenceStaticProperty {
-        source: LocalId,
-    },
     InitStaticLocal {
         local: LocalId,
         default: RegionOperand,
@@ -3595,8 +3592,33 @@ impl BaselineRegionBuilder {
                             &exact_object_registers,
                         ),
                     },
-                    InstructionKind::BindReferenceStaticProperty { source, .. } => {
-                        RegionInstructionKind::BindReferenceStaticProperty { source: *source }
+                    InstructionKind::BindReferenceStaticProperty {
+                        class_name,
+                        property,
+                        source,
+                    } => {
+                        let source_local = *source;
+                        let source = RegionOperand::Local(source_local);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::ReferenceLocal(source_local),
+                            target: RegionCallTarget::Semantic {
+                                operation: RegionSemanticOp::StaticPropertyReference {
+                                    context: semantic_context,
+                                    target: source_local,
+                                    class_name: RegionClassName::Static(class_name.clone()),
+                                    property: property.clone(),
+                                    dimensions: vec![source],
+                                    bind_source_into_property: true,
+                                },
+                            },
+                            args: Vec::new(),
+                            argument_operand_offset: 0,
+                            operands: vec![Some(source)],
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: true,
+                            caller_strict_types: unit.strict_types,
+                        })
                     }
                     InstructionKind::FetchDynamicStaticProperty {
                         dst, class_name, ..
@@ -3672,6 +3694,7 @@ impl BaselineRegionBuilder {
                                     class_name: RegionClassName::Static(class_name.clone()),
                                     property: property.clone(),
                                     dimensions,
+                                    bind_source_into_property: false,
                                 },
                             },
                             args: Vec::new(),

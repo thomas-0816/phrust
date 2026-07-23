@@ -56,7 +56,8 @@ pub(super) fn authoritative_native_call_value_is_admitted(
             php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_GENERATOR => return true,
             php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
                 if slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
-                    && slot.reserved != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+                    && native_reference_state(slot.reserved)
+                        != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
             {
                 encoded = slot.payload as i64;
             }

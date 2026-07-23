@@ -555,8 +555,16 @@ fn formerly_missing_instruction_families_enter_native_region_ir() {
         RegionInstructionKind::BindReferenceFromPropertyDim { .. }
     )));
     assert!(instructions.iter().any(|instruction| matches!(
-        instruction.kind,
-        RegionInstructionKind::BindReferenceStaticProperty { .. }
+        &instruction.kind,
+        RegionInstructionKind::NativeCall(RegionNativeCall {
+            target: RegionCallTarget::Semantic {
+                operation: RegionSemanticOp::StaticPropertyReference {
+                    bind_source_into_property: true,
+                    ..
+                },
+            },
+            ..
+        })
     )));
     assert!(instructions.iter().any(|instruction| matches!(
         instruction.kind,

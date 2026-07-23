@@ -11,13 +11,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{FunctionId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 86;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 87;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a843_0000_0076;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a843_0000_0077;
 
 /// No stable length is published for this runtime value slot.
 pub const JIT_NATIVE_VALUE_VIEW_NONE: u32 = 0;
@@ -45,6 +45,10 @@ pub const JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY: u32 = 9;
 pub const JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY: u32 = 10;
 /// Authoritative immediate scalar reference owned entirely by the direct slot.
 pub const JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR: u32 = 11;
+/// The reference is held by at least one typed property. Generated ordinary
+/// reference stores must take the exact baseline continuation so PHP type
+/// coercion and errors run before mutation.
+pub const JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD: u32 = 1 << 31;
 /// Authoritative IEEE-754 payload owned entirely by the direct slot.
 pub const JIT_NATIVE_VALUE_VIEW_FLOAT: u32 = 12;
 /// Request-owned object identity backed by the stable slot-parallel owner
@@ -2175,7 +2179,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 86);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 87);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);

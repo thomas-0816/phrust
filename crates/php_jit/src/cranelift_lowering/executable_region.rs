@@ -3856,7 +3856,6 @@ fn region_instruction_result_register(kind: &RegionInstructionKind) -> Option<Re
         | RegionInstructionKind::BindReferenceFromPropertyDim { .. }
         | RegionInstructionKind::BindReferenceIntoPropertyDim { .. }
         | RegionInstructionKind::BindReferenceDimFromProperty { .. }
-        | RegionInstructionKind::BindReferenceStaticProperty { .. }
         | RegionInstructionKind::InitStaticLocal { .. }
         | RegionInstructionKind::Discard { .. }
         | RegionInstructionKind::Echo { .. }
