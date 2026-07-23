@@ -20128,9 +20128,20 @@ fn lower_optimizing_region_instruction(
                         define_local_variable(builder, locals, local, reference)?;
                         call_args.push(reference);
                     } else {
-                        call_args.push(lower_prepared_native_call_operand(
+                        let value = lower_prepared_native_call_operand(
                             builder, locals, registers, constants, operand,
-                        )?);
+                        )?;
+                        let value = if parameter.is_some() {
+                            // A caller lvalue may already hold a direct native
+                            // reference. By-value binding observes its payload,
+                            // while the reference slot remains authoritative in
+                            // the caller. The retained call owner below keeps
+                            // that payload alive across the compiled call.
+                            lower_optimizing_reference_scalar(builder, value, false, transition)?
+                        } else {
+                            value
+                        };
+                        call_args.push(value);
                     }
                 }
 
@@ -24271,53 +24282,34 @@ fn lower_baseline_region_instruction(
                 builder.switch_to_block(unreachable);
                 builder.seal_block(unreachable);
             }
-            RegionNativeControl::Throw {
-                value,
-                catch,
-                finally,
-                exception_local,
-            } => {
+            RegionNativeControl::Throw { value } => {
                 let value = lower_region_operand(builder, locals, registers, *value)?;
-                if let Some(catch) = catch {
-                    if let Some(local) = exception_local {
-                        define_local_variable(builder, locals, *local, value)?;
-                    }
-                    builder.ins().jump(cranelift_block(blocks, *catch)?, &[]);
-                } else if let Some(finally) = finally {
-                    let status = builder
-                        .ins()
-                        .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
-                    builder.def_var(pending_status, status);
-                    builder.def_var(pending_value, value);
-                    builder.ins().jump(cranelift_block(blocks, *finally)?, &[]);
-                } else {
-                    lower_owned_frame_locals(
-                        module,
-                        builder,
-                        locals,
-                        native_operations,
-                        value_flow,
-                        function,
-                        result_out,
-                        deopt_out,
-                    )?;
-                    publish_native_call_state(
-                        builder,
-                        deopt_out,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        native_version,
-                    )?;
-                    builder
-                        .ins()
-                        .store(MemFlagsData::new(), value, result_out, 0);
-                    let status = builder
-                        .ins()
-                        .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
-                    builder.ins().return_(&[status]);
-                }
+                lower_owned_frame_locals(
+                    module,
+                    builder,
+                    locals,
+                    native_operations,
+                    value_flow,
+                    function,
+                    result_out,
+                    deopt_out,
+                )?;
+                publish_native_call_state(
+                    builder,
+                    deopt_out,
+                    function,
+                    local_count,
+                    instruction,
+                    locals,
+                    native_version,
+                )?;
+                builder
+                    .ins()
+                    .store(MemFlagsData::new(), value, result_out, 0);
+                let status = builder
+                    .ins()
+                    .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
+                builder.ins().return_(&[status]);
                 let unreachable = builder.create_block();
                 builder.switch_to_block(unreachable);
                 builder.seal_block(unreachable);
@@ -26599,6 +26591,9 @@ fn lower_native_call_trampoline(
                 && matches!(
                     &call.target,
                     RegionCallTarget::Function { function: None, .. }
+                        | RegionCallTarget::Callable { .. }
+                        | RegionCallTarget::Closure { .. }
+                        | RegionCallTarget::Pipe { .. }
                 )
                 && argument
                     .and_then(|argument| argument.by_ref_local)

@@ -2477,12 +2477,22 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     )?);
                 }
             }
-            if let php_ir::InstructionKind::CallStaticMethod {
-                class_name,
-                method,
-                ..
-            } = &instruction.kind
-            {
+            let stable_static_target = match &instruction.kind {
+                php_ir::InstructionKind::CallStaticMethod {
+                    class_name,
+                    method,
+                    ..
+                } => Some((class_name.as_str(), method.as_str())),
+                _ if matches!(
+                    descriptor.kind,
+                    crate::compiled_unit::NativeCallSiteKind::StaticMethod
+                ) => descriptor
+                    .target_class
+                    .as_deref()
+                    .zip(descriptor.target_symbol.as_deref()),
+                _ => None,
+            };
+            if let Some((class_name, method)) = stable_static_target {
                 if class_name.eq_ignore_ascii_case("Closure") && method.eq_ignore_ascii_case("bind")
                 {
                     let closure = encoded
@@ -2533,7 +2543,7 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     }),
                     "parent" => native_calling_class(context, frame.function_id)
                         .and_then(|class| class.parent.clone()),
-                    _ => Some(class_name.clone()),
+                    _ => Some(class_name.to_owned()),
                 };
                 if let Some(class) = resolved_class.as_deref() {
                     native_autoload_class(context, class, instruction)?;
@@ -2822,27 +2832,38 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     context.unit.strict_types_for_span(instruction.span),
                 )?);
             }
-            let name = match &instruction.kind {
-                php_ir::InstructionKind::CallFunction { name, .. }
-                | php_ir::InstructionKind::BindReferenceFromCall { name, .. } => {
-                    Some(std::borrow::Cow::Borrowed(
-                        descriptor.target_symbol.as_deref().unwrap_or(name.as_str()),
-                    ))
-                }
-                php_ir::InstructionKind::NewObject {
-                    display_class_name, ..
-                } => {
-                    let display_class_name = native_resolve_scoped_class_name(
-                        context,
-                        display_class_name,
-                        frame.function_id,
-                    )?;
-                    return Err(format!(
-                        "E_PHP_VM_UNKNOWN_CLASS: Class {display_class_name} not found"
-                    )
-                    .into());
-                }
-                php_ir::InstructionKind::Pipe {
+            let prepared_callable_symbol = matches!(
+                instruction.kind,
+                php_ir::InstructionKind::CallCallable { .. }
+                    | php_ir::InstructionKind::Pipe { .. }
+            )
+            .then(|| descriptor.target_symbol.as_deref())
+            .flatten()
+            .map(std::borrow::Cow::Borrowed);
+            let name = if let Some(name) = prepared_callable_symbol {
+                Some(name)
+            } else {
+                match &instruction.kind {
+                    php_ir::InstructionKind::CallFunction { name, .. }
+                    | php_ir::InstructionKind::BindReferenceFromCall { name, .. } => {
+                        Some(std::borrow::Cow::Borrowed(
+                            descriptor.target_symbol.as_deref().unwrap_or(name.as_str()),
+                        ))
+                    }
+                    php_ir::InstructionKind::NewObject {
+                        display_class_name, ..
+                    } => {
+                        let display_class_name = native_resolve_scoped_class_name(
+                            context,
+                            display_class_name,
+                            frame.function_id,
+                        )?;
+                        return Err(format!(
+                            "E_PHP_VM_UNKNOWN_CLASS: Class {display_class_name} not found"
+                        )
+                        .into());
+                    }
+                    php_ir::InstructionKind::Pipe {
                     callable: php_ir::Operand::Register(callable),
                     ..
                 } => {
@@ -2961,7 +2982,8 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
                     )
                     .into());
                 }
-                _ => None,
+                    _ => None,
+                }
             };
             let Some(name) = name else {
                 return Err(format!(
@@ -2978,7 +3000,10 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
             if matches!(
                 instruction.kind,
                 php_ir::InstructionKind::CallCallable { .. }
+                    | php_ir::InstructionKind::Pipe { .. }
             ) && context.function_id(name.as_ref()).is_none()
+                && context.external_function(name.as_ref()).is_none()
+                && php_std::arginfo::function_metadata_indexed(name.as_ref()).is_none()
             {
                 return Err(format!(
                     "E_PHP_THROW:Error:Call to undefined function {name}()"

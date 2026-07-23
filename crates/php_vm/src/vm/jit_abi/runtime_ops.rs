@@ -2074,77 +2074,75 @@ pub(in crate::vm) extern "C" fn jit_native_reference_bind_abi(
             // Region lowering appends deterministic synthetic locals for
             // reference locations. They have no PHP-visible top-level name
             // and therefore require no request-global publication.
-            if encoded == php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED)
-                && let Some(name) = name.as_ref()
-                && is_top_level
-                && name != "GLOBALS"
-            {
-                if let Some(Value::Reference(reference)) =
-                    context.inherited_globals.get(name).cloned()
-                    && let Err(error) =
-                        context.invalidate_native_global_reference(reference.gc_debug_id())
-                {
-                    record_native_helper_failure(context, error);
-                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-                }
-                context.inherited_globals.remove(name);
-                context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
-            } else if encoded != php_jit::jit_encode_constant(u32::MAX)
-                && let Some(name) = name
-                && is_top_level
-                && name != "GLOBALS"
-            {
-                if context.php_handle_is_reference(encoded) == Some(true)
-                    && let Err(error) =
-                        context.rebind_native_request_local_reference(&name, encoded)
-                {
-                    record_native_helper_failure(context, error);
-                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-                }
+            if let Some(name) = name.filter(|name| is_top_level && name != "GLOBALS") {
                 let Ok(value) = context.decode(encoded) else {
                     return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
                 };
-                match context.inherited_globals.get(&name).cloned() {
-                    Some(Value::Reference(reference)) => match value {
-                        Value::Reference(replacement) if reference.ptr_eq(&replacement) => {}
-                        Value::Reference(replacement) => {
-                            if let Err(error) =
-                                context.invalidate_native_global_reference(reference.gc_debug_id())
-                            {
+                match value {
+                    Value::Reference(replacement) => {
+                        if let Some(Value::Reference(previous)) =
+                            context.inherited_globals.get(&name).cloned()
+                            && !previous.ptr_eq(&replacement)
+                            && let Err(error) =
+                                context.invalidate_native_global_reference(previous.gc_debug_id())
+                        {
+                            record_native_helper_failure(context, error);
+                            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                        }
+                        if let Err(error) =
+                            context.rebind_native_request_local_reference(&name, encoded)
+                        {
+                            record_native_helper_failure(context, error);
+                            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                        }
+                        context
+                            .inherited_globals
+                            .insert(name, Value::Reference(replacement));
+                        context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+                    }
+                    replacement => {
+                        let canonical = match context.native_request_local_handle(&name) {
+                            Ok(canonical) => canonical,
+                            Err(error) => {
                                 record_native_helper_failure(context, error);
                                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
                             }
+                        };
+                        let Some(reference) = context.direct_native_reference_cell(canonical)
+                        else {
+                            record_native_helper_failure(
+                                context,
+                                format!("native request local ${name} has no reference cell"),
+                            );
+                            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                        };
+                        let previous = match context
+                            .replace_direct_reference_cell_value(&reference, replacement.clone())
+                        {
+                            Ok(Some(previous)) => previous,
+                            Ok(None) => {
+                                let previous = reference.get();
+                                reference.set(replacement.clone());
+                                previous
+                            }
+                            Err(error) => {
+                                record_native_helper_failure(context, error);
+                                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                            }
+                        };
+                        context.mark_rooted_container_dirty(&Value::Reference(reference.clone()));
+                        if matches!(replacement, Value::Uninitialized) {
+                            context.inherited_globals.remove(&name);
+                        } else {
                             context
                                 .inherited_globals
-                                .insert(name.clone(), Value::Reference(replacement));
-                            context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+                                .insert(name, Value::Reference(reference));
                         }
-                        replacement => {
-                            let previous = match context.replace_direct_reference_cell_value(
-                                &reference,
-                                replacement.clone(),
-                            ) {
-                                Ok(Some(previous)) => previous,
-                                Ok(None) => {
-                                    let previous = reference.get();
-                                    reference.set(replacement.clone());
-                                    previous
-                                }
-                                Err(error) => {
-                                    record_native_helper_failure(context, error);
-                                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-                                }
-                            };
-                            context.mark_rooted_container_dirty(&Value::Reference(reference));
-                            if let Err(error) = context.finalize_replaced_value(previous) {
-                                record_native_helper_failure(context, error);
-                                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
-                            }
-                        }
-                    },
-                    _ => {
-                        context.inherited_globals.insert(name.clone(), value);
                         context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
+                        if let Err(error) = context.finalize_replaced_value(previous) {
+                            record_native_helper_failure(context, error);
+                            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                        }
                     }
                 }
             }

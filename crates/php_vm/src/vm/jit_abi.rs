@@ -4492,6 +4492,14 @@ impl<'a> NativeRequestColdState<'a> {
         }
     }
 
+    fn direct_native_reference_cell(
+        &self,
+        encoded: i64,
+    ) -> Option<php_runtime::api::ReferenceCell> {
+        let index = Self::direct_value_index(encoded)?;
+        self.direct_reference_cells.get(&index).cloned()
+    }
+
     fn invalidate_native_global_reference(
         &mut self,
         reference_identity: u64,

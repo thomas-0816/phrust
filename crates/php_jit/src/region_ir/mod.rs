@@ -8,7 +8,7 @@
 ///
 /// Increment this whenever serialized cache identity or lowering semantics can
 /// no longer be shared with code produced from an earlier Region IR shape.
-pub const REGION_IR_SCHEMA_VERSION: u32 = 15;
+pub const REGION_IR_SCHEMA_VERSION: u32 = 16;
 
 mod bind;
 mod builder;

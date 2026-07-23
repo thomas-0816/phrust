@@ -207,10 +207,7 @@ fn region_control_targets(block: &crate::region_ir::RegionBlock) -> BTreeSet<Blo
                     targets.insert(*after);
                     targets.extend(*outer_finally);
                 }
-                RegionNativeControl::Throw { catch, finally, .. } => {
-                    targets.extend(*catch);
-                    targets.extend(*finally);
-                }
+                RegionNativeControl::Throw { .. } => {}
                 RegionNativeControl::EnterTry { .. }
                 | RegionNativeControl::LeaveTry
                 | RegionNativeControl::MakeException { .. } => {}
@@ -5523,6 +5520,76 @@ fn define_region_graph_function(
                     &locals,
                     &resume_locals.into_iter().collect::<Vec<_>>(),
                 )?;
+            }
+            // A call-originated throw reaches a handler through the published
+            // control value, not through a pre-existing caller local slot.
+            // Install that authoritative native throwable directly into the
+            // catch local after restoring the caller frame. Restoring the
+            // uninitialized snapshot slot here previously replaced every
+            // caught Error with NULL.
+            if let Some(exception_locals) = handler_exception_locals.get(&target) {
+                for local in exception_locals {
+                    if region.flags.is_top_level
+                        && let NativeTierOperations::Optimizing { operations } = tier_operations
+                    {
+                        let instruction = target_block.instructions.first().ok_or_else(|| {
+                            CraneliftLoweringError::new(
+                                "JIT_CRANELIFT_REJECT_NATIVE_HANDLER",
+                                format!(
+                                    "optimizing handler block {} has no transition instruction",
+                                    target.raw()
+                                ),
+                            )
+                        })?;
+                        let current = lower_trusted_request_local_reference(
+                            &mut builder,
+                            deopt_out,
+                            region.function,
+                            *local,
+                        );
+                        let value_release_validate = module
+                            .declare_func_in_func(operations.value_release_validate, builder.func);
+                        let value_release_commit = module
+                            .declare_func_in_func(operations.value_release_commit, builder.func);
+                        let emitted_transition = Cell::new(false);
+                        let live_values = Vec::new();
+                        let transition = NativeOptimizingTransition {
+                            result_out,
+                            deopt_out,
+                            function: region.function,
+                            local_count: region.local_count,
+                            instruction,
+                            locals: &locals,
+                            live_values: &live_values,
+                            native_version,
+                            value_release_validate,
+                            value_release_commit,
+                            emitted_transition: &emitted_transition,
+                        };
+                        let stored = lower_optimizing_store_reference_scalar(
+                            &mut builder,
+                            current,
+                            value,
+                            false,
+                            false,
+                            transition,
+                        )?;
+                        define_local_variable(&mut builder, &locals, *local, stored)?;
+                    } else {
+                        define_local_variable(&mut builder, &locals, *local, value)?;
+                        if region.flags.is_top_level {
+                            publish_native_reference_local(
+                                module,
+                                &mut builder,
+                                native_operations.reference_bind,
+                                value,
+                                region.function,
+                                *local,
+                                result_out,
+                            )?;
+                        }
+                    }
+                }
             }
             builder.ins().jump(cranelift_block(&blocks, target)?, &[]);
         }

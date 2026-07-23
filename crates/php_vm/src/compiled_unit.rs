@@ -329,6 +329,7 @@ pub(crate) struct NativeCallSiteDescriptor {
     pub kind: NativeCallSiteKind,
     pub span: IrSpan,
     pub target_symbol: Option<Arc<str>>,
+    pub target_class: Option<Arc<str>>,
     pub target_function: Option<FunctionId>,
     /// Stable builtin entry resolved once with immutable callsite metadata.
     /// Generated code and this immutable table are published together, so the
@@ -1064,6 +1065,17 @@ impl CompiledUnit {
                             {
                                 let (kind, target_symbol, target_function) =
                                     native_callsite_target(&call.target);
+                                let target_class = match &call.target {
+                                    php_jit::region_ir::RegionCallTarget::StaticMethod {
+                                        class_name,
+                                        ..
+                                    }
+                                    | php_jit::region_ir::RegionCallTarget::Constructor {
+                                        class_name,
+                                        ..
+                                    } => Some(Arc::from(class_name.as_str())),
+                                    _ => None,
+                                };
                                 let direct_builtin = if kind == NativeCallSiteKind::Function
                                     && target_function.is_none()
                                 {
@@ -1100,6 +1112,7 @@ impl CompiledUnit {
                                         kind,
                                         span: instruction.span,
                                         target_symbol,
+                                        target_class,
                                         target_function,
                                         direct_builtin,
                                         arguments: Arc::from(call.args.clone()),
