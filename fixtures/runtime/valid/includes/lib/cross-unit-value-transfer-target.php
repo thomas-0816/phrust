@@ -29,6 +29,11 @@ function cross_unit_read_global_payload() {
     return $cross_unit_global;
 }
 
+function cross_unit_publish_registry() {
+    global $cross_unit_registry;
+    $cross_unit_registry = array('status' => 'registered');
+}
+
 function cross_unit_static_sequence() {
     static $storage = null;
     static $calls = 0;
@@ -106,5 +111,16 @@ class CrossUnitNestedConstructor {
         cross_unit_interlude_storage()->get('theme');
         $this->value = 'nested-constructed';
         return;
+    }
+}
+
+class CrossUnitDimensionMutation {
+    protected static function mutate(&$context) {
+        $context['changed'] = true;
+    }
+
+    public static function run($data) {
+        static::mutate($data['settings']);
+        return $data;
     }
 }

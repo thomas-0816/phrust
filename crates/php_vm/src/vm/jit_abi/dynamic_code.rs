@@ -123,6 +123,12 @@ fn execute_native_include(
         .get(request.caller_function_id as usize)
         .map(|caller| caller.locals.clone())
         .ok_or_else(|| "native include caller function is missing".to_owned())?;
+    // Include runs in an independently owned native arena. Request globals
+    // that are not locals of this caller can still have an authoritative
+    // direct-reference payload (hook registries are a common example).
+    // Materialize every such root once at this cold ownership boundary before
+    // moving the global symbol table into the child request.
+    context.materialize_native_request_globals()?;
     let mut inherited_globals = std::mem::take(&mut context.inherited_globals);
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *const i64;
@@ -306,6 +312,7 @@ fn execute_native_eval(
     let compiled = compiler
         .compile_eval(&source_path, &source)
         .map_err(|error| error.to_string())?;
+    context.materialize_native_request_globals()?;
     let mut inherited_globals = std::mem::take(&mut context.inherited_globals);
     if request.caller_frame != 0 {
         let caller_frame = request.caller_frame as *const i64;

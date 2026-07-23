@@ -20,3 +20,8 @@ function cross_unit_interlude_storage() {
 function cross_unit_make_nested() {
     return new CrossUnitNestedConstructor();
 }
+
+function cross_unit_read_registry() {
+    global $cross_unit_registry;
+    return $cross_unit_registry;
+}

@@ -10122,15 +10122,7 @@ impl<'a> NativeRequestColdState<'a> {
         // that unit is still active, before publishing another unit's runtime
         // view. This is the native ownership boundary, not a per-operation
         // compatibility decode.
-        let global_roots = self
-            .native_global_reference_handles
-            .values()
-            .copied()
-            .collect::<Vec<_>>();
-        let mut visited = std::collections::BTreeSet::new();
-        for root in global_roots {
-            self.stabilize_cross_unit_graph_value(root, &mut visited)?;
-        }
+        self.stabilize_native_global_roots_for_cross_unit()?;
         let compiled = self
             .dynamic_units
             .get(unit)
@@ -10236,6 +10228,10 @@ impl<'a> NativeRequestColdState<'a> {
         // indirect-call arbitrary data as an address.
         let _runtime_view = activate_native_context(self);
         let result = operation(self);
+        // A callee may publish its own unit-local constants into a request
+        // global. Rehome those direct graph leaves before restoring the
+        // caller's constant table, symmetrically with the entry-side transfer.
+        self.stabilize_native_global_roots_for_cross_unit()?;
 
         let active_entries = std::mem::replace(&mut self.native_entries, previous_entries);
         self.dynamic_units
@@ -10266,6 +10262,19 @@ impl<'a> NativeRequestColdState<'a> {
         self.unit = previous_unit;
         self.compiled = previous_compiled;
         Ok(result)
+    }
+
+    fn stabilize_native_global_roots_for_cross_unit(&mut self) -> Result<(), String> {
+        let global_roots = self
+            .native_global_reference_handles
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut visited = std::collections::BTreeSet::new();
+        for root in global_roots {
+            self.stabilize_cross_unit_graph_value(root, &mut visited)?;
+        }
+        Ok(())
     }
 
     fn direct_array_slot(&self, encoded: i64) -> Option<(usize, php_jit::JitNativeValueSlot)> {

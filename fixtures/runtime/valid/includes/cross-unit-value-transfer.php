@@ -19,9 +19,12 @@ function cross_unit_mutate_property(&$value) {
 
 require __DIR__ . '/lib/cross-unit-value-transfer-target.php';
 $static_first = cross_unit_static_sequence();
+cross_unit_publish_registry();
 require __DIR__ . '/lib/cross-unit-static-interlude.php';
 cross_unit_static_interlude();
 $nested_constructed = cross_unit_make_nested();
+$cross_unit_registry_result = cross_unit_read_registry();
+$dimension_mutation = CrossUnitDimensionMutation::run(array('settings' => array()));
 
 $input = array('outside' => 1);
 $object = new CrossUnitTransferObject();
@@ -71,4 +74,5 @@ echo $constructed_defaults['cache_domain'], '|', $constructed_count, '|';
 echo $constructed->values()[0], '|';
 echo $static_first[0] === $static_second[0] ? 'static-same' : 'static-different', '|';
 echo $static_first[0]->first, '|', $static_second[1], '|';
-echo $nested_constructed->value, "\n";
+echo $nested_constructed->value, '|', $cross_unit_registry_result['status'], '|';
+echo $dimension_mutation['settings']['changed'] ? 'dimension-mutated' : 'dimension-missed', "\n";

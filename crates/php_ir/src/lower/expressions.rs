@@ -2396,7 +2396,7 @@ impl LoweringContext<'_> {
                         None,
                         None,
                     )
-                } else if reference_required && let Some(target) = dim_target {
+                } else if let Some(target) = dim_target {
                     let mut dims = Vec::with_capacity(target.dims.len());
                     for dim in &target.dims {
                         let dim_value =
@@ -2443,7 +2443,7 @@ impl LoweringContext<'_> {
                         None,
                         None,
                     )
-                } else if reference_required && let Some(target) = property_dim_target {
+                } else if let Some(target) = property_dim_target {
                     let object = self.lower_expr_to_register(
                         builder,
                         site.function,
