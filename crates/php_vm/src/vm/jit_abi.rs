@@ -7988,6 +7988,67 @@ impl<'a> NativeRequestColdState<'a> {
         Some(unsafe { base.add(slot) })
     }
 
+    /// Replaces one ordinary declared-property owner without materializing
+    /// either the object or the assigned value into the cold Rust plane.
+    ///
+    /// The property and assignment expression each need an independent
+    /// owner unless executable ownership moves the input owner into the
+    /// expression result. Reference-backed cells deliberately remain a cold
+    /// semantic shape until their write-through path is native as well.
+    #[allow(unsafe_code)]
+    fn assign_plain_native_declared_property(
+        &mut self,
+        object: i64,
+        value: i64,
+        property: &str,
+        move_result: bool,
+    ) -> Result<Option<i64>, String> {
+        let Some(location) = self.native_declared_property_slot_location(object, property) else {
+            return Ok(None);
+        };
+        // SAFETY: `location` belongs to the request-stable authoritative
+        // declared-slot box resolved above.
+        let previous = unsafe { *location };
+        if previous.initialized != 0 && self.php_handle_is_reference(previous.value) != Some(false)
+        {
+            return Ok(None);
+        }
+        if self.php_handle_is_reference(value) != Some(false) {
+            return Ok(None);
+        }
+        let Some(property_owner) = self.duplicate_authoritative_native_value(value)? else {
+            return Ok(None);
+        };
+        let result = if move_result {
+            value
+        } else {
+            let Some(result) = self.duplicate_authoritative_native_value(value)? else {
+                self.release(property_owner)?;
+                return Ok(None);
+            };
+            result
+        };
+        // SAFETY: the old owner remains live until the replacement record has
+        // been installed. The new record consumes `property_owner`.
+        unsafe {
+            *location = php_runtime::api::NativeDeclaredPropertySlot {
+                initialized: 1,
+                reserved: 0,
+                value: property_owner,
+            };
+        }
+        self.mark_roots_dirty(RootMutationReason::RootedContainer);
+        if previous.initialized != 0
+            && let Err(error) = self.release(previous.value)
+        {
+            if !move_result {
+                let _ = self.release(result);
+            }
+            return Err(error);
+        }
+        Ok(Some(result))
+    }
+
     /// Creates a direct reference whose payload ownership is supplied by the
     /// caller. The cold ReferenceCell is identity-only until an explicit cold
     /// boundary materializes the authoritative payload.
@@ -8511,6 +8572,52 @@ impl<'a> NativeRequestColdState<'a> {
         }
     }
 
+    /// Checks whether a native value already has a representation accepted by
+    /// typed storage. Unlike call-argument admission, this must not treat an
+    /// integer as an already-coerced float.
+    fn native_encoded_exactly_matches_ir_type(
+        &self,
+        encoded: i64,
+        type_: &php_ir::IrReturnType,
+    ) -> Option<bool> {
+        use php_ir::IrReturnType as Ir;
+        let encoded = self.dereference_direct_encoding(encoded);
+        let kind = self.native_encoded_value_kind(encoded)?;
+        match type_ {
+            Ir::Float => Some(kind == NativeEncodedValueKind::Float),
+            Ir::Nullable { inner } => {
+                if kind == NativeEncodedValueKind::Null {
+                    Some(true)
+                } else {
+                    self.native_encoded_exactly_matches_ir_type(encoded, inner)
+                }
+            }
+            Ir::Union { members } | Ir::Dnf { members } => {
+                let mut unknown = false;
+                for member in members {
+                    match self.native_encoded_exactly_matches_ir_type(encoded, member) {
+                        Some(true) => return Some(true),
+                        Some(false) => {}
+                        None => unknown = true,
+                    }
+                }
+                (!unknown).then_some(false)
+            }
+            Ir::Intersection { members } => {
+                let mut unknown = false;
+                for member in members {
+                    match self.native_encoded_exactly_matches_ir_type(encoded, member) {
+                        Some(true) => {}
+                        Some(false) => return Some(false),
+                        None => unknown = true,
+                    }
+                }
+                (!unknown).then_some(true)
+            }
+            _ => self.native_encoded_matches_ir_type(encoded, type_),
+        }
+    }
+
     /// Produces one owned native value for a typed by-value call parameter.
     /// `None` denotes a compatibility-only shape which has already crossed a
     /// cold call boundary and still requires the baseline `Value` coercer.
@@ -8658,6 +8765,41 @@ impl<'a> NativeRequestColdState<'a> {
         self.direct_value_slots[index].reserved =
             php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED;
         self.release(slot.payload as i64)?;
+        Ok(true)
+    }
+
+    /// Replaces one authoritative direct-reference payload from a borrowed
+    /// assignment operand. Both the lvalue identity and the replacement stay
+    /// in the native plane; a materialized reference or compatibility value
+    /// rejects before any visible mutation.
+    fn store_plain_native_reference_payload(
+        &mut self,
+        reference: i64,
+        value: i64,
+    ) -> Result<bool, String> {
+        let Some(index) = Self::direct_value_index(reference) else {
+            return Ok(false);
+        };
+        if self.direct_reference_payload(reference).is_none() {
+            return Ok(false);
+        }
+        let Some(replacement) = self.duplicate_authoritative_dereferenced_native_value(value)?
+        else {
+            return Ok(false);
+        };
+
+        // A direct descriptor is authoritative. Its ReferenceCell exists only
+        // as a stable identity for a later cold boundary; clear any previously
+        // materialized payload so root traversal cannot mistake that stale
+        // graph for the current lvalue contents.
+        if let Some(reference) = self.direct_reference_cells.get(&index) {
+            reference.set(Value::Uninitialized);
+        }
+        self.mark_roots_dirty(RootMutationReason::RootedContainer);
+        if !self.replace_direct_reference_payload_owned(reference, replacement)? {
+            self.release(replacement)?;
+            return Ok(false);
+        }
         Ok(true)
     }
 
@@ -13549,17 +13691,19 @@ fn execute_native_static_property(
             Value::Reference(reference) => reference,
             value => php_runtime::api::ReferenceCell::new(value),
         };
-        let effective = reference.get();
-        if let Some(type_) = &declaration.type_
-            && !native_value_matches_ir_type_in_context(context, &effective, type_)
-        {
-            return Some(Err(format!(
-                "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
-                native_assignment_type_name(&effective),
-                display_name,
-                property,
-                native_ir_type_name(type_)
-            )));
+        if let Some(type_) = &declaration.type_ {
+            let effective =
+                native_coerce_call_argument(reference.get(), type_, context.unit.strict_types);
+            if !native_value_matches_ir_type_in_context(context, &effective, type_) {
+                return Some(Err(format!(
+                    "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
+                    native_assignment_type_name(&effective),
+                    display_name,
+                    property,
+                    native_ir_type_name(type_)
+                )));
+            }
+            reference.set(effective);
         }
         let replacement = Value::Reference(reference.clone());
         let previous = match context.store_direct_static_property_value(&key, replacement.clone()) {
@@ -13591,16 +13735,17 @@ fn execute_native_static_property(
             // unit when a closure crosses into a class owned by another unit.
             value = native_value_with_owner_unit(value, context.current_dynamic_unit);
         }
-        if let Some(type_) = &declaration.type_
-            && !native_value_matches_ir_type_in_context(context, &value, type_)
-        {
-            return Some(Err(format!(
-                "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
-                native_assignment_type_name(&value),
-                display_name,
-                property,
-                native_ir_type_name(type_)
-            )));
+        if let Some(type_) = &declaration.type_ {
+            value = native_coerce_call_argument(value, type_, context.unit.strict_types);
+            if !native_value_matches_ir_type_in_context(context, &value, type_) {
+                return Some(Err(format!(
+                    "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
+                    native_assignment_type_name(&value),
+                    display_name,
+                    property,
+                    native_ir_type_name(type_)
+                )));
+            }
         }
         let direct_current = match context.direct_static_property_value(&key) {
             Some(Ok(value)) => Some(value),
@@ -15495,22 +15640,24 @@ fn execute_native_property_instruction(
                     "dynamic property assignment value is missing".to_owned()
                 ));
             };
-            let value = match context.decode(value) {
+            let mut value = match context.decode(value) {
                 Ok(value) => value,
                 Err(error) => return Some(Err(error)),
             };
             if let Some(class) = &class {
                 if let Some(entry) = class.properties.iter().find(|entry| entry.name == property) {
-                    if let Some(type_) = &entry.type_
-                        && !native_value_matches_ir_type_in_context(context, &value, type_)
-                    {
-                        return Some(Err(format!(
-                            "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
-                            native_assignment_type_name(&value),
-                            class.display_name,
-                            property,
-                            native_ir_type_name(type_)
-                        )));
+                    if let Some(type_) = &entry.type_ {
+                        value =
+                            native_coerce_call_argument(value, type_, context.unit.strict_types);
+                        if !native_value_matches_ir_type_in_context(context, &value, type_) {
+                            return Some(Err(format!(
+                                "E_PHP_THROW:TypeError:Cannot assign {} to property {}::${} of type {}",
+                                native_assignment_type_name(&value),
+                                class.display_name,
+                                property,
+                                native_ir_type_name(type_)
+                            )));
+                        }
                     }
                     if entry.flags.is_private && !caller_owns_class_scope {
                         return Some(Err(format!(

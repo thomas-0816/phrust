@@ -11103,6 +11103,143 @@ fn optimizing_compiled_call_releases_its_borrowed_argument_owner() {
 }
 
 #[test]
+fn optimizing_reference_backed_array_dimension_binding_stays_native() {
+    SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
+    let mut builder = IrBuilder::new(UnitId::new(4_242));
+    let file = builder.add_file("optimizing-reference-backed-dimension-bind.php");
+    let span = IrSpan::new(file, 0, 1);
+    let function = builder.start_function(
+        "bind_reference_backed_dimension",
+        FunctionFlags::default(),
+        span,
+    );
+    builder.set_entry(function);
+    builder.set_return_type(function, Some(IrReturnType::Int));
+    let array = untyped_param(&mut builder, function, "array");
+    let alias = builder.intern_local(function, "alias");
+    let block = builder.append_block(function);
+    let zero = builder.intern_constant(IrConstant::Int(0));
+    builder.emit(
+        function,
+        block,
+        InstructionKind::BindReferenceFromDim {
+            target: alias,
+            local: array,
+            dims: vec![Operand::Constant(zero)],
+        },
+        span,
+    );
+    let seven = builder.intern_constant(IrConstant::Int(7));
+    builder.emit(
+        function,
+        block,
+        InstructionKind::StoreLocal {
+            local: alias,
+            src: Operand::Constant(seven),
+        },
+        span,
+    );
+    let result = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::LoadLocal {
+            dst: result,
+            local: alias,
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+    let unit = builder.finish();
+
+    let mut backend = CraneliftNativeCompiler;
+    let outcome = backend.compile_region(&NativeCompileRequest {
+        compile: &JitCompileRequest::new("cl.optimizing.reference-backed-dimension-bind")
+            .with_opt_level(2),
+        unit: Some(&unit),
+        function: Some(function),
+        runtime_helpers: crate::JitRuntimeHelperAddresses {
+            native_reference_bind: forbidden_reference_bind as *const () as usize,
+            native_array_fetch: forbidden_cached_array_fetch as *const () as usize,
+            native_array_insert: forbidden_array_insert as *const () as usize,
+            native_local_fetch: forbidden_local_fetch as *const () as usize,
+            native_local_store: forbidden_local_store as *const () as usize,
+            native_value_release: forbidden_release as *const () as usize,
+            ..crate::JitRuntimeHelperAddresses::default()
+        },
+    });
+    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
+    let handle = outcome
+        .handle
+        .expect("reference-backed dimension-bind handle");
+    assert_optimizing_artifact(&handle);
+
+    let mut direct_slots =
+        vec![crate::JitNativeValueSlot::default(); crate::JIT_NATIVE_DIRECT_VALUE_CAPACITY];
+    let mut direct_entries = vec![
+        crate::JitNativeDirectArrayEntry::default();
+        crate::JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY
+    ];
+    direct_entries[0] = crate::JitNativeDirectArrayEntry { key: 0, value: 1 };
+    direct_slots[0] = crate::JitNativeValueSlot {
+        refcount: 1,
+        kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+        flags: crate::jit_native_direct_array_flags(Some(0)),
+        reserved: crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY,
+        payload: 1,
+        aux: direct_entries.as_mut_ptr() as usize as u64,
+    };
+    let array_handle = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_ARRAY_TAG,
+    );
+    direct_slots[1] = crate::JitNativeValueSlot {
+        refcount: 1,
+        kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+        flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+        reserved: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+        payload: array_handle as u64,
+        ..crate::JitNativeValueSlot::default()
+    };
+    let mut direct_next = 2_u32;
+    let mut entry_next = crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY;
+    let _arena = activate_direct_test_arena(
+        &mut direct_slots,
+        &mut direct_next,
+        &mut direct_entries,
+        &mut entry_next,
+    );
+    let mut roots_dirty = 0_u32;
+    let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
+        abi_version: crate::JIT_RUNTIME_ABI_VERSION,
+        root_mutation_pending: std::ptr::from_mut(&mut roots_dirty) as usize as u64,
+        ..crate::abi::current_native_runtime_view()
+    });
+    let reference = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_REFERENCE_TAG,
+    );
+    assert_eq!(
+        handle
+            .invoke_i64(&[reference], JIT_RUNTIME_ABI_HASH)
+            .expect("compiled reference-backed dimension bind"),
+        7
+    );
+    let bound_reference = direct_entries[0].value;
+    let bound_index = crate::jit_decode_runtime_value(bound_reference)
+        .expect("array entry must contain a direct reference")
+        .saturating_sub(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE) as usize;
+    assert_eq!(
+        direct_slots[bound_index].kind,
+        crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+    );
+    assert_eq!(direct_slots[bound_index].payload as i64, 7);
+    assert_eq!(direct_slots[0].refcount, 1);
+    assert_eq!(roots_dirty, 1);
+    assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn optimizing_by_ref_dimension_call_clones_cow_root_without_helpers() {
     SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
     let mut builder = IrBuilder::new(UnitId::new(4_241));

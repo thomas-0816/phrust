@@ -1605,6 +1605,39 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
                 php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
             };
         }
+        if name.as_deref() != Some("GLOBALS") {
+            match context.store_plain_native_reference_payload(current, value) {
+                Ok(true) => {
+                    context.record_local_store_reason(if is_top_level {
+                        "top_level_global"
+                    } else {
+                        "reference_dereference"
+                    });
+                    if move_input && let Err(error) = context.release_if_live(value) {
+                        record_native_helper_failure(
+                            context,
+                            format!(
+                                "direct native local store could not consume moved value {value}: {error}"
+                            ),
+                        );
+                        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                    }
+                    return if write_native_value(out, current) {
+                        0
+                    } else {
+                        php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                    };
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    record_native_helper_failure(
+                        context,
+                        format!("direct native local/reference store failed: {error}"),
+                    );
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                }
+            }
+        }
         if is_top_level
             && let Some(name) = name.as_deref().filter(|name| *name != "GLOBALS")
             && let Err(error) = context.materialize_native_request_global(name)
@@ -3794,6 +3827,84 @@ pub(in crate::vm) extern "C" fn jit_native_property_assign_abi(
             );
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
+        let bind_reference = op & 1 != 0;
+        let move_value = op & 2 != 0;
+
+        // Ordinary declared slots stay entirely in the authoritative native
+        // plane even when this site is being published by its first baseline
+        // continuation. Exact typed values use the same numeric slot; only
+        // coercion/type errors, hooks, readonly/dynamic storage, and reference
+        // write-through remain explicit cold semantic shapes.
+        let direct_receiver =
+            NativeRequestColdState::direct_value_index(
+                context.dereference_direct_encoding(encoded_object),
+            )
+            .and_then(|index| context.direct_object(index));
+        if let Some(object) = direct_receiver {
+            let class_name = object.class_name();
+            let class = native_active_class_handle(context, &class_name);
+            let caller_owns_scope = class.as_ref().is_some_and(|class| {
+                class
+                    .methods
+                    .iter()
+                    .any(|method| method.function.raw() == function as u32)
+            });
+            let entry = class
+                .as_ref()
+                .and_then(|class| class.properties.iter().find(|entry| entry.name == property));
+            let accessible = entry.is_none_or(|entry| {
+                (!entry.flags.is_private && !entry.flags.is_protected) || caller_owns_scope
+            });
+            let plain_declared = !dimension_write
+                && !bind_reference
+                && accessible
+                && entry.is_some_and(|entry| {
+                    !entry.flags.is_readonly
+                        && entry.hooks.get.is_none()
+                        && entry.hooks.set.is_none()
+                        && entry.type_.as_ref().is_none_or(|type_| {
+                            context.native_encoded_exactly_matches_ir_type(encoded_value, type_)
+                                == Some(true)
+                        })
+                });
+            if plain_declared {
+                match context.assign_plain_native_declared_property(
+                    encoded_object,
+                    encoded_value,
+                    property,
+                    move_value,
+                ) {
+                    Ok(Some(result)) => {
+                        if let Err(error) = context.publish_direct_object_slots(
+                            encoded_object,
+                            property,
+                            encoded_value,
+                            function,
+                            instruction_id,
+                            php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE,
+                        ) {
+                            record_native_helper_failure(context, error);
+                            return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                        }
+                        return if write_native_value(out, result) {
+                            0
+                        } else {
+                            php_jit::JitCallStatus::ABI_MISMATCH.0 as i32
+                        };
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        record_native_helper_failure(
+                            context,
+                            format!(
+                                "native property ${property} assignment could not replace its authoritative slot: {error}"
+                            ),
+                        );
+                        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                    }
+                }
+            }
+        }
         let mut object = match context.decode(object) {
             Ok(object) => object,
             Err(error) => {
@@ -3838,16 +3949,13 @@ pub(in crate::vm) extern "C" fn jit_native_property_assign_abi(
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             }
         };
-        let bind_reference = op & 1 != 0;
-        let move_value = op & 2 != 0;
         let input_was_reference = matches!(value, Value::Reference(_));
-        let can_reuse_input = move_value && (bind_reference || !input_was_reference);
-        let value = if bind_reference {
+        let mut can_reuse_input = move_value && (bind_reference || !input_was_reference);
+        let mut value = if bind_reference {
             value
         } else {
             dereference_native_assignment_value(value)
         };
-        let checked_value = dereference_native_assignment_value(value.clone());
         let class_name = object.class_name();
         let class = native_active_class_handle(context, &class_name);
         let caller_owns_scope = class.as_ref().is_some_and(|class| {
@@ -3955,22 +4063,38 @@ pub(in crate::vm) extern "C" fn jit_native_property_assign_abi(
                     .as_ref()
                     .map(|class| (class.display_name.clone(), type_))
             });
-        if let Some((display_class, type_)) = property_type
-            && !native_value_matches_ir_type_in_context(context, &checked_value, &type_)
-        {
-            let message = format!(
-                "Cannot assign {} to property {}::${} of type {}",
-                native_assignment_type_name(&checked_value),
-                display_class,
-                property,
-                native_ir_type_name(&type_)
+        if let Some((display_class, type_)) = property_type {
+            let checked_value = dereference_native_assignment_value(value.clone());
+            let coerced = native_coerce_call_argument(
+                checked_value,
+                &type_,
+                context.unit.strict_types,
             );
-            return match encode_native_throwable(context, "TypeError", &message) {
-                Ok(value) if write_native_value(out, value) => {
-                    php_jit::JitCallStatus::THROW.0 as i32
+            if !native_value_matches_ir_type_in_context(context, &coerced, &type_) {
+                let message = format!(
+                    "Cannot assign {} to property {}::${} of type {}",
+                    native_assignment_type_name(&coerced),
+                    display_class,
+                    property,
+                    native_ir_type_name(&type_)
+                );
+                return match encode_native_throwable(context, "TypeError", &message) {
+                    Ok(value) if write_native_value(out, value) => {
+                        php_jit::JitCallStatus::THROW.0 as i32
+                    }
+                    _ => php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+                };
+            }
+            can_reuse_input = false;
+            if bind_reference {
+                if let Value::Reference(reference) = &value {
+                    reference.set(coerced);
+                } else {
+                    value = coerced;
                 }
-                _ => php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
-            };
+            } else {
+                value = coerced;
+            }
         }
         if bind_reference {
             let previous = object

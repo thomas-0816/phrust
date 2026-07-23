@@ -13707,7 +13707,8 @@ fn lower_optimizing_bind_direct_array_dimension_reference(
     let (leaf_key, parents) = keys
         .split_last()
         .expect("direct array-dimension reference retains a leaf key");
-    let root = use_local_variable(builder, locals, array)?;
+    let (root, reference_slot) =
+        lower_optimizing_mutable_array_local(builder, locals, array, transition)?;
     let root_additional = builder
         .ins()
         .iconst(types::I64, i64::from(parents.is_empty()));
@@ -13722,7 +13723,6 @@ fn lower_optimizing_bind_direct_array_dimension_reference(
         deopt_out,
         transition,
     )?;
-    define_local_variable(builder, locals, array, root)?;
     let leaf = lower_direct_nested_array_path_from_unique_root(
         module,
         builder,
@@ -13793,8 +13793,17 @@ fn lower_optimizing_bind_direct_array_dimension_reference(
     builder.ins().jump(done, &[reference.into()]);
 
     builder.switch_to_block(done);
+    let reference = builder.block_params(done)[0];
+    lower_optimizing_publish_mutable_array_local(
+        builder,
+        locals,
+        array,
+        root,
+        reference_slot,
+        deopt_out,
+    )?;
     lower_mark_native_roots_dirty(builder, deopt_out);
-    Ok(builder.block_params(done)[0])
+    Ok(reference)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -22655,14 +22664,49 @@ fn lower_baseline_region_instruction(
                 &[updated, leaf_key, zero],
                 result_out,
             )?;
+            // `local_fetch` and every intermediate `array_fetch` own their
+            // returned array handle. The leaf insert deliberately COW-clones
+            // that shared handle before installing the reference, so the old
+            // leaf is no longer part of the rebuilt lvalue tree.
+            let _ = lower_guarded_value_release(
+                module,
+                builder,
+                native_operations.value_release,
+                native_dim_operation(1, function, instruction.continuation_id),
+                nested,
+                result_out,
+                deopt_out,
+            )?;
             for index in (0..keys.len().saturating_sub(1)).rev() {
+                let child = updated;
                 updated = lower_native_value_operation(
                     module,
                     builder,
                     native_operations.array_insert,
                     native_dim_operation(0, function, instruction.continuation_id),
-                    &[arrays[index], keys[index], updated],
+                    &[arrays[index], keys[index], child],
                     result_out,
+                )?;
+                // Fetching the child made the parent input shared, so this
+                // insert also COW-clones. Ownership of neither obsolete input
+                // is part of the replacement returned above.
+                let _ = lower_guarded_value_release(
+                    module,
+                    builder,
+                    native_operations.value_release,
+                    native_dim_operation(1, function, instruction.continuation_id),
+                    child,
+                    result_out,
+                    deopt_out,
+                )?;
+                let _ = lower_guarded_value_release(
+                    module,
+                    builder,
+                    native_operations.value_release,
+                    native_dim_operation(1, function, instruction.continuation_id),
+                    arrays[index],
+                    result_out,
+                    deopt_out,
                 )?;
             }
             let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
