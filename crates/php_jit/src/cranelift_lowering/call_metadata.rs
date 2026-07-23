@@ -492,61 +492,6 @@ pub(super) fn stable_builtin_path(target: &RegionCallTarget) -> Option<StablePat
     }
 }
 
-/// Exact callback invocation builtins. These names have dynamic PHP targets,
-/// but their outer builtin contract is fixed and consumes authoritative native
-/// callback/argument encodings without entering the prepared builtin router.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum StableCallbackBuiltin {
-    CallUserFunc,
-    CallUserFuncArray,
-}
-
-impl StableCallbackBuiltin {
-    pub(super) const COUNT: usize = 2;
-
-    pub(super) const fn index(self) -> usize {
-        match self {
-            Self::CallUserFunc => 0,
-            Self::CallUserFuncArray => 1,
-        }
-    }
-
-    pub(super) const fn symbol(self) -> &'static str {
-        match self {
-            Self::CallUserFunc => "phrust_native_call_user_func",
-            Self::CallUserFuncArray => "phrust_native_call_user_func_array",
-        }
-    }
-
-    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
-        match self {
-            // The exact register ABI carries six values. Larger variadic
-            // calls take the one baseline continuation before any effect.
-            Self::CallUserFunc => arity >= 1 && arity <= 6,
-            Self::CallUserFuncArray => arity == 2,
-        }
-    }
-
-    pub(super) const fn all() -> [Self; Self::COUNT] {
-        [Self::CallUserFunc, Self::CallUserFuncArray]
-    }
-}
-
-pub(super) fn stable_builtin_callback(target: &RegionCallTarget) -> Option<StableCallbackBuiltin> {
-    let RegionCallTarget::Function { name, .. } = target else {
-        return None;
-    };
-    let normalized = name.trim_start_matches('\\');
-    if normalized.contains('\\') {
-        return None;
-    }
-    match normalized.to_ascii_lowercase().as_str() {
-        "call_user_func" => Some(StableCallbackBuiltin::CallUserFunc),
-        "call_user_func_array" => Some(StableCallbackBuiltin::CallUserFuncArray),
-        _ => None,
-    }
-}
-
 pub(super) fn stable_builtin_length(target: &RegionCallTarget) -> Option<u32> {
     let RegionCallTarget::Function { name, .. } = target else {
         return None;

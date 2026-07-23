@@ -84,8 +84,6 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
                     | "phrust_native_fopen"
                     | "phrust_native_fwrite"
                     | "phrust_native_fclose"
-                    | "phrust_native_call_user_func"
-                    | "phrust_native_call_user_func_array"
             ) =>
         {
             Some(owned(BORROW_6, false))

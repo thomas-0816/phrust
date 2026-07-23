@@ -396,7 +396,12 @@ pub fn analyze_executable_value_flow(
                 continue;
             };
             if let Some(fact) = register_facts.get_mut(&dst) {
-                if borrowed_local_loads.contains(&instruction.continuation_id) {
+                let globals_proxy = matches!(
+                    instruction.kind,
+                    RegionInstructionKind::LoadLocal { local, .. }
+                        if local_storage.get(&local) == Some(&LocalStorageClass::Globals)
+                );
+                if globals_proxy || borrowed_local_loads.contains(&instruction.continuation_id) {
                     fact.ownership = SsaOwnership::Borrowed;
                 } else if fact.has_runtime_lifecycle() {
                     fact.ownership = SsaOwnership::Owned;

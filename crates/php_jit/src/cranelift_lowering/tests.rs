@@ -2,10 +2,10 @@ use super::executable_region::{
     instruction_has_native_transition, select_native_region_tier, validate_pre_regalloc_structure,
 };
 use super::{
-    CraneliftNativeCompiler, NativeCompilePlan, StableCallbackBuiltin, StablePathBuiltin,
-    StableSymbolQueryBuiltin, build_trivial_add_clif_smoke, native_dim_operation,
-    native_local_store_operation, ordinary_local_fast_path, runtime_helper_abi_hash,
-    stable_builtin_dense_id, stable_builtin_symbol_query, stable_builtin_type_predicate,
+    CraneliftNativeCompiler, NativeCompilePlan, StablePathBuiltin, StableSymbolQueryBuiltin,
+    build_trivial_add_clif_smoke, native_dim_operation, native_local_store_operation,
+    ordinary_local_fast_path, runtime_helper_abi_hash, stable_builtin_dense_id,
+    stable_builtin_symbol_query, stable_builtin_type_predicate,
 };
 use crate::region_ir::{
     BaselineRegionBuilder, CompileMetadata, NativeCompilerTier, RegionCallTarget,
@@ -32,7 +32,6 @@ static ARRAY_FETCH_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 static FOREACH_NEXT_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 static NESTED_TRANSITION_CALLS: AtomicUsize = AtomicUsize::new(0);
 static NESTED_TRANSITION_FUNCTION: AtomicUsize = AtomicUsize::new(0);
-static EXACT_CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn activate_direct_test_arena(
     slots: &mut [crate::JitNativeValueSlot],
@@ -121,9 +120,6 @@ fn assert_optimizing_artifact(handle: &crate::JitFunctionHandle) {
                     || StableSymbolQueryBuiltin::all()
                         .iter()
                         .any(|builtin| builtin.symbol() == symbol)
-                    || StableCallbackBuiltin::all()
-                        .iter()
-                        .any(|builtin| builtin.symbol() == symbol)
                     || StablePathBuiltin::all()
                         .iter()
                         .any(|builtin| builtin.symbol() == symbol) =>
@@ -172,97 +168,6 @@ fn stable_builtin_identity_survives_symbolic_function_metadata() {
         stable_builtin_symbol_query(&function_exists),
         Some(StableSymbolQueryBuiltin::FunctionExists)
     );
-}
-
-#[test]
-fn optimizing_callback_builtin_uses_exact_native_abi() {
-    EXACT_CALLBACK_CALLS.store(0, Ordering::SeqCst);
-    let mut builder = IrBuilder::new(UnitId::new(4_242));
-    let file = builder.add_file("optimizing-exact-callback.php");
-    let span = IrSpan::new(file, 0, 1);
-    let function =
-        builder.start_function("optimizing_exact_callback", FunctionFlags::default(), span);
-    let callback = untyped_param(&mut builder, function, "callback");
-    let value = untyped_param(&mut builder, function, "value");
-    let block = builder.append_block(function);
-    let callback_value = builder.alloc_register(function);
-    builder.emit(
-        function,
-        block,
-        InstructionKind::LoadLocal {
-            dst: callback_value,
-            local: callback,
-        },
-        span,
-    );
-    let argument_value = builder.alloc_register(function);
-    builder.emit(
-        function,
-        block,
-        InstructionKind::LoadLocal {
-            dst: argument_value,
-            local: value,
-        },
-        span,
-    );
-    let result = builder.alloc_register(function);
-    builder.emit(
-        function,
-        block,
-        InstructionKind::CallFunction {
-            dst: result,
-            name: "call_user_func".to_owned(),
-            args: [callback_value, argument_value]
-                .into_iter()
-                .map(|register| IrCallArg {
-                    name: None,
-                    value: Operand::Register(register),
-                    unpack: false,
-                    value_kind: IrCallArgValueKind::Direct,
-                    by_ref_local: None,
-                    by_ref_dim: None,
-                    by_ref_property: None,
-                    by_ref_property_dim: None,
-                })
-                .collect(),
-        },
-        span,
-    );
-    builder.terminate_return(function, block, Some(Operand::Register(result)), span);
-    let unit = builder.finish();
-    let mut backend = CraneliftNativeCompiler;
-    let outcome = backend.compile_region(&NativeCompileRequest {
-        compile: &JitCompileRequest::new("cl.optimizing.exact-callback").with_opt_level(2),
-        unit: Some(&unit),
-        function: Some(function),
-        runtime_helpers: crate::JitRuntimeHelperAddresses {
-            native_call_dispatch: forbidden_call_dispatch as *const () as usize,
-            native_builtin_dispatch: forbidden_call_dispatch as *const () as usize,
-            native_call_user_func: return_exact_callback_argument as *const () as usize,
-            ..crate::JitRuntimeHelperAddresses::default()
-        },
-    });
-    assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
-    let handle = outcome.handle.expect("optimizing exact callback handle");
-    assert_optimizing_artifact(&handle);
-    let helpers = handle
-        .relocatable_code()
-        .expect("optimizer relocatable artifact")
-        .relocations
-        .iter()
-        .filter_map(|relocation| match &relocation.target {
-            crate::JitRelocatableTarget::Helper(symbol) => Some(symbol.as_str()),
-            crate::JitRelocatableTarget::InternalFunction(_) => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(helpers, vec!["phrust_native_call_user_func"]);
-    assert_eq!(
-        handle
-            .invoke_i64(&[11, 77], JIT_RUNTIME_ABI_HASH)
-            .expect("exact callback execution"),
-        77
-    );
-    assert_eq!(EXACT_CALLBACK_CALLS.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -859,27 +764,6 @@ extern "C" fn return_first_call_argument(
 
 extern "C" fn passthrough_release(_runtime: *mut std::ffi::c_void, _value: i64) -> i32 {
     0
-}
-
-extern "C" fn return_exact_callback_argument(
-    _runtime: *mut std::ffi::c_void,
-    _caller_function: u32,
-    _source_file: u32,
-    _source_start: u32,
-    _source_end: u32,
-    argument_count: u32,
-    _callback: i64,
-    argument: i64,
-    _argument_2: i64,
-    _argument_3: i64,
-    _argument_4: i64,
-    _argument_5: i64,
-    transition_state: *mut crate::JitDeoptState,
-) -> crate::JitNativeControlResult {
-    assert_eq!(argument_count, 2);
-    assert!(!transition_state.is_null());
-    EXACT_CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
-    crate::JitNativeControlResult::returning(argument)
 }
 
 extern "C" fn return_exact_builtin_first_argument(

@@ -17,8 +17,7 @@ use jit_abi::{
     jit_native_array_fetch_abi, jit_native_array_insert_abi, jit_native_array_insert_local_abi,
     jit_native_array_new_abi, jit_native_array_spread_abi, jit_native_array_unset_abi,
     jit_native_basename_abi, jit_native_binary_abi, jit_native_call_dispatch_abi,
-    jit_native_call_dispatch_diagnostic_abi, jit_native_call_user_func_abi,
-    jit_native_call_user_func_array_abi, jit_native_cast_abi, jit_native_class_exists_abi,
+    jit_native_call_dispatch_diagnostic_abi, jit_native_cast_abi, jit_native_class_exists_abi,
     jit_native_compare_abi, jit_native_constant_fetch_abi, jit_native_defined_abi,
     jit_native_dirname_abi, jit_native_dynamic_code_abi, jit_native_echo_abi,
     jit_native_echo_bytes_abi, jit_native_echo_float_abi, jit_native_echo_int_abi,
@@ -1728,8 +1727,6 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         native_fopen: jit_native_fopen_abi as *const () as usize,
         native_fwrite: jit_native_fwrite_abi as *const () as usize,
         native_fclose: jit_native_fclose_abi as *const () as usize,
-        native_call_user_func: jit_native_call_user_func_abi as *const () as usize,
-        native_call_user_func_array: jit_native_call_user_func_array_abi as *const () as usize,
         native_semantic_dispatch: helper_address!(
             jit_native_semantic_dispatch_abi,
             jit_native_semantic_dispatch_diagnostic_abi

@@ -2069,6 +2069,8 @@ pub(in crate::vm) extern "C" fn jit_native_reference_bind_abi(
             };
             let is_top_level = function.flags.is_top_level;
             let name = function.locals.get(local as usize).cloned();
+            let request_global =
+                is_top_level && name.as_deref().is_some_and(|name| name != "GLOBALS");
             // Region lowering appends deterministic synthetic locals for
             // reference locations. They have no PHP-visible top-level name
             // and therefore require no request-global publication.
@@ -2145,6 +2147,14 @@ pub(in crate::vm) extern "C" fn jit_native_reference_bind_abi(
                         context.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
                     }
                 }
+            }
+            if request_global {
+                // This cold local-store boundary may detach or replace a
+                // top-level symbol reference. Republish all numeric aliases
+                // before optimizing code can run again; generated code never
+                // probes reference identities per invocation.
+                context.prepare_trusted_request_locals();
+                context.prepare_trusted_global_references();
             }
             return if write_native_value(out, encoded) {
                 0

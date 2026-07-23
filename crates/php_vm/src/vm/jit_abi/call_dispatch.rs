@@ -280,14 +280,13 @@ fn exact_query_baseline() -> php_jit::JitNativeControlResult {
     )
 }
 
-fn exact_query_class_name(context: &NativeRequestColdState<'_>, encoded: i64) -> Option<String> {
-    context
-        .native_string_name_bytes(encoded)
+fn exact_query_class_name(fast: &NativeRequestFastState, encoded: i64) -> Option<String> {
+    fast.native_query_string(encoded)
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn exact_query_autoload(
-    context: &NativeRequestColdState<'_>,
+    fast: &NativeRequestFastState,
     argument_count: u32,
     encoded: i64,
 ) -> Option<bool> {
@@ -295,24 +294,22 @@ fn exact_query_autoload(
         return Some(true);
     }
     super::runtime_ops::fast_native_truthy(encoded).or_else(|| {
-        context
-            .native_string_name_bytes(encoded)
-            .map(|bytes| !bytes.is_empty() && bytes.as_slice() != b"0")
+        fast.native_query_string(encoded)
+            .map(|bytes| !bytes.is_empty() && bytes != b"0")
     })
 }
 
 fn exact_class_kind_exists<const KIND: u8>(
-    context: &NativeRequestColdState<'_>,
+    fast: &NativeRequestFastState,
+    symbols: &NativeSymbolQueryCapability,
     argument_count: u32,
     arguments: [i64; 6],
 ) -> php_jit::JitNativeControlResult {
-    if !(argument_count == 1 || argument_count == 2) {
-        return exact_query_baseline();
-    }
-    let Some(name) = exact_query_class_name(context, arguments[0]) else {
+    debug_assert!(argument_count == 1 || argument_count == 2);
+    let Some(name) = exact_query_class_name(fast, arguments[0]) else {
         return exact_query_baseline();
     };
-    let Some(autoload) = exact_query_autoload(context, argument_count, arguments[1]) else {
+    let Some(autoload) = exact_query_autoload(fast, argument_count, arguments[1]) else {
         return exact_query_baseline();
     };
     let normalized_name = normalize_class_name(&name);
@@ -328,17 +325,19 @@ fn exact_class_kind_exists<const KIND: u8>(
         3 => kind == php_std::ClassKind::Enum,
         _ => matches!(kind, php_std::ClassKind::Class | php_std::ClassKind::Enum),
     };
-    let mut exists = context
-        .unit
-        .classes
-        .iter()
-        .find(|class| {
-            class.name == normalized_name
-                && (!class.flags.is_conditional || context.class_is_visible(&class.name))
-        })
-        .is_some_and(matches_kind)
-        || native_external_class_ref(context, &normalized_name)
-            .is_some_and(|(_, class)| matches_kind(class))
+    let mut exists = symbols.active_compiled().is_some_and(|compiled| {
+        compiled
+            .unit()
+            .classes
+            .iter()
+            .find(|class| {
+                class.name == normalized_name
+                    && (!class.flags.is_conditional || symbols.class_is_visible(&class.name))
+            })
+            .is_some_and(matches_kind)
+    }) || symbols
+        .external_class_handle(&normalized_name)
+        .is_some_and(|class| matches_kind(&class))
         || php_std::ExtensionRegistry::standard_library()
             .enabled_class(&normalized_name)
             .is_some_and(|class| matches_internal_kind(class.kind()));
@@ -366,42 +365,39 @@ fn exact_class_kind_exists<const KIND: u8>(
 }
 
 fn exact_member_exists<const METHOD: bool>(
-    context: &NativeRequestColdState<'_>,
+    fast: &NativeRequestFastState,
+    symbols: &NativeSymbolQueryCapability,
     argument_count: u32,
     arguments: [i64; 6],
 ) -> php_jit::JitNativeControlResult {
-    if argument_count != 2 {
-        return exact_query_baseline();
-    }
-    let (class_name, object) = if let Some(object) = context.native_query_object(arguments[0]) {
+    debug_assert_eq!(argument_count, 2);
+    let (class_name, object) = if let Some(object) = fast.native_query_object(arguments[0]) {
         (object.class_name_handle(), Some(object))
-    } else if let Some(name) = exact_query_class_name(context, arguments[0]) {
+    } else if let Some(name) = exact_query_class_name(fast, arguments[0]) {
         (Arc::<str>::from(name), None)
     } else {
         return exact_query_baseline();
     };
-    let Some(member) = exact_query_class_name(context, arguments[1]) else {
+    let Some(member) = exact_query_class_name(fast, arguments[1]) else {
         return exact_query_baseline();
     };
     let exists = (!METHOD
         && object
             .as_ref()
             .is_some_and(|object| object.has_dynamic_property(&member)))
-        || native_builtin_class_lineage(context, &class_name)
-            .into_iter()
-            .any(|class| {
-                if METHOD {
-                    class
-                        .methods
-                        .iter()
-                        .any(|method| method.name.eq_ignore_ascii_case(&member))
-                } else {
-                    class
-                        .properties
-                        .iter()
-                        .any(|property| property.name == member)
-                }
-            })
+        || symbols.class_lineage(&class_name).into_iter().any(|class| {
+            if METHOD {
+                class
+                    .methods
+                    .iter()
+                    .any(|method| method.name.eq_ignore_ascii_case(&member))
+            } else {
+                class
+                    .properties
+                    .iter()
+                    .any(|property| property.name == member)
+            }
+        })
         || (METHOD
             && php_std::ExtensionRegistry::standard_library()
                 .enabled_class(&class_name)
@@ -418,7 +414,14 @@ fn exact_member_exists<const METHOD: bool>(
 }
 
 macro_rules! exact_symbol_query_abi {
-    ($abi:ident, $helper_id:literal, $context:ident, $argument_count:ident, $arguments:ident, $body:block) => {
+    (
+        $abi:ident,
+        $fast:ident,
+        $symbols:ident,
+        $argument_count:ident,
+        $arguments:ident,
+        $body:block
+    ) => {
         pub(in crate::vm) extern "C" fn $abi(
             runtime: *mut NativeRequestFastState,
             _source_file: u32,
@@ -432,31 +435,31 @@ macro_rules! exact_symbol_query_abi {
             argument_4: i64,
             argument_5: i64,
         ) -> php_jit::JitNativeControlResult {
-            with_native_context_for(runtime, $helper_id, |$context| {
-                let $arguments = [
-                    argument_0, argument_1, argument_2, argument_3, argument_4, argument_5,
-                ];
-                $body
-            })
-            .unwrap_or_else(exact_query_baseline)
+            debug_assert!(!runtime.is_null());
+            // SAFETY: optimizing publication passes the stable request-owned
+            // FastState pointer. The exact query reads only its native values
+            // and the narrow live symbol capability published at activation.
+            #[allow(unsafe_code)]
+            let $fast = unsafe { &*runtime };
+            let $symbols = &$fast.symbol_query;
+            let $arguments = [
+                argument_0, argument_1, argument_2, argument_3, argument_4, argument_5,
+            ];
+            $body
         }
     };
 }
 
 exact_symbol_query_abi!(
     jit_native_defined_abi,
-    "defined",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
     {
-        if argument_count != 1 {
-            exact_query_baseline()
-        } else if let Some(name) = exact_query_class_name(context, arguments[0]) {
-            exact_query_return_bool(
-                context.lookup_constant(&name).is_ok()
-                    || native_internal_class_constant_exists(&name),
-            )
+        debug_assert_eq!(argument_count, 1);
+        if let Some(name) = exact_query_class_name(fast, arguments[0]) {
+            exact_query_return_bool(symbols.constant_exists(&name))
         } else {
             exact_query_baseline()
         }
@@ -464,21 +467,14 @@ exact_symbol_query_abi!(
 );
 exact_symbol_query_abi!(
     jit_native_function_exists_abi,
-    "function_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
     {
-        if argument_count != 1 {
-            exact_query_baseline()
-        } else if let Some(name) = exact_query_class_name(context, arguments[0]) {
-            let normalized = name.to_ascii_lowercase();
-            exact_query_return_bool(
-                context.function_id(&normalized).is_some()
-                    || context.external_function(&normalized).is_some()
-                    || context.visible_function_names.contains(&normalized)
-                    || native_php_function_exists(&normalized),
-            )
+        debug_assert_eq!(argument_count, 1);
+        if let Some(name) = exact_query_class_name(fast, arguments[0]) {
+            exact_query_return_bool(symbols.function_exists(&name))
         } else {
             exact_query_baseline()
         }
@@ -486,51 +482,51 @@ exact_symbol_query_abi!(
 );
 exact_symbol_query_abi!(
     jit_native_class_exists_abi,
-    "class_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
-    { exact_class_kind_exists::<0>(context, argument_count, arguments) }
+    { exact_class_kind_exists::<0>(fast, symbols, argument_count, arguments) }
 );
 exact_symbol_query_abi!(
     jit_native_interface_exists_abi,
-    "interface_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
-    { exact_class_kind_exists::<1>(context, argument_count, arguments) }
+    { exact_class_kind_exists::<1>(fast, symbols, argument_count, arguments) }
 );
 exact_symbol_query_abi!(
     jit_native_trait_exists_abi,
-    "trait_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
-    { exact_class_kind_exists::<2>(context, argument_count, arguments) }
+    { exact_class_kind_exists::<2>(fast, symbols, argument_count, arguments) }
 );
 exact_symbol_query_abi!(
     jit_native_enum_exists_abi,
-    "enum_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
-    { exact_class_kind_exists::<3>(context, argument_count, arguments) }
+    { exact_class_kind_exists::<3>(fast, symbols, argument_count, arguments) }
 );
 exact_symbol_query_abi!(
     jit_native_method_exists_abi,
-    "method_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
-    { exact_member_exists::<true>(context, argument_count, arguments) }
+    { exact_member_exists::<true>(fast, symbols, argument_count, arguments) }
 );
 exact_symbol_query_abi!(
     jit_native_property_exists_abi,
-    "property_exists",
-    context,
+    fast,
+    symbols,
     argument_count,
     arguments,
-    { exact_member_exists::<false>(context, argument_count, arguments) }
+    { exact_member_exists::<false>(fast, symbols, argument_count, arguments) }
 );
 
 fn exact_builtin_runtime_error(
@@ -1570,169 +1566,6 @@ exact_native_path_abi!(jit_native_file_exists_abi, 3);
 exact_native_path_abi!(jit_native_fopen_abi, 4);
 exact_native_path_abi!(jit_native_fwrite_abi, 5);
 exact_native_path_abi!(jit_native_fclose_abi, 6);
-
-#[allow(unsafe_code)]
-fn exact_callback_control_result(
-    context: &mut NativeRequestColdState<'_>,
-    outcome: NativeCallResult,
-    span: php_ir::IrSpan,
-    transition_state: *mut php_jit::JitDeoptState,
-) -> php_jit::JitNativeControlResult {
-    match outcome {
-        Ok(value) => php_jit::JitNativeControlResult::returning(value),
-        Err(NativeCallControl::Rethrow) => {
-            let Some(throwable) = context.take_pending_throwable() else {
-                return exact_builtin_runtime_error(
-                    context,
-                    "native callback rethrow has no pending throwable".to_owned(),
-                );
-            };
-            let throwable = native_throwable_with_call_source(context, throwable, span);
-            match context.encode(throwable) {
-                Ok(value) => php_jit::JitNativeControlResult::control(
-                    php_jit::JitCallStatus::THROW,
-                    0,
-                    value,
-                ),
-                Err(error) => exact_builtin_runtime_error(context, error),
-            }
-        }
-        Err(NativeCallControl::Throw { class, message }) => {
-            match encode_native_throwable_at(context, &class, &message, span) {
-                Ok(value) => php_jit::JitNativeControlResult::control(
-                    php_jit::JitCallStatus::THROW,
-                    0,
-                    value,
-                ),
-                Err(error) => exact_builtin_runtime_error(context, error),
-            }
-        }
-        Err(NativeCallControl::Propagate { status, value }) => {
-            php_jit::JitNativeControlResult::control(status, 0, value)
-        }
-        Err(NativeCallControl::SuspendFiber { state }) => {
-            if let Some(state) = state
-                && !transition_state.is_null()
-            {
-                // SAFETY: optimizing generated code owns this deopt-state
-                // buffer for the complete synchronous exact callback. It
-                // copies the callee state before publishing its caller state.
-                unsafe { transition_state.write(*state) };
-            }
-            let value = context
-                .pending_fiber_suspension_value
-                .take()
-                .unwrap_or_else(|| php_jit::jit_encode_constant(u32::MAX));
-            php_jit::JitNativeControlResult::control(
-                php_jit::JitCallStatus::SUSPEND_FIBER,
-                0,
-                value,
-            )
-        }
-        Err(NativeCallControl::Exit(value)) => {
-            php_jit::JitNativeControlResult::control(php_jit::JitCallStatus::EXIT, 0, value)
-        }
-        Err(NativeCallControl::PublishedRuntimeError) => php_jit::JitNativeControlResult::control(
-            php_jit::JitCallStatus::RUNTIME_ERROR,
-            0,
-            php_jit::jit_encode_constant(u32::MAX),
-        ),
-        Err(NativeCallControl::RuntimeError(message)) => {
-            exact_builtin_runtime_error(context, message)
-        }
-        Err(NativeCallControl::BaselineRequired) => exact_query_baseline(),
-    }
-}
-
-fn exact_native_callback<const ARRAY_ARGUMENTS: bool>(
-    runtime: *mut NativeRequestFastState,
-    caller_function: u32,
-    source_file: u32,
-    source_start: u32,
-    source_end: u32,
-    argument_count: u32,
-    arguments: [i64; 6],
-    transition_state: *mut php_jit::JitDeoptState,
-) -> php_jit::JitNativeControlResult {
-    let arity_ok = if ARRAY_ARGUMENTS {
-        argument_count == 2
-    } else {
-        (1..=6).contains(&argument_count)
-    };
-    if !arity_ok {
-        return exact_query_baseline();
-    }
-    let span = php_ir::IrSpan::new(php_ir::FileId::new(source_file), source_start, source_end);
-    with_native_context_for(runtime, "exact_callback", |context| {
-        if !exact_native_callback_is_admitted(context, arguments[0]) {
-            return exact_query_baseline();
-        }
-        let instruction = php_ir::Instruction {
-            id: php_ir::InstrId::new(0),
-            span,
-            kind: php_ir::InstructionKind::Nop,
-        };
-        let outcome = if ARRAY_ARGUMENTS {
-            let Some(outcome) = execute_native_call_user_func_array_direct(
-                context,
-                arguments[0],
-                arguments[1],
-                &instruction,
-                Some(caller_function),
-                NativeCallableBuiltinPolicy::RequireBaseline,
-            ) else {
-                return exact_query_baseline();
-            };
-            outcome
-        } else {
-            execute_native_call_user_func_encoded(
-                context,
-                &arguments[..argument_count as usize],
-                &instruction,
-                Some(caller_function),
-                NativeCallableBuiltinPolicy::RequireBaseline,
-            )
-        };
-        exact_callback_control_result(context, outcome, span, transition_state)
-    })
-    .unwrap_or_else(exact_query_baseline)
-}
-
-macro_rules! exact_native_callback_abi {
-    ($abi:ident, $array_arguments:literal) => {
-        pub(in crate::vm) extern "C" fn $abi(
-            runtime: *mut NativeRequestFastState,
-            caller_function: u32,
-            source_file: u32,
-            source_start: u32,
-            source_end: u32,
-            argument_count: u32,
-            argument_0: i64,
-            argument_1: i64,
-            argument_2: i64,
-            argument_3: i64,
-            argument_4: i64,
-            argument_5: i64,
-            transition_state: *mut php_jit::JitDeoptState,
-        ) -> php_jit::JitNativeControlResult {
-            exact_native_callback::<$array_arguments>(
-                runtime,
-                caller_function,
-                source_file,
-                source_start,
-                source_end,
-                argument_count,
-                [
-                    argument_0, argument_1, argument_2, argument_3, argument_4, argument_5,
-                ],
-                transition_state,
-            )
-        }
-    };
-}
-
-exact_native_callback_abi!(jit_native_call_user_func_abi, false);
-exact_native_callback_abi!(jit_native_call_user_func_array_abi, true);
 
 // SAFETY: generated code owns the argument/local tables and result record for
 // the complete synchronous helper invocation. Published callsite metadata

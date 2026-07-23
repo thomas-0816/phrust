@@ -2223,22 +2223,6 @@ fn native_callable_has_no_by_ref_parameters(
     }
 }
 
-pub(super) fn exact_native_callback_is_admitted(
-    context: &NativeRequestColdState<'_>,
-    encoded: i64,
-) -> bool {
-    let encoded = context.dereference_direct_encoding(encoded);
-    match context.native_encoded_value_kind(encoded) {
-        Some(NativeEncodedValueKind::String) => context.native_string_name_bytes(encoded).is_some(),
-        Some(NativeEncodedValueKind::Object) => context.native_query_object(encoded).is_some(),
-        Some(NativeEncodedValueKind::Array) => context.direct_array_entries_for(encoded).is_some(),
-        Some(NativeEncodedValueKind::Callable) => {
-            context.prepared_callable_dispatch(encoded).is_some()
-        }
-        _ => false,
-    }
-}
-
 pub(super) fn execute_native_call_user_func_encoded(
     context: &mut NativeRequestColdState<'_>,
     arguments: &[i64],

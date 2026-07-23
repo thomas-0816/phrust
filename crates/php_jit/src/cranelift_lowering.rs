@@ -245,7 +245,6 @@ struct NativeOptimizingOperations {
     exact_json: [Option<NativeHelper>; StableJsonBuiltin::COUNT],
     exact_format: [Option<NativeHelper>; StableFormatBuiltin::COUNT],
     exact_path: [Option<NativeHelper>; StablePathBuiltin::COUNT],
-    exact_callback: [Option<NativeHelper>; StableCallbackBuiltin::COUNT],
     array_ensure_unique: FuncId,
     array_ensure_unique_symbol: FunctionId,
     array_child_entry: FuncId,
@@ -291,9 +290,6 @@ impl NativeOptimizingOperations {
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
         self.exact_path = self
             .exact_path
-            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
-        self.exact_callback = self
-            .exact_callback
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
         self
     }
@@ -6764,105 +6760,6 @@ fn lower_optimizing_exact_runtime_builtin(
     Ok(value)
 }
 
-fn lower_optimizing_exact_callback_builtin(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    caller: FunctionId,
-    arguments: &[ir::Value],
-    pending_status: Variable,
-    pending_value: Variable,
-    resume_state: ir::Value,
-    transition: NativeOptimizingTransition<'_>,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_EXACT_CALLBACK",
-            "prepared callback builtin has no exact native handler",
-        )
-    })?;
-    if arguments.len() > 6 {
-        return Err(CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_EXACT_CALLBACK",
-            "prepared callback builtin exceeds the exact six-argument ABI",
-        ));
-    }
-    let caller = builder.ins().iconst(types::I32, i64::from(caller.raw()));
-    let source_file = builder.ins().iconst(
-        types::I32,
-        i64::from(transition.instruction.span.file.raw()),
-    );
-    let source_start = builder
-        .ins()
-        .iconst(types::I32, i64::from(transition.instruction.span.start));
-    let source_end = builder
-        .ins()
-        .iconst(types::I32, i64::from(transition.instruction.span.end));
-    let argument_count = builder.ins().iconst(
-        types::I32,
-        i64::try_from(arguments.len()).unwrap_or(i64::MAX),
-    );
-    let missing = builder
-        .ins()
-        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-    let completed_call = begin_native_call_or_resume(
-        builder,
-        pending_status,
-        pending_value,
-        crate::JitCallStatus::RETURN.0,
-        transition.result_out,
-        resume_state,
-        transition.deopt_out,
-    );
-    let mut exact_arguments = Vec::with_capacity(12);
-    exact_arguments.extend([
-        caller,
-        source_file,
-        source_start,
-        source_end,
-        argument_count,
-    ]);
-    exact_arguments.extend((0..6).map(|index| arguments.get(index).copied().unwrap_or(missing)));
-    exact_arguments.push(transition.deopt_out);
-    let call = call_native_helper(module, builder, helper, &exact_arguments);
-    let control = builder.inst_results(call)[0];
-    let value = builder.inst_results(call)[1];
-    let status = builder.ins().ireduce(types::I32, control);
-    let detail = builder.ins().ushr_imm(control, 32);
-    let detail = builder.ins().ireduce(types::I32, detail);
-    let returned = builder.create_block();
-    let control_exit = builder.create_block();
-    let is_return = builder.ins().icmp_imm(
-        IntCC::Equal,
-        status,
-        i64::from(crate::JitCallStatus::RETURN.0),
-    );
-    builder
-        .ins()
-        .brif(is_return, returned, &[], control_exit, &[]);
-
-    builder.switch_to_block(control_exit);
-    let suspension_link = capture_native_fiber_callee_if_suspended(
-        module,
-        builder,
-        status,
-        transition.deopt_out,
-        transition.result_out,
-    );
-    transition.emit_control_with_fiber_link(
-        builder,
-        status,
-        detail,
-        value,
-        Some(suspension_link),
-    )?;
-
-    builder.switch_to_block(returned);
-    builder.ins().jump(completed_call, &[value.into()]);
-    builder.switch_to_block(completed_call);
-    Ok(builder.block_params(completed_call)[0])
-}
-
 fn lower_optimizing_reference_scalar(
     builder: &mut FunctionBuilder<'_>,
     reference: ir::Value,
@@ -8833,8 +8730,16 @@ fn lower_optimizing_mutable_array_local(
     local: LocalId,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
-    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
     let stored = use_local_variable(builder, locals, local)?;
+    lower_optimizing_mutable_array_reference(builder, stored, transition)
+}
+
+fn lower_optimizing_mutable_array_reference(
+    builder: &mut FunctionBuilder<'_>,
+    stored: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
     let inspect = builder.create_block();
     let direct = builder.create_block();
     let rejected = builder.create_block();
@@ -8935,6 +8840,21 @@ fn lower_optimizing_publish_mutable_array_local(
     builder.ins().jump(done, &[]);
     builder.switch_to_block(done);
     Ok(())
+}
+
+fn lower_optimizing_publish_mutable_array_reference(
+    builder: &mut FunctionBuilder<'_>,
+    array: ir::Value,
+    reference_slot: ir::Value,
+    deopt_out: ir::Value,
+) {
+    builder.ins().store(
+        MemFlagsData::new(),
+        array,
+        reference_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    lower_mark_native_roots_dirty(builder, deopt_out);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -17629,7 +17549,8 @@ fn lower_optimizing_region_instruction(
             let fact = value_flow.local_fact(*local);
             let borrows_for_dimension =
                 value_flow.passes_reference_to_typed_consumer(instruction.continuation_id);
-            let retain_plain_value = value_copy_requires_retain(fact)
+            let retain_plain_value = storage != crate::region_ir::LocalStorageClass::Globals
+                && value_copy_requires_retain(fact)
                 && !value_flow.can_borrow_local_load(instruction.continuation_id)
                 && !borrows_for_dimension;
             let value = if storage.is_reference_slot() {
@@ -17933,6 +17854,62 @@ fn lower_optimizing_region_instruction(
             define_region_register(builder, register_variables, registers, *array, updated)?;
         }
         RegionInstructionKind::AppendDim {
+            dst, keys, value, ..
+        } if instruction.native_global_name.is_some() => {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            debug_assert!(!keys.is_empty());
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            let (current, reference_slot) =
+                lower_optimizing_mutable_array_reference(builder, reference, transition)?;
+            let lowered_keys = keys[1..]
+                .iter()
+                .map(|operand| {
+                    Ok((
+                        lower_array_key_operand(builder, locals, registers, constants, *operand)?,
+                        array_key_is_string_constant(constants, *operand),
+                    ))
+                })
+                .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+            let (root, leaf) = lower_direct_nested_array_path(
+                module,
+                builder,
+                optimizing_operations.array_ensure_unique,
+                optimizing_operations.array_child_entry,
+                current,
+                &lowered_keys,
+                1,
+                result_out,
+                deopt_out,
+                transition,
+            )?;
+            let key = lower_direct_array_next_integer_key(builder, leaf, transition)?;
+            let value = lower_region_operand(builder, locals, registers, *value)?;
+            let _ = lower_direct_array_append(
+                module,
+                builder,
+                leaf,
+                Some(key),
+                value,
+                false,
+                result_out,
+                deopt_out,
+                NativeArrayAppendFallback::Optimizing(transition),
+            )?;
+            lower_optimizing_publish_mutable_array_reference(
+                builder,
+                root,
+                reference_slot,
+                deopt_out,
+            );
+            define_region_register(builder, register_variables, registers, *dst, value)?;
+        }
+        RegionInstructionKind::AppendDim {
             dst,
             local,
             keys,
@@ -18027,6 +18004,74 @@ fn lower_optimizing_region_instruction(
                 reference_slot,
                 deopt_out,
             )?;
+            define_region_register(builder, register_variables, registers, *dst, value)?;
+        }
+        RegionInstructionKind::AssignDim {
+            dst, keys, value, ..
+        } if instruction.native_global_name.is_some() => {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            debug_assert!(!keys.is_empty());
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            let value = lower_region_operand(builder, locals, registers, *value)?;
+            if keys.len() == 1 {
+                let _ = lower_optimizing_store_reference_scalar(
+                    builder, reference, value, false, true, transition,
+                )?;
+            } else {
+                let lowered_keys = keys[1..]
+                    .iter()
+                    .map(|operand| {
+                        Ok((
+                            lower_array_key_operand(
+                                builder, locals, registers, constants, *operand,
+                            )?,
+                            array_key_is_string_constant(constants, *operand),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+                let (leaf_key, parents) = lowered_keys
+                    .split_last()
+                    .expect("nested global assignment retains a child key");
+                let (current, reference_slot) =
+                    lower_optimizing_mutable_array_reference(builder, reference, transition)?;
+                let (root, leaf) = lower_direct_nested_array_path(
+                    module,
+                    builder,
+                    optimizing_operations.array_ensure_unique,
+                    optimizing_operations.array_child_entry,
+                    current,
+                    parents,
+                    1,
+                    result_out,
+                    deopt_out,
+                    transition,
+                )?;
+                lower_direct_array_require_supported_key(builder, leaf_key.0, transition)?;
+                let _ = lower_direct_array_insert(
+                    module,
+                    builder,
+                    leaf,
+                    leaf_key.0,
+                    leaf_key.1,
+                    value,
+                    false,
+                    result_out,
+                    deopt_out,
+                    NativeArrayAppendFallback::Optimizing(transition),
+                )?;
+                lower_optimizing_publish_mutable_array_reference(
+                    builder,
+                    root,
+                    reference_slot,
+                    deopt_out,
+                );
+            }
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::AssignDim {
@@ -18133,6 +18178,53 @@ fn lower_optimizing_region_instruction(
             )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
+        RegionInstructionKind::IssetDim { dst, keys, .. }
+            if instruction.native_global_name.is_some() =>
+        {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            debug_assert!(!keys.is_empty());
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            let mut value =
+                lower_optimizing_reference_scalar(builder, reference, false, transition)?;
+            for key in &keys[1..] {
+                let constant_string_key = array_key_is_string_constant(constants, *key);
+                let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
+                value = lower_cached_array_fetch(
+                    module,
+                    builder,
+                    None,
+                    None,
+                    native_dim_operation(1, function, instruction.continuation_id),
+                    value,
+                    key,
+                    constant_string_key,
+                    unit_identity,
+                    result_out,
+                    deopt_out,
+                    true,
+                    Some(transition),
+                )?;
+            }
+            let null =
+                builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, value, crate::jit_encode_constant(u32::MAX));
+            let uninitialized = builder.ins().icmp_imm(
+                IntCC::Equal,
+                value,
+                crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
+            );
+            let missing = builder.ins().bor(null, uninitialized);
+            let present = builder.ins().icmp_imm(IntCC::Equal, missing, 0);
+            let result = encode_native_bool(builder, present);
+            define_region_register(builder, register_variables, registers, *dst, result)?;
+        }
         RegionInstructionKind::IssetDim { dst, local, keys } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let mut value = use_local_variable(builder, locals, *local)?;
@@ -18164,6 +18256,44 @@ fn lower_optimizing_region_instruction(
             let result = encode_native_bool(builder, present);
             define_region_register(builder, register_variables, registers, *dst, result)?;
         }
+        RegionInstructionKind::EmptyDim { dst, keys, .. }
+            if instruction.native_global_name.is_some() =>
+        {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            debug_assert!(!keys.is_empty());
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            let mut value =
+                lower_optimizing_reference_scalar(builder, reference, false, transition)?;
+            for key in &keys[1..] {
+                let constant_string_key = array_key_is_string_constant(constants, *key);
+                let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
+                value = lower_cached_array_fetch(
+                    module,
+                    builder,
+                    None,
+                    None,
+                    native_dim_operation(1, function, instruction.continuation_id),
+                    value,
+                    key,
+                    constant_string_key,
+                    unit_identity,
+                    result_out,
+                    deopt_out,
+                    true,
+                    Some(transition),
+                )?;
+            }
+            let truthy = lower_optimizing_truthy(builder, value, transition)?;
+            let empty = builder.ins().bxor_imm(truthy, 1);
+            let result = encode_native_bool(builder, empty);
+            define_region_register(builder, register_variables, registers, *dst, result)?;
+        }
         RegionInstructionKind::EmptyDim { dst, local, keys } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let mut value = use_local_variable(builder, locals, *local)?;
@@ -18191,6 +18321,62 @@ fn lower_optimizing_region_instruction(
             let empty = builder.ins().bxor_imm(truthy, 1);
             let result = encode_native_bool(builder, empty);
             define_region_register(builder, register_variables, registers, *dst, result)?;
+        }
+        RegionInstructionKind::UnsetDim { keys, .. }
+            if instruction.native_global_name.is_some() && keys.len() == 1 =>
+        {
+            // Removing a global symbol detaches existing aliases from the
+            // symbol-table entry. That identity change is the uncommon exact
+            // baseline shape; ordinary global reads and writes stay on the
+            // shared direct reference plan.
+            emitted_class = crate::JitProductionLoweringClass::BaselineFragmentTransition;
+            let _ = transition.emit_value_with_detail(builder, 0x1606)?;
+        }
+        RegionInstructionKind::UnsetDim { keys, .. }
+            if instruction.native_global_name.is_some() && keys.len() > 1 =>
+        {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            let lowered_keys = keys[1..]
+                .iter()
+                .map(|operand| {
+                    Ok((
+                        lower_array_key_operand(builder, locals, registers, constants, *operand)?,
+                        array_key_is_string_constant(constants, *operand),
+                    ))
+                })
+                .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+            let (leaf_key, parents) = lowered_keys
+                .split_last()
+                .expect("nested global unset retains a child key");
+            let (current, reference_slot) =
+                lower_optimizing_mutable_array_reference(builder, reference, transition)?;
+            let (root, leaf) = lower_direct_nested_array_path(
+                module,
+                builder,
+                optimizing_operations.array_ensure_unique,
+                optimizing_operations.array_child_entry,
+                current,
+                parents,
+                0,
+                result_out,
+                deopt_out,
+                transition,
+            )?;
+            lower_direct_array_require_supported_key(builder, leaf_key.0, transition)?;
+            let _ = lower_direct_array_unset(builder, leaf, leaf_key.0, leaf_key.1, transition)?;
+            lower_optimizing_publish_mutable_array_reference(
+                builder,
+                root,
+                reference_slot,
+                deopt_out,
+            );
         }
         RegionInstructionKind::UnsetDim { local, keys } if keys.len() == 1 => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
@@ -18630,6 +18816,49 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::FetchDim {
             dst,
+            quiet,
+            mode: php_ir::instruction::DimFetchMode::Read,
+            ..
+        } if instruction.native_global_name.is_some() => {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            let value = lower_optimizing_reference_scalar(builder, reference, true, transition)?;
+            let uninitialized = builder.ins().icmp_imm(
+                IntCC::Equal,
+                value,
+                crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
+            );
+            let value = if *quiet {
+                let null = builder
+                    .ins()
+                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                builder.ins().select(uninitialized, null, value)
+            } else {
+                let present = builder.create_block();
+                let missing = builder.create_block();
+                let merge = builder.create_block();
+                builder.append_block_param(merge, types::I64);
+                builder
+                    .ins()
+                    .brif(uninitialized, missing, &[], present, &[]);
+                builder.switch_to_block(present);
+                builder.ins().jump(merge, &[value.into()]);
+                builder.switch_to_block(missing);
+                let resumed = transition.emit_value_with_detail(builder, 0x1607)?;
+                builder.ins().jump(merge, &[resumed.into()]);
+                builder.switch_to_block(merge);
+                builder.block_params(merge)[0]
+            };
+            define_region_register(builder, register_variables, registers, *dst, value)?;
+        }
+        RegionInstructionKind::FetchDim {
+            dst,
             array,
             key,
             quiet,
@@ -18815,6 +19044,15 @@ fn lower_optimizing_region_instruction(
                 define_local_variable(builder, locals, *target, reference)?;
             }
         }
+        RegionInstructionKind::BindReferenceIntoDim { .. }
+            if instruction.native_global_name.is_some() =>
+        {
+            // Rebinding a global symbol to another reference changes symbol
+            // identity for every top-level alias. Keep that rare shape as one
+            // exact baseline continuation.
+            emitted_class = crate::JitProductionLoweringClass::BaselineFragmentTransition;
+            let _ = transition.emit_value_with_detail(builder, 0x1609)?;
+        }
         RegionInstructionKind::BindReferenceIntoDim {
             array,
             keys,
@@ -18903,6 +19141,41 @@ fn lower_optimizing_region_instruction(
                 )?;
             }
             lower_mark_native_roots_dirty(builder, deopt_out);
+        }
+        RegionInstructionKind::BindReferenceDim { target, keys, .. }
+            if instruction.native_global_name.is_some() && keys.len() == 1 =>
+        {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            let previous = use_local_variable(builder, locals, *target)?;
+            let release_previous = instruction.live_locals.contains(target)
+                && value_release_required(value_flow.local_fact(*target));
+            let admitted = builder.create_block();
+            let rejected = builder.create_block();
+            let done = builder.create_block();
+            if release_previous {
+                let previous_runtime = lower_is_runtime_handle(builder, previous);
+                let previous_plain = builder.ins().icmp_imm(IntCC::Equal, previous_runtime, 0);
+                builder
+                    .ins()
+                    .brif(previous_plain, admitted, &[], rejected, &[]);
+            } else {
+                builder.ins().jump(admitted, &[]);
+            }
+            builder.switch_to_block(admitted);
+            let reference = lower_optimizing_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition,
+                true,
+            )?;
+            lower_optimizing_retain(builder, reference, deopt_out);
+            define_local_variable(builder, locals, *target, reference)?;
+            builder.ins().jump(done, &[]);
+            builder.switch_to_block(rejected);
+            let _ = transition.emit_value_with_detail(builder, 0x1608)?;
+            builder.ins().jump(done, &[]);
+            builder.switch_to_block(done);
         }
         RegionInstructionKind::BindReferenceDim {
             target,
@@ -19701,7 +19974,6 @@ fn lower_optimizing_region_instruction(
                 || stable_builtin_json(&call.target).is_some()
                 || stable_builtin_format(&call.target).is_some()
                 || stable_builtin_path(&call.target).is_some()
-                || stable_builtin_callback(&call.target).is_some()
                 || stable_builtin_length(&call.target).is_some()
                 || stable_builtin_string_predicate(&call.target).is_some()
                 || stable_builtin_ascii_case(&call.target).is_some()
@@ -21244,36 +21516,6 @@ fn lower_optimizing_region_instruction(
                     builder,
                     optimizing_operations.exact_path[builtin.index()],
                     &arguments,
-                    transition,
-                )?;
-                define_optimizing_call_result(
-                    builder,
-                    register_variables,
-                    registers,
-                    call.result,
-                    result,
-                )?;
-            } else if let Some(builtin) = stable_builtin_callback(&call.target)
-                && builtin.accepts_arity(call.args.len())
-                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
-            {
-                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                let arguments = (0..call.args.len())
-                    .map(|index| {
-                        let operand = direct_builtin_argument(index)
-                            .expect("fixed exact callback argument has an operand");
-                        lower_region_operand(builder, locals, registers, operand)
-                    })
-                    .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
-                let result = lower_optimizing_exact_callback_builtin(
-                    module,
-                    builder,
-                    optimizing_operations.exact_callback[builtin.index()],
-                    function,
-                    &arguments,
-                    pending_status,
-                    pending_value,
-                    resume_state,
                     transition,
                 )?;
                 define_optimizing_call_result(
@@ -25666,12 +25908,28 @@ fn lower_optimizing_cached_bind_global(
             "BindGlobal must publish a reference local",
         ));
     };
-    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
-    let hit = builder.create_block();
-    let miss = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
+    let encoded = lower_optimizing_trusted_global_reference(
+        builder,
+        function,
+        instruction,
+        transition,
+        false,
+    )?;
+    // The dense slot owns one reference. The newly bound local owns a second one.
+    // This is a direct slot update, not a lifecycle helper boundary.
+    lower_optimizing_retain(builder, encoded, transition.deopt_out);
+    define_local_variable(builder, locals, destination, encoded)?;
+    Ok(())
+}
 
+fn lower_optimizing_trusted_global_reference(
+    builder: &mut FunctionBuilder<'_>,
+    function: FunctionId,
+    instruction: &RegionInstruction,
+    transition: NativeOptimizingTransition<'_>,
+    publication_is_mandatory: bool,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
     let view = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
     let offsets = builder.ins().load(
         pointer_type,
@@ -25706,6 +25964,16 @@ fn lower_optimizing_cached_bind_global(
         slot,
         std::mem::offset_of!(crate::JitNativeTrustedGlobalReferenceSlot, encoded) as i32,
     );
+    if publication_is_mandatory {
+        // Constant `$GLOBALS["name"]` plans are request-publication
+        // invariants. Generated code consumes the numeric slot directly;
+        // validation does not repeat per invocation.
+        return Ok(encoded);
+    }
+    let hit = builder.create_block();
+    let miss = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::I64);
     let state = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
@@ -25720,9 +25988,6 @@ fn lower_optimizing_cached_bind_global(
     builder.ins().brif(published, hit, &[], miss, &[]);
 
     builder.switch_to_block(hit);
-    // The dense slot owns one reference. The newly bound local owns a second one.
-    // This is a direct slot update, not a lifecycle helper boundary.
-    lower_optimizing_retain(builder, encoded, transition.deopt_out);
     builder.ins().jump(merge, &[encoded.into()]);
 
     builder.switch_to_block(miss);
@@ -25730,9 +25995,7 @@ fn lower_optimizing_cached_bind_global(
     builder.ins().jump(merge, &[resumed.into()]);
 
     builder.switch_to_block(merge);
-    let encoded = builder.block_params(merge)[0];
-    define_local_variable(builder, locals, destination, encoded)?;
-    Ok(())
+    Ok(builder.block_params(merge)[0])
 }
 
 fn lower_optimizing_trusted_static_local(

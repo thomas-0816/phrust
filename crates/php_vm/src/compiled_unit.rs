@@ -282,6 +282,7 @@ struct PreparedNativeIndexes {
     callsites: Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>>,
     property_sites: Arc<Vec<Vec<Option<PreparedNativePropertySite>>>>,
     closure_sites: Arc<Vec<Vec<Option<Arc<PreparedNativeClosureSite>>>>>,
+    global_sites: Arc<Vec<Vec<Option<Arc<str>>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -906,6 +907,7 @@ impl CompiledUnit {
             let mut callsites = Vec::with_capacity(self.inner.unit.functions.len());
             let mut property_sites = Vec::with_capacity(self.inner.unit.functions.len());
             let mut closure_sites = Vec::with_capacity(self.inner.unit.functions.len());
+            let mut global_sites = Vec::with_capacity(self.inner.unit.functions.len());
             let metadata = php_jit::region_ir::CompileMetadata::default();
             for function_index in 0..self.inner.unit.functions.len() {
                 let function = FunctionId::new(function_index as u32);
@@ -913,6 +915,7 @@ impl CompiledUnit {
                 let mut function_callsites = Vec::new();
                 let mut function_property_sites = Vec::new();
                 let mut function_closure_sites = Vec::new();
+                let mut function_global_sites = Vec::new();
                 if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
                     &self.inner.unit,
                     function,
@@ -931,6 +934,12 @@ impl CompiledUnit {
                             }
                             function_instructions[continuation] =
                                 Some(Arc::clone(&semantic_instruction));
+                            if let Some(name) = instruction.native_global_name.as_deref() {
+                                if function_global_sites.len() <= continuation {
+                                    function_global_sites.resize_with(continuation + 1, || None);
+                                }
+                                function_global_sites[continuation] = Some(Arc::from(name));
+                            }
                             let property_site = match &instruction.kind {
                                 php_jit::region_ir::RegionInstructionKind::FetchProperty {
                                     property,
@@ -1107,12 +1116,14 @@ impl CompiledUnit {
                 callsites.push(function_callsites);
                 property_sites.push(function_property_sites);
                 closure_sites.push(function_closure_sites);
+                global_sites.push(function_global_sites);
             }
             PreparedNativeIndexes {
                 continuation_instructions: Arc::new(instructions),
                 callsites: Arc::new(callsites),
                 property_sites: Arc::new(property_sites),
                 closure_sites: Arc::new(closure_sites),
+                global_sites: Arc::new(global_sites),
             }
         })
     }
@@ -1139,6 +1150,10 @@ impl CompiledUnit {
         &self,
     ) -> Arc<Vec<Vec<Option<Arc<PreparedNativeClosureSite>>>>> {
         Arc::clone(&self.prepared_native_indexes().closure_sites)
+    }
+
+    pub(crate) fn prepared_native_global_sites(&self) -> Arc<Vec<Vec<Option<Arc<str>>>>> {
+        Arc::clone(&self.prepared_native_indexes().global_sites)
     }
 
     fn prepared_external_function_call_index(&self) -> &PreparedExternalFunctionCalls {

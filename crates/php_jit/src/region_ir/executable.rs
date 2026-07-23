@@ -442,6 +442,11 @@ pub struct RegionInstruction {
     pub optimizer_transition_entry: bool,
     /// Authoritative instruction, retained even when native lowering is missing.
     pub source_kind: InstructionKind,
+    /// Exact global symbol selected by a constant `$GLOBALS["name"]`
+    /// operation. This is publication metadata: generated code consumes the
+    /// dense numeric reference plan for this continuation and never hashes or
+    /// dispatches the name.
+    pub native_global_name: Option<String>,
     pub kind: RegionInstructionKind,
 }
 
@@ -1185,6 +1190,7 @@ impl BaselineRegionBuilder {
             let mut known_object_locals = BTreeMap::<LocalId, u32>::new();
             let mut exact_object_registers = BTreeSet::<RegId>::new();
             let mut exact_object_locals = BTreeSet::<LocalId>::new();
+            let mut native_globals_registers = BTreeSet::<RegId>::new();
             if let Some((class, false)) = method_class
                 && unit
                     .classes
@@ -1242,6 +1248,11 @@ impl BaselineRegionBuilder {
                         {
                             exact_object_registers.insert(*dst);
                         }
+                        if let Operand::Register(register) = src
+                            && native_globals_registers.contains(register)
+                        {
+                            native_globals_registers.insert(*dst);
+                        }
                     }
                     InstructionKind::LoadLocal { dst, local }
                     | InstructionKind::LoadLocalQuiet { dst, local } => {
@@ -1256,6 +1267,13 @@ impl BaselineRegionBuilder {
                         }
                         if exact_object_locals.contains(local) {
                             exact_object_registers.insert(*dst);
+                        }
+                        if ir_function
+                            .locals
+                            .get(local.index())
+                            .is_some_and(|name| name == "GLOBALS")
+                        {
+                            native_globals_registers.insert(*dst);
                         }
                     }
                     InstructionKind::StoreLocal { local, src } => {
@@ -1365,6 +1383,7 @@ impl BaselineRegionBuilder {
                                     live_locals: Vec::new(),
                                     optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
+                                    native_global_name: None,
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: temporary,
                                         src: lower_operand(unit, argument.value),
@@ -1394,6 +1413,7 @@ impl BaselineRegionBuilder {
                                     live_locals: Vec::new(),
                                     optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
+                                    native_global_name: None,
                                     kind,
                                 });
                                 next_continuation = next_continuation.saturating_add(1);
@@ -1421,6 +1441,7 @@ impl BaselineRegionBuilder {
                                     live_locals: Vec::new(),
                                     optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
+                                    native_global_name: None,
                                     kind: RegionInstructionKind::StoreLocal {
                                         local: snapshot,
                                         src,
@@ -1460,6 +1481,7 @@ impl BaselineRegionBuilder {
                                     live_locals: Vec::new(),
                                     optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
+                                    native_global_name: None,
                                     kind: RegionInstructionKind::BindReference {
                                         target: local,
                                         source: local,
@@ -1510,6 +1532,7 @@ impl BaselineRegionBuilder {
                                     live_locals: Vec::new(),
                                     optimizer_transition_entry: false,
                                     source_kind: instruction.kind.clone(),
+                                    native_global_name: None,
                                     kind,
                                 });
                                 next_continuation = next_continuation.saturating_add(1);
@@ -1594,6 +1617,7 @@ impl BaselineRegionBuilder {
                                 live_locals: Vec::new(),
                                 optimizer_transition_entry: false,
                                 source_kind: instruction.kind.clone(),
+                                native_global_name: None,
                                 kind: RegionInstructionKind::NewObject {
                                     dst: *dst,
                                     class: class_index,
@@ -1820,6 +1844,62 @@ impl BaselineRegionBuilder {
                                 keys,
                             }
                         }
+                    }
+                    InstructionKind::CallFunction { dst, name, args }
+                        if name
+                            .trim_start_matches('\\')
+                            .eq_ignore_ascii_case("call_user_func")
+                            && !args.is_empty()
+                            && args
+                                .iter()
+                                .all(|argument| argument.name.is_none() && !argument.unpack) =>
+                    {
+                        let callee = args[0].value;
+                        let callback_args = args[1..].to_vec();
+                        let mut operands = vec![Some(lower_operand(unit, callee))];
+                        operands.extend(lower_call_operands(unit, &callback_args));
+                        fast_path_operations = fast_path_operations.saturating_add(1);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Callable { callee },
+                            args: callback_args,
+                            argument_operand_offset: 1,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
+                    }
+                    InstructionKind::CallFunction { dst, name, args }
+                        if name
+                            .trim_start_matches('\\')
+                            .eq_ignore_ascii_case("call_user_func_array")
+                            && args.len() == 2
+                            && args
+                                .iter()
+                                .all(|argument| argument.name.is_none() && !argument.unpack) =>
+                    {
+                        let callee = args[0].value;
+                        let mut unpacked = args[1].clone();
+                        unpacked.unpack = true;
+                        let callback_args = vec![unpacked];
+                        let operands = vec![
+                            Some(lower_operand(unit, callee)),
+                            Some(lower_operand(unit, args[1].value)),
+                        ];
+                        fast_path_operations = fast_path_operations.saturating_add(1);
+                        RegionInstructionKind::NativeCall(RegionNativeCall {
+                            result: RegionCallResult::Register(*dst),
+                            target: RegionCallTarget::Callable { callee },
+                            args: callback_args,
+                            argument_operand_offset: 1,
+                            operands,
+                            direct_arity: None,
+                            variadic: false,
+                            returns_by_reference: false,
+                            caller_strict_types: unit.strict_types,
+                        })
                     }
                     InstructionKind::CallFunction { dst, name, args } => {
                         let args = prepared_call_args.as_deref().unwrap_or(args);
@@ -3621,6 +3701,13 @@ impl BaselineRegionBuilder {
                 if let RegionInstructionKind::NativeCall(call) = &kind {
                     super::semantic_lowering::validate_semantic_call(call, semantic_context)?;
                 }
+                let native_global_name = native_global_site_name(
+                    unit,
+                    ir_function,
+                    &instruction.kind,
+                    &known_register_strings,
+                    &native_globals_registers,
+                );
                 instructions.push(RegionInstruction {
                     id: instruction.id,
                     span: instruction.span,
@@ -3628,6 +3715,7 @@ impl BaselineRegionBuilder {
                     live_locals: Vec::new(),
                     optimizer_transition_entry: false,
                     source_kind: instruction.kind.clone(),
+                    native_global_name,
                     kind,
                 });
                 next_continuation = next_continuation.saturating_add(1);
@@ -4256,6 +4344,47 @@ fn known_string_operand(
         },
         Operand::Local(_) => None,
     }
+}
+
+fn native_global_site_name(
+    unit: &IrUnit,
+    function: &php_ir::IrFunction,
+    instruction: &InstructionKind,
+    strings: &BTreeMap<RegId, String>,
+    globals: &BTreeSet<RegId>,
+) -> Option<String> {
+    let local_is_globals = |local: LocalId| {
+        function
+            .locals
+            .get(local.index())
+            .is_some_and(|name| name == "GLOBALS")
+    };
+    let first_dimension = |dimensions: &[Operand]| {
+        dimensions
+            .first()
+            .and_then(|operand| known_string_operand(unit, *operand, strings))
+    };
+    let name = match instruction {
+        InstructionKind::FetchDim { array, key, .. } if matches!(array, Operand::Register(register) if globals.contains(register)) => {
+            known_string_operand(unit, *key, strings)
+        }
+        InstructionKind::ArrayGet { array, index, .. } if matches!(array, Operand::Register(register) if globals.contains(register)) => {
+            known_string_operand(unit, *index, strings)
+        }
+        InstructionKind::AssignDim { local, dims, .. }
+        | InstructionKind::AppendDim { local, dims, .. }
+        | InstructionKind::IssetDim { local, dims, .. }
+        | InstructionKind::EmptyDim { local, dims, .. }
+        | InstructionKind::UnsetDim { local, dims }
+        | InstructionKind::BindReferenceDim { local, dims, .. }
+        | InstructionKind::BindReferenceFromDim { local, dims, .. }
+            if local_is_globals(*local) =>
+        {
+            first_dimension(dims)
+        }
+        _ => None,
+    }?;
+    (name != "GLOBALS").then_some(name)
 }
 
 fn find_function(unit: &IrUnit, name: &str) -> Option<FunctionId> {

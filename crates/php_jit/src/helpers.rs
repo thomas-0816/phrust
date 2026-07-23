@@ -149,20 +149,6 @@ const NATIVE_EXACT_BUILTIN_6_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::Value,
     JitHelperArgKind::Value,
 ];
-const NATIVE_EXACT_CALLBACK_6_ARGS: &[JitHelperArgKind] = &[
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-];
-
 /// Stable helper registry.
 pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     JitHelperSymbol {
@@ -796,24 +782,6 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
         description: "exact prepared file_exists capability handler",
     },
     JitHelperSymbol {
-        id: JitHelperId(85),
-        name: "phrust_native_call_user_func",
-        args: NATIVE_EXACT_CALLBACK_6_ARGS,
-        returns: JitHelperReturnKind::ControlResult,
-        can_throw: true,
-        has_side_effects: true,
-        description: "exact native call_user_func callback handler",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(86),
-        name: "phrust_native_call_user_func_array",
-        args: NATIVE_EXACT_CALLBACK_6_ARGS,
-        returns: JitHelperReturnKind::ControlResult,
-        can_throw: true,
-        has_side_effects: true,
-        description: "exact native call_user_func_array callback handler",
-    },
-    JitHelperSymbol {
         id: JitHelperId(87),
         name: "phrust_native_fopen",
         args: NATIVE_EXACT_BUILTIN_6_ARGS,
@@ -901,8 +869,6 @@ pub fn resolve_helper_address(
         "phrust_native_fopen" => Some(runtime.native_fopen),
         "phrust_native_fwrite" => Some(runtime.native_fwrite),
         "phrust_native_fclose" => Some(runtime.native_fclose),
-        "phrust_native_call_user_func" => Some(runtime.native_call_user_func),
-        "phrust_native_call_user_func_array" => Some(runtime.native_call_user_func_array),
         "phrust_jit_native_semantic_dispatch" => Some(runtime.native_semantic_dispatch),
         "phrust_jit_native_function_resolve" => Some(runtime.native_function_resolve),
         "phrust_native_frame_alloc" => Some(runtime.native_frame_alloc),
