@@ -224,7 +224,7 @@ impl Vm {
                 ),
             }
         };
-        context.recycle_native_value_arena();
+        context.recycle_native_request_buffers();
         result.process_exit_terminates_process = process_exit_terminates_process;
         result.http_response = Some(Box::new(http_response));
         result.upload_registry = Some(Box::new(upload_registry));

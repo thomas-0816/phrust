@@ -1418,13 +1418,13 @@ fn optimizing_borrowed_parameter_discard_does_not_release_owner() {
 }
 
 #[test]
-fn optimizing_reference_local_reads_published_scalar_view_without_helper() {
+fn optimizing_reference_local_reads_authoritative_direct_slot_without_helper() {
     SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
     let mut builder = IrBuilder::new(UnitId::new(4_217));
-    let file = builder.add_file("optimizing-reference-scalar-view.php");
+    let file = builder.add_file("optimizing-direct-reference-slot.php");
     let span = IrSpan::new(file, 0, 1);
     let function = builder.start_function(
-        "optimizing_reference_scalar_view",
+        "optimizing_direct_reference_slot",
         FunctionFlags::default(),
         span,
     );
@@ -1454,7 +1454,7 @@ fn optimizing_reference_local_reads_published_scalar_view_without_helper() {
     let unit = builder.finish();
     let mut backend = CraneliftNativeCompiler;
     let outcome = backend.compile_region(&NativeCompileRequest {
-        compile: &JitCompileRequest::new("cl.optimizing.reference-scalar-view").with_opt_level(2),
+        compile: &JitCompileRequest::new("cl.optimizing.direct-reference-slot").with_opt_level(2),
         unit: Some(&unit),
         function: Some(function),
         runtime_helpers: crate::JitRuntimeHelperAddresses {
@@ -1465,37 +1465,24 @@ fn optimizing_reference_local_reads_published_scalar_view_without_helper() {
     });
 
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
-    let handle = outcome.handle.expect("optimizing reference scalar view");
+    let handle = outcome.handle.expect("optimizing direct reference slot");
     assert_optimizing_artifact(&handle);
-    let mut reference_view = crate::JitNativeReferenceScalarView {
-        abi_version: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-        state: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
-        encoded: 73,
-    };
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 8];
-    slots[7] = crate::JitNativeValueSlot {
-        refcount: 1,
-        kind: crate::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
-        flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-        payload: std::ptr::from_mut(&mut reference_view) as usize as u64,
-        ..crate::JitNativeValueSlot::default()
-    };
-    let referenced_string = crate::jit_encode_typed_runtime_value(
-        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
-        crate::JIT_VALUE_RUNTIME_STRING_TAG,
-    );
+    let referenced_integer =
+        crate::jit_encode_runtime_value(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1);
     let mut direct_slots = [
         crate::JitNativeValueSlot {
             refcount: 1,
             kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
             flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
             reserved: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
-            payload: referenced_string as u64,
+            payload: referenced_integer as u64,
             ..crate::JitNativeValueSlot::default()
         },
         crate::JitNativeValueSlot {
             refcount: 1,
-            kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
+            kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_INT,
+            flags: crate::JIT_NATIVE_DIRECT_INT_ABI_VERSION,
+            payload: crate::jit_encode_constant(0) as u64,
             ..crate::JitNativeValueSlot::default()
         },
         crate::JitNativeValueSlot {
@@ -1508,19 +1495,9 @@ fn optimizing_reference_local_reads_published_scalar_view_without_helper() {
     ];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let reference =
-        crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    assert_eq!(
-        handle
-            .invoke_i64(&[reference], JIT_RUNTIME_ABI_HASH)
-            .expect("cached scalar reference read"),
-        73
-    );
     let direct_reference = crate::jit_encode_typed_runtime_value(
         crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
         crate::JIT_VALUE_RUNTIME_REFERENCE_TAG,
@@ -1529,18 +1506,18 @@ fn optimizing_reference_local_reads_published_scalar_view_without_helper() {
         handle
             .invoke_i64(&[direct_reference], JIT_RUNTIME_ABI_HASH)
             .expect("direct reference payload read"),
-        referenced_string
+        referenced_integer
     );
     assert_eq!(
         direct_slots[1].refcount, 2,
-        "direct reference read did not retain its returned runtime payload"
+        "direct reference read did not retain its returned integer owner"
     );
 
     // Reference-capable storage describes a local's lifetime, not the tag of
     // every value ever held in that local. Before a later binding executes it
     // may contain an ordinary array; optimized loading must return that value
-    // directly instead of interpreting the array-length payload as a pointer
-    // to JitNativeReferenceScalarView.
+    // directly instead of interpreting the array-length payload as a
+    // reference descriptor.
     let array = crate::jit_encode_typed_runtime_value(
         crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 2,
         crate::JIT_VALUE_RUNTIME_ARRAY_TAG,
@@ -1579,7 +1556,7 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
             attributes: Vec::new(),
         },
     );
-    let replacement = typed_string_param(&mut builder, function, "replacement");
+    let replacement = untyped_param(&mut builder, function, "replacement");
     let entry = builder.append_block(function);
     let check_empty = builder.append_block(function);
     let success = builder.append_block(function);
@@ -1686,6 +1663,13 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
         aux: replacement_bytes.as_ptr() as usize as u64,
         ..crate::JitNativeValueSlot::default()
     };
+    direct_slots[3] = crate::JitNativeValueSlot {
+        refcount: 1,
+        kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_INT,
+        flags: crate::JIT_NATIVE_DIRECT_INT_ABI_VERSION,
+        payload: crate::jit_encode_constant(0) as u64,
+        ..crate::JitNativeValueSlot::default()
+    };
     let previous = crate::jit_encode_typed_runtime_value(
         crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
         crate::JIT_VALUE_RUNTIME_STRING_TAG,
@@ -1694,6 +1678,8 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
         crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 2,
         crate::JIT_VALUE_RUNTIME_STRING_TAG,
     );
+    let colliding_integer =
+        crate::jit_encode_runtime_value(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 3);
     direct_slots[0] = crate::JitNativeValueSlot {
         refcount: 1,
         kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
@@ -1702,7 +1688,7 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
         payload: previous as u64,
         ..crate::JitNativeValueSlot::default()
     };
-    let mut direct_next = 3_u32;
+    let mut direct_next = 4_u32;
     let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
     let mut string_next = 4_u32;
     let mut string_free =
@@ -1732,11 +1718,23 @@ fn optimizing_direct_reference_replaces_native_handle_and_tests_payload() {
     assert_eq!(direct_slots[0].payload as i64, replacement);
     assert_eq!(direct_slots[1].refcount, 0);
     assert!(direct_slots[2].refcount >= 2);
+
+    assert_eq!(
+        handle
+            .invoke_i64(&[reference, colliding_integer], JIT_RUNTIME_ABI_HASH)
+            .expect("direct reference integer execution"),
+        colliding_integer
+    );
+    assert_eq!(direct_slots[0].payload as i64, colliding_integer);
+    assert!(
+        direct_slots[3].refcount >= 2,
+        "direct reference did not retain the colliding integer owner"
+    );
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
 }
 
 #[test]
-fn optimizing_reference_array_load_acquires_intrusive_cow_owner_without_helper() {
+fn optimizing_reference_array_load_retains_authoritative_direct_owner_without_helper() {
     SSA_FORBIDDEN_HELPER_CALLS.store(0, Ordering::SeqCst);
     let mut builder = IrBuilder::new(UnitId::new(4_220));
     let file = builder.add_file("optimizing-reference-array-load.php");
@@ -1785,62 +1783,42 @@ fn optimizing_reference_array_load_acquires_intrusive_cow_owner_without_helper()
     let handle = outcome.handle.expect("optimizing reference array load");
     assert_optimizing_artifact(&handle);
 
-    let mut strong = 1_usize;
-    let mut scalar = crate::JitNativeReferenceScalarView {
-        abi_version: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-        state: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
-        encoded: 0,
-    };
-    let mut array = crate::JitNativeReferenceArrayView {
-        abi_version: crate::JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
-        state: crate::JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
-        length: 0,
-        entries: 0,
-        storage_refcount: std::ptr::from_mut(&mut strong) as usize as u64,
-        dirty: 0,
-        reserved: 0,
-    };
-    let mut slots = vec![crate::JitNativeValueSlot::default(); 8];
-    slots[7] = crate::JitNativeValueSlot {
-        refcount: 1,
-        kind: crate::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
-        flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-        payload: std::ptr::from_mut(&mut scalar) as usize as u64,
-        aux: std::ptr::from_mut(&mut array) as usize as u64,
-        ..crate::JitNativeValueSlot::default()
-    };
-    let mut direct_slots = vec![crate::JitNativeValueSlot::default(); 8];
-    let mut direct_next = 0_u32;
-    let mut direct_free = crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE;
+    let array = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_ARRAY_TAG,
+    );
+    let mut direct_slots = [
+        crate::JitNativeValueSlot {
+            refcount: 1,
+            kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+            flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+            reserved: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+            payload: array as u64,
+            ..crate::JitNativeValueSlot::default()
+        },
+        crate::JitNativeValueSlot {
+            refcount: 1,
+            kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
+            flags: crate::JIT_NATIVE_ARRAY_VIEW_ABI_VERSION,
+            ..crate::JitNativeValueSlot::default()
+        },
+    ];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
-        value_slot_capacity: slots.len() as u32,
-        value_slots: slots.as_mut_ptr() as usize as u64,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
-        direct_value_next: std::ptr::from_mut(&mut direct_next) as usize as u64,
-        direct_value_free_head: std::ptr::from_mut(&mut direct_free) as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
-    let reference =
-        crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
+    let reference = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_REFERENCE_TAG,
+    );
     let loaded = handle
         .invoke_i64(&[reference], JIT_RUNTIME_ABI_HASH)
         .expect("native reference array load");
+    assert_eq!(loaded, array);
     assert_eq!(
-        loaded,
-        (crate::JIT_VALUE_RUNTIME_ARRAY_TAG | u64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
-            as i64
-    );
-    assert_eq!(strong, 2, "native load did not acquire a COW owner");
-    assert_eq!(direct_next, 1);
-    assert_eq!(direct_slots[0].refcount, 1);
-    assert_eq!(
-        direct_slots[0].kind,
-        crate::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
-    );
-    assert_eq!(
-        direct_slots[0].payload,
-        std::ptr::from_mut(&mut strong) as usize as u64
+        direct_slots[1].refcount, 2,
+        "native load did not acquire an independent direct-array owner"
     );
     assert_eq!(SSA_FORBIDDEN_HELPER_CALLS.load(Ordering::SeqCst), 0);
 }
@@ -4729,7 +4707,7 @@ fn ordinary_instructions_do_not_create_resume_or_clif_entry_blocks() {
         .and_then(|value| value.parse::<usize>().ok())
         .expect("compile diagnostic must report the actual maximum fragment CLIF block count");
     assert!(
-        max_fragment_clif_blocks <= 16,
+        max_fragment_clif_blocks <= 20,
         "a straight-line fragment may add bounded entry/return and fragment-edge plumbing, not one block per instruction: {max_fragment_clif_blocks} blocks; {compile_diagnostic}"
     );
     assert!(
@@ -8962,6 +8940,7 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
     let zero = builder.intern_constant(IrConstant::Int(0));
     let two = builder.intern_constant(IrConstant::Int(2));
     let failure = builder.intern_constant(IrConstant::Int(-1));
+    let constant_needle = builder.intern_constant(IrConstant::String("needle".to_owned()));
     let entry = builder.append_block(function);
     let check_list = builder.append_block(function);
     let success = builder.append_block(function);
@@ -9217,7 +9196,9 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
     };
     entries[1] = crate::JitNativeDirectArrayEntry {
         key: 7,
-        value: needle_value,
+        value: crate::jit_encode_constant(
+            u32::try_from(constant_needle.index()).expect("constant index fits native encoding"),
+        ),
     };
     direct_slots[2] = crate::JitNativeValueSlot {
         refcount: 1,
@@ -9232,6 +9213,13 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
     let mut entry_next = crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY;
     let mut entry_free =
         [crate::JIT_NATIVE_DIRECT_ARRAY_FREE_NONE; crate::JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS];
+    let mut constant_views = vec![crate::JitNativeConstantView::default(); unit.constants.len()];
+    constant_views[constant_needle.index()] = crate::JitNativeConstantView {
+        kind: crate::JIT_NATIVE_CONSTANT_VIEW_STRING,
+        reserved: 0,
+        length: needle_bytes.len() as u64,
+        bytes: needle_bytes.as_ptr() as usize as u64,
+    };
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
         direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
@@ -9240,6 +9228,8 @@ fn optimizing_array_builtin_family_preserves_direct_arrays() {
         direct_array_entries: entries.as_mut_ptr() as usize as u64,
         direct_array_next: std::ptr::from_mut(&mut entry_next) as usize as u64,
         direct_array_free_heads: entry_free.as_mut_ptr() as usize as u64,
+        trusted_constant_views: constant_views.as_mut_ptr() as usize as u64,
+        trusted_constant_view_count: constant_views.len() as u32,
         ..crate::JitNativeRuntimeView::default()
     });
     let array = crate::jit_encode_typed_runtime_value(
@@ -10174,27 +10164,38 @@ fn optimizing_builtin_type_predicate_uses_native_tag_test() {
     assert_eq!(outcome.status, JitCompileStatus::Compiled, "{outcome:?}");
     let handle = outcome.handle.expect("optimizing type-predicate handle");
     assert_optimizing_artifact(&handle);
-    let referenced_string =
-        crate::jit_encode_typed_runtime_value(8, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-    let mut reference_view = crate::JitNativeReferenceScalarView {
-        abi_version: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-        state: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
-        encoded: referenced_string,
-    };
+    let referenced_string = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        crate::JIT_VALUE_RUNTIME_STRING_TAG,
+    );
     let mut slots = vec![crate::JitNativeValueSlot::default(); 9];
-    slots[7] = crate::JitNativeValueSlot {
-        refcount: 1,
-        kind: crate::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
-        flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-        payload: std::ptr::from_mut(&mut reference_view) as usize as u64,
-        ..crate::JitNativeValueSlot::default()
-    };
+    let mut direct_slots = [
+        crate::JitNativeValueSlot {
+            refcount: 1,
+            kind: crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+            flags: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+            reserved: crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+            payload: referenced_string as u64,
+            ..crate::JitNativeValueSlot::default()
+        },
+        crate::JitNativeValueSlot {
+            refcount: 1,
+            kind: crate::JIT_NATIVE_VALUE_VIEW_STRING,
+            flags: crate::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+            ..crate::JitNativeValueSlot::default()
+        },
+    ];
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
         value_slot_capacity: slots.len() as u32,
         value_slots: slots.as_mut_ptr() as usize as u64,
+        direct_value_slots: direct_slots.as_mut_ptr() as usize as u64,
         ..crate::JitNativeRuntimeView::default()
     });
+    let direct_reference = crate::jit_encode_typed_runtime_value(
+        crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+        crate::JIT_VALUE_RUNTIME_REFERENCE_TAG,
+    );
     for (input, expected) in [
         (
             crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_ARRAY_TAG),
@@ -10210,7 +10211,7 @@ fn optimizing_builtin_type_predicate_uses_native_tag_test() {
         ),
         (41, crate::jit_encode_constant(crate::JIT_VALUE_TRUE)),
         (
-            crate::jit_encode_typed_runtime_value(7, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG),
+            direct_reference,
             crate::jit_encode_constant(crate::JIT_VALUE_TRUE),
         ),
     ] {

@@ -2518,7 +2518,7 @@ impl LoweringContext<'_> {
                             dims,
                         }),
                     )
-                } else if reference_required && let Some(target) = property_target {
+                } else if let Some(target) = property_target {
                     let object = self.lower_expr_to_register(
                         builder,
                         site.function,

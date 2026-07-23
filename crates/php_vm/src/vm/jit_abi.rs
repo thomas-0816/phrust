@@ -2442,8 +2442,13 @@ struct BaselineGeneratorIteratorState {
     finished: bool,
 }
 
-pub(super) struct NativeValueArenaBuffers {
-    values: Vec<Option<NativeStoredValue>>,
+/// Reusable allocations whose contents never survive a request boundary.
+///
+/// PHP-visible owners are released before this record is returned to the
+/// worker. The pool retains only raw native arenas, frame mappings, and
+/// numeric scratch capacity; it never retains values, globals, callbacks,
+/// exceptions, extension state, or other request semantics.
+pub(super) struct NativeRequestBuffers {
     value_slots: php_runtime::api::StableNativeArena<php_jit::JitNativeValueSlot>,
     direct_value_slots: php_runtime::api::StableNativeArena<php_jit::JitNativeValueSlot>,
     direct_value_next: Box<u32>,
@@ -2460,16 +2465,30 @@ pub(super) struct NativeValueArenaBuffers {
     direct_string_free_heads: Box<[u32; php_jit::JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS]>,
     direct_string_reused_bytes: Box<u64>,
     free_value_slots: Vec<u32>,
+    fiber_suspension_states: php_runtime::api::StableNativeArena<php_jit::JitDeoptState>,
+    fiber_suspension_next: Box<u32>,
+    static_property_slots:
+        php_runtime::api::StableNativeArena<php_jit::JitNativeStaticPropertySlot>,
+    static_property_next: Box<u32>,
+    native_call_encoded_scratch: Vec<i64>,
+    native_frame_arena: NativeFrameArena,
+    direct_object_handles: std::collections::HashMap<u64, u32>,
+    direct_resource_handles: std::collections::HashMap<u64, u32>,
+    direct_closure_handles: std::collections::HashMap<u64, u32>,
+    direct_fiber_handles: std::collections::HashMap<u64, u32>,
+    direct_generator_handles: std::collections::HashMap<u64, u32>,
+    direct_array_handles: std::collections::HashMap<(u64, u64), u32>,
+    direct_array_storage_ids: std::collections::HashMap<usize, (u64, u64)>,
+    class_constant_cache: std::collections::HashMap<
+        (Option<usize>, u32),
+        std::collections::HashMap<String, std::collections::HashMap<String, i64>>,
+    >,
+    diagnostic_telemetry: NativeRuntimeTelemetry,
 }
 
-impl Default for NativeValueArenaBuffers {
+impl Default for NativeRequestBuffers {
     fn default() -> Self {
         Self {
-            // The Rust compatibility plane is cold and may grow normally.
-            // Its ABI records still need a stable base for baseline-native
-            // continuations, but demand-backed storage avoids constructing or
-            // touching the million-slot upper bound.
-            values: Vec::new(),
             value_slots: php_runtime::api::StableNativeArena::new(NATIVE_COLD_VALUE_SLOT_LIMIT),
             direct_value_slots: php_runtime::api::StableNativeArena::new(
                 php_jit::JIT_NATIVE_DIRECT_VALUE_CAPACITY,
@@ -2502,40 +2521,90 @@ impl Default for NativeValueArenaBuffers {
             ),
             direct_string_reused_bytes: Box::new(0),
             free_value_slots: Vec::new(),
+            fiber_suspension_states: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_FIBER_SUSPENSION_CAPACITY,
+            ),
+            fiber_suspension_next: Box::new(0),
+            static_property_slots: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_STATIC_PROPERTY_CAPACITY,
+            ),
+            static_property_next: Box::new(0),
+            native_call_encoded_scratch: Vec::new(),
+            native_frame_arena: NativeFrameArena::default(),
+            direct_object_handles: std::collections::HashMap::new(),
+            direct_resource_handles: std::collections::HashMap::new(),
+            direct_closure_handles: std::collections::HashMap::new(),
+            direct_fiber_handles: std::collections::HashMap::new(),
+            direct_generator_handles: std::collections::HashMap::new(),
+            direct_array_handles: std::collections::HashMap::new(),
+            direct_array_storage_ids: std::collections::HashMap::new(),
+            class_constant_cache: std::collections::HashMap::new(),
+            diagnostic_telemetry: NativeRuntimeTelemetry::default(),
         }
     }
 }
 
-impl std::fmt::Debug for NativeValueArenaBuffers {
+impl std::fmt::Debug for NativeRequestBuffers {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("NativeValueArenaBuffers")
-            .field("value_capacity", &self.values.capacity())
+            .debug_struct("NativeRequestBuffers")
             .field("slot_capacity", &self.value_slots.capacity())
+            .field(
+                "argument_scratch_capacity",
+                &self.native_call_encoded_scratch.capacity(),
+            )
+            .field(
+                "frame_capacity_bytes",
+                &self.native_frame_arena.capacity_bytes(),
+            )
             .finish()
     }
 }
 
-thread_local! {
-    static NATIVE_VALUE_ARENA_POOL: RefCell<Vec<NativeValueArenaBuffers>> = const {
-        RefCell::new(Vec::new())
-    };
+/// One explicit worker-owned pool for reusable native request allocations.
+///
+/// A worker may be cloned into nested/baseline execution, so checkout is
+/// synchronized. Checked-out buffers are exclusively owned by their request.
+#[derive(Debug, Default)]
+pub(super) struct NativeRequestPool {
+    available: Vec<NativeRequestBuffers>,
 }
 
-fn take_native_value_arena() -> NativeValueArenaBuffers {
-    NATIVE_VALUE_ARENA_POOL.with(|arenas| arenas.borrow_mut().pop().unwrap_or_default())
-}
-
-fn recycle_native_value_arena(arena: NativeValueArenaBuffers) {
-    debug_assert!(arena.values.is_empty());
-    debug_assert!(arena.free_value_slots.is_empty());
-    const MAX_RETAINED_NATIVE_VALUE_ARENAS: usize = 1;
-    NATIVE_VALUE_ARENA_POOL.with(|arenas| {
-        let mut arenas = arenas.borrow_mut();
-        if arenas.len() < MAX_RETAINED_NATIVE_VALUE_ARENAS {
-            arenas.push(arena);
+impl NativeRequestPool {
+    pub(super) fn checkout(&mut self, argument_capacity: usize) -> NativeRequestBuffers {
+        let mut buffers = self.available.pop().unwrap_or_default();
+        buffers.native_call_encoded_scratch.clear();
+        if buffers.native_call_encoded_scratch.capacity() < argument_capacity {
+            buffers
+                .native_call_encoded_scratch
+                .reserve(argument_capacity);
         }
-    });
+        buffers
+    }
+
+    pub(super) fn recycle(&mut self, mut buffers: NativeRequestBuffers) {
+        debug_assert!(buffers.free_value_slots.is_empty());
+        debug_assert_eq!(*buffers.direct_value_next, 0);
+        debug_assert_eq!(*buffers.direct_array_next, 0);
+        debug_assert_eq!(*buffers.direct_string_next, 0);
+        debug_assert_eq!(*buffers.fiber_suspension_next, 0);
+        debug_assert_eq!(*buffers.static_property_next, 0);
+        debug_assert!(buffers.direct_object_handles.is_empty());
+        debug_assert!(buffers.direct_resource_handles.is_empty());
+        debug_assert!(buffers.direct_closure_handles.is_empty());
+        debug_assert!(buffers.direct_fiber_handles.is_empty());
+        debug_assert!(buffers.direct_generator_handles.is_empty());
+        debug_assert!(buffers.direct_array_handles.is_empty());
+        debug_assert!(buffers.direct_array_storage_ids.is_empty());
+        debug_assert!(buffers.class_constant_cache.is_empty());
+        buffers.native_call_encoded_scratch.clear();
+        buffers.native_frame_arena.reset_for_pool();
+        buffers.diagnostic_telemetry.reset_for_pool();
+        const MAX_RETAINED_NATIVE_REQUESTS: usize = 1;
+        if self.available.len() < MAX_RETAINED_NATIVE_REQUESTS {
+            self.available.push(buffers);
+        }
+    }
 }
 
 fn trusted_property_storage(
@@ -2728,7 +2797,13 @@ impl<'a> NativeRequestColdState<'a> {
 
     fn discard_native_fiber_suspension_states(&mut self) {
         // Stack entries are snapshots of owners already carried by generated
-        // activation state; the arena itself owns no encoded values.
+        // activation state; the arena itself owns no encoded values. Native
+        // code updates only the current stack depth, so a fully popped stack
+        // does not retain a separate high-water mark. Discarding the reserved
+        // range decommits every page touched by this request without moving
+        // the worker-stable mapping.
+        self.fiber_suspension_states
+            .discard_prefix(self.fiber_suspension_states.capacity());
         *self.fiber_suspension_next = 0;
     }
 
@@ -3053,7 +3128,39 @@ impl<'a> NativeRequestColdState<'a> {
             sorted.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
             environment = std::sync::Arc::new(sorted);
         }
-        let value_arena = take_native_value_arena();
+        let NativeRequestBuffers {
+            value_slots,
+            direct_value_slots,
+            direct_value_next,
+            direct_object_owners,
+            direct_array_states,
+            direct_array_entries,
+            direct_array_next,
+            direct_value_free_head,
+            direct_value_reused_bytes,
+            direct_array_free_heads,
+            direct_array_reused_bytes,
+            direct_string_bytes,
+            direct_string_next,
+            direct_string_free_heads,
+            direct_string_reused_bytes,
+            free_value_slots,
+            fiber_suspension_states,
+            fiber_suspension_next,
+            static_property_slots,
+            static_property_next,
+            native_call_encoded_scratch,
+            native_frame_arena,
+            direct_object_handles,
+            direct_resource_handles,
+            direct_closure_handles,
+            direct_fiber_handles,
+            direct_generator_handles,
+            direct_array_handles,
+            direct_array_storage_ids,
+            class_constant_cache,
+            diagnostic_telemetry,
+        } = worker_state.checkout_native_request_buffers(native_call_argument_capacity);
         Self {
             compiled: compiled.clone(),
             unit: ActiveNativeUnit::new(compiled),
@@ -3062,13 +3169,11 @@ impl<'a> NativeRequestColdState<'a> {
             worker_state,
             fast_state: std::ptr::null_mut(),
             native_entries,
-            native_call_encoded_scratch: Vec::with_capacity(native_call_argument_capacity),
-            native_frame_arena: NativeFrameArena::default(),
+            native_call_encoded_scratch,
+            native_frame_arena,
             baseline_transition_store_owner_pending: false,
-            fiber_suspension_states: php_runtime::api::StableNativeArena::new(
-                php_jit::JIT_NATIVE_FIBER_SUSPENSION_CAPACITY,
-            ),
-            fiber_suspension_next: Box::new(0),
+            fiber_suspension_states,
+            fiber_suspension_next,
             native_execution_scopes: vec![Box::new(NativeExecutionScope {
                 unit: None,
                 called_class: None,
@@ -3077,46 +3182,44 @@ impl<'a> NativeRequestColdState<'a> {
             current_native_execution_scope: 1,
             native_method_pics: std::collections::BTreeMap::new(),
             output,
-            values: value_arena.values,
-            value_slots: value_arena.value_slots,
-            direct_value_slots: value_arena.direct_value_slots,
-            direct_value_next: value_arena.direct_value_next,
-            direct_object_owners: value_arena.direct_object_owners,
-            direct_array_states: value_arena.direct_array_states,
-            direct_array_entries: value_arena.direct_array_entries,
-            direct_array_next: value_arena.direct_array_next,
-            direct_value_free_head: value_arena.direct_value_free_head,
-            direct_value_reused_bytes: value_arena.direct_value_reused_bytes,
-            direct_array_free_heads: value_arena.direct_array_free_heads,
-            direct_array_reused_bytes: value_arena.direct_array_reused_bytes,
-            direct_string_bytes: value_arena.direct_string_bytes,
-            direct_string_next: value_arena.direct_string_next,
-            direct_string_free_heads: value_arena.direct_string_free_heads,
-            direct_string_reused_bytes: value_arena.direct_string_reused_bytes,
-            static_property_slots: php_runtime::api::StableNativeArena::new(
-                php_jit::JIT_NATIVE_STATIC_PROPERTY_CAPACITY,
-            ),
-            static_property_next: Box::new(0),
+            values: Vec::new(),
+            value_slots,
+            direct_value_slots,
+            direct_value_next,
+            direct_object_owners,
+            direct_array_states,
+            direct_array_entries,
+            direct_array_next,
+            direct_value_free_head,
+            direct_value_reused_bytes,
+            direct_array_free_heads,
+            direct_array_reused_bytes,
+            direct_string_bytes,
+            direct_string_next,
+            direct_string_free_heads,
+            direct_string_reused_bytes,
+            static_property_slots,
+            static_property_next,
             static_property_indices: std::collections::BTreeMap::new(),
             direct_reference_cells: std::collections::HashMap::new(),
             native_global_reference_handles: std::collections::BTreeMap::new(),
-            direct_object_handles: std::collections::HashMap::new(),
-            direct_resource_handles: std::collections::HashMap::new(),
-            direct_closure_handles: std::collections::HashMap::new(),
-            direct_fiber_handles: std::collections::HashMap::new(),
+            direct_object_handles,
+            direct_resource_handles,
+            direct_closure_handles,
+            direct_fiber_handles,
             direct_fiber_cells: std::collections::HashMap::new(),
-            direct_generator_handles: std::collections::HashMap::new(),
+            direct_generator_handles,
             direct_generator_cells: std::collections::HashMap::new(),
             direct_string_handles: std::collections::HashMap::new(),
             direct_string_keys: std::collections::HashMap::new(),
-            direct_array_handles: std::collections::HashMap::new(),
-            direct_array_storage_ids: std::collections::HashMap::new(),
+            direct_array_handles,
+            direct_array_storage_ids,
             direct_array_encode_depth: 0,
             // Wrapping 4095 + 1 makes the first loop-header visit poll. Native
             // code then checks the deadline once per 4096 loop-header visits.
             native_poll_counter: Box::new(4095),
             native_root_mutation_pending: Box::new(0),
-            free_value_slots: value_arena.free_value_slots,
+            free_value_slots,
             decoded_constant_cache: RefCell::new(std::collections::HashMap::new()),
             runtime_class_cache: RefCell::new(std::collections::HashMap::new()),
             trusted_class_plans: Vec::new(),
@@ -3151,7 +3254,7 @@ impl<'a> NativeRequestColdState<'a> {
                 .typed_static_reference_constraints,
             static_locals: inherited_symbols.static_locals,
             enum_cases: inherited_symbols.enum_cases,
-            class_constant_cache: std::collections::HashMap::new(),
+            class_constant_cache,
             baseline_generator_iterators: std::collections::BTreeMap::new(),
             fiber_executions: std::collections::BTreeMap::new(),
             active_fiber: None,
@@ -3201,7 +3304,7 @@ impl<'a> NativeRequestColdState<'a> {
                 .execution_time_limit
                 .and_then(|limit| std::time::Instant::now().checked_add(limit)),
             execution_deadline_mutable: options.runtime_context.execution_time_limit.is_some(),
-            runtime_telemetry: Rc::new(RefCell::new(NativeRuntimeTelemetry::default())),
+            runtime_telemetry: Rc::new(RefCell::new(diagnostic_telemetry)),
             diagnostic: None,
         }
     }
@@ -3956,7 +4059,7 @@ impl<'a> NativeRequestColdState<'a> {
         self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
     }
 
-    pub(super) fn recycle_native_value_arena(&mut self) {
+    pub(super) fn recycle_native_request_buffers(&mut self) {
         self.clear_trusted_constant_fetches();
         self.clear_trusted_request_locals();
         self.clear_trusted_global_references();
@@ -4035,6 +4138,8 @@ impl<'a> NativeRequestColdState<'a> {
         self.direct_closure_handles.clear();
         self.direct_fiber_handles.clear();
         self.direct_fiber_cells.clear();
+        self.direct_generator_handles.clear();
+        self.direct_generator_cells.clear();
         self.direct_string_handles.clear();
         self.direct_string_keys.clear();
         self.direct_array_handles.clear();
@@ -4042,25 +4147,48 @@ impl<'a> NativeRequestColdState<'a> {
         self.direct_array_encode_depth = 0;
         self.class_constant_cache.clear();
         self.free_value_slots.clear();
-        recycle_native_value_arena(NativeValueArenaBuffers {
-            values: std::mem::take(&mut self.values),
-            value_slots: std::mem::take(&mut self.value_slots),
-            direct_value_slots: std::mem::take(&mut self.direct_value_slots),
-            direct_value_next: std::mem::take(&mut self.direct_value_next),
-            direct_object_owners: std::mem::take(&mut self.direct_object_owners),
-            direct_array_states: std::mem::take(&mut self.direct_array_states),
-            direct_array_entries: std::mem::take(&mut self.direct_array_entries),
-            direct_array_next: std::mem::take(&mut self.direct_array_next),
-            direct_value_free_head: std::mem::take(&mut self.direct_value_free_head),
-            direct_value_reused_bytes: std::mem::take(&mut self.direct_value_reused_bytes),
-            direct_array_free_heads: std::mem::take(&mut self.direct_array_free_heads),
-            direct_array_reused_bytes: std::mem::take(&mut self.direct_array_reused_bytes),
-            direct_string_bytes: std::mem::take(&mut self.direct_string_bytes),
-            direct_string_next: std::mem::take(&mut self.direct_string_next),
-            direct_string_free_heads: std::mem::take(&mut self.direct_string_free_heads),
-            direct_string_reused_bytes: std::mem::take(&mut self.direct_string_reused_bytes),
-            free_value_slots: std::mem::take(&mut self.free_value_slots),
-        });
+        let diagnostic_telemetry = std::mem::replace(
+            &mut self.runtime_telemetry,
+            Rc::new(RefCell::new(NativeRuntimeTelemetry::default())),
+        );
+        let mut diagnostic_telemetry = Rc::try_unwrap(diagnostic_telemetry)
+            .map(RefCell::into_inner)
+            .unwrap_or_default();
+        diagnostic_telemetry.reset_for_pool();
+        self.worker_state
+            .recycle_native_request_buffers(NativeRequestBuffers {
+                value_slots: std::mem::take(&mut self.value_slots),
+                direct_value_slots: std::mem::take(&mut self.direct_value_slots),
+                direct_value_next: std::mem::take(&mut self.direct_value_next),
+                direct_object_owners: std::mem::take(&mut self.direct_object_owners),
+                direct_array_states: std::mem::take(&mut self.direct_array_states),
+                direct_array_entries: std::mem::take(&mut self.direct_array_entries),
+                direct_array_next: std::mem::take(&mut self.direct_array_next),
+                direct_value_free_head: std::mem::take(&mut self.direct_value_free_head),
+                direct_value_reused_bytes: std::mem::take(&mut self.direct_value_reused_bytes),
+                direct_array_free_heads: std::mem::take(&mut self.direct_array_free_heads),
+                direct_array_reused_bytes: std::mem::take(&mut self.direct_array_reused_bytes),
+                direct_string_bytes: std::mem::take(&mut self.direct_string_bytes),
+                direct_string_next: std::mem::take(&mut self.direct_string_next),
+                direct_string_free_heads: std::mem::take(&mut self.direct_string_free_heads),
+                direct_string_reused_bytes: std::mem::take(&mut self.direct_string_reused_bytes),
+                free_value_slots: std::mem::take(&mut self.free_value_slots),
+                fiber_suspension_states: std::mem::take(&mut self.fiber_suspension_states),
+                fiber_suspension_next: std::mem::take(&mut self.fiber_suspension_next),
+                static_property_slots: std::mem::take(&mut self.static_property_slots),
+                static_property_next: std::mem::take(&mut self.static_property_next),
+                native_call_encoded_scratch: std::mem::take(&mut self.native_call_encoded_scratch),
+                native_frame_arena: std::mem::take(&mut self.native_frame_arena),
+                direct_object_handles: std::mem::take(&mut self.direct_object_handles),
+                direct_resource_handles: std::mem::take(&mut self.direct_resource_handles),
+                direct_closure_handles: std::mem::take(&mut self.direct_closure_handles),
+                direct_fiber_handles: std::mem::take(&mut self.direct_fiber_handles),
+                direct_generator_handles: std::mem::take(&mut self.direct_generator_handles),
+                direct_array_handles: std::mem::take(&mut self.direct_array_handles),
+                direct_array_storage_ids: std::mem::take(&mut self.direct_array_storage_ids),
+                class_constant_cache: std::mem::take(&mut self.class_constant_cache),
+                diagnostic_telemetry,
+            });
     }
 
     fn reset_execution_deadline_seconds(&mut self, seconds: u64) {
@@ -4202,7 +4330,7 @@ impl<'a> NativeRequestColdState<'a> {
             .copied()
             .filter(|encoded| self.native_reference_identity(*encoded) == Some(reference_identity));
         let encoded = if let Some(encoded) = reusable {
-            self.restore_uninitialized_direct_reference(encoded)?;
+            self.restore_authoritative_direct_reference(encoded)?;
             encoded
         } else {
             if let Some(stale) = self.native_global_reference_handles.remove(name) {
@@ -4216,13 +4344,14 @@ impl<'a> NativeRequestColdState<'a> {
         Ok(Some(encoded))
     }
 
-    /// A cold consumer may temporarily materialize a request reference into
-    /// its stable `ReferenceCell` scalar view. Before publishing that same
-    /// identity back to optimizing code, restore an uninitialized payload to
-    /// the authoritative direct slot. Immediate uninitialized carries no
-    /// nested owner, so this is a representation move rather than an
-    /// encode/decode cycle.
-    fn restore_uninitialized_direct_reference(&mut self, encoded: i64) -> Result<(), String> {
+    /// Republishes a reference that crossed an explicit cold boundary into
+    /// its authoritative direct slot before native execution sees it again.
+    ///
+    /// The stable `ReferenceCell` keeps alias identity while cold code owns
+    /// the materialized value. Re-entry moves that current value back into
+    /// the direct value plane once; optimizing artifacts therefore never
+    /// need to import the compatibility scalar/array overlay.
+    fn restore_authoritative_direct_reference(&mut self, encoded: i64) -> Result<(), String> {
         let Some(index) = Self::direct_value_index(encoded) else {
             return Err("native request reference is not a direct handle".to_owned());
         };
@@ -4245,18 +4374,31 @@ impl<'a> NativeRequestColdState<'a> {
             .get(&index)
             .cloned()
             .ok_or_else(|| "materialized native request reference has no identity".to_owned())?;
-        if !matches!(reference.get(), Value::Uninitialized) {
-            return Ok(());
-        }
+        let value = reference.get();
+        let typed_guard = slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD;
+        // Publish an empty direct descriptor before recursively encoding the
+        // payload so a self-referential value resolves to this same identity.
         self.direct_value_slots[index] = php_jit::JitNativeValueSlot {
             kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
             flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED
-                | (slot.reserved & php_jit::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD),
-            payload: php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED) as u64,
+            reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY | typed_guard,
+            payload: 0,
             aux: 0,
             ..slot
         };
+        let payload = match self.encode(value) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.direct_value_slots[index] = slot;
+                return Err(error);
+            }
+        };
+        let direct = self
+            .direct_value_slots
+            .get_mut(index)
+            .ok_or_else(|| format!("native request reference {index} slot disappeared"))?;
+        direct.reserved = php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED | typed_guard;
+        direct.payload = payload as u64;
         Ok(())
     }
 
@@ -4292,7 +4434,7 @@ impl<'a> NativeRequestColdState<'a> {
             .copied()
             .filter(|encoded| self.native_reference_identity(*encoded).is_some())
         {
-            self.restore_uninitialized_direct_reference(encoded)?;
+            self.restore_authoritative_direct_reference(encoded)?;
             return Ok(encoded);
         }
         if let Some(encoded) = self.native_global_reference_handle(name)? {
@@ -4788,6 +4930,7 @@ impl<'a> NativeRequestColdState<'a> {
     }
 
     fn clear_trusted_static_locals(&mut self) {
+        let _ = self.materialize_trusted_static_locals();
         let values = self
             .trusted_static_local_slots
             .iter_mut()
@@ -4802,6 +4945,24 @@ impl<'a> NativeRequestColdState<'a> {
         for encoded in values {
             let _ = self.release_if_live(encoded);
         }
+    }
+
+    fn materialize_trusted_static_locals(&mut self) -> Result<(), String> {
+        let values = self
+            .trusted_static_local_slots
+            .iter()
+            .filter_map(|slot| {
+                (slot.state == php_jit::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED)
+                    .then_some(slot.encoded)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        for encoded in values {
+            // Static-local cells survive compiled-unit activations and nested
+            // include arenas. Move their authoritative direct payload into the
+            // stable identity exactly at either cold ownership boundary.
+            self.decode(encoded)?;
+        }
+        Ok(())
     }
 
     fn materialize_native_globals_array(&mut self) -> Result<Value, String> {
@@ -5894,6 +6055,13 @@ impl<'a> NativeRequestColdState<'a> {
             .iter()
             .find_map(|(index, existing)| existing.ptr_eq(&reference).then_some(*index))
         {
+            let runtime_index = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
+                .ok_or_else(|| "direct native reference handle overflow".to_owned())?;
+            let encoded =
+                (php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG | u64::from(runtime_index)) as i64;
+            self.restore_authoritative_direct_reference(encoded)?;
             let slot = self
                 .direct_value_slots
                 .get_mut(index)
@@ -5906,13 +6074,7 @@ impl<'a> NativeRequestColdState<'a> {
                 .checked_add(1)
                 .ok_or_else(|| "direct native reference refcount overflow".to_owned())?;
             slot.reserved |= typed_guard;
-            let runtime_index = u32::try_from(index)
-                .ok()
-                .and_then(|index| index.checked_add(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE))
-                .ok_or_else(|| "direct native reference handle overflow".to_owned())?;
-            return Ok(
-                (php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG | u64::from(runtime_index)) as i64,
-            );
+            return Ok(encoded);
         }
 
         // Publish the empty descriptor and identity before recursively
@@ -6582,11 +6744,22 @@ impl<'a> NativeRequestColdState<'a> {
             .ok_or_else(|| format!("direct native array {index} entries are outside its arena"))?
             .to_vec();
         let mut array = php_runtime::api::PhpArray::with_capacity(length);
-        for entry in entries {
-            let key = self.decode(entry.key)?;
+        for (entry_index, entry) in entries.into_iter().enumerate() {
+            let key = self.decode(entry.key).map_err(|error| {
+                format!(
+                    "direct native array {index} entry {entry_index} key {} could not decode: {error}",
+                    entry.key
+                )
+            })?;
             let key = php_runtime::api::ArrayKey::from_value(&key)
                 .ok_or_else(|| format!("direct native array {index} has an invalid key"))?;
-            array.insert(key, self.decode(entry.value)?);
+            let value = self.decode(entry.value).map_err(|error| {
+                format!(
+                    "direct native array {index} entry {entry_index} value {} could not decode: {error}",
+                    entry.value
+                )
+            })?;
+            array.insert(key, value);
         }
         let state = self.direct_array_states[index];
         array.set_native_next_append_key(
@@ -6931,13 +7104,42 @@ impl<'a> NativeRequestColdState<'a> {
             if let Some(value) = self.decoded_constant_cache.borrow().get(&cache_key) {
                 return Ok(value.clone());
             }
-            let constant = self
-                .unit
-                .constants
-                .get(constant_index)
-                .ok_or_else(|| {
+            let constant = self.unit.constants.get(constant_index).ok_or_else(|| {
+                let mut candidates = self
+                    .dynamic_units
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(unit, package)| {
+                        let source_unit = package.compiled.unit();
+                        let candidate = source_unit.constants.get(constant_index)?;
+                        let source = source_unit
+                            .files
+                            .first()
+                            .map_or("<unknown>", |file| file.path.as_str());
+                        let mut literal = format!("{candidate:?}");
+                        literal.truncate(160);
+                        Some(format!("dynamic[{unit}]={source}:{literal}"))
+                    })
+                    .take(64)
+                    .collect::<Vec<_>>();
+                if let Some(candidate) = self.compiled.unit().constants.get(constant_index) {
+                    let source = self
+                        .compiled
+                        .unit()
+                        .files
+                        .first()
+                        .map_or("<unknown>", |file| file.path.as_str());
+                    let mut literal = format!("{candidate:?}");
+                    literal.truncate(160);
+                    candidates.insert(0, format!("compiled={source}:{literal}"));
+                }
+                let candidates = if candidates.is_empty() {
+                    "none".to_owned()
+                } else {
+                    candidates.join(", ")
+                };
                     format!(
-                        "native constant {constant} is missing from active unit {} (dynamic={:?}, constants={}, source={})",
+                        "native constant {constant} is missing from active unit {} (dynamic={:?}, constants={}, source={}, candidates=[{}])",
                         self.unit.id.raw(),
                         self.current_dynamic_unit,
                         self.unit.constants.len(),
@@ -6945,6 +7147,7 @@ impl<'a> NativeRequestColdState<'a> {
                             .files
                             .first()
                             .map_or("<unknown>", |file| file.path.as_str()),
+                        candidates,
                     )
                 })?;
             // Constants embedded in native operands can still require the
@@ -9816,6 +10019,7 @@ impl<'a> NativeRequestColdState<'a> {
 
     fn take_include_symbols(&mut self) -> Result<NativeIncludeSymbols, String> {
         self.demote_trusted_static_properties();
+        self.materialize_trusted_static_locals()?;
         // Include/eval hands Rust-owned request state to a separately owned
         // native arena. No ObjectRef crossing that ownership boundary may
         // retain declared-property slots encoded against this arena.
@@ -9873,6 +10077,7 @@ impl<'a> NativeRequestColdState<'a> {
         self.exception_handlers = symbols.exception_handlers;
         self.last_error = symbols.last_error;
         self.prepare_trusted_static_properties();
+        self.prepare_trusted_static_locals();
         self.mark_roots_dirty(RootMutationReason::GlobalOrStatic);
     }
 
@@ -9911,6 +10116,21 @@ impl<'a> NativeRequestColdState<'a> {
         unit: usize,
         operation: impl FnOnce(&mut Self) -> R,
     ) -> Result<R, String> {
+        // Request globals outlive every compiled-unit activation. Generated
+        // direct reference stores may leave a literal indexed by the current
+        // unit in their authoritative payload; rehome those roots once while
+        // that unit is still active, before publishing another unit's runtime
+        // view. This is the native ownership boundary, not a per-operation
+        // compatibility decode.
+        let global_roots = self
+            .native_global_reference_handles
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut visited = std::collections::BTreeSet::new();
+        for root in global_roots {
+            self.stabilize_cross_unit_graph_value(root, &mut visited)?;
+        }
         let compiled = self
             .dynamic_units
             .get(unit)
@@ -10080,57 +10300,169 @@ impl<'a> NativeRequestColdState<'a> {
             .get(start..start.checked_add(length)?)
     }
 
-    /// Rewrites unit-indexed constants embedded in a native array tree to
-    /// request-owned native values exactly once before the tree crosses an
-    /// IR-unit boundary.  The array slots remain the authoritative storage;
-    /// this deliberately does not decode the tree to `PhpArray` or allocate
-    /// a second direct-array facade.
+    /// Rewrites unit-indexed constants embedded in an authoritative native
+    /// ownership graph before that graph crosses an IR-unit boundary.
+    ///
+    /// Arrays are not the only possible carrier: references, declared object
+    /// slots, and prepared closure captures can all own an array (or a literal)
+    /// that is later read in another unit. Walk those native owners in place;
+    /// no Rust `Value`, `PhpArray`, or compatibility facade participates.
     fn stabilize_direct_array_for_cross_unit(&mut self, encoded: i64) -> Result<(), String> {
-        let mut pending = vec![encoded];
         let mut visited = std::collections::BTreeSet::new();
-        while let Some(array) = pending.pop() {
-            let Some((index, slot)) = self.direct_array_slot(array) else {
-                continue;
-            };
-            if !visited.insert(index) {
-                continue;
-            }
-            let length = usize::try_from(slot.payload)
-                .map_err(|_| format!("direct native array {index} length overflow"))?;
-            let base = self.direct_array_entries.as_ptr() as usize;
-            let address = usize::try_from(slot.aux)
-                .map_err(|_| format!("direct native array {index} address overflow"))?;
-            let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
-            let offset = address
-                .checked_sub(base)
-                .ok_or_else(|| format!("direct native array {index} is outside its arena"))?;
-            if offset % entry_size != 0 {
-                return Err(format!("direct native array {index} address is unaligned"));
-            }
-            let start = offset / entry_size;
-            let end = start
-                .checked_add(length)
-                .ok_or_else(|| format!("direct native array {index} range overflow"))?;
-            if end > self.direct_array_entries.len() {
-                return Err(format!(
-                    "direct native array {index} entries are outside its arena"
-                ));
-            }
-            for entry_index in start..end {
-                let entry = self.direct_array_entries[entry_index];
-                let key = self.stabilize_cross_unit_value(entry.key)?;
-                let value = self.stabilize_cross_unit_value(entry.value)?;
-                self.direct_array_entries[entry_index] =
-                    php_jit::JitNativeDirectArrayEntry { key, value };
-                if Self::direct_value_index(key).is_some() {
-                    pending.push(key);
-                }
-                if Self::direct_value_index(value).is_some() {
-                    pending.push(value);
-                }
-            }
-        }
+        self.stabilize_cross_unit_graph_value(encoded, &mut visited)?;
         Ok(())
+    }
+
+    fn stabilize_cross_unit_graph_value(
+        &mut self,
+        encoded: i64,
+        visited: &mut std::collections::BTreeSet<usize>,
+    ) -> Result<i64, String> {
+        let encoded = self.stabilize_cross_unit_value(encoded)?;
+        let Some(index) = Self::direct_value_index(encoded) else {
+            return Ok(encoded);
+        };
+        if !visited.insert(index) {
+            return Ok(encoded);
+        }
+        let slot = self
+            .direct_value_slots
+            .get(index)
+            .copied()
+            .filter(|slot| slot.refcount != 0)
+            .ok_or_else(|| format!("direct native value {index} is missing"))?;
+        match slot.kind {
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY => {
+                let length = usize::try_from(slot.payload)
+                    .map_err(|_| format!("direct native array {index} length overflow"))?;
+                let base = self.direct_array_entries.as_ptr() as usize;
+                let address = usize::try_from(slot.aux)
+                    .map_err(|_| format!("direct native array {index} address overflow"))?;
+                let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+                let offset = address
+                    .checked_sub(base)
+                    .ok_or_else(|| format!("direct native array {index} is outside its arena"))?;
+                if offset % entry_size != 0 {
+                    return Err(format!("direct native array {index} address is unaligned"));
+                }
+                let start = offset / entry_size;
+                let end = start
+                    .checked_add(length)
+                    .ok_or_else(|| format!("direct native array {index} range overflow"))?;
+                if end > self.direct_array_entries.len() {
+                    return Err(format!(
+                        "direct native array {index} entries are outside its arena"
+                    ));
+                }
+                for entry_index in start..end {
+                    let entry = self.direct_array_entries[entry_index];
+                    let key = self.stabilize_cross_unit_graph_value(entry.key, visited)?;
+                    let value = self.stabilize_cross_unit_graph_value(entry.value, visited)?;
+                    self.direct_array_entries[entry_index] =
+                        php_jit::JitNativeDirectArrayEntry { key, value };
+                }
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR
+                if slot.flags == php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION
+                    && native_reference_state(slot.reserved)
+                        != php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY =>
+            {
+                let payload =
+                    self.stabilize_cross_unit_graph_value(slot.payload as i64, visited)?;
+                self.direct_value_slots[index].payload = payload as u64;
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+                if slot.flags == php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION =>
+            {
+                let object = self
+                    .direct_object(index)
+                    .ok_or_else(|| format!("direct native object {index} has no stable owner"))?;
+                let (base, count) =
+                    object
+                        .native_declared_slots_view(slot.payload)
+                        .ok_or_else(|| {
+                            format!("direct native object {index} lost its declared slots")
+                        })?;
+                for property_index in 0..count {
+                    // SAFETY: the object owns one immovable native slot slice
+                    // for this layout. This request-thread walk neither
+                    // demotes the object nor changes the slice allocation.
+                    #[allow(unsafe_code)]
+                    let property = unsafe { *base.add(property_index) };
+                    if property.initialized == 0 {
+                        continue;
+                    }
+                    let value = self.stabilize_cross_unit_graph_value(property.value, visited)?;
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        *base.add(property_index) =
+                            php_runtime::api::NativeDeclaredPropertySlot { value, ..property };
+                    }
+                }
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_PREPARED_CALLABLE => {
+                let children = self
+                    .direct_prepared_callable(index)
+                    .map(|callable| match callable {
+                        NativePreparedCallable::Closure(closure) => closure
+                            .implicit_this
+                            .into_iter()
+                            .chain(closure.captures.iter().copied())
+                            .collect::<Vec<_>>(),
+                        NativePreparedCallable::BoundMethod {
+                            target: NativePreparedCallableMethodTarget::Object(object),
+                            ..
+                        } => vec![*object],
+                        _ => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                let stabilized = children
+                    .into_iter()
+                    .map(|value| self.stabilize_cross_unit_graph_value(value, visited))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut published_implicit_this = None;
+                if let Some(callable) = self.direct_prepared_callable_mut(index) {
+                    match callable {
+                        NativePreparedCallable::Closure(closure) => {
+                            let mut values = stabilized.into_iter();
+                            if closure.implicit_this.is_some() {
+                                closure.implicit_this = values.next();
+                            }
+                            for capture in &mut closure.captures {
+                                *capture = values
+                                    .next()
+                                    .expect("closure capture stabilization kept its arity");
+                            }
+                            closure.native_view.implicit_this =
+                                closure.implicit_this.unwrap_or_else(|| {
+                                    php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED)
+                                });
+                            published_implicit_this = Some(closure.native_view.implicit_this);
+                        }
+                        NativePreparedCallable::BoundMethod {
+                            target: NativePreparedCallableMethodTarget::Object(object),
+                            ..
+                        } => {
+                            *object = stabilized[0];
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(implicit_this) = published_implicit_this {
+                    let owner = slot.aux as usize as *mut NativePreparedCallableOwner;
+                    // SAFETY: this is the same request-owned record validated
+                    // by direct_prepared_callable_mut above. The generated
+                    // prefix view is a by-value copy and must be refreshed
+                    // together with the closure metadata field.
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        (*owner).native_view.implicit_this = implicit_this;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(encoded)
     }
 
     /// Rehomes only unit-indexed immediates before already-owned native frame
@@ -10148,15 +10480,9 @@ impl<'a> NativeRequestColdState<'a> {
                     && index != php_jit::JIT_VALUE_FALSE
                     && index != php_jit::JIT_VALUE_TRUE
             });
-            if unit_local_constant {
-                *encoded = self.stabilize_active_unit_constant(
-                    php_jit::jit_decode_constant(*encoded)
-                        .expect("unit-local constant was classified above"),
-                )?;
-                continue;
-            }
-            if self.direct_array_slot(*encoded).is_some() {
-                self.stabilize_direct_array_for_cross_unit(*encoded)?;
+            if unit_local_constant || Self::direct_value_index(*encoded).is_some() {
+                let mut visited = std::collections::BTreeSet::new();
+                *encoded = self.stabilize_cross_unit_graph_value(*encoded, &mut visited)?;
             }
         }
         Ok(())
@@ -14604,7 +14930,7 @@ fn invoke_native_external_function_with_metadata_at_tier(
     baseline_continuation: bool,
 ) -> NativeCallResult {
     prepare_dynamic_native_entry(context, target.unit, target.function)?;
-    let transferred_arguments = transfer_baseline_external_arguments(context, arguments)?;
+    let mut transferred_arguments = transfer_baseline_external_arguments(context, arguments)?;
     let execution_target = NativeExecutionTarget {
         unit: Some(target.unit),
         function: target.function,
@@ -14636,6 +14962,12 @@ fn invoke_native_external_function_with_metadata_at_tier(
                 false,
             )
         };
+        // External callees may mutate a receiver, reference, or array argument
+        // and publish literals from their own IrUnit into that authoritative
+        // ownership graph. Rehome those newly written constants while the
+        // callee unit is still active, before restoring the caller's runtime
+        // view. This is the symmetric return half of argument transfer.
+        context.stabilize_owned_native_values_for_cross_unit(&mut transferred_arguments)?;
         match result {
             Ok(encoded) => Ok(context.transfer_external_return(encoded, target.unit)?),
             Err(NativeCallControl::Exit(encoded)) => {
@@ -14693,6 +15025,10 @@ fn transfer_baseline_external_arguments(
                 context.stabilize_direct_array_for_cross_unit(encoded)?;
                 context.retain(encoded).map(|()| encoded)
             } else {
+                if NativeRequestColdState::direct_value_index(encoded).is_some() {
+                    let mut visited = std::collections::BTreeSet::new();
+                    context.stabilize_cross_unit_graph_value(encoded, &mut visited)?;
+                }
                 let duplicated = context.duplicate_authoritative_native_value(encoded)?;
                 match duplicated {
                     Some(value) => Ok(value),

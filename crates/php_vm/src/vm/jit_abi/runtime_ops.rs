@@ -1741,9 +1741,17 @@ pub(in crate::vm) extern "C" fn jit_native_local_store_abi(
         let mut replacement = match context.decode(value) {
             Ok(value) => value,
             Err(error) => {
+                let function_name = context
+                    .unit
+                    .functions
+                    .get(function as u64 as u32 as usize)
+                    .map_or("<unknown>", |definition| definition.name.as_str());
+                let local_name = name.as_deref().unwrap_or("<compiler-local>");
                 record_native_helper_failure(
                     context,
-                    format!("local store could not decode replacement {value}: {error}"),
+                    format!(
+                        "local store could not decode replacement {value} for {function_name}::${local_name}: {error}"
+                    ),
                 );
                 return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
             }

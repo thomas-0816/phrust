@@ -46,6 +46,13 @@ pub struct StableNativeArena<T: NativeZeroed> {
     mapped: bool,
 }
 
+// SAFETY: the arena uniquely owns its allocation and moving that owner does
+// not move the allocation itself. Request pooling transfers an arena only
+// after all published native pointers have expired; `T: Send` prevents
+// non-transferable payloads from entering the arena.
+#[allow(unsafe_code)]
+unsafe impl<T: NativeZeroed + Send> Send for StableNativeArena<T> {}
+
 /// A diagnostics-only snapshot of one stable native arena.
 ///
 /// The request owner supplies high-water state when it asks for this snapshot,

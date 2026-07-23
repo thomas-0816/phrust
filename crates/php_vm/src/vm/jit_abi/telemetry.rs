@@ -209,6 +209,25 @@ pub(super) struct NativeHelperTimingFrame {
 }
 
 impl NativeRuntimeTelemetry {
+    pub(super) fn reset_for_pool(&mut self) {
+        self.counters = crate::counters::VmCounters::default();
+        self.helper_timing_stack.clear();
+        self.builtin_attribution_stack.clear();
+        self.helper_calls.fill(0);
+        self.helper_time_nanos.fill(0);
+        self.local_reads.fill(0);
+        self.local_stores.fill(0);
+        self.truthy_classes.fill(0);
+        self.retains.fill(0);
+        self.releases.fill(0);
+        self.root_rebuilds.fill(0);
+        self.operation_calls.fill(0);
+        self.operation_time_nanos.fill(0);
+        self.function_calls.clear();
+        self.function_time_nanos.clear();
+        self.slow_paths.fill(0);
+    }
+
     fn enter_helper(&mut self, helper_id: &'static str) {
         self.counters.runtime_helper_calls = self.counters.runtime_helper_calls.saturating_add(1);
         if matches!(

@@ -58,6 +58,7 @@ pub struct VmWorkerState {
     background_tiering: bool,
     tiering_options: crate::tiering::TieringOptions,
     tiering_state: Arc<Mutex<BackgroundTieringState>>,
+    native_request_pool: Arc<Mutex<jit_abi::NativeRequestPool>>,
 }
 
 #[derive(Debug, Default)]
@@ -128,6 +129,7 @@ impl Default for VmWorkerState {
             background_tiering: false,
             tiering_options,
             tiering_state: Arc::new(Mutex::new(BackgroundTieringState::default())),
+            native_request_pool: Arc::new(Mutex::new(jit_abi::NativeRequestPool::default())),
         }
     }
 }
@@ -162,7 +164,19 @@ impl VmWorkerState {
             background_tiering: false,
             tiering_options: crate::tiering::TieringOptions::default(),
             tiering_state: Arc::new(Mutex::new(BackgroundTieringState::default())),
+            native_request_pool: Arc::new(Mutex::new(jit_abi::NativeRequestPool::default())),
         }
+    }
+
+    fn checkout_native_request_buffers(
+        &self,
+        argument_capacity: usize,
+    ) -> jit_abi::NativeRequestBuffers {
+        lock_unpoisoned(&self.native_request_pool).checkout(argument_capacity)
+    }
+
+    fn recycle_native_request_buffers(&self, buffers: jit_abi::NativeRequestBuffers) {
+        lock_unpoisoned(&self.native_request_pool).recycle(buffers);
     }
 
     /// Returns worker-stable native compile-record cache counters.
@@ -1335,7 +1349,7 @@ impl Vm {
                 ),
             }
         };
-        context.recycle_native_value_arena();
+        context.recycle_native_request_buffers();
         result.process_exit_terminates_process = process_exit_terminates_process;
         result.http_response = Some(Box::new(http_response));
         result.upload_registry = Some(Box::new(upload_registry));
@@ -3513,6 +3527,48 @@ mod tests {
                 .is_some(),
             "second constant-key insert was lost"
         );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn worker_request_pool_reuse_preserves_returned_array_and_resets_next_request() {
+        let (unit, _) = optimizing_nested_constant_key_array_transition_unit();
+        let worker = VmWorkerState::new(crate::tiering::TieringOptions::default());
+        let options = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            native_cache: php_jit::NativeCacheMode::Off,
+            ..VmOptions::default()
+        };
+
+        let first = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
+        let second = Vm::with_options_and_worker_state(options, worker).execute(unit);
+        let assert_complete = |result: &VmResult| {
+            let Some(Value::Array(array)) = result.return_value.as_ref() else {
+                panic!("pooled request did not return an array: {result:#?}");
+            };
+            assert_eq!(
+                array
+                    .get(&php_runtime::api::ArrayKey::String("path".into()))
+                    .and_then(|value| match value {
+                        Value::Array(nested) => {
+                            nested.get(&php_runtime::api::ArrayKey::Int(0)).cloned()
+                        }
+                        _ => None,
+                    }),
+                Some(Value::Int(41))
+            );
+            assert!(matches!(
+                array.get(&php_runtime::api::ArrayKey::String("selector".into())),
+                Some(Value::Null)
+            ));
+        };
+        // Keep the first request's returned Value alive while the second
+        // checks out the same native buffers. It must remain fully detached
+        // from the worker-owned arenas.
+        assert_complete(&first);
+        assert_complete(&second);
+        assert_complete(&first);
     }
 
     #[test]

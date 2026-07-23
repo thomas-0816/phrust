@@ -6,6 +6,36 @@ Each entry names the invariants that make the unsafe sound and the tests
 that exercise them. Update this file in the same commit as any change to
 the module's unsafe code.
 
+## StableNativeArena
+
+Demand-backed, fixed-address storage for plain native ABI records. Unix
+allocations reserve anonymous mappings and may decommit an initialized prefix;
+the fallback uses one zeroed allocator block. Safe indexing is exposed only for
+the fixed capacity.
+
+Invariants:
+
+- `ptr`, `capacity`, `bytes`, and `mapped` describe exactly one allocation
+  created by `mmap` or `alloc_zeroed`; `Drop` releases it with the matching
+  operation and size.
+- `T: NativeZeroed` promises that an all-zero byte pattern is valid. Only the
+  audited primitive and native ABI record implementations may make that
+  promise.
+- The allocation address never changes. `Deref`/`DerefMut` construct slices
+  bounded by `capacity`, and `discard_prefix` is bounded by that same capacity.
+- `discard_prefix` is called only after PHP-visible owners represented by the
+  records have been released. On Unix `MADV_DONTNEED` restores anonymous zero
+  pages; the fallback fills only that bounded prefix with valid zero values.
+- The arena is `Send` only when `T: Send`. Moving the uniquely owned arena
+  between requests does not move its allocation, and the worker pool transfers
+  it only after all native pointers published by the previous request have
+  expired.
+
+Tests: reserved/high-water/resident usage bounds, prefix discard and zero
+re-observation, and the VM native-request-pool test that statically requires
+`Send`, reuses exact arena addresses, and verifies reset request counters and
+scratch state.
+
 ## CompactBytes
 
 Single-allocation byte storage: one heap block holding a header

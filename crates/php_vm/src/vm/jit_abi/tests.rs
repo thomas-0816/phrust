@@ -2,6 +2,59 @@ use super::native_builtins::format_native_php_diagnostic;
 use super::{dereference_native_callable_value, native_backtrace_frame};
 
 #[test]
+fn native_request_pool_reuses_only_reset_worker_owned_buffers() {
+    fn assert_send<T: Send>() {}
+    assert_send::<super::NativeRequestBuffers>();
+
+    let mut pool = super::NativeRequestPool::default();
+    let mut first = pool.checkout(37);
+    let value_slots = first.value_slots.as_mut_ptr() as usize;
+    let direct_value_slots = first.direct_value_slots.as_mut_ptr() as usize;
+    let fiber_states = first.fiber_suspension_states.as_mut_ptr() as usize;
+    let static_properties = first.static_property_slots.as_mut_ptr() as usize;
+    assert!(first.native_call_encoded_scratch.capacity() >= 37);
+    first
+        .native_call_encoded_scratch
+        .extend_from_slice(&[11, 13, 17]);
+    first.direct_object_handles.reserve(64);
+    let object_handle_capacity = first.direct_object_handles.capacity();
+    first.direct_object_handles.clear();
+    first.diagnostic_telemetry.counters.runtime_helper_calls = 23;
+
+    pool.recycle(first);
+    assert_eq!(pool.available.len(), 1);
+
+    let mut second = pool.checkout(37);
+    assert_eq!(second.value_slots.as_mut_ptr() as usize, value_slots);
+    assert_eq!(
+        second.direct_value_slots.as_mut_ptr() as usize,
+        direct_value_slots
+    );
+    assert_eq!(
+        second.fiber_suspension_states.as_mut_ptr() as usize,
+        fiber_states
+    );
+    assert_eq!(
+        second.static_property_slots.as_mut_ptr() as usize,
+        static_properties
+    );
+    assert!(second.native_call_encoded_scratch.is_empty());
+    assert!(second.native_call_encoded_scratch.capacity() >= 37);
+    assert_eq!(*second.direct_value_next, 0);
+    assert_eq!(*second.direct_array_next, 0);
+    assert_eq!(*second.direct_string_next, 0);
+    assert_eq!(*second.fiber_suspension_next, 0);
+    assert_eq!(*second.static_property_next, 0);
+    assert!(second.free_value_slots.is_empty());
+    assert_eq!(second.native_frame_arena.high_water_bytes(), 0);
+    assert_eq!(
+        second.direct_object_handles.capacity(),
+        object_handle_capacity
+    );
+    assert_eq!(second.diagnostic_telemetry.counters.runtime_helper_calls, 0);
+}
+
+#[test]
 fn nested_native_activation_restores_the_outer_fast_state_view() {
     let outer_view = php_jit::JitNativeRuntimeView {
         trusted_function_entries: 0x1110,

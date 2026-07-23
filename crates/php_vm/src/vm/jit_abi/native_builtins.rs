@@ -4415,6 +4415,63 @@ pub(super) fn execute_baseline_native_builtin(
                 .collect::<Vec<_>>();
             context.encode_native_array_owner(php_runtime::api::PhpArray::from_packed(names))
         }
+        "error_log" => {
+            if arguments.is_empty() || arguments.len() > 4 {
+                return Err("error_log() expects between 1 and 4 arguments".to_owned());
+            }
+            let message = native_encoded_string(context, arguments[0])?;
+            let message_type = arguments
+                .get(1)
+                .map(|value| {
+                    native_builtin_int_argument(
+                        context,
+                        *value,
+                        context.unit.strict_types_for_span(source.span),
+                    )
+                })
+                .transpose()?
+                .flatten()
+                .unwrap_or(0);
+            let success = match message_type {
+                0 | 4 => {
+                    eprintln!("{}", String::from_utf8_lossy(&message));
+                    true
+                }
+                3 => {
+                    let Some(destination) = arguments.get(2) else {
+                        return context.encode(Value::Bool(false));
+                    };
+                    let destination = native_encoded_string(context, *destination)?;
+                    let destination =
+                        std::path::PathBuf::from(String::from_utf8_lossy(&destination).as_ref());
+                    let destination = if destination.is_absolute() {
+                        destination
+                    } else {
+                        context.cwd.join(destination)
+                    };
+                    if !context
+                        .options
+                        .runtime_context
+                        .filesystem
+                        .allows_path(&destination)
+                    {
+                        false
+                    } else {
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(destination)
+                            .and_then(|mut file| std::io::Write::write_all(&mut file, &message))
+                            .is_ok()
+                    }
+                }
+                // Message type 1 requires a configured mail transport; type
+                // 2 was removed from PHP. Neither may silently become a host
+                // process or filesystem capability.
+                _ => false,
+            };
+            context.encode(Value::Bool(success))
+        }
         "error_reporting" => {
             let previous = context.error_reporting;
             if let Some(value) = arguments.first() {
