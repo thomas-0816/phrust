@@ -5159,6 +5159,7 @@ fn define_region_graph_function(
                 builder.append_block_param(block, types::I32);
                 builder.append_block_param(block, types::I64);
                 builder.append_block_param(block, types::I32);
+                builder.append_block_param(block, types::I64);
                 for _ in 0..crate::JIT_DEOPT_LOCAL_MASK_WORDS {
                     builder.append_block_param(block, types::I64);
                 }
@@ -5980,6 +5981,8 @@ fn define_region_graph_function(
                             result_out,
                             deopt_out,
                             resume_state,
+                            pending_status,
+                            pending_value,
                             region.function,
                             region.local_count,
                             native_version,
@@ -6235,6 +6238,7 @@ fn define_region_graph_function(
             let status = params[0];
             let value = params[1];
             let continuation = params[2];
+            let suspension_link = params[3];
             let store_i32 = |builder: &mut FunctionBuilder<'_>, offset: usize, value: ir::Value| {
                 builder
                     .ins()
@@ -6267,7 +6271,7 @@ fn define_region_graph_function(
                 std::mem::offset_of!(crate::JitDeoptState, native_version),
                 native_version_value,
             );
-            for (word, mask) in params[3..].iter().copied().enumerate() {
+            for (word, mask) in params[4..].iter().copied().enumerate() {
                 builder.ins().store(
                     MemFlagsData::new(),
                     mask,
@@ -6279,6 +6283,7 @@ fn define_region_graph_function(
             builder
                 .ins()
                 .store(MemFlagsData::new(), value, result_out, 0);
+            publish_native_fiber_suspension_link(&mut builder, deopt_out, suspension_link);
             let finished = builder.create_block();
             builder.set_cold_block(finished);
             emit_streaming_local_snapshot_loop(

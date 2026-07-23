@@ -11,13 +11,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use php_ir::{FunctionId, LocalId, RegId};
 
 /// Version for the C-compatible runtime ABI records.
-pub const JIT_RUNTIME_ABI_VERSION: u32 = 76;
+pub const JIT_RUNTIME_ABI_VERSION: u32 = 77;
 
 /// Stable ABI fingerprint for Cranelift ABI.
 ///
 /// This is updated only when a `repr(C)` boundary type changes layout or tag
 /// meaning. It is intentionally independent from Rust type names.
-pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a843_0000_006c;
+pub const JIT_RUNTIME_ABI_HASH: u64 = 0x0dc1_a843_0000_006d;
 
 /// No stable length is published for this runtime value slot.
 pub const JIT_NATIVE_VALUE_VIEW_NONE: u32 = 0;
@@ -511,6 +511,14 @@ pub struct JitNativeRuntimeView {
     pub trusted_optimizing_function_entries: u64,
     pub trusted_optimizing_function_entry_count: u32,
     pub trusted_optimizing_function_entry_reserved: u32,
+    /// Demand-backed caller snapshots captured only when a compiled native
+    /// call returns `SUSPEND_FIBER`. Generated callers push the callee state,
+    /// publish their own continuation, and link the two without entering the
+    /// cold coordinator or a runtime helper.
+    pub fiber_suspension_states: u64,
+    pub fiber_suspension_next: u64,
+    pub fiber_suspension_capacity: u32,
+    pub fiber_suspension_reserved: u32,
     /// Request-local loop-header counter. Generated code performs a deadline
     /// poll on the first header visit and at a fixed bounded cadence.
     pub poll_counter: u64,
@@ -556,7 +564,7 @@ pub struct JitNativeRuntimeView {
 
 thread_local! {
     static ACTIVE_NATIVE_RUNTIME_VIEW: Cell<JitNativeRuntimeView> =
-        const { Cell::new(JitNativeRuntimeView { abi_version: 0, value_slot_capacity: 0, value_slots: 0, direct_value_slots: 0, direct_value_next: 0, direct_value_free_head: 0, direct_value_reused_bytes: 0, direct_object_owners: 0, direct_array_states: 0, direct_array_entries: 0, direct_array_next: 0, direct_array_free_heads: 0, direct_array_reused_bytes: 0, direct_string_bytes: 0, direct_string_next: 0, direct_string_free_heads: 0, direct_string_reused_bytes: 0, trusted_globals_proxy: 0, trusted_request_local_function_offsets: 0, trusted_request_local_function_count: 0, trusted_request_local_reserved: 0, trusted_request_local_slots: 0, trusted_request_local_slot_count: 0, trusted_request_local_slot_reserved: 0, trusted_constant_views: 0, trusted_constant_view_count: 0, trusted_constant_view_reserved: 0, trusted_constant_slots: 0, trusted_constant_slot_count: 0, trusted_constant_slot_reserved: 0, trusted_class_plans: 0, trusted_class_plan_count: 0, trusted_class_plan_reserved: 0, trusted_function_entries: 0, trusted_function_entry_count: 0, trusted_function_entry_reserved: 0, trusted_optimizing_function_entries: 0, trusted_optimizing_function_entry_count: 0, trusted_optimizing_function_entry_reserved: 0, poll_counter: 0, root_mutation_pending: 0, trusted_property_function_offsets: 0, trusted_property_function_count: 0, trusted_property_reserved: 0, trusted_property_slots: 0, trusted_property_slot_count: 0, trusted_property_slot_reserved: 0, trusted_global_reference_slots: 0, trusted_global_reference_slot_count: 0, trusted_global_reference_slot_reserved: 0, trusted_static_local_slots: 0, trusted_static_local_slot_count: 0, trusted_static_local_slot_reserved: 0, static_property_slots: 0, static_property_slot_count: 0, static_property_slot_reserved: 0, trusted_static_property_slots: 0, trusted_static_property_slot_count: 0, trusted_static_property_slot_reserved: 0, trusted_instanceof_plans: 0, trusted_instanceof_plan_count: 0, trusted_instanceof_plan_reserved: 0, trusted_instanceof_entries: 0, trusted_instanceof_entry_count: 0, trusted_instanceof_entry_reserved: 0, error_reporting: 0 }) };
+        const { Cell::new(JitNativeRuntimeView { abi_version: 0, value_slot_capacity: 0, value_slots: 0, direct_value_slots: 0, direct_value_next: 0, direct_value_free_head: 0, direct_value_reused_bytes: 0, direct_object_owners: 0, direct_array_states: 0, direct_array_entries: 0, direct_array_next: 0, direct_array_free_heads: 0, direct_array_reused_bytes: 0, direct_string_bytes: 0, direct_string_next: 0, direct_string_free_heads: 0, direct_string_reused_bytes: 0, trusted_globals_proxy: 0, trusted_request_local_function_offsets: 0, trusted_request_local_function_count: 0, trusted_request_local_reserved: 0, trusted_request_local_slots: 0, trusted_request_local_slot_count: 0, trusted_request_local_slot_reserved: 0, trusted_constant_views: 0, trusted_constant_view_count: 0, trusted_constant_view_reserved: 0, trusted_constant_slots: 0, trusted_constant_slot_count: 0, trusted_constant_slot_reserved: 0, trusted_class_plans: 0, trusted_class_plan_count: 0, trusted_class_plan_reserved: 0, trusted_function_entries: 0, trusted_function_entry_count: 0, trusted_function_entry_reserved: 0, trusted_optimizing_function_entries: 0, trusted_optimizing_function_entry_count: 0, trusted_optimizing_function_entry_reserved: 0, fiber_suspension_states: 0, fiber_suspension_next: 0, fiber_suspension_capacity: 0, fiber_suspension_reserved: 0, poll_counter: 0, root_mutation_pending: 0, trusted_property_function_offsets: 0, trusted_property_function_count: 0, trusted_property_reserved: 0, trusted_property_slots: 0, trusted_property_slot_count: 0, trusted_property_slot_reserved: 0, trusted_global_reference_slots: 0, trusted_global_reference_slot_count: 0, trusted_global_reference_slot_reserved: 0, trusted_static_local_slots: 0, trusted_static_local_slot_count: 0, trusted_static_local_slot_reserved: 0, static_property_slots: 0, static_property_slot_count: 0, static_property_slot_reserved: 0, trusted_static_property_slots: 0, trusted_static_property_slot_count: 0, trusted_static_property_slot_reserved: 0, trusted_instanceof_plans: 0, trusted_instanceof_plan_count: 0, trusted_instanceof_plan_reserved: 0, trusted_instanceof_entries: 0, trusted_instanceof_entry_count: 0, trusted_instanceof_entry_reserved: 0, error_reporting: 0 }) };
     // Standalone compiler tests may publish only the arena fields they
     // exercise. Production activation always supplies its request-owned head.
     static FALLBACK_DIRECT_VALUE_FREE_HEAD: Cell<u32> =
@@ -712,6 +720,10 @@ pub(crate) fn native_runtime_view(runtime: *mut std::ffi::c_void) -> JitNativeRu
 pub const JIT_DEOPT_MAX_SLOTS: usize = 256;
 pub const JIT_DEOPT_LOCAL_MASK_WORDS: usize = JIT_DEOPT_MAX_SLOTS / u64::BITS as usize;
 pub const JIT_DEOPT_MAX_REGISTERS: usize = 64;
+/// The native frame arena admits at most 768 active allocations. A suspended
+/// compiled call can therefore never require more caller snapshots than this
+/// request-local demand-backed stack.
+pub const JIT_NATIVE_FIBER_SUSPENSION_CAPACITY: usize = 768;
 
 /// Diagnostic detail written only when an optimizing array access leaves the
 /// native tier. These values classify the rejected native representation; they
@@ -722,7 +734,7 @@ pub const JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED: u32 = 0x1003;
 
 /// Caller-owned state buffer populated before a native side exit returns.
 #[repr(C)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JitDeoptState {
     /// Stable IR function ID that owns `continuation_id`.
     pub function_id: u32,
@@ -761,6 +773,12 @@ pub struct JitDeoptState {
     /// fragment transitions without exposing Rust container offsets.
     pub runtime_view: JitNativeRuntimeView,
 }
+
+// SAFETY: `JitDeoptState` is a plain C-layout ABI record, has no destructor,
+// and every field accepts an all-zero bit pattern. Runtime publication fills
+// the active prefix before generated code can consume a captured state.
+#[allow(unsafe_code)]
+unsafe impl php_runtime::api::NativeZeroed for JitDeoptState {}
 
 impl Default for JitDeoptState {
     fn default() -> Self {
@@ -1284,6 +1302,10 @@ pub struct JitNativeCallFrame {
     pub receiver_handle: u64,
     pub class_context: u64,
     pub exception_metadata: u64,
+    /// Caller-owned `JitDeoptState` populated only when a nested native
+    /// activation suspends. The generated caller immediately moves it into
+    /// the native suspension stack before publishing its own continuation.
+    pub transition_state: u64,
     pub trace_metadata: u64,
     pub generator_handle: u64,
     pub fiber_handle: u64,
@@ -1312,6 +1334,7 @@ impl Default for JitNativeCallFrame {
             receiver_handle: 0,
             class_context: 0,
             exception_metadata: 0,
+            transition_state: 0,
             trace_metadata: 0,
             generator_handle: 0,
             fiber_handle: 0,
@@ -2123,7 +2146,7 @@ mod tests {
 
     #[test]
     fn c_abi_layout_is_stable() {
-        assert_eq!(JIT_RUNTIME_ABI_VERSION, 76);
+        assert_eq!(JIT_RUNTIME_ABI_VERSION, 77);
         assert_ne!(JIT_RUNTIME_ABI_HASH, 0);
         assert_eq!(size_of::<JitOpaqueHandle>(), 8);
         assert_eq!(size_of::<JitCValueTag>(), 4);

@@ -1423,6 +1423,194 @@ fn publish_native_call_state(
     )
 }
 
+fn copy_native_deopt_state(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: ir::Type,
+    destination: ir::Value,
+    source: ir::Value,
+) {
+    let state_bytes = std::mem::size_of::<crate::JitDeoptState>();
+    debug_assert_eq!(state_bytes % std::mem::size_of::<u64>(), 0);
+    let copy_loop = builder.create_block();
+    let copy_word = builder.create_block();
+    let copy_done = builder.create_block();
+    builder.append_block_param(copy_loop, pointer_type);
+    let start = builder.ins().iconst(pointer_type, 0);
+    builder.ins().jump(copy_loop, &[start.into()]);
+
+    builder.switch_to_block(copy_loop);
+    let byte_offset = builder.block_params(copy_loop)[0];
+    let remains = builder.ins().icmp_imm(
+        IntCC::UnsignedLessThan,
+        byte_offset,
+        i64::try_from(state_bytes).unwrap_or(i64::MAX),
+    );
+    builder.ins().brif(remains, copy_word, &[], copy_done, &[]);
+
+    builder.switch_to_block(copy_word);
+    let source = builder.ins().iadd(source, byte_offset);
+    let target = builder.ins().iadd(destination, byte_offset);
+    let word = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), source, 0);
+    builder.ins().store(MemFlagsData::new(), word, target, 0);
+    let next_offset = builder.ins().iadd_imm(byte_offset, 8);
+    builder.ins().jump(copy_loop, &[next_offset.into()]);
+
+    builder.switch_to_block(copy_done);
+}
+
+/// Saves the callee continuation before a compiled caller overwrites the
+/// shared state buffer with its own `NativeCall` continuation. This executes
+/// only on the explicit `SUSPEND_FIBER` side exit and writes directly into the
+/// request-owned demand-backed suspension stack published in the fast state.
+fn capture_native_fiber_callee_if_suspended(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    status: ir::Value,
+    deopt_out: ir::Value,
+    result_out: ir::Value,
+) -> ir::Value {
+    let capture = builder.create_block();
+    let unchanged = builder.create_block();
+    let ready = builder.create_block();
+    builder.append_block_param(ready, types::I64);
+    let suspended = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
+    );
+    builder.ins().brif(suspended, capture, &[], unchanged, &[]);
+
+    builder.switch_to_block(unchanged);
+    let no_link = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(ready, &[no_link.into()]);
+
+    builder.switch_to_block(capture);
+    let pointer_type = module.target_config().pointer_type();
+    let view = std::mem::offset_of!(crate::JitDeoptState, runtime_view) as i32;
+    let states = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, fiber_suspension_states) as i32,
+    );
+    let next_pointer = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, fiber_suspension_next) as i32,
+    );
+    let capacity = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        deopt_out,
+        view + std::mem::offset_of!(crate::JitNativeRuntimeView, fiber_suspension_capacity) as i32,
+    );
+    let index = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), next_pointer, 0);
+    let available = builder.create_block();
+    let exhausted = builder.create_block();
+    let within_capacity = builder.ins().icmp(IntCC::UnsignedLessThan, index, capacity);
+    builder
+        .ins()
+        .brif(within_capacity, available, &[], exhausted, &[]);
+
+    builder.switch_to_block(exhausted);
+    let empty = builder.ins().iconst(types::I64, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), empty, result_out, 0);
+    let runtime_error = builder
+        .ins()
+        .iconst(types::I32, i64::from(crate::JitCallStatus::RUNTIME_ERROR.0));
+    builder.ins().return_(&[runtime_error]);
+
+    builder.switch_to_block(available);
+    let index_pointer = builder.ins().uextend(pointer_type, index);
+    let offset = builder.ins().imul_imm(
+        index_pointer,
+        i64::try_from(std::mem::size_of::<crate::JitDeoptState>()).unwrap_or(i64::MAX),
+    );
+    let destination = builder.ins().iadd(states, offset);
+    copy_native_deopt_state(builder, pointer_type, destination, deopt_out);
+    let next = builder.ins().iadd_imm(index, 1);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), next, next_pointer, 0);
+    let link = builder.ins().uextend(types::I64, next);
+    builder.ins().jump(ready, &[link.into()]);
+
+    builder.switch_to_block(ready);
+    builder.block_params(ready)[0]
+}
+
+fn publish_native_fiber_suspension_link(
+    builder: &mut FunctionBuilder<'_>,
+    deopt_out: ir::Value,
+    link: ir::Value,
+) {
+    builder.ins().store(
+        MemFlagsData::new(),
+        link,
+        deopt_out,
+        std::mem::offset_of!(crate::JitDeoptState, delegation_handle) as i32,
+    );
+}
+
+/// Splits a compiled userland call into its normal invocation and the exact
+/// continuation result supplied when a suspended callee has completed. The
+/// resume loader places typed control in `pending_*`; consuming it here avoids
+/// re-invoking the callee or routing a stable target through the dispatcher.
+fn begin_native_call_or_resume(
+    builder: &mut FunctionBuilder<'_>,
+    pending_status: Variable,
+    pending_value: Variable,
+    expected_return_status: u32,
+    result_out: ir::Value,
+    resume_state: ir::Value,
+    deopt_out: ir::Value,
+) -> ir::Block {
+    let invoke = builder.create_block();
+    let resumed = builder.create_block();
+    let completed = builder.create_block();
+    let propagate = builder.create_block();
+    builder.append_block_param(completed, types::I64);
+
+    let status = builder.use_var(pending_status);
+    let normal = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::CONTINUE.0),
+    );
+    builder.ins().brif(normal, invoke, &[], resumed, &[]);
+
+    builder.switch_to_block(resumed);
+    let value = builder.use_var(pending_value);
+    let clear = builder
+        .ins()
+        .iconst(types::I32, i64::from(crate::JitCallStatus::CONTINUE.0));
+    builder.def_var(pending_status, clear);
+    let returned = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status));
+    builder
+        .ins()
+        .brif(returned, completed, &[value.into()], propagate, &[]);
+
+    builder.switch_to_block(propagate);
+    let pointer_type = builder.func.dfg.value_type(resume_state);
+    copy_native_deopt_state(builder, pointer_type, deopt_out, resume_state);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), value, result_out, 0);
+    builder.ins().return_(&[status]);
+
+    builder.switch_to_block(invoke);
+    completed
+}
+
 #[allow(clippy::too_many_arguments)]
 fn publish_native_continuation_state(
     builder: &mut FunctionBuilder<'_>,
@@ -17150,6 +17338,8 @@ fn lower_optimizing_region_instruction(
     result_out: ir::Value,
     deopt_out: ir::Value,
     resume_state: ir::Value,
+    pending_status: Variable,
+    pending_value: Variable,
     function: FunctionId,
     local_count: u32,
     native_version: u32,
@@ -19305,6 +19495,20 @@ fn lower_optimizing_region_instruction(
                 )
             {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let expected_return_status = if call.returns_by_reference {
+                    crate::JitCallStatus::RETURN_REFERENCE.0
+                } else {
+                    crate::JitCallStatus::RETURN.0
+                };
+                let completed_call = begin_native_call_or_resume(
+                    builder,
+                    pending_status,
+                    pending_value,
+                    expected_return_status,
+                    result_out,
+                    resume_state,
+                    deopt_out,
+                );
                 let (_, parameters, _, _, _) = function_params
                     .get(&target)
                     .expect("compiled-call target metadata was admitted above");
@@ -19555,11 +19759,6 @@ fn lower_optimizing_region_instruction(
                 let resume_callee = builder.create_block();
                 let propagate = builder.create_block();
                 builder.append_block_param(propagate, types::I32);
-                let expected_return_status = if call.returns_by_reference {
-                    crate::JitCallStatus::RETURN_REFERENCE.0
-                } else {
-                    crate::JitCallStatus::RETURN.0
-                };
                 let is_return =
                     builder
                         .ins()
@@ -19655,9 +19854,54 @@ fn lower_optimizing_region_instruction(
                         lower_optimizing_release_call_owner(builder, argument, deopt_out);
                     }
                 }
+                let suspension_link = capture_native_fiber_callee_if_suspended(
+                    module,
+                    builder,
+                    propagated_status,
+                    deopt_out,
+                    result_out,
+                );
                 builder
                     .ins()
                     .store(MemFlagsData::new(), control, result_out, 0);
+                let publish_caller = builder.create_block();
+                let preserve_callee = builder.create_block();
+                let is_throw = builder.ins().icmp_imm(
+                    IntCC::Equal,
+                    propagated_status,
+                    i64::from(crate::JitCallStatus::THROW.0),
+                );
+                let is_exit = builder.ins().icmp_imm(
+                    IntCC::Equal,
+                    propagated_status,
+                    i64::from(crate::JitCallStatus::EXIT.0),
+                );
+                let is_suspend = builder.ins().icmp_imm(
+                    IntCC::Equal,
+                    propagated_status,
+                    i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
+                );
+                let unwinds = builder.ins().bor(is_throw, is_exit);
+                let publishes = builder.ins().bor(unwinds, is_suspend);
+                builder
+                    .ins()
+                    .brif(publishes, publish_caller, &[], preserve_callee, &[]);
+
+                builder.switch_to_block(publish_caller);
+                publish_native_register_values(builder, deopt_out, transition.live_values)?;
+                publish_native_call_state(
+                    builder,
+                    deopt_out,
+                    function,
+                    local_count,
+                    instruction,
+                    locals,
+                    native_version,
+                )?;
+                publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
+                builder.ins().return_(&[propagated_status]);
+
+                builder.switch_to_block(preserve_callee);
                 builder.ins().return_(&[propagated_status]);
 
                 builder.switch_to_block(returned);
@@ -19669,6 +19913,9 @@ fn lower_optimizing_region_instruction(
                         lower_optimizing_release_call_owner(builder, argument, deopt_out);
                     }
                 }
+                builder.ins().jump(completed_call, &[result.into()]);
+                builder.switch_to_block(completed_call);
+                let result = builder.block_params(completed_call)[0];
                 match call.result {
                     RegionCallResult::Register(destination) => define_region_register(
                         builder,
@@ -22966,6 +23213,20 @@ fn lower_baseline_region_instruction(
                 )?;
                 return Ok(());
             };
+            let expected_return_status = if call.returns_by_reference {
+                crate::JitCallStatus::RETURN_REFERENCE.0
+            } else {
+                crate::JitCallStatus::RETURN.0
+            };
+            let completed_call = begin_native_call_or_resume(
+                builder,
+                pending_status,
+                pending_value,
+                expected_return_status,
+                result_out,
+                resume_state,
+                deopt_out,
+            );
             let result_slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 8,
@@ -23142,11 +23403,6 @@ fn lower_baseline_region_instruction(
                 builder.ins().iconst(types::I32, -1),
                 builder.ins().iconst(pointer_type, 0),
             ];
-            let expected_return_status = if call.returns_by_reference {
-                crate::JitCallStatus::RETURN_REFERENCE.0
-            } else {
-                crate::JitCallStatus::RETURN.0
-            };
             let (call, baseline_entries) = match callee {
                 NativeDirectCallee::Local(callee) => {
                     let callee_ref = module.declare_func_in_func(callee, builder.func);
@@ -23318,6 +23574,9 @@ fn lower_baseline_region_instruction(
                     .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status));
             builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
             builder.switch_to_block(side_exit);
+            let suspension_link = capture_native_fiber_callee_if_suspended(
+                module, builder, status, deopt_out, result_out,
+            );
             let control_value = builder.ins().stack_load(types::I64, result_slot, 0);
             for argument in &released_call_arguments {
                 let _ = lower_guarded_value_release(
@@ -23345,14 +23604,26 @@ fn lower_baseline_region_instruction(
                 status,
                 i64::from(crate::JitCallStatus::EXIT.0),
             );
+            let is_suspend = builder.ins().icmp_imm(
+                IntCC::Equal,
+                status,
+                i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
+            );
             let unwinds_caller = builder.ins().bor(is_throw, is_exit);
+            let publishes_caller = builder.ins().bor(unwinds_caller, is_suspend);
             builder
                 .ins()
-                .brif(unwinds_caller, caller_unwind, &[], preserve_callee, &[]);
+                .brif(publishes_caller, caller_unwind, &[], preserve_callee, &[]);
             builder.switch_to_block(caller_unwind);
-            // A throw or exit must now traverse this caller's catch/finally
-            // table. Publish the call-site continuation and live locals before
-            // returning the explicit control status to the unwind driver.
+            // Throw/exit traverse this caller's catch/finally table. A Fiber
+            // suspension retains the copied callee state and publishes this
+            // caller as the next resumable native activation.
+            publish_native_register_state(
+                builder,
+                deopt_out,
+                registers,
+                transition_live_registers,
+            )?;
             publish_native_call_state(
                 builder,
                 deopt_out,
@@ -23362,6 +23633,7 @@ fn lower_baseline_region_instruction(
                 locals,
                 native_version,
             )?;
+            publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
             builder.ins().return_(&[status]);
             builder.switch_to_block(preserve_callee);
             // Guard exits and other non-unwind statuses retain the callee's
@@ -23380,6 +23652,9 @@ fn lower_baseline_region_instruction(
                     deopt_out,
                 )?;
             }
+            builder.ins().jump(completed_call, &[value.into()]);
+            builder.switch_to_block(completed_call);
+            let value = builder.block_params(completed_call)[0];
             match destination {
                 RegionCallResult::Register(dst) => {
                     define_region_register(builder, register_variables, registers, dst, value)?;
@@ -25312,6 +25587,8 @@ fn lower_direct_semantic_call(
     builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
 
     builder.switch_to_block(side_exit);
+    let suspension_link =
+        capture_native_fiber_callee_if_suspended(module, builder, status, deopt_out, result_out);
     publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
     let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
     if let Some(streaming_call_exit) = streaming_call_exit {
@@ -25323,10 +25600,11 @@ fn lower_direct_semantic_call(
             .map(|mask| builder.ins().iconst(types::I64, mask as i64))
             .map(Into::into)
             .collect::<Vec<ir::BlockArg>>();
-        let mut args = Vec::<ir::BlockArg>::with_capacity(3 + masks.len());
+        let mut args = Vec::<ir::BlockArg>::with_capacity(4 + masks.len());
         args.push(status.into());
         args.push(control_value.into());
         args.push(continuation.into());
+        args.push(suspension_link.into());
         args.extend(masks);
         builder.ins().jump(streaming_call_exit.block, &args);
     } else {
@@ -25339,6 +25617,7 @@ fn lower_direct_semantic_call(
             locals,
             native_version,
         )?;
+        publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
         builder
             .ins()
             .store(MemFlagsData::new(), control_value, result_out, 0);
@@ -25538,6 +25817,8 @@ fn lower_direct_builtin_call(
     builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
 
     builder.switch_to_block(side_exit);
+    let suspension_link =
+        capture_native_fiber_callee_if_suspended(module, builder, status, deopt_out, result_out);
     publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
     let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
     if let Some(streaming_call_exit) = streaming_call_exit {
@@ -25549,10 +25830,11 @@ fn lower_direct_builtin_call(
             .map(|mask| builder.ins().iconst(types::I64, mask as i64))
             .map(Into::into)
             .collect::<Vec<ir::BlockArg>>();
-        let mut args = Vec::<ir::BlockArg>::with_capacity(3 + masks.len());
+        let mut args = Vec::<ir::BlockArg>::with_capacity(4 + masks.len());
         args.push(status.into());
         args.push(control_value.into());
         args.push(continuation.into());
+        args.push(suspension_link.into());
         args.extend(masks);
         builder.ins().jump(streaming_call_exit.block, &args);
     } else {
@@ -25565,6 +25847,7 @@ fn lower_direct_builtin_call(
             locals,
             native_version,
         )?;
+        publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
         builder
             .ins()
             .store(MemFlagsData::new(), control_value, result_out, 0);
@@ -25971,6 +26254,12 @@ fn lower_native_call_trampoline(
         frame_ptr,
         std::mem::offset_of!(crate::JitNativeCallFrame, arguments) as i32,
     );
+    builder.ins().store(
+        MemFlagsData::new(),
+        deopt_out,
+        frame_ptr,
+        std::mem::offset_of!(crate::JitNativeCallFrame, transition_state) as i32,
+    );
     let receiver = if let RegionCallTarget::StaticMethod { class_name, .. } = &call.target
         && matches!(
             class_name.to_ascii_lowercase().as_str(),
@@ -26022,6 +26311,8 @@ fn lower_native_call_trampoline(
         .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status));
     builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
     builder.switch_to_block(side_exit);
+    let suspension_link =
+        capture_native_fiber_callee_if_suspended(module, builder, status, deopt_out, result_out);
     publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
     let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
     if let Some(streaming_call_exit) = streaming_call_exit {
@@ -26033,10 +26324,11 @@ fn lower_native_call_trampoline(
             .map(|mask| builder.ins().iconst(types::I64, mask as i64))
             .map(Into::into)
             .collect::<Vec<ir::BlockArg>>();
-        let mut args = Vec::<ir::BlockArg>::with_capacity(3 + masks.len());
+        let mut args = Vec::<ir::BlockArg>::with_capacity(4 + masks.len());
         args.push(status.into());
         args.push(control_value.into());
         args.push(continuation.into());
+        args.push(suspension_link.into());
         args.extend(masks);
         builder.ins().jump(streaming_call_exit.block, &args);
     } else {
@@ -26049,6 +26341,7 @@ fn lower_native_call_trampoline(
             locals,
             native_version,
         )?;
+        publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
         builder
             .ins()
             .store(MemFlagsData::new(), control_value, result_out, 0);

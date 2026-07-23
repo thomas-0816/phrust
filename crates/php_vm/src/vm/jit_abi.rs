@@ -1412,6 +1412,12 @@ pub(super) struct NativeRequestColdState<'a> {
         std::sync::Arc<std::collections::BTreeMap<php_ir::FunctionId, php_jit::JitFunctionHandle>>,
     native_call_encoded_scratch: Vec<i64>,
     native_frame_arena: NativeFrameArena,
+    /// Demand-backed native continuation stack used only when a compiled
+    /// caller observes `SUSPEND_FIBER`. Generated code writes these records
+    /// through the fast-state view; cold code consumes them exactly once when
+    /// it installs the suspended Fiber execution tree.
+    fiber_suspension_states: php_runtime::api::StableNativeArena<php_jit::JitDeoptState>,
+    fiber_suspension_next: Box<u32>,
     native_method_pics: std::collections::BTreeMap<u64, NativeMethodPic>,
     pub(super) output: php_runtime::api::OutputBuffer,
     values: Vec<Option<NativeStoredValue>>,
@@ -1520,7 +1526,6 @@ pub(super) struct NativeRequestColdState<'a> {
     fiber_executions: std::collections::BTreeMap<u64, NativeFiberExecution>,
     active_fiber: Option<u64>,
     pending_fiber_suspension_value: Option<i64>,
-    pending_nested_fiber_execution: Option<NativeFiberExecution>,
     completed_nested_fiber_call: Option<(u32, u32, php_jit::JitCallStatus, i64)>,
     pending_throwable: Option<Value>,
     called_classes: Vec<Arc<str>>,
@@ -1722,7 +1727,9 @@ enum NativeCallControl {
         status: php_jit::JitCallStatus,
         value: i64,
     },
-    SuspendFiber,
+    SuspendFiber {
+        state: Option<Box<php_jit::JitDeoptState>>,
+    },
     Exit(i64),
     PublishedRuntimeError,
     RuntimeError(String),
@@ -1750,7 +1757,7 @@ impl NativeCallControl {
                 "native encoded control status={} value={value} escaped into the baseline boundary",
                 status.0
             ),
-            Self::SuspendFiber => "E_PHP_SUSPEND_FIBER".to_owned(),
+            Self::SuspendFiber { .. } => "E_PHP_SUSPEND_FIBER".to_owned(),
             Self::Exit(value) => format!("E_PHP_EXIT:{value}"),
             Self::PublishedRuntimeError => NATIVE_RUNTIME_ERROR_MARKER.to_owned(),
             Self::RuntimeError(message) => message,
@@ -1772,7 +1779,7 @@ impl NativeCallControl {
             return Self::throw(class, message);
         }
         if message == "E_PHP_SUSPEND_FIBER" {
-            return Self::SuspendFiber;
+            return Self::SuspendFiber { state: None };
         }
         if let Some(value) = message.strip_prefix("E_PHP_EXIT:")
             && let Ok(value) = value.parse::<i64>()
@@ -2163,6 +2170,26 @@ impl<'a> NativeRequestColdState<'a> {
         self.fast_state.cast()
     }
 
+    fn take_native_fiber_suspension_state(
+        &mut self,
+        handle: u64,
+    ) -> Result<Option<php_jit::JitDeoptState>, String> {
+        if handle == 0 {
+            return Ok(None);
+        }
+        let next = usize::try_from(*self.fiber_suspension_next)
+            .map_err(|_| "native Fiber suspension stack is invalid".to_owned())?;
+        let index = usize::try_from(handle - 1)
+            .map_err(|_| "native Fiber suspension handle is invalid".to_owned())?;
+        if index >= self.fiber_suspension_states.capacity() || index + 1 != next {
+            return Err(format!(
+                "native Fiber suspension stack is not LIFO: handle={handle} depth={next}"
+            ));
+        }
+        *self.fiber_suspension_next = u32::try_from(index).unwrap_or(0);
+        Ok(Some(self.fiber_suspension_states[index]))
+    }
+
     /// Releases the owners captured in a suspended native activation when no
     /// generated continuation will ever resume it. Normal return/unwind runs
     /// the generated epilogue and must not pass through this path.
@@ -2473,6 +2500,10 @@ impl<'a> NativeRequestColdState<'a> {
             native_entries,
             native_call_encoded_scratch: Vec::with_capacity(native_call_argument_capacity),
             native_frame_arena: NativeFrameArena::default(),
+            fiber_suspension_states: php_runtime::api::StableNativeArena::new(
+                php_jit::JIT_NATIVE_FIBER_SUSPENSION_CAPACITY,
+            ),
+            fiber_suspension_next: Box::new(0),
             native_method_pics: std::collections::BTreeMap::new(),
             output,
             values: value_arena.values,
@@ -2550,7 +2581,6 @@ impl<'a> NativeRequestColdState<'a> {
             fiber_executions: std::collections::BTreeMap::new(),
             active_fiber: None,
             pending_fiber_suspension_value: None,
-            pending_nested_fiber_execution: None,
             completed_nested_fiber_call: None,
             pending_throwable: None,
             called_classes: Vec::new(),
@@ -3357,9 +3387,6 @@ impl<'a> NativeRequestColdState<'a> {
         self.clear_trusted_static_locals();
         let suspended_fibers = std::mem::take(&mut self.fiber_executions);
         for (_, execution) in suspended_fibers {
-            let _ = self.abandon_native_fiber_execution(execution);
-        }
-        if let Some(execution) = self.pending_nested_fiber_execution.take() {
             let _ = self.abandon_native_fiber_execution(execution);
         }
         if let Some(value) = self.pending_fiber_suspension_value.take() {
@@ -10176,6 +10203,12 @@ pub(super) fn activate_native_context(
         )
         .unwrap_or(u32::MAX),
         trusted_optimizing_function_entry_reserved: 0,
+        fiber_suspension_states: context.fiber_suspension_states.as_mut_ptr() as usize as u64,
+        fiber_suspension_next: std::ptr::from_mut(context.fiber_suspension_next.as_mut()) as usize
+            as u64,
+        fiber_suspension_capacity: u32::try_from(context.fiber_suspension_states.capacity())
+            .unwrap_or(u32::MAX),
+        fiber_suspension_reserved: 0,
         poll_counter: std::ptr::from_mut(context.native_poll_counter.as_mut()) as usize as u64,
         root_mutation_pending: std::ptr::from_mut(context.native_root_mutation_pending.as_mut())
             as usize as u64,
@@ -12444,15 +12477,10 @@ fn invoke_native_method_with_prepared_trace_arguments(
         }) if status == php_jit::JitCallStatus::SUSPEND_FIBER.0 as i32
             && context.active_fiber.is_some() =>
         {
-            let nested = context.pending_nested_fiber_execution.take().map(Box::new);
-            context.pending_nested_fiber_execution = Some(NativeFiberExecution {
-                handle,
-                arguments: arguments.to_vec(),
-                state,
-                nested,
-            });
             context.pending_fiber_suspension_value = Some(value);
-            Err(NativeCallControl::SuspendFiber)
+            Err(NativeCallControl::SuspendFiber {
+                state: Some(Box::new(state)),
+            })
         }
         Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. }) => {
             let continuation = context

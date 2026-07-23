@@ -1965,6 +1965,40 @@ pub(super) fn execute_native_generator_method(
     Some(result)
 }
 
+fn take_captured_native_fiber_execution(
+    context: &mut NativeRequestColdState<'_>,
+    link: u64,
+) -> Result<Option<Box<NativeFiberExecution>>, String> {
+    let Some(mut state) = context.take_native_fiber_suspension_state(link)? else {
+        return Ok(None);
+    };
+    let nested_link = std::mem::take(&mut state.delegation_handle);
+    let function = php_ir::FunctionId::new(state.function_id);
+    let handle = ensure_native_baseline_entry(context, function)?;
+    let arity = handle
+        .region_state_metadata()
+        .and_then(|metadata| {
+            metadata
+                .function_entries
+                .iter()
+                .find(|entry| entry.function.raw() == state.function_id)
+                .map(|entry| entry.arity)
+        })
+        .ok_or_else(|| {
+            format!(
+                "captured native Fiber function {} has no entry metadata",
+                state.function_id
+            )
+        })?;
+    let nested = take_captured_native_fiber_execution(context, nested_link)?;
+    Ok(Some(Box::new(NativeFiberExecution {
+        handle,
+        arguments: vec![0; usize::from(arity)],
+        state,
+        nested,
+    })))
+}
+
 pub(super) fn finish_native_fiber_outcome(
     context: &mut NativeRequestColdState<'_>,
     fiber: &NativeFiberReceiver,
@@ -1989,17 +2023,19 @@ pub(super) fn finish_native_fiber_outcome(
         php_jit::JitI64InvokeOutcome::SideExit {
             status,
             value,
-            state,
+            mut state,
         } if status == php_jit::JitCallStatus::SUSPEND_FIBER.0 as i32 => {
             context.set_fiber_receiver_state(fiber, php_runtime::api::FiberState::Suspended)?;
             let fiber_id = context.fiber_receiver_id(fiber)?;
+            let suspension_link = std::mem::take(&mut state.delegation_handle);
+            let nested = take_captured_native_fiber_execution(context, suspension_link)?;
             context.fiber_executions.insert(
                 fiber_id,
                 NativeFiberExecution {
                     handle,
                     arguments,
                     state,
-                    nested: context.pending_nested_fiber_execution.take().map(Box::new),
+                    nested,
                 },
             );
             Ok(value)
@@ -2097,22 +2133,23 @@ fn classify_native_fiber_execution_outcome(
     context: &mut NativeRequestColdState<'_>,
     mut execution: NativeFiberExecution,
     outcome: php_jit::JitI64InvokeOutcome,
-) -> NativeFiberExecutionOutcome {
+) -> Result<NativeFiberExecutionOutcome, String> {
     match outcome {
         php_jit::JitI64InvokeOutcome::SideExit {
             status,
             value,
-            state,
+            mut state,
         } if status == php_jit::JitCallStatus::SUSPEND_FIBER.0 as i32 => {
+            let suspension_link = std::mem::take(&mut state.delegation_handle);
             execution.state = state;
-            execution.nested = context.pending_nested_fiber_execution.take().map(Box::new);
-            NativeFiberExecutionOutcome::Suspended { execution, value }
+            execution.nested = take_captured_native_fiber_execution(context, suspension_link)?;
+            Ok(NativeFiberExecutionOutcome::Suspended { execution, value })
         }
-        outcome => NativeFiberExecutionOutcome::Completed {
+        outcome => Ok(NativeFiberExecutionOutcome::Completed {
             handle: execution.handle,
             arguments: execution.arguments,
             outcome,
-        },
+        }),
     }
 }
 
@@ -2145,15 +2182,26 @@ fn resume_native_fiber_execution(
                     status,
                     value,
                 ));
+                execution.state.control_status = status;
+                execution.state.control_value = value;
                 let runtime = context.native_runtime_ptr();
-                match execution
+                let resumed = execution
                     .handle
                     .invoke_i64_same_artifact_transition_with_unwind_runtime(
                         &execution.state,
                         php_jit::JIT_RUNTIME_ABI_HASH,
                         runtime,
                         |types, value| native_catch_matches(context, types, value),
-                    ) {
+                    );
+                if context.completed_nested_fiber_call.as_ref().is_some_and(
+                    |(function, continuation, _, _)| {
+                        *function == execution.state.function_id
+                            && *continuation == execution.state.continuation_id
+                    },
+                ) {
+                    context.completed_nested_fiber_call = None;
+                }
+                match resumed {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         context.abandon_native_fiber_execution(execution)?;
@@ -2186,9 +2234,7 @@ fn resume_native_fiber_execution(
             }
         }
     };
-    Ok(classify_native_fiber_execution_outcome(
-        context, execution, outcome,
-    ))
+    classify_native_fiber_execution_outcome(context, execution, outcome)
 }
 
 pub(super) fn execute_native_fiber_method(

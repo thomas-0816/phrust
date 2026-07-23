@@ -1513,7 +1513,7 @@ fn exact_callback_control_result(
         Err(NativeCallControl::Propagate { status, value }) => {
             php_jit::JitNativeControlResult::control(status, 0, value)
         }
-        Err(NativeCallControl::SuspendFiber) => {
+        Err(NativeCallControl::SuspendFiber { state: _ }) => {
             let value = context
                 .pending_fiber_suspension_value
                 .take()
@@ -1854,7 +1854,7 @@ pub(super) fn finish_native_dispatch_outcome(
             (php_jit::JitCallStatus::THROW, value)
         }
         Some(Err(NativeCallControl::Propagate { status, value })) => (status, Some(value)),
-        Some(Err(NativeCallControl::SuspendFiber)) => {
+        Some(Err(NativeCallControl::SuspendFiber { state: _ })) => {
             let value = with_native_context_for(runtime, "call_dispatch", |context| {
                 context.pending_fiber_suspension_value.take()
             })
@@ -3540,7 +3540,18 @@ unsafe fn jit_native_call_dispatch_impl<const DIAGNOSTIC: bool>(
             Some(Err(NativeCallControl::Propagate { status, value })) => {
                 (status.0 as i32, status, Some(value))
             }
-            Some(Err(NativeCallControl::SuspendFiber)) => {
+            Some(Err(NativeCallControl::SuspendFiber { state })) => {
+                if let Some(state) = state
+                    && frame.transition_state != 0
+                {
+                    // SAFETY: generated call frames publish their live
+                    // caller-owned `JitDeoptState` buffer for this synchronous
+                    // dispatch. The caller consumes it before returning.
+                    unsafe {
+                        (frame.transition_state as usize as *mut php_jit::JitDeoptState)
+                            .write(*state);
+                    }
+                }
                 let value = with_native_context_for(runtime, "call_dispatch", |context| {
                     context.pending_fiber_suspension_value.take()
                 })

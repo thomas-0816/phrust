@@ -1,7 +1,12 @@
 <?php
-function suspend_for_throw(): void
+function suspend_inner_for_throw(): void
 {
     Fiber::suspend("ready");
+}
+
+function suspend_for_throw(): void
+{
+    suspend_inner_for_throw();
 }
 
 $fiber = new Fiber(function (): string {
