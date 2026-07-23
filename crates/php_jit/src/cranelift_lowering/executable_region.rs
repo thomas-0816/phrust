@@ -3154,11 +3154,31 @@ pub(super) fn compile_region_graph_native(
                     offending_fragments.sort_unstable_by_key(|(fragment_id, _)| *fragment_id);
                     offending_fragments.dedup_by_key(|(fragment_id, _)| *fragment_id);
                     for (fragment_id, pieces) in offending_fragments.into_iter().rev() {
+                        let block_shape = active_plan
+                            .fragments
+                            .iter()
+                            .find(|fragment| fragment.id == fragment_id)
+                            .map(|fragment| {
+                                fragment
+                                    .blocks
+                                    .iter()
+                                    .map(|block| {
+                                        format!(
+                                            "{}:{}",
+                                            block.raw(),
+                                            region.blocks[block.index()].instructions.len()
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_default();
                         active_plan = active_plan.refine_fragment_into(region, fragment_id, pieces).ok_or_else(|| {
                             CraneliftLoweringError::new(
                                 "JIT_CRANELIFT_PRE_REGALLOC_UNSPLITTABLE",
                                 format!(
-                                    "fragment {fragment_id} exceeds the exact pre-regalloc safety margin and contains no safe Region-block cut"
+                                    "function {} fragment {fragment_id} exceeds the exact pre-regalloc safety margin and contains no safe Region-block cut (block:instruction-count={block_shape})",
+                                    region.function_name,
                                 ),
                             )
                         })?;

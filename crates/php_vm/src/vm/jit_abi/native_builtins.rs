@@ -53,6 +53,25 @@ fn native_encoded_string(
     }
 }
 
+/// Applies the shared native call coercion rules for an internal builtin int
+/// parameter and returns its immediate payload. The temporary checked owner
+/// is released before returning; admitted bool/float/numeric-string inputs
+/// therefore never enter the Rust `Value` plane.
+fn native_builtin_int_argument(
+    context: &mut NativeRequestColdState<'_>,
+    encoded: i64,
+    strict: bool,
+) -> Result<Option<i64>, String> {
+    let Some(checked) =
+        context.coerce_native_call_argument_encoded(encoded, &php_ir::IrReturnType::Int, strict)?
+    else {
+        return Ok(None);
+    };
+    let value = context.native_encoded_int(checked);
+    context.release(checked)?;
+    Ok(value)
+}
+
 fn native_dereference_value(mut value: Value) -> Value {
     // Native call metadata may wrap a value more than once while it crosses
     // foreach, method, and builtin boundaries. PHP references are transparent
@@ -4323,21 +4342,19 @@ pub(super) fn execute_baseline_native_builtin(
             context.encode(Value::Int(i64::try_from(count).unwrap_or(i64::MAX)))
         }
         "debug_backtrace" => {
-            let options =
-                arguments
-                    .first()
-                    .map_or(Ok(1), |argument| match context.decode(*argument)? {
-                        Value::Int(options) => Ok(options),
-                        _ => Err("debug_backtrace(): argument #1 must be of type int".to_owned()),
-                    })?;
+            let strict = context.unit.strict_types_for_span(source.span);
+            let options = arguments.first().map_or(Ok(1), |argument| {
+                native_builtin_int_argument(context, *argument, strict)?
+                    .ok_or_else(|| "debug_backtrace(): argument #1 must be of type int".to_owned())
+            })?;
             let limit = arguments.get(1).map_or(Ok(0), |argument| {
-                match context.decode(*argument)? {
-                    Value::Int(limit) if limit >= 0 => Ok(limit),
-                    Value::Int(_) => Err(
+                match native_builtin_int_argument(context, *argument, strict)? {
+                    Some(limit) if limit >= 0 => Ok(limit),
+                    Some(_) => Err(
                         "debug_backtrace(): argument #2 ($limit) must be greater than or equal to 0"
                             .to_owned(),
                     ),
-                    _ => Err("debug_backtrace(): argument #2 must be of type int".to_owned()),
+                    None => Err("debug_backtrace(): argument #2 must be of type int".to_owned()),
                 }
             })?;
             let limit = usize::try_from(limit).unwrap_or(usize::MAX);
@@ -4415,9 +4432,12 @@ pub(super) fn execute_baseline_native_builtin(
             let Some(index) = arguments.first() else {
                 return Err("func_get_arg() expects exactly 1 argument".to_owned());
             };
-            let Value::Int(index) = context.decode(*index)? else {
-                return Err("func_get_arg(): argument #1 must be of type int".to_owned());
-            };
+            let index = native_builtin_int_argument(
+                context,
+                *index,
+                context.unit.strict_types_for_span(source.span),
+            )?
+            .ok_or_else(|| "func_get_arg(): argument #1 must be of type int".to_owned())?;
             let Some(value) = usize::try_from(index)
                 .ok()
                 .and_then(|index| context.call_frames.last()?.arguments.get(index))
@@ -4562,14 +4582,12 @@ pub(super) fn execute_baseline_native_builtin(
         "error_reporting" => {
             let previous = context.error_reporting;
             if let Some(value) = arguments.first() {
-                let value = match context.decode(*value)? {
-                    Value::Reference(reference) => reference.get(),
-                    value => value,
-                };
-                context.error_reporting = match value {
-                    Value::Int(value) => value,
-                    _ => return Err("error_reporting() expects an int".to_owned()),
-                };
+                context.error_reporting = native_builtin_int_argument(
+                    context,
+                    *value,
+                    context.unit.strict_types_for_span(source.span),
+                )?
+                .ok_or_else(|| "error_reporting() expects an int".to_owned())?;
             }
             context.encode(Value::Int(previous))
         }

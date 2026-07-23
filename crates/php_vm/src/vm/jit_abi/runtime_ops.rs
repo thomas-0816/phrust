@@ -2551,6 +2551,51 @@ pub(in crate::vm) extern "C" fn jit_native_argument_check_abi(
             .and_then(|(function, continuation)| {
                 context.instruction_for_continuation(function, continuation)
             });
+        if !parameter.by_ref {
+            // A by-value parameter observes the payload of a caller
+            // reference, never the reference container. Keep the ordinary
+            // typed path entirely in native encodings. Materialized
+            // compatibility references are restored to their authoritative
+            // direct payload once by `duplicate_dereferenced_native_value`;
+            // only an unsupported coercion continues into the cold Value
+            // diagnostic path below.
+            let native_checked = match context
+                .coerce_native_call_argument_encoded(encoded, type_, strict)
+            {
+                Ok(Some(checked)) => Some(checked),
+                Ok(None) => {
+                    let Ok(payload) = context.duplicate_dereferenced_native_value(encoded) else {
+                        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                    };
+                    let checked =
+                        match context.coerce_native_call_argument_encoded(payload, type_, strict) {
+                            Ok(checked) => checked,
+                            Err(_) => {
+                                let _ = context.release(payload);
+                                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                            }
+                        };
+                    if context.release(payload).is_err() {
+                        return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                    }
+                    checked
+                }
+                Err(_) => return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32,
+            };
+            if let Some(checked) = native_checked {
+                if context.native_encoded_matches_ir_type(checked, type_) == Some(true) {
+                    return if write_native_value(out, checked) {
+                        0
+                    } else {
+                        let _ = context.release(checked);
+                        php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                    };
+                }
+                if context.release(checked).is_err() {
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                }
+            }
+        }
         let Ok(value) = context.decode(encoded) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
@@ -4702,6 +4747,49 @@ pub(in crate::vm) extern "C" fn jit_native_array_unset_abi(
         let Some(key) = php_runtime::api::ArrayKey::from_value(&key) else {
             return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
         };
+        if context.direct_array_slot(array).is_some() {
+            match context.direct_array_find_encoded(array, &key) {
+                Ok(None) => {
+                    return if write_native_value(out, array) {
+                        0
+                    } else {
+                        php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+                    };
+                }
+                Ok(Some(_)) => {}
+                Err(error) => {
+                    record_native_helper_failure(context, error);
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                }
+            }
+            let target = if context.direct_array_is_unique(array) == Some(true) {
+                Ok(array)
+            } else {
+                context.clone_direct_array_handle(array)
+            };
+            let target = match target {
+                Ok(target) => target,
+                Err(error) => {
+                    record_native_helper_failure(context, error);
+                    return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+                }
+            };
+            if let Err(error) = context.direct_array_remove_encoded(target, &key) {
+                if target != array {
+                    let _ = context.release(target);
+                }
+                record_native_helper_failure(context, error);
+                return php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32;
+            }
+            return if write_native_value(out, target) {
+                0
+            } else {
+                if target != array {
+                    let _ = context.release(target);
+                }
+                php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
+            };
+        }
         if context
             .mutate_array(array, |target| {
                 target.remove(&key);

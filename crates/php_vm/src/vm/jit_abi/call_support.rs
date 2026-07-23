@@ -181,7 +181,22 @@ fn bind_native_by_value_parameter(
         }
         return Ok(context.duplicate_dereferenced_native_value(argument)?);
     };
-    if let Some(value) = context.coerce_native_call_argument_encoded(argument, type_, strict)? {
+    let argument = if builtin_policy == NativeCallableBuiltinPolicy::RequireBaseline {
+        context
+            .duplicate_authoritative_dereferenced_native_value(argument)?
+            .ok_or(NativeCallControl::BaselineRequired)?
+    } else {
+        context.duplicate_dereferenced_native_value(argument)?
+    };
+    let coerced = match context.coerce_native_call_argument_encoded(argument, type_, strict) {
+        Ok(value) => value,
+        Err(error) => {
+            context.release(argument)?;
+            return Err(error.into());
+        }
+    };
+    if let Some(value) = coerced {
+        context.release(argument)?;
         if context.native_encoded_matches_ir_type(value, type_) == Some(true) {
             return Ok(value);
         }
@@ -198,14 +213,19 @@ fn bind_native_by_value_parameter(
     }
 
     if builtin_policy == NativeCallableBuiltinPolicy::RequireBaseline {
+        context.release(argument)?;
         return Err(NativeCallControl::BaselineRequired);
     }
     // Baseline-only compatibility. Exact native callbacks never decode an
     // argument or reconstruct it through the Rust value plane.
-    let mut value = match context.decode(argument)? {
-        Value::Reference(reference) => reference.get(),
-        value => value,
+    let mut value = match context.decode(argument) {
+        Ok(value) => value,
+        Err(error) => {
+            context.release(argument)?;
+            return Err(error.into());
+        }
     };
+    context.release(argument)?;
     value = native_coerce_call_argument(value, type_, strict);
     if !(native_value_matches_ir_type_in_context(context, &value, type_)
         || matches!(type_, php_ir::IrReturnType::Callable)

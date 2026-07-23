@@ -10202,6 +10202,73 @@ impl<'a> NativeRequestColdState<'a> {
         Ok(())
     }
 
+    /// Removes one entry from a uniquely owned authoritative direct array.
+    ///
+    /// The caller performs encoded-handle COW first. Keeping removal in the
+    /// direct entry plane is important for by-value call parameters: mutating
+    /// a shared request slot would otherwise write through into the caller
+    /// even though PHP requires the callee to observe an independent array
+    /// value.
+    fn direct_array_remove_encoded(
+        &mut self,
+        encoded: i64,
+        key: &php_runtime::api::ArrayKey,
+    ) -> Result<(), String> {
+        let (array_index, mut slot) = self
+            .direct_array_slot(encoded)
+            .ok_or_else(|| "native value is not a direct array".to_owned())?;
+        if slot.refcount != 1 {
+            return Err("direct native array removal requires unique ownership".to_owned());
+        }
+        let length = usize::try_from(slot.payload)
+            .map_err(|_| "direct native array length overflow".to_owned())?;
+        let Some(position) = self
+            .direct_array_entries_for(encoded)
+            .ok_or_else(|| "direct native array entries are unavailable".to_owned())?
+            .iter()
+            .position(|entry| self.native_encoded_matches_array_key(entry.key, key))
+        else {
+            return Ok(());
+        };
+        let base = self.direct_array_entries.as_ptr() as usize;
+        let address = usize::try_from(slot.aux)
+            .map_err(|_| "direct native array address overflow".to_owned())?;
+        let entry_size = std::mem::size_of::<php_jit::JitNativeDirectArrayEntry>();
+        let offset = address
+            .checked_sub(base)
+            .ok_or_else(|| "direct native array address is outside its arena".to_owned())?;
+        if offset % entry_size != 0 {
+            return Err("direct native array address is unaligned".to_owned());
+        }
+        let start = offset / entry_size;
+        let removed = self.direct_array_entries[start + position];
+        self.release(removed.key)?;
+        self.release(removed.value)?;
+        self.direct_array_entries
+            .copy_within(start + position + 1..start + length, start + position);
+        let new_length = length - 1;
+        self.direct_array_entries[start + new_length] =
+            php_jit::JitNativeDirectArrayEntry { key: 0, value: 0 };
+
+        let cursor = php_jit::jit_native_direct_array_cursor(slot.flags)
+            .and_then(|cursor| usize::try_from(cursor).ok())
+            .filter(|cursor| *cursor < length)
+            .and_then(|cursor| {
+                if cursor > position {
+                    Some(cursor - 1)
+                } else if cursor == position && position >= new_length {
+                    None
+                } else {
+                    Some(cursor)
+                }
+            })
+            .and_then(|cursor| u32::try_from(cursor).ok());
+        slot.flags = php_jit::jit_native_direct_array_flags(cursor);
+        slot.payload = new_length as u64;
+        self.direct_value_slots[array_index] = slot;
+        Ok(())
+    }
+
     fn publish_direct_object_slots(
         &mut self,
         object: i64,
