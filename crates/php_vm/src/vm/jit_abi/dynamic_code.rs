@@ -255,17 +255,17 @@ fn execute_native_include(
             resolved.canonical_path.display()
         ));
     }
-    if let Some(exports) = exports {
-        register_native_dynamic_unit(context, (*compiled).clone(), exports)
-            .map_err(|error| format!("E_PHP_INCLUDE_EXECUTION: {error}"))?;
-    }
+    let owner_unit = exports
+        .map(|exports| register_native_dynamic_unit(context, (*compiled).clone(), exports))
+        .transpose()
+        .map_err(|error| format!("E_PHP_INCLUDE_EXECUTION: {error}"))?;
     let return_value = match result.return_value {
         Some(Value::Null) if implicit_return => Value::Int(1),
         Some(value) => value,
         None => Value::Int(1),
     };
     context
-        .encode(return_value)
+        .encode(native_value_with_owner_unit(return_value, owner_unit))
         .map(NativeDynamicCodeOutcome::Returned)
 }
 
@@ -428,11 +428,14 @@ fn execute_native_eval(
         context.diagnostic = result.diagnostics.into_iter().next();
         return Err(format!("evaluated native entry failed: {}", result.status));
     }
-    if let Some(exports) = exports {
-        register_native_dynamic_unit(context, dynamic_unit, exports)?;
-    }
+    let owner_unit = exports
+        .map(|exports| register_native_dynamic_unit(context, dynamic_unit, exports))
+        .transpose()?;
     context
-        .encode(result.return_value.unwrap_or(Value::Null))
+        .encode(native_value_with_owner_unit(
+            result.return_value.unwrap_or(Value::Null),
+            owner_unit,
+        ))
         .map(NativeDynamicCodeOutcome::Returned)
 }
 

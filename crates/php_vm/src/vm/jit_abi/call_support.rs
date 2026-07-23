@@ -734,7 +734,7 @@ pub(super) fn create_native_generator_with_metadata_strict(
     strict: bool,
     builtin_policy: NativeCallableBuiltinPolicy,
 ) -> NativeCallResult {
-    let target = NativeGeneratorTarget {
+    let target = NativeExecutionTarget {
         unit: context.current_dynamic_unit,
         function,
         called_class: context.called_classes.last().cloned(),
@@ -769,7 +769,7 @@ fn invoke_native_with_owned_bound_arguments(
     if native_function_is_generator(context, function) {
         return context
             .publish_native_generator_owned(
-                NativeGeneratorTarget {
+                NativeExecutionTarget {
                     unit: context.current_dynamic_unit,
                     function,
                     called_class: context.called_classes.last().cloned(),
@@ -1359,37 +1359,40 @@ fn invoke_native_bound_method(
             ));
         }
         let function = entry.function;
-        let pushed_called_class = entry.flags.is_static;
-        if pushed_called_class {
-            context.called_classes.push(Arc::from(class_name.as_str()));
-        }
-        if native_function_is_generator(context, function) {
-            let result = create_native_generator_with_metadata_strict(
+        let execution_target = NativeExecutionTarget {
+            unit: context.current_dynamic_unit,
+            function,
+            called_class: if entry.flags.is_static {
+                Some(Arc::from(class_name.as_str()))
+            } else {
+                context.called_classes.last().cloned()
+            },
+            scope_class: context
+                .lexical_scope_classes
+                .last()
+                .map(|scope| Arc::from(scope.as_str())),
+        };
+        return context.run_in_native_execution_target(&execution_target, |context| {
+            if native_function_is_generator(context, function) {
+                return create_native_generator_with_metadata_strict(
+                    context,
+                    function,
+                    &call_arguments,
+                    metadata,
+                    strict,
+                    builtin_policy,
+                );
+            }
+            invoke_native_function_with_metadata_strict_at_tier(
                 context,
                 function,
                 &call_arguments,
                 metadata,
                 strict,
+                false,
                 builtin_policy,
-            );
-            if pushed_called_class {
-                context.called_classes.pop();
-            }
-            return result;
-        }
-        let result = invoke_native_function_with_metadata_strict_at_tier(
-            context,
-            function,
-            &call_arguments,
-            metadata,
-            strict,
-            false,
-            builtin_policy,
-        );
-        if pushed_called_class {
-            context.called_classes.pop();
-        }
-        return result;
+            )
+        });
     }
     if let Some((function, _)) = native_external_method(context, &class_name, method) {
         if external_function_is_generator(context, function) {
@@ -1433,9 +1436,8 @@ fn invoke_native_closure_payload(
         return Err(NativeCallControl::BaselineRequired);
     }
     let function = php_ir::FunctionId::new(closure.function);
-    let has_implicit_this = closure
-        .context
-        .owner_unit
+    let owner_unit = closure.context.owner_unit;
+    let has_implicit_this = owner_unit
         .and_then(|unit| context.dynamic_units.get(unit))
         .map(|package| package.compiled.unit())
         .unwrap_or(&*context.unit)
@@ -1488,14 +1490,14 @@ fn invoke_native_closure_payload(
         context.lexical_scope_classes.push(scope_class.to_string());
     }
     let result = (|| -> NativeCallResult {
-        let generator = closure.context.owner_unit.map_or_else(
+        let generator = owner_unit.map_or_else(
             || native_function_is_generator(context, function),
             |unit| {
                 external_function_is_generator(context, NativeDynamicFunction { unit, function })
             },
         );
         if generator {
-            if let Some(unit) = closure.context.owner_unit {
+            if let Some(unit) = owner_unit {
                 return create_native_external_generator_with_metadata_policy(
                     context,
                     NativeDynamicFunction { unit, function },
@@ -1510,24 +1512,24 @@ fn invoke_native_closure_payload(
                     builtin_policy,
                 );
             }
-            let pushed_called_class = closure.context.called_class.is_some();
-            if let Some(called_class) = &closure.context.called_class {
-                context.called_classes.push(Arc::clone(called_class));
-            }
-            let result = create_native_generator_with_metadata_strict(
-                context,
+            let execution_target = NativeExecutionTarget {
+                unit: context.current_dynamic_unit,
                 function,
-                &closure_arguments,
-                metadata,
-                context.unit.strict_types_for_span(instruction.span),
-                builtin_policy,
-            );
-            if pushed_called_class {
-                context.called_classes.pop();
-            }
-            return result;
+                called_class: closure.context.called_class.clone(),
+                scope_class: closure.context.scope_class.clone(),
+            };
+            return context.run_in_native_execution_target(&execution_target, |context| {
+                create_native_generator_with_metadata_strict(
+                    context,
+                    function,
+                    &closure_arguments,
+                    metadata,
+                    context.unit.strict_types_for_span(instruction.span),
+                    builtin_policy,
+                )
+            });
         }
-        if let Some(unit) = closure.context.owner_unit {
+        if let Some(unit) = owner_unit {
             return invoke_native_external_function_with_metadata_policy(
                 context,
                 NativeDynamicFunction { unit, function },
@@ -1542,23 +1544,23 @@ fn invoke_native_closure_payload(
                 builtin_policy,
             );
         }
-        let pushed_called_class = closure.context.called_class.is_some();
-        if let Some(called_class) = &closure.context.called_class {
-            context.called_classes.push(Arc::clone(called_class));
-        }
-        let result = invoke_native_function_with_metadata_strict_at_tier(
-            context,
+        let execution_target = NativeExecutionTarget {
+            unit: context.current_dynamic_unit,
             function,
-            &closure_arguments,
-            metadata,
-            context.unit.strict_types_for_span(instruction.span),
-            false,
-            builtin_policy,
-        );
-        if pushed_called_class {
-            context.called_classes.pop();
-        }
-        result
+            called_class: closure.context.called_class.clone(),
+            scope_class: closure.context.scope_class.clone(),
+        };
+        context.run_in_native_execution_target(&execution_target, |context| {
+            invoke_native_function_with_metadata_strict_at_tier(
+                context,
+                function,
+                &closure_arguments,
+                metadata,
+                context.unit.strict_types_for_span(instruction.span),
+                false,
+                builtin_policy,
+            )
+        })
     })();
     if pushed_scope {
         context.lexical_scope_classes.pop();
@@ -2215,6 +2217,7 @@ pub(super) fn execute_native_generator_method(
 fn take_captured_native_fiber_execution(
     context: &mut NativeRequestColdState<'_>,
     link: u64,
+    fallback: Option<&NativeExecutionTarget>,
 ) -> Result<Option<Box<NativeFiberExecution>>, String> {
     let Some(mut state) = context.take_native_fiber_suspension_state(link)? else {
         return Ok(None);
@@ -2245,9 +2248,15 @@ fn take_captured_native_fiber_execution(
         let active_index = context.direct_generator_index(active).ok_or_else(|| {
             "native Generator Fiber continuation lost its active activation".to_owned()
         })?;
-        let (handle, mut active_state) = context
+        let (target, handle, mut active_state) = context
             .direct_generator(active_index)
-            .and_then(|generator| generator.handle.clone().zip(generator.state))
+            .and_then(|generator| {
+                generator
+                    .handle
+                    .clone()
+                    .zip(generator.state)
+                    .map(|(handle, state)| (generator.target.clone(), handle, state))
+            })
             .ok_or_else(|| {
                 "native Generator Fiber continuation has no compiled activation state".to_owned()
             })?;
@@ -2255,8 +2264,9 @@ fn take_captured_native_fiber_execution(
         if let Some(generator) = context.direct_generator_mut(active_index) {
             generator.state = Some(active_state);
         }
-        let nested = take_captured_native_fiber_execution(context, nested_link)?;
+        let nested = take_captured_native_fiber_execution(context, nested_link, Some(&target))?;
         return Ok(Some(Box::new(NativeFiberExecution {
+            target,
             handle,
             arguments: Vec::new(),
             state: active_state,
@@ -2265,8 +2275,10 @@ fn take_captured_native_fiber_execution(
         })));
     }
     let nested_link = std::mem::take(&mut state.delegation_handle);
-    let function = php_ir::FunctionId::new(state.function_id);
-    let handle = ensure_native_baseline_entry(context, function)?;
+    let target = context.native_execution_target_from_state(&state, fallback)?;
+    let handle = context.run_in_native_execution_target(&target, |context| {
+        ensure_native_baseline_entry(context, target.function)
+    })?;
     let arity = handle
         .region_state_metadata()
         .and_then(|metadata| {
@@ -2282,8 +2294,9 @@ fn take_captured_native_fiber_execution(
                 state.function_id
             )
         })?;
-    let nested = take_captured_native_fiber_execution(context, nested_link)?;
+    let nested = take_captured_native_fiber_execution(context, nested_link, Some(&target))?;
     Ok(Some(Box::new(NativeFiberExecution {
+        target,
         handle,
         arguments: vec![0; usize::from(arity)],
         state,
@@ -2295,6 +2308,7 @@ fn take_captured_native_fiber_execution(
 pub(super) fn finish_native_fiber_outcome(
     context: &mut NativeRequestColdState<'_>,
     fiber: &NativeFiberReceiver,
+    target: NativeExecutionTarget,
     handle: php_jit::JitFunctionHandle,
     arguments: Vec<i64>,
     outcome: php_jit::JitI64InvokeOutcome,
@@ -2322,16 +2336,19 @@ pub(super) fn finish_native_fiber_outcome(
             context.set_fiber_receiver_state(fiber, php_runtime::api::FiberState::Suspended)?;
             let fiber_id = context.fiber_receiver_id(fiber)?;
             let suspension_link = std::mem::take(&mut state.delegation_handle);
-            let nested = match take_captured_native_fiber_execution(context, suspension_link) {
-                Ok(nested) => nested,
-                Err(error) => {
-                    context.discard_native_fiber_suspension_states();
-                    return Err(error);
-                }
-            };
+            let nested =
+                match take_captured_native_fiber_execution(context, suspension_link, Some(&target))
+                {
+                    Ok(nested) => nested,
+                    Err(error) => {
+                        context.discard_native_fiber_suspension_states();
+                        return Err(error);
+                    }
+                };
             context.fiber_executions.insert(
                 fiber_id,
                 NativeFiberExecution {
+                    target,
                     handle,
                     arguments,
                     state,
@@ -2359,10 +2376,26 @@ pub(super) fn finish_native_fiber_outcome(
                 });
             Err(format!("E_PHP_THROW:{class}:{message}"))
         }
-        php_jit::JitI64InvokeOutcome::SideExit { status, .. } => {
+        php_jit::JitI64InvokeOutcome::SideExit { status, state, .. } => {
             context.discard_native_fiber_suspension_states();
             context.set_fiber_receiver_state(fiber, php_runtime::api::FiberState::Errored)?;
-            Err(format!("native fiber returned status {status}"))
+            let diagnostic = context
+                .diagnostic
+                .as_ref()
+                .map(|diagnostic| format!(": {}", diagnostic.message()))
+                .unwrap_or_default();
+            let continuation = context
+                .instruction_for_continuation(state.function_id, state.continuation_id)
+                .map(|instruction| format!(" at {:?}", instruction.kind))
+                .unwrap_or_else(|| {
+                    format!(
+                        " at native continuation {}:{}",
+                        state.function_id, state.continuation_id
+                    )
+                });
+            Err(format!(
+                "native fiber returned status {status}{continuation}{diagnostic}"
+            ))
         }
     }
 }
@@ -2401,6 +2434,7 @@ enum NativeFiberExecutionOutcome {
         value: i64,
     },
     Completed {
+        target: NativeExecutionTarget,
         handle: php_jit::JitFunctionHandle,
         arguments: Vec<i64>,
         outcome: php_jit::JitI64InvokeOutcome,
@@ -2446,10 +2480,15 @@ fn classify_native_fiber_execution_outcome(
         } if status == php_jit::JitCallStatus::SUSPEND_FIBER.0 as i32 => {
             let suspension_link = std::mem::take(&mut state.delegation_handle);
             execution.state = state;
-            execution.nested = take_captured_native_fiber_execution(context, suspension_link)?;
+            execution.nested = take_captured_native_fiber_execution(
+                context,
+                suspension_link,
+                Some(&execution.target),
+            )?;
             Ok(NativeFiberExecutionOutcome::Suspended { execution, value })
         }
         outcome => Ok(NativeFiberExecutionOutcome::Completed {
+            target: execution.target,
             handle: execution.handle,
             arguments: execution.arguments,
             outcome,
@@ -2528,6 +2567,7 @@ fn resume_native_generator_fiber_execution(
     match context.propagate_direct_generator_fiber_advance(frame.active, frame.parents, advance)? {
         NativeGeneratorAdvance::Yielded { key, value } => {
             Ok(NativeFiberExecutionOutcome::Completed {
+                target: execution.target,
                 handle: execution.handle,
                 arguments: execution.arguments,
                 outcome: php_jit::JitI64InvokeOutcome::SideExit {
@@ -2541,6 +2581,7 @@ fn resume_native_generator_fiber_execution(
         NativeGeneratorAdvance::Complete => {
             let missing = php_jit::jit_encode_constant(u32::MAX);
             Ok(NativeFiberExecutionOutcome::Completed {
+                target: execution.target,
                 handle: execution.handle,
                 arguments: execution.arguments,
                 outcome: php_jit::JitI64InvokeOutcome::SideExit {
@@ -2559,9 +2600,15 @@ fn resume_native_generator_fiber_execution(
             let active_index = context.direct_generator_index(active).ok_or_else(|| {
                 "resuspended direct Generator lost its native activation".to_owned()
             })?;
-            let (handle, mut state) = context
+            let (target, handle, mut state) = context
                 .direct_generator(active_index)
-                .and_then(|generator| generator.handle.clone().zip(generator.state))
+                .and_then(|generator| {
+                    generator
+                        .handle
+                        .clone()
+                        .zip(generator.state)
+                        .map(|(handle, state)| (generator.target.clone(), handle, state))
+                })
                 .ok_or_else(|| {
                     "resuspended direct Generator has no compiled activation state".to_owned()
                 })?;
@@ -2569,9 +2616,10 @@ fn resume_native_generator_fiber_execution(
             if let Some(generator) = context.direct_generator_mut(active_index) {
                 generator.state = Some(state);
             }
-            let nested = take_captured_native_fiber_execution(context, nested_link)?;
+            let nested = take_captured_native_fiber_execution(context, nested_link, Some(&target))?;
             Ok(NativeFiberExecutionOutcome::Suspended {
                 execution: NativeFiberExecution {
+                    target,
                     handle,
                     arguments: Vec::new(),
                     state,
@@ -2586,13 +2634,25 @@ fn resume_native_generator_fiber_execution(
 
 fn resume_native_fiber_execution(
     context: &mut NativeRequestColdState<'_>,
-    mut execution: NativeFiberExecution,
+    execution: NativeFiberExecution,
     kind: php_jit::JitNativeResumeInputKind,
     value: i64,
 ) -> Result<NativeFiberExecutionOutcome, String> {
     if let Some(generator) = execution.generator.clone() {
         return resume_native_generator_fiber_execution(context, execution, generator, kind, value);
     }
+    let target = execution.target.clone();
+    context.run_in_native_execution_target(&target, |context| {
+        resume_native_fiber_execution_in_target(context, execution, kind, value)
+    })
+}
+
+fn resume_native_fiber_execution_in_target(
+    context: &mut NativeRequestColdState<'_>,
+    mut execution: NativeFiberExecution,
+    kind: php_jit::JitNativeResumeInputKind,
+    value: i64,
+) -> Result<NativeFiberExecutionOutcome, String> {
     let outcome = if let Some(nested) = execution.nested.take() {
         match resume_native_fiber_execution(context, *nested, kind, value) {
             Ok(NativeFiberExecutionOutcome::Suspended {
@@ -2757,10 +2817,20 @@ pub(super) fn execute_native_fiber_method(
                     return Err("Fiber callback must resolve to a native closure".to_owned());
                 };
                 let function = php_ir::FunctionId::new(closure.function);
-                let handle = ensure_native_entry(context, function)?;
-                let has_implicit_this = closure
-                    .context
-                    .owner_unit
+                let owner_unit = closure.context.owner_unit;
+                let target = NativeExecutionTarget {
+                    unit: owner_unit,
+                    function,
+                    called_class: closure.context.called_class.clone(),
+                    scope_class: closure.context.scope_class.clone(),
+                };
+                if let Some(unit) = target.unit {
+                    prepare_dynamic_native_entry(context, unit, function)?;
+                }
+                let handle = context.run_in_native_execution_target(&target, |context| {
+                    ensure_native_entry(context, function)
+                })?;
+                let has_implicit_this = owner_unit
                     .and_then(|unit| context.dynamic_units.get(unit))
                     .map(|package| package.compiled.unit())
                     .unwrap_or(&*context.unit)
@@ -2820,37 +2890,66 @@ pub(super) fn execute_native_fiber_method(
                         }
                     }
                 }
+                if target.unit != context.current_dynamic_unit
+                    && let Err(error) =
+                        context.stabilize_owned_native_values_for_cross_unit(&mut arguments)
+                {
+                    for argument in arguments {
+                        let _ = context.release_if_live(argument);
+                    }
+                    return Err(error);
+                }
                 context.set_fiber_receiver_state(&fiber, php_runtime::api::FiberState::Running)?;
                 let fiber_id = context.fiber_receiver_id(&fiber)?;
                 let previous_fiber = context.active_fiber.replace(fiber_id);
-                let runtime = context.native_runtime_ptr();
-                let outcome = handle.invoke_i64_with_deopt_runtime(
-                    &arguments,
-                    php_jit::JIT_RUNTIME_ABI_HASH,
-                    runtime,
-                );
-                context.active_fiber = previous_fiber;
-                let (handle, outcome) = match resume_native_optimizing_exit_with_artifact(
-                    context,
-                    Some(handle),
-                    outcome,
-                ) {
-                    Ok((handle, outcome)) => (
-                        handle.expect("Fiber invocation always has an active artifact"),
+                let invocation_target = target.clone();
+                let mut arguments = Some(arguments);
+                let outcome = context.run_in_native_execution_target(&target, |context| {
+                    let arguments = arguments
+                        .take()
+                        .expect("Fiber arguments enter their native frame exactly once");
+                    let runtime = context.native_runtime_ptr();
+                    let outcome = handle.invoke_i64_with_deopt_runtime(
+                        &arguments,
+                        php_jit::JIT_RUNTIME_ABI_HASH,
+                        runtime,
+                    );
+                    let (handle, outcome) = match resume_native_optimizing_exit_with_artifact(
+                        context,
+                        Some(handle),
                         outcome,
-                    ),
-                    Err(error) => {
-                        context.set_fiber_receiver_state(
-                            &fiber,
-                            php_runtime::api::FiberState::Errored,
-                        )?;
-                        for argument in arguments {
-                            context.release_if_live(argument)?;
+                    ) {
+                        Ok((handle, outcome)) => (
+                            handle.expect("Fiber invocation always has an active artifact"),
+                            outcome,
+                        ),
+                        Err(error) => {
+                            for argument in arguments {
+                                context.release_if_live(argument)?;
+                            }
+                            return Err(format!("native fiber invocation failed: {error:?}"));
                         }
-                        return Err(format!("native fiber invocation failed: {error:?}"));
+                    };
+                    finish_native_fiber_outcome(
+                        context,
+                        &fiber,
+                        invocation_target,
+                        handle,
+                        arguments,
+                        outcome,
+                    )
+                });
+                context.active_fiber = previous_fiber;
+                if let Some(arguments) = arguments {
+                    for argument in arguments {
+                        context.release_if_live(argument)?;
                     }
-                };
-                finish_native_fiber_outcome(context, &fiber, handle, arguments, outcome)
+                }
+                if outcome.is_err() {
+                    context
+                        .set_fiber_receiver_state(&fiber, php_runtime::api::FiberState::Errored)?;
+                }
+                outcome
             }
             "resume" | "throw" => {
                 if context.fiber_receiver_state(&fiber)? != php_runtime::api::FiberState::Suspended
@@ -2865,10 +2964,32 @@ pub(super) fn execute_native_fiber_method(
                     .fiber_executions
                     .remove(&fiber_id)
                     .ok_or_else(|| "native fiber suspension state is missing".to_owned())?;
-                let value = encoded
-                    .get(1)
-                    .copied()
-                    .unwrap_or_else(|| php_jit::jit_encode_constant(u32::MAX));
+                let resume_target = execution.resume_target().clone();
+                let mut value = if let Some(value) = encoded.get(1).copied() {
+                    if matches!(&fiber, NativeFiberReceiver::Direct(_)) {
+                        match context.duplicate_authoritative_dereferenced_native_value(value)? {
+                            Some(value) => value,
+                            // Materialized values are admitted only after the
+                            // explicit baseline-native Fiber boundary.
+                            None => context.duplicate_dereferenced_native_value(value)?,
+                        }
+                    } else {
+                        context.duplicate_dereferenced_native_value(value)?
+                    }
+                } else {
+                    php_jit::jit_encode_constant(u32::MAX)
+                };
+                if resume_target.unit != context.current_dynamic_unit {
+                    let mut input = [value];
+                    if let Err(error) =
+                        context.stabilize_owned_native_values_for_cross_unit(&mut input)
+                    {
+                        let _ = context.release_if_live(value);
+                        context.abandon_native_fiber_execution(execution)?;
+                        return Err(error);
+                    }
+                    value = input[0];
+                }
                 context.set_fiber_receiver_state(&fiber, php_runtime::api::FiberState::Running)?;
                 let kind = if method.eq_ignore_ascii_case("throw") {
                     php_jit::JitNativeResumeInputKind::THROW
@@ -2888,6 +3009,7 @@ pub(super) fn execute_native_fiber_method(
                         Ok(value)
                     }
                     Ok(NativeFiberExecutionOutcome::Completed {
+                        target,
                         handle,
                         arguments,
                         outcome,
@@ -2899,7 +3021,16 @@ pub(super) fn execute_native_fiber_method(
                                     .to_owned(),
                             );
                         }
-                        finish_native_fiber_outcome(context, &fiber, handle, arguments, outcome)
+                        context.run_in_native_execution_target(&target, |context| {
+                            finish_native_fiber_outcome(
+                                context,
+                                &fiber,
+                                target.clone(),
+                                handle,
+                                arguments,
+                                outcome,
+                            )
+                        })
                     }
                     Err(error) => {
                         context.set_fiber_receiver_state(

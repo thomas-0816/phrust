@@ -100,7 +100,7 @@ pub(super) fn register_native_dynamic_unit(
     context: &mut NativeRequestColdState<'_>,
     compiled: crate::compiled_unit::CompiledUnit,
     exports: NativeIncludeExports,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let entry = compiled.unit().entry;
     compiled
         .unit()
@@ -241,7 +241,7 @@ pub(super) fn register_native_dynamic_unit(
             }
             callback
         }));
-    Ok(())
+    Ok(unit)
 }
 
 pub(in crate::vm) fn native_entries_from_records(

@@ -1536,6 +1536,8 @@ pub(super) struct NativeRequestColdState<'a> {
     /// it installs the suspended Fiber execution tree.
     fiber_suspension_states: php_runtime::api::StableNativeArena<php_jit::JitDeoptState>,
     fiber_suspension_next: Box<u32>,
+    native_execution_scopes: Vec<NativeExecutionScope>,
+    current_native_execution_scope: u32,
     native_method_pics: std::collections::BTreeMap<u64, NativeMethodPic>,
     pub(super) output: php_runtime::api::OutputBuffer,
     values: Vec<Option<NativeStoredValue>>,
@@ -2008,16 +2010,33 @@ struct NativeDirectFiber {
     return_value: Option<i64>,
 }
 
-#[derive(Clone)]
-struct NativeGeneratorTarget {
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeExecutionScope {
+    unit: Option<usize>,
+    called_class: Option<Arc<str>>,
+    scope_class: Option<Arc<str>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeExecutionTarget {
     unit: Option<usize>,
     function: php_ir::FunctionId,
     called_class: Option<Arc<str>>,
     scope_class: Option<Arc<str>>,
 }
 
+impl NativeExecutionTarget {
+    fn scope(&self) -> NativeExecutionScope {
+        NativeExecutionScope {
+            unit: self.unit,
+            called_class: self.called_class.clone(),
+            scope_class: self.scope_class.clone(),
+        }
+    }
+}
+
 struct NativeDirectGenerator {
-    target: NativeGeneratorTarget,
+    target: NativeExecutionTarget,
     /// These owners transfer into the generated activation on first entry.
     /// Thereafter the suspension snapshot or generated epilogue owns them.
     arguments: Vec<i64>,
@@ -2372,11 +2391,20 @@ struct NativeGeneratorFiberFrame {
 }
 
 struct NativeFiberExecution {
+    target: NativeExecutionTarget,
     handle: php_jit::JitFunctionHandle,
     arguments: Vec<i64>,
     state: php_jit::JitDeoptState,
     nested: Option<Box<NativeFiberExecution>>,
     generator: Option<NativeGeneratorFiberFrame>,
+}
+
+impl NativeFiberExecution {
+    fn resume_target(&self) -> &NativeExecutionTarget {
+        self.nested
+            .as_deref()
+            .map_or(&self.target, NativeFiberExecution::resume_target)
+    }
 }
 
 impl<'a> NativeRequestColdState<'a> {
@@ -2418,6 +2446,7 @@ impl<'a> NativeRequestColdState<'a> {
         execution: NativeFiberExecution,
     ) -> Result<(), String> {
         let NativeFiberExecution {
+            target: _,
             handle,
             arguments: _,
             state,
@@ -2741,6 +2770,12 @@ impl<'a> NativeRequestColdState<'a> {
                 php_jit::JIT_NATIVE_FIBER_SUSPENSION_CAPACITY,
             ),
             fiber_suspension_next: Box::new(0),
+            native_execution_scopes: vec![NativeExecutionScope {
+                unit: None,
+                called_class: None,
+                scope_class: None,
+            }],
+            current_native_execution_scope: 1,
             native_method_pics: std::collections::BTreeMap::new(),
             output,
             values: value_arena.values,
@@ -3636,6 +3671,8 @@ impl<'a> NativeRequestColdState<'a> {
             let _ = self.release_if_live(value);
         }
         self.discard_native_fiber_suspension_states();
+        self.native_execution_scopes.truncate(1);
+        self.current_native_execution_scope = 1;
         self.active_fiber = None;
         // ObjectRef identities may escape an include/nested VM through
         // globals or returned symbols. Their native property cells point into
@@ -5152,9 +5189,10 @@ impl<'a> NativeRequestColdState<'a> {
             }
             php_ir::IrConstant::String(value) => self.encode_direct_string_bytes(value.as_bytes()),
             php_ir::IrConstant::StringBytes(value) => self.encode_direct_string_bytes(&value),
-            php_ir::IrConstant::NamedConstant(_)
-            | php_ir::IrConstant::ClassConstant { .. }
-            | php_ir::IrConstant::Array(_) => {
+            constant @ php_ir::IrConstant::Array(_) => {
+                self.encode_native_ir_constant_owned(&constant)
+            }
+            php_ir::IrConstant::NamedConstant(_) | php_ir::IrConstant::ClassConstant { .. } => {
                 let encoded = php_jit::jit_encode_constant(index);
                 self.decode(encoded).and_then(|value| self.encode(value))
             }
@@ -6681,7 +6719,7 @@ impl<'a> NativeRequestColdState<'a> {
 
     fn publish_native_generator_owned(
         &mut self,
-        target: NativeGeneratorTarget,
+        target: NativeExecutionTarget,
         arguments: Vec<i64>,
     ) -> Result<i64, String> {
         let index = match self.reserve_direct_value_slot() {
@@ -9374,6 +9412,35 @@ impl<'a> NativeRequestColdState<'a> {
         Ok(())
     }
 
+    /// Rehomes only unit-indexed immediates before already-owned native frame
+    /// values cross into another IR unit. Direct values keep the same owner;
+    /// direct arrays keep the same COW identity while their embedded constant
+    /// indexes are stabilized in place.
+    fn stabilize_owned_native_values_for_cross_unit(
+        &mut self,
+        values: &mut [i64],
+    ) -> Result<(), String> {
+        for encoded in values {
+            let unit_local_constant = php_jit::jit_decode_constant(*encoded).is_some_and(|index| {
+                index != u32::MAX
+                    && index != php_jit::JIT_VALUE_UNINITIALIZED
+                    && index != php_jit::JIT_VALUE_FALSE
+                    && index != php_jit::JIT_VALUE_TRUE
+            });
+            if unit_local_constant {
+                *encoded = self.stabilize_active_unit_constant(
+                    php_jit::jit_decode_constant(*encoded)
+                        .expect("unit-local constant was classified above"),
+                )?;
+                continue;
+            }
+            if self.direct_array_slot(*encoded).is_some() {
+                self.stabilize_direct_array_for_cross_unit(*encoded)?;
+            }
+        }
+        Ok(())
+    }
+
     fn stabilize_cross_unit_value(&mut self, encoded: i64) -> Result<i64, String> {
         let Some(constant) = php_jit::jit_decode_constant(encoded) else {
             return Ok(encoded);
@@ -9387,8 +9454,7 @@ impl<'a> NativeRequestColdState<'a> {
         ) {
             return Ok(encoded);
         }
-        let value = self.decode(encoded)?;
-        self.encode(value)
+        self.stabilize_active_unit_constant(constant)
     }
 
     fn direct_array_length(&self, encoded: i64) -> Option<usize> {
@@ -9972,33 +10038,152 @@ impl<'a> NativeRequestColdState<'a> {
         }
     }
 
-    fn run_in_native_generator_target<R>(
+    fn register_native_execution_scope(
         &mut self,
-        target: &NativeGeneratorTarget,
-        operation: impl FnOnce(&mut Self) -> Result<R, String>,
-    ) -> Result<R, String> {
-        let called_class = target.called_class.clone();
-        let scope_class = target.scope_class.clone();
-        let run = move |context: &mut Self| {
-            if let Some(called_class) = called_class {
-                context.called_classes.push(called_class);
-            }
-            if let Some(scope_class) = scope_class {
-                context.lexical_scope_classes.push(scope_class.to_string());
-            }
-            let result = operation(context);
-            if target.scope_class.is_some() {
-                context.lexical_scope_classes.pop();
-            }
-            if target.called_class.is_some() {
-                context.called_classes.pop();
-            }
-            result
-        };
-        match target.unit {
-            Some(unit) => self.with_active_dynamic_unit(unit, run)?,
-            None => run(self),
+        scope: NativeExecutionScope,
+    ) -> Result<u32, String> {
+        if let Some(index) = self
+            .native_execution_scopes
+            .iter()
+            .position(|candidate| candidate == &scope)
+        {
+            return u32::try_from(index + 1)
+                .map_err(|_| "native execution scope identity overflow".to_owned());
         }
+        self.native_execution_scopes.push(scope);
+        u32::try_from(self.native_execution_scopes.len())
+            .map_err(|_| "native execution scope identity overflow".to_owned())
+    }
+
+    fn native_execution_target_from_state(
+        &self,
+        state: &php_jit::JitDeoptState,
+        fallback: Option<&NativeExecutionTarget>,
+    ) -> Result<NativeExecutionTarget, String> {
+        let identity = state.runtime_view.fiber_execution_scope;
+        let index = usize::try_from(identity)
+            .ok()
+            .and_then(|identity| identity.checked_sub(1))
+            .ok_or_else(|| "suspended native activation has no execution scope".to_owned())?;
+        let recorded = self
+            .native_execution_scopes
+            .get(index)
+            .ok_or_else(|| format!("suspended native execution scope {identity} is missing"))?;
+        let function_entries = state.runtime_view.trusted_function_entries;
+        let inferred_unit = self
+            .dynamic_units
+            .iter()
+            .enumerate()
+            .find_map(|(unit, package)| {
+                let entries = package
+                    .compiled
+                    .prepared_deployment_image()
+                    .native_function_entries
+                    .as_ptr() as usize as u64;
+                (entries == function_entries).then_some(Some(unit))
+            })
+            .or_else(|| {
+                let entries = self
+                    .compiled
+                    .prepared_deployment_image()
+                    .native_function_entries
+                    .as_ptr() as usize as u64;
+                (self.current_dynamic_unit.is_none() && entries == function_entries).then_some(None)
+            })
+            .unwrap_or(recorded.unit);
+        let same_activation =
+            fallback.is_some_and(|fallback| fallback.function.raw() == state.function_id);
+        let scope = fallback
+            .filter(|fallback| {
+                same_activation
+                    || (recorded.unit != inferred_unit && fallback.unit == inferred_unit)
+            })
+            .map_or_else(|| recorded.clone(), NativeExecutionTarget::scope);
+        let inferred_unit = if same_activation {
+            fallback.and_then(|fallback| fallback.unit)
+        } else {
+            inferred_unit
+        };
+        Ok(NativeExecutionTarget {
+            unit: inferred_unit,
+            function: php_ir::FunctionId::new(state.function_id),
+            called_class: scope.called_class.clone(),
+            scope_class: scope.scope_class.clone(),
+        })
+    }
+
+    fn run_in_native_execution_target<R, E>(
+        &mut self,
+        target: &NativeExecutionTarget,
+        operation: impl FnOnce(&mut Self) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        E: From<String>,
+    {
+        let identity = self
+            .register_native_execution_scope(target.scope())
+            .map_err(E::from)?;
+        let previous_identity =
+            std::mem::replace(&mut self.current_native_execution_scope, identity);
+        let push_called_class = target
+            .called_class
+            .as_ref()
+            .is_some_and(|called_class| self.called_classes.last() != Some(called_class));
+        if push_called_class {
+            self.called_classes.push(
+                target
+                    .called_class
+                    .as_ref()
+                    .expect("called class was classified above")
+                    .clone(),
+            );
+        }
+        let push_scope_class = target.scope_class.as_ref().is_some_and(|scope_class| {
+            self.lexical_scope_classes.last().map(String::as_str) != Some(scope_class.as_ref())
+        });
+        if push_scope_class {
+            self.lexical_scope_classes.push(
+                target
+                    .scope_class
+                    .as_ref()
+                    .expect("scope class was classified above")
+                    .to_string(),
+            );
+        }
+
+        let target_is_active = match target.unit {
+            Some(unit) => {
+                self.current_dynamic_unit == Some(unit)
+                    && self.dynamic_units.get(unit).is_some_and(|package| {
+                        package.compiled.artifact_identity() == self.compiled.artifact_identity()
+                    })
+            }
+            None => self.current_dynamic_unit.is_none(),
+        };
+        let result = if target_is_active {
+            let _runtime_view = activate_native_context(self);
+            operation(self)
+        } else {
+            match target.unit {
+                Some(unit) => self
+                    .with_active_dynamic_unit(unit, operation)
+                    .map_err(E::from)?,
+                None => Err(E::from(format!(
+                    "root native execution target {} cannot run inside dynamic unit {:?}",
+                    target.function.raw(),
+                    self.current_dynamic_unit,
+                ))),
+            }
+        };
+
+        if push_scope_class {
+            self.lexical_scope_classes.pop();
+        }
+        if push_called_class {
+            self.called_classes.pop();
+        }
+        self.current_native_execution_scope = previous_identity;
+        result
     }
 
     fn duplicate_direct_generator_value(&mut self, encoded: i64) -> Result<i64, String> {
@@ -10198,7 +10383,7 @@ impl<'a> NativeRequestColdState<'a> {
         };
         let handle = match saved_handle {
             Some(handle) => handle,
-            None => self.run_in_native_generator_target(&target, |context| {
+            None => self.run_in_native_execution_target(&target, |context| {
                 ensure_native_entry(context, target.function)
             })?,
         };
@@ -10207,7 +10392,7 @@ impl<'a> NativeRequestColdState<'a> {
             generator.handle = Some(handle.clone());
         }
         let invocation_handle = handle.clone();
-        let outcome = self.run_in_native_generator_target(&target, |context| {
+        let outcome = self.run_in_native_execution_target(&target, |context| {
             let runtime = context.native_runtime_ptr();
             let outcome = if let Some(state) = saved_state.as_ref() {
                 if context.completed_nested_fiber_call.as_ref().is_some_and(
@@ -11642,7 +11827,7 @@ pub(super) fn activate_native_context(
             as u64,
         fiber_suspension_capacity: u32::try_from(context.fiber_suspension_states.capacity())
             .unwrap_or(u32::MAX),
-        fiber_suspension_reserved: 0,
+        fiber_execution_scope: context.current_native_execution_scope,
         poll_counter: std::ptr::from_mut(context.native_poll_counter.as_mut()) as usize as u64,
         root_mutation_pending: std::ptr::from_mut(context.native_root_mutation_pending.as_mut())
             as usize as u64,
@@ -13568,13 +13753,19 @@ fn invoke_native_external_function_with_metadata_at_tier(
     }
     let transferred_arguments =
         transfer_native_external_arguments(context, arguments, builtin_policy)?;
-    let result = context.with_active_dynamic_unit(target.unit, |context| {
-        let pushed_called_class = called_class.is_some();
-        if let Some(called_class) = &called_class {
-            context
-                .called_classes
-                .push(Arc::from(called_class.as_str()));
-        }
+    let execution_target = NativeExecutionTarget {
+        unit: Some(target.unit),
+        function: target.function,
+        called_class: called_class
+            .as_deref()
+            .map(Arc::from)
+            .or_else(|| context.called_classes.last().cloned()),
+        scope_class: context
+            .lexical_scope_classes
+            .last()
+            .map(|scope| Arc::from(scope.as_str())),
+    };
+    let result = context.run_in_native_execution_target(&execution_target, |context| {
         let result = if baseline_continuation {
             invoke_native_resolved_function_with_metadata_strict(
                 context,
@@ -13594,9 +13785,6 @@ fn invoke_native_external_function_with_metadata_at_tier(
                 builtin_policy,
             )
         };
-        if pushed_called_class {
-            context.called_classes.pop();
-        }
         match result {
             Ok(encoded) => Ok(context.transfer_external_return(encoded, target.unit)?),
             Err(NativeCallControl::Exit(encoded)) => {
@@ -13613,10 +13801,9 @@ fn invoke_native_external_function_with_metadata_at_tier(
         }
     }
     match (result, release_error) {
-        (Err(error), _) => Err(error.into()),
-        (Ok(Err(control)), _) => Err(control),
-        (Ok(Ok(_)), Some(error)) => Err(error.into()),
-        (Ok(Ok(value)), None) => Ok(value),
+        (Err(control), _) => Err(control),
+        (Ok(_), Some(error)) => Err(error.into()),
+        (Ok(value), None) => Ok(value),
     }
 }
 
@@ -13686,13 +13873,19 @@ fn create_native_external_generator_with_metadata_policy(
         return Err(NativeCallControl::BaselineRequired);
     }
     let transferred = transfer_native_external_arguments(context, arguments, builtin_policy)?;
-    let result = context.with_active_dynamic_unit(target.unit, |context| {
-        let pushed_called_class = called_class.is_some();
-        if let Some(called_class) = &called_class {
-            context
-                .called_classes
-                .push(Arc::from(called_class.as_str()));
-        }
+    let execution_target = NativeExecutionTarget {
+        unit: Some(target.unit),
+        function: target.function,
+        called_class: called_class
+            .as_deref()
+            .map(Arc::from)
+            .or_else(|| context.called_classes.last().cloned()),
+        scope_class: context
+            .lexical_scope_classes
+            .last()
+            .map(|scope| Arc::from(scope.as_str())),
+    };
+    let result = context.run_in_native_execution_target(&execution_target, |context| {
         let result = create_native_generator_with_metadata_strict(
             context,
             target.function,
@@ -13701,9 +13894,6 @@ fn create_native_external_generator_with_metadata_policy(
             strict,
             builtin_policy,
         );
-        if pushed_called_class {
-            context.called_classes.pop();
-        }
         result
     });
     let mut release_error = None;
@@ -13713,10 +13903,9 @@ fn create_native_external_generator_with_metadata_policy(
         }
     }
     match (result, release_error) {
-        (Err(error), _) => Err(error.into()),
-        (Ok(Err(control)), _) => Err(control),
-        (Ok(Ok(_)), Some(error)) => Err(error.into()),
-        (Ok(Ok(generator)), None) => Ok(generator),
+        (Err(control), _) => Err(control),
+        (Ok(_), Some(error)) => Err(error.into()),
+        (Ok(generator), None) => Ok(generator),
     }
 }
 
@@ -13757,7 +13946,7 @@ fn invoke_native_method_with_trace_arguments(
         // the body synchronously.
         return context
             .publish_native_generator_owned(
-                NativeGeneratorTarget {
+                NativeExecutionTarget {
                     unit: context.current_dynamic_unit,
                     function,
                     called_class: context.called_classes.last().cloned(),
@@ -15252,7 +15441,7 @@ fn execute_native_class_constant(
             .iter()
             .find(|entry| entry.name.eq_ignore_ascii_case(constant))
         {
-            let caller = native_calling_class(context, caller_function);
+            let caller = native_effective_calling_class(context, caller_function);
             if entry.flags.is_private && caller.is_none_or(|caller| caller.name != class.name) {
                 return Some(Err(format!(
                     "E_PHP_THROW:Error:Cannot access private constant {}::{}",
@@ -15386,7 +15575,7 @@ fn execute_native_class_constant(
             .iter()
             .find(|entry| entry.name.eq_ignore_ascii_case(constant))
         {
-            let caller = native_calling_class(context, caller_function);
+            let caller = native_effective_calling_class(context, caller_function);
             if entry.flags.is_private && caller.is_none_or(|caller| caller.name != class.name) {
                 return Some(Err(format!(
                     "E_PHP_THROW:Error:Cannot access private constant {}::{}",
