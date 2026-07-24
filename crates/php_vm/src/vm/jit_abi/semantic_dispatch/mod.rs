@@ -18,6 +18,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_abi(
     operation: u32,
     operands: *const i64,
     operand_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     // SAFETY: this is the production instantiation; publication validated the
@@ -31,6 +32,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_abi(
             operation,
             operands,
             operand_count,
+            transition_state,
             out,
         )
     }
@@ -48,6 +50,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_diagnostic_abi(
     operation: u32,
     operands: *const i64,
     operand_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     // SAFETY: diagnostic publication validates the same generated ABI.
@@ -60,6 +63,7 @@ pub(in crate::vm) extern "C" fn jit_native_semantic_dispatch_diagnostic_abi(
             operation,
             operands,
             operand_count,
+            transition_state,
             out,
         )
     }
@@ -74,6 +78,7 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
     operation: u32,
     operands: *const i64,
     operand_count: u32,
+    transition_state: *mut php_jit::JitDeoptState,
     out: *mut php_jit::JitCallResult,
 ) -> i32 {
     debug_assert!(!runtime.is_null());
@@ -118,24 +123,14 @@ unsafe fn jit_native_semantic_dispatch_impl<const DIAGNOSTIC: bool>(
         function,
         continuation,
     );
-    let outcome = match outcome {
-        Ok(encoded) if operation == php_jit::region_ir::RegionSemanticOperationId::BindGlobal => {
-            let php_ir::InstructionKind::BindGlobal { name, .. } = &instruction.kind else {
-                unreachable!("validated BindGlobal callsite must retain its source name")
-            };
-            context
-                .publish_native_global_reference(function, continuation, name, encoded)
-                .map(|()| encoded)
-        }
-        outcome => outcome,
-    };
     if DIAGNOSTIC {
         context.exit_runtime_helper(helper_id);
     }
     super::call_dispatch::finish_native_dispatch_outcome(
         runtime,
-        Some(outcome),
+        Some(outcome.map_err(NativeCallControl::from_baseline_error)),
         Some(descriptor.span),
+        transition_state,
         out,
     )
 }
@@ -232,7 +227,12 @@ pub(super) fn execute_native_semantic_operation(
             caller_function,
             Some(continuation),
         ),
-        Id::BindGlobal => execute_native_bind_global(context, instruction),
+        Id::BindGlobal => {
+            return Err(
+                "JIT_NATIVE_BIND_GLOBAL_PLAN_MISSING: global binding must use its prepared direct reference plan"
+                    .to_owned(),
+            );
+        }
         Id::BoundClosureClass => return execute_bound_closure_class(context, arguments),
         Id::ObjectClassName => None,
     };

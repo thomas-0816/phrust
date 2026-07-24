@@ -9,7 +9,7 @@
 /// Bump this whenever lowering starts emitting different (still-compatible)
 /// IR for the same source, so content-addressed native caches recompile
 /// instead of serving the older lowering forever.
-pub const IR_LOWERING_REVISION: u32 = 5;
+pub const IR_LOWERING_REVISION: u32 = 6;
 
 pub mod block;
 pub mod builder;
@@ -34,7 +34,9 @@ pub use compilation::{
     CompilationSource, UnresolvedTraitRequest,
 };
 pub use constants::IrConstant;
-pub use function::{FunctionFlags, IrCapture, IrFunction, IrParam, IrReturnType};
+pub use function::{
+    FunctionFlags, IrCapture, IrFunction, IrParam, IrReturnType, is_compiler_generated_local_name,
+};
 pub use ids::{BlockId, ClassId, ConstId, FileId, FunctionId, InstrId, LocalId, RegId, UnitId};
 pub use instruction::{
     BinaryOp, CallableKind, CastKind, ClosureCaptureArg, CompareOp, IncludeKind, Instruction,

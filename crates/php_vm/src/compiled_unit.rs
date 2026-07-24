@@ -193,11 +193,13 @@ pub(crate) struct PreparedDeploymentNativeImage {
     /// Rust `Value` or allocating a request-local string handle.
     pub constant_views: Box<[php_jit::JitNativeConstantView]>,
     /// Dense baseline publication cells indexed by `FunctionId`. Generated
-    /// code loads these cells directly. Optimizing entries are intentionally
-    /// not stored here until the native ABI can preserve an optimized caller
-    /// continuation across a callee side exit.
+    /// code uses these only for an exact continuation after an optimizing
+    /// callee side exit.
     pub native_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
-    pub optimizing_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
+    /// Dense ordinary-call cells indexed by `FunctionId`. Every published
+    /// baseline initializes its cell and an optimizing publication atomically
+    /// replaces that target, so generated calls never select a tier.
+    pub preferred_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
 }
 
 impl PreparedUnit {
@@ -281,6 +283,8 @@ struct PreparedNativeIndexes {
     continuation_instructions: Arc<Vec<Vec<Option<Arc<php_ir::Instruction>>>>>,
     callsites: Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>>,
     property_sites: Arc<Vec<Vec<Option<PreparedNativePropertySite>>>>,
+    closure_sites: Arc<Vec<Vec<Option<Arc<PreparedNativeClosureSite>>>>>,
+    global_sites: Arc<Vec<Vec<Option<Arc<str>>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -288,6 +292,17 @@ pub(crate) struct PreparedNativePropertySite {
     pub class_index: u32,
     pub property: Arc<str>,
     pub required_state: u32,
+}
+
+/// Immutable exact allocation metadata for one `MakeClosure` continuation.
+/// Capture values remain native and are supplied by generated code; this
+/// record owns only source/debug descriptors and the target identity.
+#[derive(Debug)]
+pub(crate) struct PreparedNativeClosureSite {
+    pub function: FunctionId,
+    pub capture_descriptors: Arc<[(String, bool)]>,
+    pub debug: Option<php_runtime::api::ClosureDebugInfo>,
+    pub binds_this: bool,
 }
 
 /// Typed operation selected by one native callsite descriptor.
@@ -316,6 +331,7 @@ pub(crate) struct NativeCallSiteDescriptor {
     pub kind: NativeCallSiteKind,
     pub span: IrSpan,
     pub target_symbol: Option<Arc<str>>,
+    pub target_class: Option<Arc<str>>,
     pub target_function: Option<FunctionId>,
     /// Stable builtin entry resolved once with immutable callsite metadata.
     /// Generated code and this immutable table are published together, so the
@@ -665,7 +681,7 @@ impl CompiledUnit {
                 native_function_entries: (0..unit.functions.len())
                     .map(|_| std::sync::atomic::AtomicUsize::new(0))
                     .collect(),
-                optimizing_function_entries: (0..unit.functions.len())
+                preferred_function_entries: (0..unit.functions.len())
                     .map(|_| std::sync::atomic::AtomicUsize::new(0))
                     .collect(),
             }
@@ -893,12 +909,16 @@ impl CompiledUnit {
             let mut instructions = Vec::with_capacity(self.inner.unit.functions.len());
             let mut callsites = Vec::with_capacity(self.inner.unit.functions.len());
             let mut property_sites = Vec::with_capacity(self.inner.unit.functions.len());
+            let mut closure_sites = Vec::with_capacity(self.inner.unit.functions.len());
+            let mut global_sites = Vec::with_capacity(self.inner.unit.functions.len());
             let metadata = php_jit::region_ir::CompileMetadata::default();
             for function_index in 0..self.inner.unit.functions.len() {
                 let function = FunctionId::new(function_index as u32);
                 let mut function_instructions = Vec::new();
                 let mut function_callsites = Vec::new();
                 let mut function_property_sites = Vec::new();
+                let mut function_closure_sites = Vec::new();
+                let mut function_global_sites = Vec::new();
                 if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
                     &self.inner.unit,
                     function,
@@ -917,6 +937,12 @@ impl CompiledUnit {
                             }
                             function_instructions[continuation] =
                                 Some(Arc::clone(&semantic_instruction));
+                            if let Some(name) = instruction.native_global_name.as_deref() {
+                                if function_global_sites.len() <= continuation {
+                                    function_global_sites.resize_with(continuation + 1, || None);
+                                }
+                                function_global_sites[continuation] = Some(Arc::from(name));
+                            }
                             let property_site = match &instruction.kind {
                                 php_jit::region_ir::RegionInstructionKind::FetchProperty {
                                     property,
@@ -981,11 +1007,77 @@ impl CompiledUnit {
                                 }
                                 function_property_sites[continuation] = Some(property_site);
                             }
+                            if let php_jit::region_ir::RegionInstructionKind::NativeDynamicCode(
+                                php_jit::region_ir::RegionNativeDynamicCode::MakeClosure {
+                                    function: closure_function,
+                                    captures,
+                                    binds_this,
+                                    ..
+                                },
+                            ) = &instruction.kind
+                            {
+                                let debug = self
+                                    .inner
+                                    .unit
+                                    .functions
+                                    .get(closure_function.index())
+                                    .and_then(|function| {
+                                        let file =
+                                            self.inner.unit.files.get(function.span.file.index())?;
+                                        let line = self
+                                            .source_display_line(function.span, false)
+                                            .unwrap_or(1);
+                                        Some(php_runtime::api::ClosureDebugInfo {
+                                            name: format!("{{closure:{}:{line}}}", file.path),
+                                            file: file.path.clone(),
+                                            line,
+                                            parameters: function
+                                                .params
+                                                .iter()
+                                                .map(|parameter| {
+                                                    php_runtime::api::ClosureDebugParameter {
+                                                        name: parameter.name.clone(),
+                                                        required: parameter.required,
+                                                    }
+                                                })
+                                                .collect(),
+                                        })
+                                    });
+                                if function_closure_sites.len() <= continuation {
+                                    function_closure_sites
+                                        .resize_with(continuation + 1, || None);
+                                }
+                                function_closure_sites[continuation] =
+                                    Some(Arc::new(PreparedNativeClosureSite {
+                                        function: *closure_function,
+                                        capture_descriptors: Arc::from(
+                                            captures
+                                                .iter()
+                                                .map(|capture| {
+                                                    (capture.name.clone(), capture.by_ref)
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        ),
+                                        debug,
+                                        binds_this: *binds_this,
+                                    }));
+                            }
                             if let php_jit::region_ir::RegionInstructionKind::NativeCall(call) =
                                 &instruction.kind
                             {
                                 let (kind, target_symbol, target_function) =
                                     native_callsite_target(&call.target);
+                                let target_class = match &call.target {
+                                    php_jit::region_ir::RegionCallTarget::StaticMethod {
+                                        class_name,
+                                        ..
+                                    }
+                                    | php_jit::region_ir::RegionCallTarget::Constructor {
+                                        class_name,
+                                        ..
+                                    } => Some(Arc::from(class_name.as_str())),
+                                    _ => None,
+                                };
                                 let direct_builtin = if kind == NativeCallSiteKind::Function
                                     && target_function.is_none()
                                 {
@@ -1022,6 +1114,7 @@ impl CompiledUnit {
                                         kind,
                                         span: instruction.span,
                                         target_symbol,
+                                        target_class,
                                         target_function,
                                         direct_builtin,
                                         arguments: Arc::from(call.args.clone()),
@@ -1037,11 +1130,15 @@ impl CompiledUnit {
                 instructions.push(function_instructions);
                 callsites.push(function_callsites);
                 property_sites.push(function_property_sites);
+                closure_sites.push(function_closure_sites);
+                global_sites.push(function_global_sites);
             }
             PreparedNativeIndexes {
                 continuation_instructions: Arc::new(instructions),
                 callsites: Arc::new(callsites),
                 property_sites: Arc::new(property_sites),
+                closure_sites: Arc::new(closure_sites),
+                global_sites: Arc::new(global_sites),
             }
         })
     }
@@ -1062,6 +1159,16 @@ impl CompiledUnit {
         &self,
     ) -> Arc<Vec<Vec<Option<PreparedNativePropertySite>>>> {
         Arc::clone(&self.prepared_native_indexes().property_sites)
+    }
+
+    pub(crate) fn prepared_native_closure_sites(
+        &self,
+    ) -> Arc<Vec<Vec<Option<Arc<PreparedNativeClosureSite>>>>> {
+        Arc::clone(&self.prepared_native_indexes().closure_sites)
+    }
+
+    pub(crate) fn prepared_native_global_sites(&self) -> Arc<Vec<Vec<Option<Arc<str>>>>> {
+        Arc::clone(&self.prepared_native_indexes().global_sites)
     }
 
     fn prepared_external_function_call_index(&self) -> &PreparedExternalFunctionCalls {
@@ -1197,13 +1304,7 @@ impl CompiledUnit {
                                 .map(|file| Arc::from(file.path.as_str())),
                             trace_line: self.source_display_line(function.span, false).unwrap_or(0),
                             capture_count: function.captures.len(),
-                            implicit_closure_this: function.flags.is_closure
-                                && !function.flags.is_static
-                                && function.locals.first().is_some_and(|name| name == "this")
-                                && !function
-                                    .captures
-                                    .iter()
-                                    .any(|capture| capture.local == php_ir::LocalId::new(0)),
+                            implicit_closure_this: function.implicit_closure_this_local().is_some(),
                             instance_method: method_metadata
                                 .get(&function_id)
                                 .is_some_and(|(_, call_type)| *call_type == "->"),

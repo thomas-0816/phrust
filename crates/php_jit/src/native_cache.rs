@@ -2771,6 +2771,7 @@ mod tests {
             inline_bytes_added: 0,
             tail_call_sites: 0,
             inline_rejected_by_reason: BTreeMap::new(),
+            direct_callees: vec![php_ir::FunctionId::new(9)],
             continuations: vec![crate::JitContinuationMetadata {
                 id: 7,
                 function: php_ir::FunctionId::new(3),

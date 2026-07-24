@@ -209,12 +209,12 @@ pub(super) fn execute_native_array_object(
                 constructor_id: None,
                 flags: php_runtime::api::ClassFlags::default(),
             };
-            Some(context.encode(Value::Object(
+            Some(context.encode_native_object_owner(
                 php_runtime::api::ObjectRef::new_with_display_name(
                     &class,
                     display_class_name.clone(),
                 ),
-            )))
+            ))
         }
         php_ir::InstructionKind::NewObject {
             class_name,
@@ -249,7 +249,7 @@ pub(super) fn execute_native_array_object(
                     object.set_property(name, value.clone());
                 }
             }
-            Some(context.encode(Value::Object(object)))
+            Some(context.encode_native_object_owner(object))
         }
         php_ir::InstructionKind::NewObject {
             class_name,
@@ -321,7 +321,7 @@ pub(super) fn execute_native_array_object(
                             .iter()
                             .filter(|parameter| !parameter.optional && !parameter.variadic)
                             .count();
-                        return context.encode(Value::Object(native_metadata_object(
+                        return context.encode_native_object_owner(native_metadata_object(
                             display_class_name,
                             [
                                 (
@@ -345,7 +345,7 @@ pub(super) fn execute_native_array_object(
                                     Value::Array(php_runtime::api::PhpArray::new()),
                                 ),
                             ],
-                        )));
+                        ));
                     }
                     let function_id = function_id
                         .ok_or_else(|| "ReflectionFunction target is missing".to_owned())?;
@@ -356,10 +356,10 @@ pub(super) fn execute_native_array_object(
                         .ok_or_else(|| "ReflectionFunction metadata is missing".to_owned())?;
                     let properties =
                         native_reflection_function_properties(context, function, closure.as_ref())?;
-                    return context.encode(Value::Object(native_metadata_object(
+                    return context.encode_native_object_owner(native_metadata_object(
                         display_class_name,
                         properties,
-                    )));
+                    ));
                 }
                 if class_name.eq_ignore_ascii_case("ReflectionMethod") {
                     if arguments.len() != 2 {
@@ -423,13 +423,13 @@ pub(super) fn execute_native_array_object(
                             ("static".to_owned(), Value::Bool(entry.flags.is_static)),
                             ("internal".to_owned(), Value::Bool(false)),
                         ]);
-                        return context.encode(Value::Object(native_metadata_object(
+                        return context.encode_native_object_owner(native_metadata_object(
                             display_class_name,
                             properties,
-                        )));
+                        ));
                     }
                     if php_std::generated::arginfo::method_metadata(&owner, &method).is_some() {
-                        return context.encode(Value::Object(native_metadata_object(
+                        return context.encode_native_object_owner(native_metadata_object(
                             display_class_name,
                             [
                                 (
@@ -442,7 +442,7 @@ pub(super) fn execute_native_array_object(
                                 ),
                                 ("internal".to_owned(), Value::Bool(true)),
                             ],
-                        )));
+                        ));
                     }
                     return Err(format!(
                         "E_PHP_THROW:ReflectionException:Method {owner}::{method}() does not exist"
@@ -500,7 +500,7 @@ pub(super) fn execute_native_array_object(
                         .map(ir_constant_value)
                         .transpose()?
                         .unwrap_or(Value::Null);
-                    return context.encode(Value::Object(native_metadata_object(
+                    return context.encode_native_object_owner(native_metadata_object(
                         display_class_name,
                         [
                             (
@@ -529,7 +529,7 @@ pub(super) fn execute_native_array_object(
                                 native_reflection_attributes(context, &property.attributes)?,
                             ),
                         ],
-                    )));
+                    ));
                 }
                 let name = arguments
                     .first()
@@ -567,10 +567,10 @@ pub(super) fn execute_native_array_object(
                         Value::String(PhpString::from_bytes(name.into_bytes())),
                     ));
                 }
-                context.encode(Value::Object(native_metadata_object(
+                context.encode_native_object_owner(native_metadata_object(
                     display_class_name,
                     properties,
-                )))
+                ))
             })();
             Some(result)
         }
@@ -593,7 +593,7 @@ pub(super) fn execute_native_array_object(
                     value,
                 );
             }
-            Some(context.encode(Value::Array(array)))
+            Some(context.encode_native_array_owner(array))
         }
         php_ir::InstructionKind::CallMethod { method, .. } => {
             let receiver = arguments.first().copied()?;
@@ -679,13 +679,13 @@ pub(super) fn execute_native_array_object(
                     "getdoccomment" => context.encode(Value::Bool(false)),
                     "getdeclaringclass" => {
                         let name = string_property("declaring_class").unwrap_or_default();
-                        context.encode(Value::Object(native_metadata_object(
+                        context.encode_native_object_owner(native_metadata_object(
                             "ReflectionClass",
                             [(
                                 "name".to_owned(),
                                 Value::String(PhpString::from_bytes(name.into_bytes())),
                             )],
-                        )))
+                        ))
                     }
                     "isfinal" | "isinterface" | "isinstantiable" | "isbacked" => {
                         let name = string_property("name").unwrap_or_default();
@@ -757,7 +757,9 @@ pub(super) fn execute_native_array_object(
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default();
-                        context.encode(Value::Array(php_runtime::api::PhpArray::from_packed(names)))
+                        context.encode_native_array_owner(php_runtime::api::PhpArray::from_packed(
+                            names,
+                        ))
                     }
                     "getmethods" | "getmethod" => {
                         let owner = string_property("name").unwrap_or_default();
@@ -814,9 +816,9 @@ pub(super) fn execute_native_array_object(
                         if requested.is_some() {
                             context.encode(methods.into_iter().next().unwrap_or(Value::Null))
                         } else {
-                            context.encode(Value::Array(php_runtime::api::PhpArray::from_packed(
-                                methods,
-                            )))
+                            context.encode_native_array_owner(
+                                php_runtime::api::PhpArray::from_packed(methods),
+                            )
                         }
                     }
                     "getproperties" | "getproperty" => {
@@ -877,9 +879,9 @@ pub(super) fn execute_native_array_object(
                         if requested.is_some() {
                             context.encode(properties.into_iter().next().unwrap_or(Value::Null))
                         } else {
-                            context.encode(Value::Array(php_runtime::api::PhpArray::from_packed(
-                                properties,
-                            )))
+                            context.encode_native_array_owner(
+                                php_runtime::api::PhpArray::from_packed(properties),
+                            )
                         }
                     }
                     "getconstants" | "getconstant" | "getreflectionconstant" => {
@@ -931,7 +933,7 @@ pub(super) fn execute_native_array_object(
                                     value,
                                 );
                             }
-                            return context.encode(Value::Array(values));
+                            return context.encode_native_array_owner(values);
                         }
                         let entry = class.constants.iter().find(|entry| {
                             requested.as_ref().is_some_and(|name| entry.name == *name)
@@ -956,7 +958,7 @@ pub(super) fn execute_native_array_object(
                         }
                         let entry =
                             entry.ok_or_else(|| "reflection constant is missing".to_owned())?;
-                        context.encode(Value::Object(native_metadata_object(
+                        context.encode_native_object_owner(native_metadata_object(
                             "ReflectionClassConstant",
                             [
                                 (
@@ -975,7 +977,7 @@ pub(super) fn execute_native_array_object(
                                     native_reflection_attributes(context, &entry.attributes)?,
                                 ),
                             ],
-                        )))
+                        ))
                     }
                     "getcases" => {
                         let owner = string_property("name").unwrap_or_default();
@@ -1029,7 +1031,9 @@ pub(super) fn execute_native_array_object(
                             })
                             .transpose()?
                             .unwrap_or_default();
-                        context.encode(Value::Array(php_runtime::api::PhpArray::from_packed(cases)))
+                        context.encode_native_array_owner(php_runtime::api::PhpArray::from_packed(
+                            cases,
+                        ))
                     }
                     "hasmethod" => {
                         let owner = string_property("name").unwrap_or_default();
@@ -1089,7 +1093,7 @@ pub(super) fn execute_native_array_object(
                     }
                     "newinstance" => {
                         let name = string_property("name").unwrap_or_default();
-                        context.encode(Value::Object(native_metadata_object(&name, [])))
+                        context.encode_native_object_owner(native_metadata_object(&name, []))
                     }
                     _ => Err(format!("native reflection method {method} is unsupported")),
                 }

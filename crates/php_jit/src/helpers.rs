@@ -6,7 +6,7 @@ pub use php_runtime::api::JitHelperId;
 
 /// Stable ABI fingerprint for the helper-symbol registry. Bumped whenever the
 /// registry's symbol set or any helper ABI changes.
-pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_0022;
+pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_0026;
 
 /// Helper argument kind.
 #[repr(u32)]
@@ -109,8 +109,9 @@ const NATIVE_OP_5_ARGS: &[JitHelperArgKind] = &[
 ];
 const NATIVE_CONTEXT_VALUE_OUT_ARGS: &[JitHelperArgKind] =
     &[JitHelperArgKind::Value, JitHelperArgKind::U64];
-const NATIVE_CONTEXT_VALUE_OUT_3_ARGS: &[JitHelperArgKind] = &[
+const NATIVE_CONTEXT_VALUE_OUT_4_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::Value,
+    JitHelperArgKind::U64,
     JitHelperArgKind::U64,
     JitHelperArgKind::U64,
     JitHelperArgKind::U64,
@@ -148,7 +149,13 @@ const NATIVE_EXACT_BUILTIN_6_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::Value,
     JitHelperArgKind::Value,
 ];
-
+const NATIVE_EXACT_INCLUDE_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::I64,
+    JitHelperArgKind::I64,
+    JitHelperArgKind::I64,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::U64,
+];
 /// Stable helper registry.
 pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     JitHelperSymbol {
@@ -370,7 +377,7 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     JitHelperSymbol {
         id: JitHelperId(38),
         name: "phrust_native_foreach_next",
-        args: NATIVE_CONTEXT_VALUE_OUT_3_ARGS,
+        args: NATIVE_CONTEXT_VALUE_OUT_4_ARGS,
         returns: JitHelperReturnKind::Status,
         can_throw: true,
         has_side_effects: true,
@@ -781,6 +788,51 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
         has_side_effects: false,
         description: "exact prepared file_exists capability handler",
     },
+    JitHelperSymbol {
+        id: JitHelperId(87),
+        name: "phrust_native_fopen",
+        args: NATIVE_EXACT_BUILTIN_6_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact prepared fopen stream-capability handler",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(88),
+        name: "phrust_native_fwrite",
+        args: NATIVE_EXACT_BUILTIN_6_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact prepared fwrite stream-capability handler",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(89),
+        name: "phrust_native_fclose",
+        args: NATIVE_EXACT_BUILTIN_6_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact prepared fclose stream-capability handler",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(90),
+        name: "phrust_native_define",
+        args: NATIVE_EXACT_BUILTIN_6_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact prepared native constant-definition handler",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(91),
+        name: "phrust_native_include",
+        args: NATIVE_EXACT_INCLUDE_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact cold include compiler and native-entry invoker",
+    },
 ];
 
 /// Looks up a helper by stable id.
@@ -809,6 +861,8 @@ pub fn resolve_helper_address(
     match helper.name {
         "phrust_jit_native_call_dispatch" => Some(runtime.native_call_dispatch),
         "phrust_baseline_native_builtin_dispatch" => Some(runtime.native_builtin_dispatch),
+        "phrust_native_define" => Some(runtime.native_define),
+        "phrust_native_include" => Some(runtime.native_include),
         "phrust_native_defined" => Some(runtime.native_defined),
         "phrust_native_function_exists" => Some(runtime.native_function_exists),
         "phrust_native_class_exists" => Some(runtime.native_class_exists),
@@ -839,6 +893,9 @@ pub fn resolve_helper_address(
         "phrust_native_dirname" => Some(runtime.native_dirname),
         "phrust_native_realpath" => Some(runtime.native_realpath),
         "phrust_native_file_exists" => Some(runtime.native_file_exists),
+        "phrust_native_fopen" => Some(runtime.native_fopen),
+        "phrust_native_fwrite" => Some(runtime.native_fwrite),
+        "phrust_native_fclose" => Some(runtime.native_fclose),
         "phrust_jit_native_semantic_dispatch" => Some(runtime.native_semantic_dispatch),
         "phrust_jit_native_function_resolve" => Some(runtime.native_function_resolve),
         "phrust_native_frame_alloc" => Some(runtime.native_frame_alloc),
@@ -928,7 +985,7 @@ mod tests {
             JIT_HELPER_SYMBOLS.first().expect("first").id,
             JitHelperId(14)
         );
-        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(84));
+        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(91));
     }
 
     #[test]

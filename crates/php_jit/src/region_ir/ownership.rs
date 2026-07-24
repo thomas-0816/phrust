@@ -65,7 +65,8 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
             || name.starts_with("phrust_native_json_")
             || matches!(
                 name,
-                "phrust_native_defined"
+                "phrust_native_define"
+                    | "phrust_native_defined"
                     | "phrust_native_function_exists"
                     | "phrust_native_class_exists"
                     | "phrust_native_interface_exists"
@@ -81,10 +82,14 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
                     | "phrust_native_dirname"
                     | "phrust_native_realpath"
                     | "phrust_native_file_exists"
+                    | "phrust_native_fopen"
+                    | "phrust_native_fwrite"
+                    | "phrust_native_fclose"
             ) =>
         {
             Some(owned(BORROW_6, false))
         }
+        "phrust_native_include" => Some(owned(BORROW_1, false)),
         "phrust_jit_native_call_dispatch"
         | "phrust_baseline_native_builtin_dispatch"
         | "phrust_jit_native_semantic_dispatch"

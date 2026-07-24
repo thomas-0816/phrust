@@ -1,5 +1,99 @@
 use super::*;
 
+fn lower_native_dynamic_caller_frame(
+    builder: &mut FunctionBuilder<'_>,
+    locals: &NativeLocalMap,
+    pointer_type: ir::Type,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    if locals.is_empty() {
+        return Ok(builder.ins().iconst(pointer_type, 0));
+    }
+    let frame_size = u32::try_from(locals.len().saturating_mul(8)).map_err(|_| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_DYNAMIC_CODE",
+            "caller local frame exceeds stack-slot limits",
+        )
+    })?;
+    let frame_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        frame_size,
+        3,
+    ));
+    let frame_ptr = builder.ins().stack_addr(pointer_type, frame_slot, 0);
+    for local in locals.keys() {
+        let value = use_local_variable(builder, locals, *local)?;
+        builder.ins().store(
+            MemFlagsData::new(),
+            value,
+            frame_ptr,
+            i32::try_from(local.index().saturating_mul(8)).unwrap_or(i32::MAX),
+        );
+    }
+    Ok(frame_ptr)
+}
+
+fn reload_native_dynamic_caller_frame(
+    builder: &mut FunctionBuilder<'_>,
+    locals: &NativeLocalMap,
+    caller_frame: ir::Value,
+) -> Result<(), CraneliftLoweringError> {
+    for local in locals.keys() {
+        let value = builder.ins().load(
+            types::I64,
+            MemFlagsData::new(),
+            caller_frame,
+            i32::try_from(local.index().saturating_mul(8)).unwrap_or(i32::MAX),
+        );
+        define_local_variable(builder, locals, *local, value)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn lower_optimizing_native_include(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    native_include: Option<NativeHelper>,
+    locals: &NativeLocalMap,
+    registers: &NativeRegisterMap,
+    kind: php_ir::instruction::IncludeKind,
+    path: RegionOperand,
+    instruction: &RegionInstruction,
+    function: FunctionId,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let kind = match kind {
+        php_ir::instruction::IncludeKind::Include => crate::JitNativeDynamicCodeKind::INCLUDE,
+        php_ir::instruction::IncludeKind::IncludeOnce => {
+            crate::JitNativeDynamicCodeKind::INCLUDE_ONCE
+        }
+        php_ir::instruction::IncludeKind::Require => crate::JitNativeDynamicCodeKind::REQUIRE,
+        php_ir::instruction::IncludeKind::RequireOnce => {
+            crate::JitNativeDynamicCodeKind::REQUIRE_ONCE
+        }
+    };
+    let source = lower_region_operand(builder, locals, registers, path)?;
+    let pointer_type = module.target_config().pointer_type();
+    let caller_frame = lower_native_dynamic_caller_frame(builder, locals, pointer_type)?;
+    let kind = builder.ins().iconst(types::I32, i64::from(kind.0));
+    let caller_function = builder.ins().iconst(types::I32, i64::from(function.raw()));
+    let continuation = builder
+        .ins()
+        .iconst(types::I32, i64::from(instruction.continuation_id));
+    let value = lower_optimizing_typed_control_value_call(
+        module,
+        builder,
+        native_include,
+        &[kind, caller_function, continuation, source, caller_frame],
+        transition,
+        "exact native include compiler/invoker was not declared",
+    )?;
+    if !locals.is_empty() {
+        reload_native_dynamic_caller_frame(builder, locals, caller_frame)?;
+    }
+    Ok(value)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lower_native_dynamic_code(
     module: &mut JITModule,
@@ -85,14 +179,15 @@ pub(super) fn lower_native_dynamic_code(
         RegionNativeDynamicCode::MakeClosure {
             dst,
             function,
-            capture_count,
+            captures,
+            ..
         } => (
             crate::JitNativeDynamicCodeKind::MAKE_CLOSURE,
             Some(*dst),
             Some(*function),
             None,
             0,
-            *capture_count,
+            u32::try_from(captures.len()).unwrap_or(u32::MAX),
         ),
     };
     let request_size = u32::try_from(std::mem::size_of::<crate::JitNativeDynamicCodeRequest>())
@@ -197,32 +292,7 @@ pub(super) fn lower_native_dynamic_code(
         3,
     ));
     let out_ptr = builder.ins().stack_addr(pointer_type, out_slot, 0);
-    let caller_frame = if locals.is_empty() {
-        builder.ins().iconst(pointer_type, 0)
-    } else {
-        let frame_size = u32::try_from(locals.len().saturating_mul(8)).map_err(|_| {
-            CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_NATIVE_DYNAMIC_CODE",
-                "caller local frame exceeds stack-slot limits",
-            )
-        })?;
-        let frame_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            frame_size,
-            3,
-        ));
-        let frame_ptr = builder.ins().stack_addr(pointer_type, frame_slot, 0);
-        for local in locals.keys() {
-            let value = use_local_variable(builder, locals, *local)?;
-            builder.ins().store(
-                MemFlagsData::new(),
-                value,
-                frame_ptr,
-                i32::try_from(local.index().saturating_mul(8)).unwrap_or(i32::MAX),
-            );
-        }
-        frame_ptr
-    };
+    let caller_frame = lower_native_dynamic_caller_frame(builder, locals, pointer_type)?;
     builder.ins().store(
         MemFlagsData::new(),
         caller_frame,
@@ -254,15 +324,7 @@ pub(super) fn lower_native_dynamic_code(
     builder.ins().return_(&[status]);
     builder.switch_to_block(success);
     if !locals.is_empty() {
-        for local in locals.keys() {
-            let value = builder.ins().load(
-                types::I64,
-                MemFlagsData::new(),
-                caller_frame,
-                i32::try_from(local.index().saturating_mul(8)).unwrap_or(i32::MAX),
-            );
-            define_local_variable(builder, locals, *local, value)?;
-        }
+        reload_native_dynamic_caller_frame(builder, locals, caller_frame)?;
     }
     if let Some(destination) = destination {
         let value = builder.ins().stack_load(

@@ -265,10 +265,7 @@ fn entries() -> &'static [BuiltinEntry] {
                 .flat_map(|(module, entries)| {
                     entries.iter().copied().map(|mut entry| {
                         entry.handler_kind = module_handler_kind(module);
-                        entry.execution_kind = if modules::requires_vm_dispatch(
-                            entry.name,
-                            entry.function,
-                        ) {
+                        entry.execution_kind = if modules::requires_vm_dispatch(entry.name) {
                             BuiltinExecutionKind::Vm
                         } else {
                             BuiltinExecutionKind::Runtime
@@ -402,5 +399,21 @@ mod tests {
             registry.get("var_dump").unwrap().execution_kind(),
             BuiltinExecutionKind::Vm
         );
+        for name in [
+            "set_error_handler",
+            "error_reporting",
+            "getenv",
+            "ob_start",
+            "sort",
+            "spl_autoload_register",
+            "class_exists",
+            "preg_replace_callback",
+        ] {
+            assert_eq!(
+                registry.get(name).unwrap().execution_kind(),
+                BuiltinExecutionKind::Vm,
+                "{name} must retain VM request semantics"
+            );
+        }
     }
 }

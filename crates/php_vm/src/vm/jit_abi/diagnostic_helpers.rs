@@ -226,7 +226,7 @@ diagnostic_helper!(
 diagnostic_helper!(
     jit_native_foreach_next_diagnostic_abi => jit_native_foreach_next_abi,
     "foreach_next",
-    (iterator: i64, key_out: *mut i64, value_out: *mut i64, has_out: *mut i64) -> i32
+    (iterator: i64, key_out: *mut i64, value_out: *mut i64, has_out: *mut i64, state_out: *mut php_jit::JitDeoptState) -> i32
 );
 
 diagnostic_helper!(

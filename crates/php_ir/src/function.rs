@@ -3,6 +3,16 @@
 use crate::block::BasicBlock;
 use crate::constants::IrConstant;
 use crate::ids::LocalId;
+
+/// Returns whether a local name belongs to an IR-only compiler slot.
+///
+/// PHP variable names cannot contain `:`, so the lowering-owned namespace
+/// cannot collide with a PHP-visible local. These slots are frame-local even
+/// when they are emitted in a top-level function.
+#[must_use]
+pub fn is_compiler_generated_local_name(name: &str) -> bool {
+    name.starts_with("__phrust:")
+}
 use crate::module::AttributeEntry;
 use crate::source_map::IrSpan;
 use serde::{Deserialize, Serialize};
@@ -152,5 +162,24 @@ impl IrFunction {
             captures: Vec::new(),
             attributes: Vec::new(),
         }
+    }
+
+    /// Returns the native entry slot for a Closure's bindable `$this`.
+    ///
+    /// Captures are allocated before other Closure locals, so `$this` is not
+    /// necessarily local zero. A captured outer `$this` is already carried by
+    /// the capture list and must not also become an implicit entry operand.
+    #[must_use]
+    pub fn implicit_closure_this_local(&self) -> Option<LocalId> {
+        if !self.flags.is_closure || self.flags.is_static {
+            return None;
+        }
+        let local = self
+            .locals
+            .iter()
+            .position(|name| name == "this")
+            .and_then(|index| u32::try_from(index).ok())
+            .map(LocalId::new)?;
+        (!self.captures.iter().any(|capture| capture.local == local)).then_some(local)
     }
 }

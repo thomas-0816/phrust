@@ -276,6 +276,116 @@ mod tests {
     use php_ir::{InstructionKind, Operand};
 
     #[test]
+    fn replacing_borrowed_variadic_parameter_preserves_call_boundary_owner() {
+        let output = PhpExecutor::default().execute_source(PhpExecutionInput {
+            source: r#"<?php
+function replace_variadic($mode, ...$values) {
+    global $results;
+    if (!$values) {
+        $values = true;
+    }
+    if ($mode === 'array') {
+        $values = array(array('first', 'second'));
+    }
+    $results[$mode] = $values;
+}
+
+replace_variadic('scalar');
+replace_variadic('array', array('input'));
+echo "ok\n";
+"#
+            .to_owned(),
+            source_path: "borrowed-variadic-owner.php".to_owned(),
+            real_path: None,
+            cwd: std::path::PathBuf::from("."),
+            include_roots: Vec::new(),
+            runtime_context: php_runtime::api::RuntimeContext::default(),
+            optimization_level: None,
+            collect_counters: false,
+        });
+
+        assert_eq!(
+            output.status,
+            PhpExecutionStatus::Success,
+            "stdout={} diagnostics={}",
+            String::from_utf8_lossy(&output.stdout),
+            output.diagnostics_text
+        );
+        assert_eq!(output.stdout, b"ok\n");
+    }
+
+    #[test]
+    fn global_binding_uses_one_authoritative_reference_across_native_calls() {
+        let output = PhpExecutor::default().execute_source(PhpExecutionInput {
+            source: r#"<?php
+$counter = 1;
+function update_counter() {
+    global $counter;
+    $counter += 4;
+}
+function replace_owned_local_with_global() {
+    $created = array('old-owner');
+    global $created;
+    echo is_null($created) ? "null\n" : "unexpected\n";
+    $created = 'native';
+}
+
+update_counter();
+echo $counter, "\n";
+replace_owned_local_with_global();
+echo $created, "\n";
+"#
+            .to_owned(),
+            source_path: "direct-global-reference.php".to_owned(),
+            real_path: None,
+            cwd: std::path::PathBuf::from("."),
+            include_roots: Vec::new(),
+            runtime_context: php_runtime::api::RuntimeContext::default(),
+            optimization_level: None,
+            collect_counters: false,
+        });
+
+        assert_eq!(
+            output.status,
+            PhpExecutionStatus::Success,
+            "stdout={} diagnostics={}",
+            String::from_utf8_lossy(&output.stdout),
+            output.diagnostics_text
+        );
+        assert_eq!(output.stdout, b"5\nnull\nnative\n");
+    }
+
+    #[test]
+    fn dynamic_scalar_constants_remain_native_through_define_query_and_fetch() {
+        let output = PhpExecutor::default().execute_source(PhpExecutionInput {
+            source: r#"<?php
+define('NATIVE_INT_CONSTANT', 41);
+define('NATIVE_STRING_CONSTANT', 'native');
+echo NATIVE_INT_CONSTANT + 1, "\n";
+echo NATIVE_STRING_CONSTANT, "\n";
+echo defined('NATIVE_STRING_CONSTANT') ? "defined\n" : "missing\n";
+"#
+            .to_owned(),
+            source_path: "native-dynamic-constants.php".to_owned(),
+            real_path: None,
+            cwd: std::path::PathBuf::from("."),
+            include_roots: Vec::new(),
+            runtime_context: php_runtime::api::RuntimeContext::default(),
+            optimization_level: None,
+            collect_counters: false,
+        });
+
+        assert_eq!(
+            output.status,
+            PhpExecutionStatus::Success,
+            "stdout={} diagnostics={}",
+            String::from_utf8_lossy(&output.stdout),
+            output.diagnostics_text
+        );
+        assert_eq!(output.stdout, b"42\nnative\ndefined\n");
+    }
+
+    #[test]
     fn native_builtin_arginfo_errors_are_php_catchable() {
         let output = PhpExecutor::default().execute_source(PhpExecutionInput {
             source: r#"<?php

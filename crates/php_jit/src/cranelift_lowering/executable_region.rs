@@ -207,10 +207,7 @@ fn region_control_targets(block: &crate::region_ir::RegionBlock) -> BTreeSet<Blo
                     targets.insert(*after);
                     targets.extend(*outer_finally);
                 }
-                RegionNativeControl::Throw { catch, finally, .. } => {
-                    targets.extend(*catch);
-                    targets.extend(*finally);
-                }
+                RegionNativeControl::Throw { .. } => {}
                 RegionNativeControl::EnterTry { .. }
                 | RegionNativeControl::LeaveTry
                 | RegionNativeControl::MakeException { .. } => {}
@@ -552,8 +549,9 @@ pub(super) fn instruction_has_native_transition(
 
 fn optimizing_instruction_family_is_direct(kind: &RegionInstructionKind) -> bool {
     match kind {
-        RegionInstructionKind::AssignDim { keys, .. } => keys.len() == 1,
-        RegionInstructionKind::AppendDim { keys, .. } => keys.is_empty(),
+        RegionInstructionKind::AssignDim { keys, .. }
+        | RegionInstructionKind::UnsetDim { keys, .. } => !keys.is_empty(),
+        RegionInstructionKind::AppendDim { .. } => true,
         RegionInstructionKind::ArrayInsert {
             key, by_ref_local, ..
         } => key.is_none() && by_ref_local.is_none(),
@@ -581,6 +579,10 @@ fn optimizing_instruction_family_is_direct(kind: &RegionInstructionKind) -> bool
         | RegionInstructionKind::ForeachNext { .. }
         | RegionInstructionKind::ForeachCleanup { .. }
         | RegionInstructionKind::FetchProperty { .. }
+        | RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::Include { .. })
+        | RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::MakeClosure {
+            ..
+        })
         | RegionInstructionKind::NativeCall(_) => true,
         _ => false,
     }
@@ -1314,11 +1316,29 @@ pub(super) fn compile_region_graph_native(
             "include, eval, or runtime declaration requires the native dynamic-code compiler",
         ));
     }
+    let needs_exact_include = !baseline_helper_imports
+        && regions.values().any(|region| {
+            region_contains(region, |kind| {
+                matches!(
+                    kind,
+                    RegionInstructionKind::NativeDynamicCode(
+                        RegionNativeDynamicCode::Include { .. }
+                    )
+                )
+            })
+        });
+    if needs_exact_include && runtime_helpers.native_include == 0 {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_INCLUDE",
+            "optimizing include requires its exact native compiler/invoker",
+        ));
+    }
     let native_call_symbol = NATIVE_CALL_DISPATCH_SYMBOL.to_owned();
     let native_builtin_dispatch_symbol = BASELINE_NATIVE_BUILTIN_DISPATCH_SYMBOL.to_owned();
     let native_semantic_dispatch_symbol = NATIVE_SEMANTIC_DISPATCH_SYMBOL.to_owned();
     let native_function_resolve_symbol = NATIVE_FUNCTION_RESOLVE_SYMBOL.to_owned();
     let native_dynamic_code_symbol = NATIVE_DYNAMIC_CODE_SYMBOL.to_owned();
+    let native_include_symbol = NATIVE_INCLUDE_SYMBOL.to_owned();
     let needs_unary = regions.values().any(|region| {
         region_contains(region, |kind| {
             matches!(
@@ -1416,17 +1436,21 @@ pub(super) fn compile_region_graph_native(
         })
     });
     let needs_local_store = regions.values().any(|region| {
-        region_contains(region, |kind| {
-            matches!(
-                kind,
-                RegionInstructionKind::StoreLocal { .. }
-                    | RegionInstructionKind::AssignLocalResult { .. }
-                    | RegionInstructionKind::AssignDim { .. }
-                    | RegionInstructionKind::AppendDim { .. }
-                    | RegionInstructionKind::UnsetDim { .. }
-                    | RegionInstructionKind::BindReferenceDim { .. }
-            )
-        })
+        region
+            .exception_regions
+            .iter()
+            .any(|handler| handler.catch.is_some() && handler.exception_local.is_some())
+            || region_contains(region, |kind| {
+                matches!(
+                    kind,
+                    RegionInstructionKind::StoreLocal { .. }
+                        | RegionInstructionKind::AssignLocalResult { .. }
+                        | RegionInstructionKind::AssignDim { .. }
+                        | RegionInstructionKind::AppendDim { .. }
+                        | RegionInstructionKind::UnsetDim { .. }
+                        | RegionInstructionKind::BindReferenceDim { .. }
+                )
+            })
     });
     let needs_value_release = true;
     // Local publication is part of the native frame ABI, not just explicit
@@ -1522,6 +1546,16 @@ pub(super) fn compile_region_graph_native(
     let needs_plain_object_clone = regions.values().any(|region| {
         region_contains(region, |kind| {
             matches!(kind, RegionInstructionKind::CloneObject { plain: true, .. })
+        })
+    });
+    let needs_prepared_closure_new = regions.values().any(|region| {
+        region_contains(region, |kind| {
+            matches!(
+                kind,
+                RegionInstructionKind::NativeDynamicCode(
+                    RegionNativeDynamicCode::MakeClosure { .. }
+                )
+            )
         })
     });
     let needs_object_clone_with = regions.values().any(|region| {
@@ -1687,6 +1721,7 @@ pub(super) fn compile_region_graph_native(
     let needs_exception_new = baseline_helper_imports && needs_exception_new;
     let needs_array_new = baseline_helper_imports && needs_array_new;
     let needs_prepared_object_new = !baseline_helper_imports && needs_object_new;
+    let needs_prepared_closure_new = !baseline_helper_imports && needs_prepared_closure_new;
     let needs_object_new = baseline_helper_imports && needs_object_new;
     let needs_property_fetch = baseline_helper_imports && needs_property_fetch;
     let needs_property_assign = baseline_helper_imports && needs_property_assign;
@@ -1728,6 +1763,7 @@ pub(super) fn compile_region_graph_native(
             continue;
         }
         let address = match builtin {
+            StableSymbolQueryBuiltin::Define => runtime_helpers.native_define,
             StableSymbolQueryBuiltin::Defined => runtime_helpers.native_defined,
             StableSymbolQueryBuiltin::FunctionExists => runtime_helpers.native_function_exists,
             StableSymbolQueryBuiltin::ClassExists => runtime_helpers.native_class_exists,
@@ -1826,6 +1862,9 @@ pub(super) fn compile_region_graph_native(
             StablePathBuiltin::Dirname => runtime_helpers.native_dirname,
             StablePathBuiltin::Realpath => runtime_helpers.native_realpath,
             StablePathBuiltin::FileExists => runtime_helpers.native_file_exists,
+            StablePathBuiltin::Fopen => runtime_helpers.native_fopen,
+            StablePathBuiltin::Fwrite => runtime_helpers.native_fwrite,
+            StablePathBuiltin::Fclose => runtime_helpers.native_fclose,
         };
         if address == 0 {
             return Err(CraneliftLoweringError::new(
@@ -1864,6 +1903,12 @@ pub(super) fn compile_region_graph_native(
         imports.push((
             native_dynamic_code_symbol.clone(),
             runtime_helpers.native_dynamic_code,
+        ));
+    }
+    if needs_exact_include {
+        imports.push((
+            native_include_symbol.clone(),
+            runtime_helpers.native_include,
         ));
     }
     for (needed, configured, fallback, symbol) in [
@@ -2143,6 +2188,16 @@ pub(super) fn compile_region_graph_native(
             },
         ));
     }
+    if needs_prepared_closure_new {
+        imports.push((
+            "phrust_native_prepared_closure_new".to_owned(),
+            if runtime_helpers.native_prepared_closure_new == 0 {
+                test_native_prepared_closure_new_fallback as *const () as usize
+            } else {
+                runtime_helpers.native_prepared_closure_new
+            },
+        ));
+    }
     if needs_plain_object_clone {
         imports.push((
             "phrust_native_plain_object_clone".to_owned(),
@@ -2239,6 +2294,25 @@ pub(super) fn compile_region_graph_native(
             } else {
                 None
             };
+            let native_include = if needs_exact_include {
+                let pointer_type = module.target_config().pointer_type();
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(types::I64));
+                signature.params.push(AbiParam::new(pointer_type));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    &native_include_symbol,
+                    &signature,
+                    helper_address(&native_include_symbol),
+                )?)
+            } else {
+                None
+            };
             let mut native_operations = NativeOperationFunctions::default();
             let pointer_type = module.target_config().pointer_type();
             let mut exact_symbol_query = [None; StableSymbolQueryBuiltin::COUNT];
@@ -2247,9 +2321,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2268,9 +2340,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2289,9 +2359,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2310,9 +2378,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2331,9 +2397,7 @@ pub(super) fn compile_region_graph_native(
                     continue;
                 }
                 let mut signature = module.make_signature();
-                for _ in 0..4 {
-                    signature.params.push(AbiParam::new(types::I32));
-                }
+                signature.params.push(AbiParam::new(types::I32));
                 for _ in 0..6 {
                     signature.params.push(AbiParam::new(types::I64));
                 }
@@ -2435,6 +2499,22 @@ pub(super) fn compile_region_graph_native(
             } else {
                 None
             };
+            let prepared_closure_new = if needs_prepared_closure_new {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I64));
+                signature.params.push(AbiParam::new(pointer_type));
+                signature.params.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                Some(declare_native_helper(
+                    module,
+                    "phrust_native_prepared_closure_new",
+                    &signature,
+                    helper_address("phrust_native_prepared_closure_new"),
+                )?)
+            } else {
+                None
+            };
             let plain_object_clone = if needs_plain_object_clone {
                 let mut signature = module.make_signature();
                 signature.params.push(AbiParam::new(types::I64));
@@ -2461,6 +2541,7 @@ pub(super) fn compile_region_graph_native(
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(types::I32));
                 signature.params.push(AbiParam::new(pointer_type));
+                signature.params.push(AbiParam::new(pointer_type));
                 signature.returns.push(AbiParam::new(types::I32));
                 native_operations.builtin_dispatch = Some(declare_native_helper(
                     module,
@@ -2477,6 +2558,7 @@ pub(super) fn compile_region_graph_native(
                 signature.params.push(AbiParam::new(types::I32));
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(types::I32));
+                signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.returns.push(AbiParam::new(types::I32));
                 native_operations.semantic_dispatch = Some(declare_native_helper(
@@ -2724,6 +2806,7 @@ pub(super) fn compile_region_graph_native(
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(pointer_type));
                 signature.params.push(AbiParam::new(pointer_type));
+                signature.params.push(AbiParam::new(pointer_type));
                 signature.returns.push(AbiParam::new(types::I32));
                 native_operations.foreach_next = Some(declare_native_helper(
                     module,
@@ -2877,6 +2960,24 @@ pub(super) fn compile_region_graph_native(
                         )
                     })?;
                 functions.insert(array_child_entry_symbol, array_child_entry);
+                let array_insert_admitted_symbol = FunctionId::new(next_synthetic);
+                next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
+                    CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_FRAGMENT_SYMBOL_LIMIT",
+                        "native prepared array-insert symbol id overflowed",
+                    )
+                })?;
+                let symbol = format!("{name}.native.array_insert_admitted");
+                let signature = direct_array_insert_admitted_signature(module);
+                let array_insert_admitted = module
+                    .declare_function(&symbol, Linkage::Local, &signature)
+                    .map_err(|error| {
+                        CraneliftLoweringError::new(
+                            "JIT_CRANELIFT_REJECT_DECLARE",
+                            format!("failed to declare {symbol}: {error}"),
+                        )
+                    })?;
+                functions.insert(array_insert_admitted_symbol, array_insert_admitted);
                 let value_release_validate_symbol = FunctionId::new(next_synthetic);
                 next_synthetic = next_synthetic.checked_add(1).ok_or_else(|| {
                     CraneliftLoweringError::new(
@@ -2915,6 +3016,7 @@ pub(super) fn compile_region_graph_native(
                 functions.insert(value_release_commit_symbol, value_release_commit);
                 NativeTierOperations::Optimizing {
                     operations: NativeOptimizingOperations {
+                        include: native_include,
                         echo_bytes,
                         echo_int,
                         echo_float,
@@ -2922,6 +3024,7 @@ pub(super) fn compile_region_graph_native(
                         float_to_int,
                         object_class_name,
                         prepared_object_new,
+                        prepared_closure_new,
                         plain_object_clone,
                         exact_symbol_query,
                         exact_pcre,
@@ -2932,6 +3035,8 @@ pub(super) fn compile_region_graph_native(
                         array_ensure_unique_symbol,
                         array_child_entry,
                         array_child_entry_symbol,
+                        array_insert_admitted,
+                        array_insert_admitted_symbol,
                         value_release_validate,
                         value_release_validate_symbol,
                         value_release_commit,
@@ -3019,13 +3124,91 @@ pub(super) fn compile_region_graph_native(
                     ),
                 )
             }));
+            let mut preflighted_whole = None;
             let mut preflighted_fragments = BTreeMap::<u32, DefinedRegionFunction>::new();
-            // Fragmented optimizing functions need the same exact CLIF
-            // preflight as streaming baseline functions. The cheap planner
-            // estimate intentionally cannot account for the full live-state
-            // fanout of direct guards; without this pass, one underestimated
-            // fragment rejects the complete optimizing artifact only after
-            // all preceding fragments have already been compiled.
+            // A planner-admitted whole optimizing function still needs exact
+            // CLIF preflight. Direct calls, ownership, and guards can expand
+            // one Region instruction into enough backend state to exceed the
+            // whole-function ceiling even when the source estimate is
+            // bounded. Keep the ordinary whole-function representation when
+            // its exact form fits; otherwise enter the same deterministic
+            // fragment refinement used below.
+            if active_fragment_layout.is_none() {
+                let register_liveness = NativeRegisterLiveness::analyze(region);
+                let compiler =
+                    crate::cranelift_lowering::baseline_streaming::compiler_for_tier(
+                        region.compile_metadata.tier,
+                    );
+                let preflight = compiler.compile_fragment(&mut |mode| {
+                    define_region_graph_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        region,
+                        &unit.constants,
+                        &value_flows[&region.function],
+                        functions[&region.function],
+                        &functions,
+                        &inline_constants,
+                        &tail_forwards,
+                        &function_params,
+                        &request.external_function_signatures,
+                        tier_operations,
+                        &register_liveness,
+                        None,
+                        runtime_unit_identity,
+                        mode,
+                        false,
+                        true,
+                    )
+                });
+                match preflight {
+                    Ok(defined)
+                        if defined
+                            .pre_regalloc
+                            .exceeds_replan_margin(region.compile_metadata.tier) =>
+                    {
+                        active_plan = NativeCompilePlan::for_bounded_fragments(region);
+                        active_fragment_layout =
+                            Some(NativeFunctionFragmentLayout::for_plan(region, &active_plan)?);
+                        compiled_pre_regalloc_replans
+                            .set(compiled_pre_regalloc_replans.get().saturating_add(1));
+                        (fragment_functions, fragment_symbols) = declare_fragment_functions(
+                            module,
+                            name,
+                            region,
+                            active_fragment_layout.as_ref(),
+                            0,
+                            &mut next_synthetic,
+                            &mut functions,
+                        )?;
+                    }
+                    Ok(defined) => preflighted_whole = Some(defined),
+                    Err(error) if error.code == "JIT_CRANELIFT_PRE_REGALLOC_BUDGET" => {
+                        active_plan = NativeCompilePlan::for_bounded_fragments(region);
+                        active_fragment_layout =
+                            Some(NativeFunctionFragmentLayout::for_plan(region, &active_plan)?);
+                        compiled_pre_regalloc_replans
+                            .set(compiled_pre_regalloc_replans.get().saturating_add(1));
+                        (fragment_functions, fragment_symbols) = declare_fragment_functions(
+                            module,
+                            name,
+                            region,
+                            active_fragment_layout.as_ref(),
+                            0,
+                            &mut next_synthetic,
+                            &mut functions,
+                        )?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            // Fragmented optimizing functions and streaming baseline
+            // functions use exact preflight for every fragment. The cheap
+            // planner estimate intentionally cannot account for the full
+            // live-state fanout of direct guards; without this pass, one
+            // underestimated fragment rejects the complete artifact only
+            // after all preceding fragments have already been compiled.
             if active_fragment_layout.is_some() {
                 for replan_attempt in 0..=MAX_PRE_REGALLOC_REPLAN_ATTEMPTS {
                     let mut offending_fragments = Vec::new();
@@ -3115,11 +3298,31 @@ pub(super) fn compile_region_graph_native(
                     offending_fragments.sort_unstable_by_key(|(fragment_id, _)| *fragment_id);
                     offending_fragments.dedup_by_key(|(fragment_id, _)| *fragment_id);
                     for (fragment_id, pieces) in offending_fragments.into_iter().rev() {
+                        let block_shape = active_plan
+                            .fragments
+                            .iter()
+                            .find(|fragment| fragment.id == fragment_id)
+                            .map(|fragment| {
+                                fragment
+                                    .blocks
+                                    .iter()
+                                    .map(|block| {
+                                        format!(
+                                            "{}:{}",
+                                            block.raw(),
+                                            region.blocks[block.index()].instructions.len()
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_default();
                         active_plan = active_plan.refine_fragment_into(region, fragment_id, pieces).ok_or_else(|| {
                             CraneliftLoweringError::new(
                                 "JIT_CRANELIFT_PRE_REGALLOC_UNSPLITTABLE",
                                 format!(
-                                    "fragment {fragment_id} exceeds the exact pre-regalloc safety margin and contains no safe Region-block cut"
+                                    "function {} fragment {fragment_id} exceeds the exact pre-regalloc safety margin and contains no safe Region-block cut (block:instruction-count={block_shape})",
+                                    region.function_name,
                                 ),
                             )
                         })?;
@@ -3139,6 +3342,7 @@ pub(super) fn compile_region_graph_native(
                     )?;
                 }
             }
+            let referenced_internal_functions = std::cell::RefCell::new(BTreeSet::new());
             let mut append_defined = |symbol: FunctionId,
                                       arity: u8,
                                       local_count: u32,
@@ -3164,6 +3368,13 @@ pub(super) fn compile_region_graph_native(
                     .max(defined.maximum_temporary_cache_entries);
                 relocatable_bytes.extend_from_slice(&defined.code);
                 for relocation in &mut defined.relocations {
+                    if let crate::JitRelocatableTarget::InternalFunction(function) =
+                        &relocation.target
+                    {
+                        referenced_internal_functions
+                            .borrow_mut()
+                            .insert(*function);
+                    }
                     relocation.offset = relocation.offset.saturating_add(code_offset);
                 }
                 relocatable_relocations.append(&mut defined.relocations);
@@ -3183,58 +3394,6 @@ pub(super) fn compile_region_graph_native(
             // Cranelift's allocation-heavy translation scratch sequentially;
             // `clear_context` preserves its backing allocations after every
             // fragment while regalloc still sees only one fragment at a time.
-            if let NativeTierOperations::Optimizing { operations } = tier_operations {
-                let defined = define_direct_array_ensure_unique_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.array_ensure_unique,
-                )?;
-                let _ = append_defined(
-                    operations.array_ensure_unique_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_array_child_entry_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.array_child_entry,
-                )?;
-                let _ = append_defined(
-                    operations.array_child_entry_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_value_release_validate_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.value_release_validate,
-                    operations.value_release_validate_symbol,
-                )?;
-                let _ = append_defined(
-                    operations.value_release_validate_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-                let defined = define_direct_value_release_commit_function(
-                    module,
-                    codegen_context,
-                    builder_context,
-                    operations.value_release_commit,
-                    operations.value_release_commit_symbol,
-                )?;
-                let _ = append_defined(
-                    operations.value_release_commit_symbol,
-                    0,
-                    0,
-                    defined,
-                )?;
-            }
             for candidate in regions.values() {
                 if let Some(layout) = &active_fragment_layout {
                     let mut function_bytes = 0_u64;
@@ -3357,6 +3516,7 @@ pub(super) fn compile_region_graph_native(
                         &fragment_functions,
                         layout,
                         &functions,
+                        &value_flows[&candidate.function],
                     )?;
                     let (bytes, stack) = append_defined(
                         candidate.function,
@@ -3370,33 +3530,44 @@ pub(super) fn compile_region_graph_native(
                         .insert(candidate.function, (function_bytes, maximum_stack));
                 } else {
                     let register_liveness = NativeRegisterLiveness::analyze(candidate);
-                    let compiler =
-                        crate::cranelift_lowering::baseline_streaming::compiler_for_tier(
-                            candidate.compile_metadata.tier,
-                        );
-                    let defined = compiler.compile_fragment(&mut |compilation_mode| {
-                        define_region_graph_function(
+                    let defined = if let Some(preflighted) = preflighted_whole.take() {
+                        compile_preflighted_region_function(
                             module,
                             codegen_context,
-                            builder_context,
-                            candidate,
-                            &unit.constants,
-                            &value_flows[&candidate.function],
                             functions[&candidate.function],
+                            candidate,
                             &functions,
-                            &inline_constants,
-                            &tail_forwards,
-                            &function_params,
-                            &request.external_function_signatures,
-                            tier_operations,
-                            &register_liveness,
-                            None,
-                            runtime_unit_identity,
-                            compilation_mode,
-                            false,
-                            false,
+                            preflighted,
                         )
-                    })?;
+                    } else {
+                        let compiler =
+                            crate::cranelift_lowering::baseline_streaming::compiler_for_tier(
+                                candidate.compile_metadata.tier,
+                            );
+                        compiler.compile_fragment(&mut |compilation_mode| {
+                            define_region_graph_function(
+                                module,
+                                codegen_context,
+                                builder_context,
+                                candidate,
+                                &unit.constants,
+                                &value_flows[&candidate.function],
+                                functions[&candidate.function],
+                                &functions,
+                                &inline_constants,
+                                &tail_forwards,
+                                &function_params,
+                                &request.external_function_signatures,
+                                tier_operations,
+                                &register_liveness,
+                                None,
+                                runtime_unit_identity,
+                                compilation_mode,
+                                false,
+                                false,
+                            )
+                        })
+                    }?;
                     let metrics = append_defined(
                         candidate.function,
                         region_arity(candidate)?,
@@ -3404,6 +3575,101 @@ pub(super) fn compile_region_graph_native(
                         defined,
                     )?;
                     function_code_metrics.insert(candidate.function, metrics);
+                }
+            }
+            if let NativeTierOperations::Optimizing { operations } = tier_operations {
+                // Optimizing support functions are part of an artifact only
+                // when its emitted CLIF actually relocates to them. The old
+                // unconditional bundle compiled and published all five
+                // bodies even for pure scalar functions. Keep the exact
+                // native dependency closure for the admitted insert.
+                let referenced = referenced_internal_functions.borrow().clone();
+                let needs_insert = referenced.contains(&operations.array_insert_admitted_symbol);
+                let needs_ensure =
+                    referenced.contains(&operations.array_ensure_unique_symbol);
+                let needs_child =
+                    needs_insert || referenced.contains(&operations.array_child_entry_symbol);
+                let needs_validate =
+                    referenced.contains(&operations.value_release_validate_symbol);
+                let needs_commit =
+                    needs_insert || referenced.contains(&operations.value_release_commit_symbol);
+
+                if needs_ensure {
+                    let defined = define_direct_array_ensure_unique_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.array_ensure_unique,
+                    )?;
+                    let _ = append_defined(
+                        operations.array_ensure_unique_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_child {
+                    let defined = define_direct_array_child_entry_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.array_child_entry,
+                    )?;
+                    let _ = append_defined(
+                        operations.array_child_entry_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_validate {
+                    let defined = define_direct_value_release_validate_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.value_release_validate,
+                        operations.value_release_validate_symbol,
+                    )?;
+                    let _ = append_defined(
+                        operations.value_release_validate_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_commit {
+                    let defined = define_direct_value_release_commit_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.value_release_commit,
+                        operations.value_release_commit_symbol,
+                    )?;
+                    let _ = append_defined(
+                        operations.value_release_commit_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
+                }
+                if needs_insert {
+                    let defined = define_direct_array_insert_admitted_function(
+                        module,
+                        codegen_context,
+                        builder_context,
+                        operations.array_insert_admitted,
+                        operations.array_insert_admitted_symbol,
+                        operations.array_child_entry,
+                        operations.array_child_entry_symbol,
+                        operations.value_release_commit,
+                        operations.value_release_commit_symbol,
+                    )?;
+                    let _ = append_defined(
+                        operations.array_insert_admitted_symbol,
+                        0,
+                        0,
+                        defined,
+                    )?;
                 }
             }
             drop(append_defined);
@@ -3566,6 +3832,7 @@ pub(super) fn compile_region_graph_native(
                 active_fragment_layout
                     .as_ref()
                     .map(|layout| &layout.register_liveness),
+                &value_flows,
                 emitted_production_lowering,
             );
             let mut handle = JitFunctionHandle::i64_status_out_native(
@@ -3587,7 +3854,9 @@ pub(super) fn compile_region_graph_native(
                         crate::JitRelocatableTarget::Helper(symbol)
                             if matches!(
                                 symbol.as_str(),
-                                "phrust_native_defined"
+                                "phrust_native_define"
+                                    | "phrust_native_include"
+                                    | "phrust_native_defined"
                                     | "phrust_native_echo_bytes"
                                     | "phrust_native_echo_int"
                                     | "phrust_native_echo_float"
@@ -3595,6 +3864,7 @@ pub(super) fn compile_region_graph_native(
                                     | "phrust_native_float_to_int"
                                     | "phrust_native_object_class_name"
                                     | "phrust_native_prepared_object_new"
+                                    | "phrust_native_prepared_closure_new"
                                     | "phrust_native_plain_object_clone"
                                     | "phrust_native_function_exists"
                                     | "phrust_native_class_exists"
@@ -3616,6 +3886,9 @@ pub(super) fn compile_region_graph_native(
                                         | "phrust_native_dirname"
                                         | "phrust_native_realpath"
                                         | "phrust_native_file_exists"
+                                        | "phrust_native_fopen"
+                                        | "phrust_native_fwrite"
+                                        | "phrust_native_fclose"
                                 ) =>
                         {
                             None
@@ -3681,16 +3954,6 @@ pub(super) fn select_native_region_tier(
     _plan: &NativeCompilePlan,
     _constants: &[IrConstant],
 ) {
-    // A PHP top-level body executes in the including scope: every named local
-    // is observable through the caller frame and may be introduced by the
-    // included file itself. The optimizing local-SSA contract deliberately
-    // excludes that dynamic symbol-table aliasing. Keep top-level bodies in
-    // baseline-native code until they have a dedicated direct native scope
-    // representation; silently treating these locals as private SSA values
-    // loses include exports such as WordPress' `$wp_version`.
-    if candidate.flags.is_top_level {
-        candidate.compile_metadata.tier = NativeCompilerTier::Baseline;
-    }
     // Baseline and optimizing code must share real CFG boundaries around a
     // baseline-only island.  Otherwise baseline has no edge on which it can
     // re-enter the published optimizing continuation and one unsupported
@@ -3802,7 +4065,6 @@ fn region_instruction_result_register(kind: &RegionInstructionKind) -> Option<Re
         | RegionInstructionKind::BindReferenceFromPropertyDim { .. }
         | RegionInstructionKind::BindReferenceIntoPropertyDim { .. }
         | RegionInstructionKind::BindReferenceDimFromProperty { .. }
-        | RegionInstructionKind::BindReferenceStaticProperty { .. }
         | RegionInstructionKind::InitStaticLocal { .. }
         | RegionInstructionKind::Discard { .. }
         | RegionInstructionKind::Echo { .. }
@@ -4123,6 +4385,17 @@ fn direct_array_child_entry_signature(module: &JITModule) -> Signature {
     signature.params.push(AbiParam::new(types::I64));
     signature.returns.push(AbiParam::new(types::I64));
     signature.returns.push(AbiParam::new(pointer_type));
+    signature
+}
+
+fn direct_array_insert_admitted_signature(module: &JITModule) -> Signature {
+    let pointer_type = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.params.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(types::I64));
     signature
 }
 
@@ -4471,6 +4744,7 @@ fn define_region_fragment_wrapper(
     fragment_functions: &BTreeMap<u32, FuncId>,
     layout: &NativeFunctionFragmentLayout,
     relocation_functions: &BTreeMap<FunctionId, FuncId>,
+    value_flow: &ExecutableValueFlow,
 ) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
     let pointer_type = module.target_config().pointer_type();
     ctx.func.signature = region_graph_signature(module, region)?;
@@ -4500,9 +4774,23 @@ fn define_region_fragment_wrapper(
             crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
         );
         for local in frame_layout.local_slots.keys().copied() {
+            let initial = if matches!(
+                value_flow.local_storage(local),
+                crate::region_ir::LocalStorageClass::RequestGlobal
+                    | crate::region_ir::LocalStorageClass::Superglobal
+            ) {
+                lower_trusted_request_local_reference(
+                    &mut builder,
+                    deopt_out,
+                    region.function,
+                    local,
+                )
+            } else {
+                uninitialized
+            };
             builder.ins().store(
                 MemFlagsData::new(),
-                uninitialized,
+                initial,
                 frame,
                 frame_layout.local_offset(local)?,
             );
@@ -5114,6 +5402,7 @@ fn define_region_graph_function(
                 builder.append_block_param(block, types::I32);
                 builder.append_block_param(block, types::I64);
                 builder.append_block_param(block, types::I32);
+                builder.append_block_param(block, types::I64);
                 for _ in 0..crate::JIT_DEOPT_LOCAL_MASK_WORDS {
                     builder.append_block_param(block, types::I64);
                 }
@@ -5222,9 +5511,23 @@ fn define_region_graph_function(
             types::I64,
             crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
         );
-        for storage in locals.values().copied() {
-            if let NativeLocalStorage::Variable(variable) = storage {
-                builder.def_var(variable, uninitialized_value);
+        for (local, storage) in &locals {
+            if let NativeLocalStorage::Variable(variable) = *storage {
+                let initial = if matches!(
+                    value_flow.local_storage(*local),
+                    crate::region_ir::LocalStorageClass::RequestGlobal
+                        | crate::region_ir::LocalStorageClass::Superglobal
+                ) {
+                    lower_trusted_request_local_reference(
+                        &mut builder,
+                        deopt_out,
+                        region.function,
+                        *local,
+                    )
+                } else {
+                    uninitialized_value
+                };
+                builder.def_var(variable, initial);
             }
         }
         if fragment.is_none() {
@@ -5246,9 +5549,23 @@ fn define_region_graph_function(
             let frame = fragment_frame.expect("inline fragment frame");
             let layout = frame_layout.expect("inline fragment frame layout");
             for local in layout.local_slots.keys().copied() {
+                let initial = if matches!(
+                    value_flow.local_storage(local),
+                    crate::region_ir::LocalStorageClass::RequestGlobal
+                        | crate::region_ir::LocalStorageClass::Superglobal
+                ) {
+                    lower_trusted_request_local_reference(
+                        &mut builder,
+                        deopt_out,
+                        region.function,
+                        local,
+                    )
+                } else {
+                    uninitialized_value
+                };
                 builder.ins().store(
                     MemFlagsData::new(),
-                    uninitialized_value,
+                    initial,
                     frame,
                     layout.local_offset(local)?,
                 );
@@ -5297,14 +5614,6 @@ fn define_region_graph_function(
             .iter()
             .map(|target| (*target, builder.create_block()))
             .collect::<BTreeMap<_, _>>();
-        let suspension_resume_loaders = owned_blocks
-            .iter()
-            .flat_map(|block| &block.instructions)
-            .filter(|instruction| {
-                matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_))
-            })
-            .map(|instruction| (instruction.continuation_id, builder.create_block()))
-            .collect::<BTreeMap<_, _>>();
         let transition_resume_loaders = owned_blocks
             .iter()
             .flat_map(|block| {
@@ -5351,7 +5660,7 @@ fn define_region_graph_function(
             .map(|entry| (entry.id, builder.create_block()))
             .collect::<BTreeMap<_, _>>();
         let has_resume_entries = !handler_resume_loaders.is_empty()
-            || !suspension_resume_loaders.is_empty()
+            || !suspension_blocks.is_empty()
             || !transition_resume_loaders.is_empty()
             || !optimizing_block_resume_loaders.is_empty()
             || !osr_resume_loaders.is_empty();
@@ -5363,9 +5672,9 @@ fn define_region_graph_function(
             let resume = u128::from(crate::native_handler_resume_id(*target) as u32);
             resume_switch.set_entry(resume, *loader);
         }
-        for (continuation, loader) in &suspension_resume_loaders {
+        for (continuation, resume_block) in &suspension_blocks {
             let resume = u128::from(crate::native_suspension_resume_id(*continuation) as u32);
-            resume_switch.set_entry(resume, *loader);
+            resume_switch.set_entry(resume, *resume_block);
         }
         for (continuation, loader) in &transition_resume_loaders {
             let resume = u128::from(crate::native_transition_resume_id(*continuation) as u32);
@@ -5381,7 +5690,9 @@ fn define_region_graph_function(
             let resume = u128::from(*id);
             resume_switch.set_entry(resume, *loader);
         }
-        if let Some(resume_default) = resume_default {
+        let resume_dispatch = if let Some(resume_default) = resume_default {
+            let dispatch = builder.create_block();
+            builder.set_cold_block(dispatch);
             if let Some(restore) = streaming_resume_restore {
                 let is_normal_entry = builder.ins().icmp_imm(IntCC::Equal, resume_id, -1);
                 builder
@@ -5389,8 +5700,6 @@ fn define_region_graph_function(
                     .brif(is_normal_entry, resume_default, &[], restore, &[]);
                 builder.switch_to_block(restore);
                 builder.set_cold_block(restore);
-                let dispatch = builder.create_block();
-                builder.set_cold_block(dispatch);
                 let local_restore_done = builder.create_block();
                 builder.set_cold_block(local_restore_done);
                 emit_streaming_local_restore_loop(
@@ -5431,10 +5740,13 @@ fn define_region_graph_function(
                     layout.pending_value_offset(),
                 );
                 builder.ins().jump(dispatch, &[]);
-                builder.switch_to_block(dispatch);
+            } else {
+                builder.ins().jump(dispatch, &[]);
             }
-            resume_switch.emit(&mut builder, resume_id, resume_default);
-        }
+            Some(dispatch)
+        } else {
+            None
+        };
 
         for target in handler_resume_blocks {
             let loader = handler_resume_loaders[&target];
@@ -5480,63 +5792,96 @@ fn define_region_graph_function(
                     &resume_locals.into_iter().collect::<Vec<_>>(),
                 )?;
             }
-            builder.ins().jump(cranelift_block(&blocks, target)?, &[]);
-        }
-        for region_block in &owned_blocks {
-            for instruction in &region_block.instructions {
-                if !matches!(instruction.kind, RegionInstructionKind::NativeSuspend(_)) {
-                    continue;
-                }
-                let loader = suspension_resume_loaders[&instruction.continuation_id];
-                builder.switch_to_block(loader);
-                builder.set_cold_block(loader);
-                let control_status = builder.ins().load(
-                    types::I32,
-                    MemFlagsData::new(),
-                    resume_state,
-                    std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
-                );
-                let control_value = builder.ins().load(
-                    types::I64,
-                    MemFlagsData::new(),
-                    resume_state,
-                    std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
-                );
-                builder.def_var(pending_status, control_status);
-                builder.def_var(pending_value, control_value);
-                if let Some(frame) = streaming_state_frame {
-                    builder.ins().store(
-                        MemFlagsData::new(),
-                        control_status,
-                        frame,
-                        frame_layout
-                            .expect("streaming frame layout")
-                            .pending_status_offset(),
-                    );
-                    builder.ins().store(
-                        MemFlagsData::new(),
-                        control_value,
-                        frame,
-                        frame_layout
-                            .expect("streaming frame layout")
-                            .pending_value_offset(),
-                    );
-                }
-                if streaming_state_frame.is_none() {
-                    restore_native_local_state_values(
+            // A call-originated throw reaches a handler through the published
+            // control value, not through a pre-existing caller local slot.
+            // Install that authoritative native throwable directly into the
+            // catch local after restoring the caller frame. Restoring the
+            // uninitialized snapshot slot here previously replaced every
+            // caught Error with NULL.
+            if let Some(exception_locals) = handler_exception_locals.get(&target) {
+                if matches!(tier_operations, NativeTierOperations::Optimizing { .. }) {
+                    // Catch binding can overwrite an object whose destructor
+                    // re-enters PHP. Exception paths are cold, so hand the
+                    // complete pre-bind frame and pending throwable to the
+                    // exact baseline handler entry once instead of embedding
+                    // a partial release/store sequence in optimizing code.
+                    let transition_locals = target_block
+                        .entry_live_locals
+                        .iter()
+                        .copied()
+                        .chain(exception_locals.iter().copied())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    publish_native_continuation_state(
                         &mut builder,
-                        resume_state,
+                        deopt_out,
+                        region.function,
+                        region.local_count,
+                        // Catch-bind transitions resume by exact handler block,
+                        // including an empty handler with no instruction
+                        // continuation of its own.
+                        target.raw(),
+                        &transition_locals,
                         &locals,
-                        &instruction.live_locals,
+                        native_version,
                     )?;
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        status,
+                        deopt_out,
+                        std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
+                    );
+                    let detail = builder.ins().iconst(
+                        types::I32,
+                        i64::from(crate::JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL),
+                    );
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        detail,
+                        deopt_out,
+                        std::mem::offset_of!(crate::JitDeoptState, control_reserved) as i32,
+                    );
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        value,
+                        deopt_out,
+                        std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
+                    );
+                    let empty = builder
+                        .ins()
+                        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                    builder
+                        .ins()
+                        .store(MemFlagsData::new(), empty, result_out, 0);
+                    let transition = builder.ins().iconst(
+                        types::I32,
+                        i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+                    );
+                    builder.ins().return_(&[transition]);
+                    let unreachable = builder.create_block();
+                    builder.switch_to_block(unreachable);
+                    builder.seal_block(unreachable);
+                } else {
+                    for local in exception_locals {
+                        let current = use_local_variable(&mut builder, &locals, *local)?;
+                        let function = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(region.function.raw()));
+                        let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
+                        let stored = lower_native_value_operation(
+                            module,
+                            &mut builder,
+                            native_operations.local_store,
+                            crate::JIT_LOCAL_STORE_MOVE_INPUT,
+                            &[current, value, function, local_value],
+                            result_out,
+                        )?;
+                        define_local_variable(&mut builder, &locals, *local, stored)?;
+                    }
                 }
-                builder.ins().jump(
-                    *suspension_blocks
-                        .get(&instruction.continuation_id)
-                        .expect("suspension block was predeclared"),
-                    &[],
-                );
             }
+            builder.ins().jump(cranelift_block(&blocks, target)?, &[]);
         }
         for region_block in &owned_blocks {
             for instruction in &region_block.instructions {
@@ -5809,6 +6154,30 @@ fn define_region_graph_function(
                         );
                         define_local_variable(&mut builder, &locals, local, value)?;
                     }
+                    let mut restored_registers = register_variables.clone();
+                    for register in register_live_in.get(entry).into_iter().flatten() {
+                        let type_ = register_types.get(register).copied().unwrap_or(types::I64);
+                        let value = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::new(),
+                            frame,
+                            frame_layout
+                                .expect("optimizing fragment frame layout")
+                                .register_offset(fragment.fragment.id, *register)?,
+                        );
+                        let value = if type_ == types::I64 {
+                            value
+                        } else {
+                            builder.ins().ireduce(type_, value)
+                        };
+                        define_region_register(
+                            &mut builder,
+                            &register_variables,
+                            &mut restored_registers,
+                            *register,
+                            value,
+                        )?;
+                    }
                 }
                 builder.ins().jump(cranelift_block(&blocks, *entry)?, &[]);
             }
@@ -5923,9 +6292,8 @@ fn define_region_graph_function(
             }
             let mut terminated = false;
             for instruction in &region_block.instructions {
-                if let Some(transition_block) =
-                    transition_blocks.get(&instruction.continuation_id).copied()
-                {
+                let transition_block = transition_blocks.get(&instruction.continuation_id).copied();
+                if let Some(transition_block) = transition_block {
                     builder.ins().jump(transition_block, &[]);
                     builder.switch_to_block(transition_block);
                     // A resume loader may enter this instruction without
@@ -5969,6 +6337,7 @@ fn define_region_graph_function(
                             module,
                             &mut builder,
                             &register_variables,
+                            &suspension_blocks,
                             &locals,
                             &mut registers,
                             instruction,
@@ -5980,6 +6349,9 @@ fn define_region_graph_function(
                             runtime,
                             result_out,
                             deopt_out,
+                            resume_state,
+                            pending_status,
+                            pending_value,
                             region.function,
                             region.local_count,
                             native_version,
@@ -6235,6 +6607,7 @@ fn define_region_graph_function(
             let status = params[0];
             let value = params[1];
             let continuation = params[2];
+            let suspension_link = params[3];
             let store_i32 = |builder: &mut FunctionBuilder<'_>, offset: usize, value: ir::Value| {
                 builder
                     .ins()
@@ -6267,7 +6640,7 @@ fn define_region_graph_function(
                 std::mem::offset_of!(crate::JitDeoptState, native_version),
                 native_version_value,
             );
-            for (word, mask) in params[3..].iter().copied().enumerate() {
+            for (word, mask) in params[4..].iter().copied().enumerate() {
                 builder.ins().store(
                     MemFlagsData::new(),
                     mask,
@@ -6279,6 +6652,7 @@ fn define_region_graph_function(
             builder
                 .ins()
                 .store(MemFlagsData::new(), value, result_out, 0);
+            publish_native_fiber_suspension_link(&mut builder, deopt_out, suspension_link);
             let finished = builder.create_block();
             builder.set_cold_block(finished);
             emit_streaming_local_snapshot_loop(
@@ -6291,6 +6665,10 @@ fn define_region_graph_function(
             );
             builder.switch_to_block(finished);
             builder.ins().return_(&[status]);
+        }
+        if let (Some(dispatch), Some(resume_default)) = (resume_dispatch, resume_default) {
+            builder.switch_to_block(dispatch);
+            resume_switch.emit(&mut builder, resume_id, resume_default);
         }
         builder.switch_to_block(terminal_exit);
         let terminal_status = builder.block_params(terminal_exit)[0];
@@ -6550,6 +6928,188 @@ fn lower_direct_array_child_entry_body(builder: &mut FunctionBuilder<'_>) {
     let zero_value = builder.ins().iconst(types::I64, 0);
     let null_entry = builder.ins().iconst(pointer_type, 0);
     builder.ins().return_(&[zero_value, null_entry]);
+}
+
+fn lower_direct_array_insert_admitted_body(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    child_entry: FuncId,
+    value_release_commit: FuncId,
+) {
+    let entry = builder.create_block();
+    let inspect_replace = builder.create_block();
+    let replace = builder.create_block();
+    let append = builder.create_block();
+    let succeeded = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.append_block_param(inspect_replace, types::I64);
+    builder.append_block_param(inspect_replace, module.target_config().pointer_type());
+    builder.append_block_param(replace, types::I64);
+    builder.append_block_param(replace, module.target_config().pointer_type());
+
+    builder.switch_to_block(entry);
+    let deopt_out = builder.block_params(entry)[0];
+    let array = builder.block_params(entry)[1];
+    let key = builder.block_params(entry)[2];
+    let value = builder.block_params(entry)[3];
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let child_entry = module.declare_func_in_func(child_entry, builder.func);
+    let lookup = builder.ins().call(child_entry, &[deopt_out, array, key]);
+    let old = builder.inst_results(lookup)[0];
+    let found_entry = builder.inst_results(lookup)[1];
+    let found = builder.ins().icmp_imm(IntCC::NotEqual, found_entry, 0);
+    builder.ins().brif(
+        found,
+        inspect_replace,
+        &[old.into(), found_entry.into()],
+        append,
+        &[],
+    );
+
+    builder.switch_to_block(inspect_replace);
+    let old = builder.block_params(inspect_replace)[0];
+    let found_entry = builder.block_params(inspect_replace)[1];
+    let unchanged = builder.ins().icmp(IntCC::Equal, old, value);
+    builder.ins().brif(
+        unchanged,
+        succeeded,
+        &[],
+        replace,
+        &[old.into(), found_entry.into()],
+    );
+
+    builder.switch_to_block(replace);
+    let old = builder.block_params(replace)[0];
+    let found_entry = builder.block_params(replace)[1];
+    lower_optimizing_retain(builder, value, deopt_out);
+    builder.ins().store(
+        MemFlagsData::new(),
+        value,
+        found_entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let commit = module.declare_func_in_func(value_release_commit, builder.func);
+    let _ = builder.ins().call(commit, &[deopt_out, old]);
+    builder.ins().jump(succeeded, &[]);
+
+    // The caller has already admitted a direct, unique array with room for
+    // one entry and an integer/string key. Repeating those engine-integrity
+    // checks here would recreate an operation-local fallback after the exact
+    // native boundary. This compiled function therefore commits the admitted
+    // mutation directly; PHP-visible COW/key semantics remain in the caller's
+    // single guard and continuation.
+    builder.switch_to_block(append);
+    let slot = lower_optimizing_slot_address(builder, array, deopt_out);
+    let length = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let (integer_key, integer_raw) = lower_optimizing_integer_candidate(builder, key, deopt_out);
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let entry_index = if pointer_type == types::I64 {
+        length
+    } else {
+        builder.ins().ireduce(pointer_type, length)
+    };
+    let entry_offset = builder.ins().ishl_imm(entry_index, 4);
+    let destination = builder.ins().iadd(entries, entry_offset);
+    lower_optimizing_retain(builder, key, deopt_out);
+    lower_optimizing_retain(builder, value, deopt_out);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), key, destination, 0);
+    builder.ins().store(
+        MemFlagsData::new(),
+        value,
+        destination,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let next_length = builder.ins().iadd_imm(length, 1);
+    builder.ins().store(
+        MemFlagsData::new(),
+        next_length,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+
+    let state = lower_direct_array_state_address(builder, array, deopt_out);
+    let current_next = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, next_append_key) as i32,
+    );
+    let has_current_next = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, has_next_append_key) as i32,
+    );
+    let maximum_key = builder.ins().icmp_imm(IntCC::Equal, integer_raw, i64::MAX);
+    let incremented_key = builder.ins().iadd_imm(integer_raw, 1);
+    let candidate_next = builder
+        .ins()
+        .select(maximum_key, integer_raw, incremented_key);
+    let advances = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThan, candidate_next, current_next);
+    let absent = builder.ins().icmp_imm(IntCC::Equal, has_current_next, 0);
+    let advances = builder.ins().bor(absent, advances);
+    let advances = builder.ins().band(integer_key, advances);
+    let next_append_key = builder.ins().select(advances, candidate_next, current_next);
+    builder.ins().store(
+        MemFlagsData::new(),
+        next_append_key,
+        state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, next_append_key) as i32,
+    );
+    let has_integer_key = builder.ins().icmp_imm(IntCC::NotEqual, integer_key, 0);
+    let had_next = builder.ins().icmp_imm(IntCC::NotEqual, has_current_next, 0);
+    let has_next = builder.ins().bor(has_integer_key, had_next);
+    let has_next = builder.ins().uextend(types::I32, has_next);
+    builder.ins().store(
+        MemFlagsData::new(),
+        has_next,
+        state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, has_next_append_key) as i32,
+    );
+
+    let flags = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
+    );
+    let cursor = builder
+        .ins()
+        .ushr_imm(flags, crate::JIT_NATIVE_DIRECT_ARRAY_CURSOR_SHIFT as i64);
+    let cursor_absent = builder.ins().icmp_imm(
+        IntCC::Equal,
+        cursor,
+        i64::from(crate::JIT_NATIVE_DIRECT_ARRAY_CURSOR_NONE),
+    );
+    let first = builder.ins().iconst(
+        types::I32,
+        i64::from(crate::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION),
+    );
+    let flags = builder.ins().select(cursor_absent, first, flags);
+    builder.ins().store(
+        MemFlagsData::new(),
+        flags,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
+    );
+    builder.ins().jump(succeeded, &[]);
+
+    builder.switch_to_block(succeeded);
+    builder.ins().return_(&[array]);
 }
 
 fn lower_direct_value_release_validate_body(
@@ -7675,6 +8235,108 @@ fn define_direct_array_child_entry_function(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn define_direct_array_insert_admitted_function(
+    module: &mut JITModule,
+    ctx: &mut cranelift_codegen::Context,
+    builder_context: &mut FunctionBuilderContext,
+    func_id: FuncId,
+    symbol: FunctionId,
+    child_entry: FuncId,
+    child_entry_symbol: FunctionId,
+    value_release_commit: FuncId,
+    value_release_commit_symbol: FunctionId,
+) -> Result<DefinedRegionFunction, CraneliftLoweringError> {
+    ctx.func.signature = direct_array_insert_admitted_signature(module);
+    ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, builder_context);
+        lower_direct_array_insert_admitted_body(
+            module,
+            &mut builder,
+            child_entry,
+            value_release_commit,
+        );
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+    let verifier_flags = settings::Flags::new(settings::builder());
+    verify_function(&ctx.func, &verifier_flags).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_VERIFIER",
+            format!("prepared direct array insert verifier failure: {error}"),
+        )
+    })?;
+    let clif_blocks = ctx.func.layout.blocks().count();
+    let pre_regalloc = PreRegallocMetrics {
+        blocks: clif_blocks,
+        values: ctx.func.dfg.num_values(),
+        instructions: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.layout.block_insts(block).count())
+            .sum(),
+        block_parameters: ctx
+            .func
+            .layout
+            .blocks()
+            .map(|block| ctx.func.dfg.block_params(block).len())
+            .sum(),
+        ..PreRegallocMetrics::default()
+    };
+    module.define_function(func_id, ctx).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_DEFINE",
+            format!("failed to define prepared direct array insert: {error}"),
+        )
+    })?;
+    let compiled = ctx.compiled_code().ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_CACHE_CODE",
+            "Cranelift returned no prepared direct array insert code",
+        )
+    })?;
+    let native_stack_bytes = compiled
+        .buffer
+        .frame_layout()
+        .map_or(0, |layout| layout.frame_to_fp_offset);
+    let code = compiled.code_buffer().to_vec();
+    let alignment = u64::from(compiled.buffer.alignment)
+        .max(module.isa().function_alignment().minimum as u64)
+        .max(module.isa().symbol_alignment());
+    let relocation_functions = BTreeMap::from([
+        (symbol, func_id),
+        (child_entry_symbol, child_entry),
+        (value_release_commit_symbol, value_release_commit),
+    ]);
+    let relocations = compiled
+        .buffer
+        .relocs()
+        .iter()
+        .map(|relocation| {
+            capture_relocation(
+                module,
+                ModuleReloc::from_mach_reloc(relocation, &ctx.func, func_id),
+                &relocation_functions,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    module.clear_context(ctx);
+    Ok(DefinedRegionFunction {
+        lowered_function: None,
+        code,
+        clif_blocks,
+        alignment,
+        relocations,
+        native_pc_ranges: Vec::new(),
+        native_stack_bytes,
+        pre_regalloc,
+        maximum_temporary_cache_entries: 0,
+        production_lowering: Vec::new(),
+    })
+}
+
 fn define_direct_value_release_validate_function(
     module: &mut JITModule,
     ctx: &mut cranelift_codegen::Context,
@@ -7870,6 +8532,7 @@ fn region_graph_metadata<'a>(
     native_pc_ranges: Vec<crate::JitNativePcRange>,
     function_entries: Vec<crate::JitNativeFunctionEntryMetadata>,
     root_register_liveness: Option<&NativeRegisterLiveness>,
+    value_flows: &BTreeMap<FunctionId, ExecutableValueFlow>,
     mut emitted_production_lowering: Vec<crate::JitProductionLoweringMetadata>,
 ) -> crate::JitRegionStateMetadata {
     let regions = regions.collect::<Vec<_>>();
@@ -7948,6 +8611,12 @@ fn region_graph_metadata<'a>(
             )
         })
         .unwrap_or_default();
+    let direct_callees = regions
+        .iter()
+        .flat_map(|region| region.direct_callees())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     crate::JitRegionStateMetadata {
         local_count: root_local_count,
         compiler_tier: regions
@@ -7965,6 +8634,7 @@ fn region_graph_metadata<'a>(
         inline_bytes_added: root_inlining.1,
         tail_call_sites: root_inlining.2,
         inline_rejected_by_reason: root_inlining.3,
+        direct_callees,
         continuations,
         native_pc_ranges,
         osr_entries,
@@ -8018,6 +8688,8 @@ fn region_graph_metadata<'a>(
         suspensions: regions
             .iter()
             .flat_map(|region| {
+                let liveness = &transition_liveness[&region.function];
+                let value_flow = &value_flows[&region.function];
                 region.blocks.iter().flat_map(move |block| {
                     block.instructions.iter().filter_map(move |instruction| {
                         let RegionInstructionKind::NativeSuspend(suspend) = &instruction.kind
@@ -8035,6 +8707,27 @@ fn region_graph_metadata<'a>(
                                 crate::JitNativeSuspendKind::FIBER_SUSPEND
                             }
                         };
+                        let live_registers = liveness
+                            .get(&instruction.continuation_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let owned_locals = instruction
+                            .live_locals
+                            .iter()
+                            .copied()
+                            .filter(|local| {
+                                value_flow.local_storage(*local).is_native_frame_local()
+                            })
+                            .collect();
+                        let owned_registers = live_registers
+                            .iter()
+                            .copied()
+                            .filter(|register| {
+                                crate::region_ir::value_release_required(
+                                    value_flow.register_fact(*register),
+                                )
+                            })
+                            .collect();
                         Some(crate::JitNativeSuspensionMetadata {
                             function: region.function,
                             continuation_id: instruction.continuation_id,
@@ -8044,6 +8737,9 @@ fn region_graph_metadata<'a>(
                             kind,
                             span: instruction.span,
                             live_locals: instruction.live_locals.clone(),
+                            owned_locals,
+                            live_registers,
+                            owned_registers,
                             owning_generation_required: true,
                         })
                     })
@@ -8115,6 +8811,7 @@ fn region_graph_metadata<'a>(
             .iter()
             .flat_map(|region| {
                 let liveness = &transition_liveness[&region.function];
+                let value_flow = &value_flows[&region.function];
                 let mut transitions = region
                     .blocks
                     .iter()
@@ -8128,6 +8825,23 @@ fn region_graph_metadata<'a>(
                         }
                         let live_registers = liveness.get(&instruction.continuation_id)?;
                         (live_registers.len() <= crate::JIT_DEOPT_MAX_REGISTERS).then(|| {
+                            let owned_locals = instruction
+                                .live_locals
+                                .iter()
+                                .copied()
+                                .filter(|local| {
+                                    value_flow.local_storage(*local).is_native_frame_local()
+                                })
+                                .collect();
+                            let owned_registers = live_registers
+                                .iter()
+                                .copied()
+                                .filter(|register| {
+                                    crate::region_ir::value_release_required(
+                                        value_flow.register_fact(*register),
+                                    )
+                                })
+                                .collect();
                             crate::JitNativeTransitionMetadata {
                                 function: region.function,
                                 native_version: u32::from(
@@ -8140,6 +8854,8 @@ fn region_graph_metadata<'a>(
                                 span: instruction.span,
                                 live_locals: instruction.live_locals.clone(),
                                 live_registers: live_registers.clone(),
+                                owned_locals,
+                                owned_registers,
                                 result_register: region_instruction_result_register(
                                     &instruction.kind,
                                 ),
@@ -8155,6 +8871,23 @@ fn region_graph_metadata<'a>(
                     let continuation_id = block.terminator_continuation_id;
                     let live_registers = liveness.get(&continuation_id)?;
                     (live_registers.len() <= crate::JIT_DEOPT_MAX_REGISTERS).then(|| {
+                        let owned_locals = block
+                            .terminator_live_locals
+                            .iter()
+                            .copied()
+                            .filter(|local| {
+                                value_flow.local_storage(*local).is_native_frame_local()
+                            })
+                            .collect();
+                        let owned_registers = live_registers
+                            .iter()
+                            .copied()
+                            .filter(|register| {
+                                crate::region_ir::value_release_required(
+                                    value_flow.register_fact(*register),
+                                )
+                            })
+                            .collect();
                         crate::JitNativeTransitionMetadata {
                             function: region.function,
                             native_version: u32::from(
@@ -8165,6 +8898,8 @@ fn region_graph_metadata<'a>(
                             span: block.terminator_span,
                             live_locals: block.terminator_live_locals.clone(),
                             live_registers: live_registers.clone(),
+                            owned_locals,
+                            owned_registers,
                             result_register: None,
                         }
                     })

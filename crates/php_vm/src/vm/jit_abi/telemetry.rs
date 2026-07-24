@@ -161,6 +161,7 @@ fn helper_index(helper_id: &str) -> usize {
 pub(super) struct NativeRuntimeTelemetry {
     pub(super) counters: crate::counters::VmCounters,
     pub(super) helper_timing_stack: Vec<NativeHelperTimingFrame>,
+    builtin_attribution_stack: Vec<&'static str>,
     helper_calls: [u64; HELPER_NAMES.len()],
     helper_time_nanos: [u64; HELPER_NAMES.len()],
     local_reads: [u64; LOCAL_REASONS.len()],
@@ -181,6 +182,7 @@ impl Default for NativeRuntimeTelemetry {
         Self {
             counters: crate::counters::VmCounters::default(),
             helper_timing_stack: Vec::new(),
+            builtin_attribution_stack: Vec::new(),
             helper_calls: [0; HELPER_NAMES.len()],
             helper_time_nanos: [0; HELPER_NAMES.len()],
             local_reads: [0; LOCAL_REASONS.len()],
@@ -207,6 +209,25 @@ pub(super) struct NativeHelperTimingFrame {
 }
 
 impl NativeRuntimeTelemetry {
+    pub(super) fn reset_for_pool(&mut self) {
+        self.counters = crate::counters::VmCounters::default();
+        self.helper_timing_stack.clear();
+        self.builtin_attribution_stack.clear();
+        self.helper_calls.fill(0);
+        self.helper_time_nanos.fill(0);
+        self.local_reads.fill(0);
+        self.local_stores.fill(0);
+        self.truthy_classes.fill(0);
+        self.retains.fill(0);
+        self.releases.fill(0);
+        self.root_rebuilds.fill(0);
+        self.operation_calls.fill(0);
+        self.operation_time_nanos.fill(0);
+        self.function_calls.clear();
+        self.function_time_nanos.clear();
+        self.slow_paths.fill(0);
+    }
+
     fn enter_helper(&mut self, helper_id: &'static str) {
         self.counters.runtime_helper_calls = self.counters.runtime_helper_calls.saturating_add(1);
         if matches!(
@@ -351,7 +372,6 @@ impl NativeRequestColdState<'_> {
             self.native_frame_arena.capacity_bytes() as u64;
         counters.native_frame_arena_high_water_bytes =
             self.native_frame_arena.high_water_bytes() as u64;
-        let cold_values = self.value_slots.usage(self.values.len());
         let direct_values = self
             .direct_value_slots
             .usage(*self.direct_value_next as usize);
@@ -368,7 +388,6 @@ impl NativeRequestColdState<'_> {
             .static_property_slots
             .usage(*self.static_property_next as usize);
         for (name, usage) in [
-            ("cold_value_slots", cold_values),
             ("direct_value_slots", direct_values),
             ("direct_object_owners", direct_object_owners),
             ("direct_array_entries", direct_arrays),
@@ -979,16 +998,6 @@ impl NativeRequestColdState<'_> {
         record_scratch(target, &LIFECYCLE_REASONS, reason);
     }
 
-    pub(super) fn record_release_to_zero(&self) {
-        if self.options.collect_counters {
-            let mut telemetry = self.runtime_telemetry.borrow_mut();
-            telemetry.counters.runtime_helper_release_to_zero = telemetry
-                .counters
-                .runtime_helper_release_to_zero
-                .saturating_add(1);
-        }
-    }
-
     pub(super) fn record_root_rebuild_reason(&self, reason: &'static str) {
         if !self.options.collect_counters {
             return;
@@ -998,48 +1007,6 @@ impl NativeRequestColdState<'_> {
             &ROOT_REASONS,
             reason,
         );
-    }
-
-    pub(super) fn record_value_table_allocation(&self, high_water: usize, kind: &'static str) {
-        if self.options.collect_counters {
-            let mut telemetry = self.runtime_telemetry.borrow_mut();
-            let helper = telemetry
-                .helper_timing_stack
-                .last()
-                .map_or("outside_helper", |frame| HELPER_NAMES[frame.helper_index]);
-            telemetry.counters.native_value_table_allocations = telemetry
-                .counters
-                .native_value_table_allocations
-                .saturating_add(1);
-            telemetry.counters.native_value_table_high_water = telemetry
-                .counters
-                .native_value_table_high_water
-                .max(high_water as u64);
-            *telemetry
-                .counters
-                .native_value_table_materializations_by_kind_and_origin
-                .entry(format!("{kind}@{helper}"))
-                .or_default() += 1;
-        }
-    }
-
-    pub(super) fn record_value_table_reuse(&self, kind: &'static str) {
-        if self.options.collect_counters {
-            let mut telemetry = self.runtime_telemetry.borrow_mut();
-            let helper = telemetry
-                .helper_timing_stack
-                .last()
-                .map_or("outside_helper", |frame| HELPER_NAMES[frame.helper_index]);
-            telemetry.counters.native_value_table_reuses = telemetry
-                .counters
-                .native_value_table_reuses
-                .saturating_add(1);
-            *telemetry
-                .counters
-                .native_value_table_materializations_by_kind_and_origin
-                .entry(format!("{kind}@{helper}"))
-                .or_default() += 1;
-        }
     }
 
     pub(super) fn record_direct_array_materialization(
@@ -1076,6 +1043,73 @@ impl NativeRequestColdState<'_> {
             .native_value_table_materializations_by_kind_and_origin
             .entry(format!("direct_array_entry_site@{site}"))
             .or_default() += u64::try_from(entries).unwrap_or(u64::MAX);
+        if let Some(name) = telemetry.builtin_attribution_stack.last().copied() {
+            *telemetry
+                .counters
+                .native_value_table_materializations_by_kind_and_origin
+                .entry(format!("direct_array_builtin@{name}"))
+                .or_default() += 1;
+            *telemetry
+                .counters
+                .native_value_table_materializations_by_kind_and_origin
+                .entry(format!("direct_array_entry_builtin@{name}"))
+                .or_default() += u64::try_from(entries).unwrap_or(u64::MAX);
+        }
+    }
+
+    pub(super) fn enter_builtin_attribution(&self, name: &'static str) {
+        if self.options.collect_counters {
+            self.runtime_telemetry
+                .borrow_mut()
+                .builtin_attribution_stack
+                .push(name);
+        }
+    }
+
+    pub(super) fn exit_builtin_attribution(&self, name: &'static str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        let popped = self
+            .runtime_telemetry
+            .borrow_mut()
+            .builtin_attribution_stack
+            .pop();
+        debug_assert_eq!(popped, Some(name));
+    }
+
+    pub(super) fn record_direct_object_promotion(
+        &self,
+        caller: &'static std::panic::Location<'static>,
+    ) {
+        if !self.options.collect_counters {
+            return;
+        }
+        let site = format!("{}:{}", caller.file(), caller.line());
+        *self
+            .runtime_telemetry
+            .borrow_mut()
+            .counters
+            .native_value_table_materializations_by_kind_and_origin
+            .entry(format!("direct_object_promotion_site@{site}"))
+            .or_default() += 1;
+    }
+
+    pub(super) fn record_direct_object_demotion(
+        &self,
+        caller: &'static std::panic::Location<'static>,
+    ) {
+        if !self.options.collect_counters {
+            return;
+        }
+        let site = format!("{}:{}", caller.file(), caller.line());
+        *self
+            .runtime_telemetry
+            .borrow_mut()
+            .counters
+            .native_value_table_materializations_by_kind_and_origin
+            .entry(format!("direct_object_demotion_site@{site}"))
+            .or_default() += 1;
     }
 
     pub(super) fn record_native_transition(

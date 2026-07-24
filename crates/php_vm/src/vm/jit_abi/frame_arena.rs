@@ -30,6 +30,13 @@ struct FrameChunkStorage {
     mapping_len: usize,
 }
 
+// SAFETY: `FrameChunkStorage` uniquely owns its anonymous mapping. Moving the
+// owner between worker requests does not expose or alias the mapping; checkout
+// occurs only after the previous request has ended and reset its allocations.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+unsafe impl Send for FrameChunkStorage {}
+
 #[cfg(unix)]
 impl std::fmt::Debug for FrameChunkStorage {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -278,6 +285,21 @@ impl NativeFrameArena {
 
     pub(super) fn capacity_bytes(&self) -> usize {
         self.capacity_bytes
+    }
+
+    /// Ends one request's use of the worker-owned arena without discarding its
+    /// guarded mappings. No generated frame pointer survives request teardown.
+    pub(super) fn reset_for_pool(&mut self) {
+        debug_assert!(
+            self.allocations.is_empty(),
+            "native frame arena returned with live allocations"
+        );
+        self.allocations.clear();
+        for chunk in &mut self.chunks {
+            chunk.used = 0;
+        }
+        self.active_bytes = 0;
+        self.high_water_bytes = 0;
     }
 }
 

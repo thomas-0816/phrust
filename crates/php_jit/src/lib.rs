@@ -25,66 +25,80 @@ pub mod region_ir;
 
 pub use abi::{
     JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS,
-    JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_CONSTANT_VIEW_BOOL,
+    JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_COLD_GENERATOR_ABI_VERSION,
+    JIT_NATIVE_COLD_ITERATOR_ABI_VERSION, JIT_NATIVE_CONSTANT_VIEW_BOOL,
     JIT_NATIVE_CONSTANT_VIEW_FLOAT, JIT_NATIVE_CONSTANT_VIEW_INT, JIT_NATIVE_CONSTANT_VIEW_NONE,
     JIT_NATIVE_CONSTANT_VIEW_NULL, JIT_NATIVE_CONSTANT_VIEW_STRING,
     JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION, JIT_NATIVE_DIRECT_ARRAY_CURSOR_NONE,
     JIT_NATIVE_DIRECT_ARRAY_CURSOR_SHIFT, JIT_NATIVE_DIRECT_ARRAY_ENTRY_CAPACITY,
     JIT_NATIVE_DIRECT_ARRAY_FLAGS_VERSION_MASK, JIT_NATIVE_DIRECT_ARRAY_FREE_BUCKETS,
     JIT_NATIVE_DIRECT_ARRAY_FREE_NONE, JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY,
+    JIT_NATIVE_DIRECT_FIBER_ABI_VERSION, JIT_NATIVE_DIRECT_GENERATOR_ABI_VERSION,
+    JIT_NATIVE_DIRECT_INT_ABI_VERSION, JIT_NATIVE_DIRECT_RESOURCE_ABI_VERSION,
     JIT_NATIVE_DIRECT_STRING_BYTE_CAPACITY, JIT_NATIVE_DIRECT_STRING_CAPACITY_SHIFT,
     JIT_NATIVE_DIRECT_STRING_FREE_BUCKETS, JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY,
     JIT_NATIVE_DIRECT_VALUE_CAPACITY, JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
-    JIT_NATIVE_FOREACH_VIEW_ABI_VERSION, JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED,
-    JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION, JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE,
-    JIT_NATIVE_PREPARED_CLASS_EMPTY, JIT_NATIVE_REFERENCE_ARRAY_KEY_INT,
-    JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING, JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT, JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING, JIT_NATIVE_REFERENCE_ARRAY_VALUE_TRUE,
-    JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED, JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED,
-    JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_ARRAY_VIEW_EMPTY,
-    JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED, JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
-    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_FALSE, JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_INT,
-    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_NULL, JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_TRUE,
+    JIT_NATIVE_FIBER_SUSPENSION_CAPACITY, JIT_NATIVE_FOREACH_VIEW_ABI_VERSION,
+    JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED, JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION,
+    JIT_NATIVE_PREPARED_CALLABLE_ABI_VERSION, JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE,
+    JIT_NATIVE_PREPARED_CLASS_EMPTY, JIT_NATIVE_PREPARED_CLOSURE_HAS_IMPLICIT_THIS,
+    JIT_NATIVE_REFERENCE_ARRAY_KEY_INT, JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL, JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_TRUE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNINITIALIZED,
+    JIT_NATIVE_REFERENCE_ARRAY_VALUE_UNSUPPORTED, JIT_NATIVE_REFERENCE_ARRAY_VIEW_ABI_VERSION,
+    JIT_NATIVE_REFERENCE_ARRAY_VIEW_EMPTY, JIT_NATIVE_REFERENCE_ARRAY_VIEW_PUBLISHED,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION, JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_FALSE,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_INT, JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_NULL,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_TRUE,
     JIT_NATIVE_REFERENCE_SCALAR_VIEW_DIRTY_UNINITIALIZED, JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY,
-    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_SHARED_ARRAY_ABI_VERSION,
-    JIT_NATIVE_STATIC_PROPERTY_CAPACITY, JIT_NATIVE_STRING_VALUE_ZERO,
-    JIT_NATIVE_STRING_VIEW_ABI_VERSION, JIT_NATIVE_TRUSTED_CONSTANT_EMPTY,
-    JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED, JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_EMPTY,
-    JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED,
+    JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED, JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD,
+    JIT_NATIVE_REQUEST_LOCAL_EMPTY, JIT_NATIVE_REQUEST_LOCAL_PUBLISHED,
+    JIT_NATIVE_SHARED_ARRAY_ABI_VERSION, JIT_NATIVE_STATIC_PROPERTY_CAPACITY,
+    JIT_NATIVE_STRING_VALUE_ZERO, JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+    JIT_NATIVE_TRUSTED_CONSTANT_EMPTY, JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED,
+    JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_EMPTY, JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED,
+    JIT_NATIVE_TRUSTED_LITERAL_EMPTY, JIT_NATIVE_TRUSTED_LITERAL_PUBLISHED,
     JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_EMPTY,
     JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE,
     JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE, JIT_NATIVE_TRUSTED_STATIC_LOCAL_EMPTY,
     JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_EMPTY,
     JIT_NATIVE_TRUSTED_STATIC_PROPERTY_READABLE, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_WRITABLE,
     JIT_NATIVE_VALUE_VIEW_ARRAY, JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY,
-    JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH,
-    JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT, JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
-    JIT_NATIVE_VALUE_VIEW_FLOAT, JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT, JIT_NATIVE_VALUE_VIEW_NONE,
-    JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR, JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY,
-    JIT_NATIVE_VALUE_VIEW_STRING, JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED,
-    JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED, JIT_OPTIMIZING_EXIT_ARRAY_VIEW_MISSING,
-    JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiSlot, JitAbiValue, JitBailout,
-    JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView, JitCValue, JitCValueTag, JitCallResult,
-    JitCallStatus, JitDeoptState, JitExceptionMarker, JitFrameHandle, JitFrameView,
-    JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame, JitNativeCallKind,
-    JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord, JitNativeControlResult,
-    JitNativeDestructorPoint, JitNativeDirectArrayEntry, JitNativeDispatchTrampoline,
-    JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline,
-    JitNativeExceptionHandler, JitNativeFastStateHeader, JitNativeFiberState,
-    JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader, JitNativeGeneratorState,
-    JitNativeIndirectionEntry, JitNativeInstanceOfEntry, JitNativeInstanceOfPlan,
-    JitNativePcMetadata, JitNativePreparedClassPlan, JitNativeReferenceArrayEntry,
-    JitNativeReferenceArrayView, JitNativeReferenceScalarView, JitNativeResumeInputKind,
-    JitNativeRootEntry, JitNativeRootKind, JitNativeRuntimeView, JitNativeRuntimeViewGuard,
-    JitNativeStaticPropertySlot, JitNativeSuspendKind, JitNativeSuspensionGenerationPolicy,
-    JitNativeTransitionState, JitNativeTrustedConstantSlot, JitNativeTrustedGlobalReferenceSlot,
-    JitNativeTrustedPropertySlot, JitNativeTrustedStaticLocalSlot,
-    JitNativeTrustedStaticPropertySlot, JitNativeValueSlot, JitOpaqueHandle, JitOpaqueValueKind,
-    JitRegionResult, JitRuntimeCallout, JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle,
-    SideExitReason, activate_native_runtime_view, jit_native_direct_array_cursor,
-    jit_native_direct_array_flags, jit_native_direct_string_capacity,
-    jit_native_direct_string_reserved, jit_native_instanceof_index,
+    JIT_NATIVE_VALUE_VIEW_COLD_GENERATOR, JIT_NATIVE_VALUE_VIEW_COLD_ITERATOR,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_FIBER,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH, JIT_NATIVE_VALUE_VIEW_DIRECT_GENERATOR,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_INT, JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT,
+    JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR, JIT_NATIVE_VALUE_VIEW_DIRECT_RESOURCE,
+    JIT_NATIVE_VALUE_VIEW_FLOAT, JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT,
+    JIT_NATIVE_VALUE_VIEW_GLOBALS_PROXY, JIT_NATIVE_VALUE_VIEW_MATERIALIZED_FIBER,
+    JIT_NATIVE_VALUE_VIEW_MATERIALIZED_GENERATOR, JIT_NATIVE_VALUE_VIEW_NONE,
+    JIT_NATIVE_VALUE_VIEW_PREPARED_CALLABLE, JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR,
+    JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY, JIT_NATIVE_VALUE_VIEW_STRING,
+    JIT_OPTIMIZING_EXIT_ARRAY_KEY_UNSUPPORTED, JIT_OPTIMIZING_EXIT_ARRAY_NOT_TAGGED,
+    JIT_OPTIMIZING_EXIT_ARRAY_VIEW_MISSING, JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION,
+    JitAbiSlot, JitAbiValue, JitBailout, JitBailoutKind, JitCExit, JitCExitTag, JitCFrameView,
+    JitCValue, JitCValueTag, JitCallResult, JitCallStatus, JitDeoptState, JitExceptionMarker,
+    JitFrameHandle, JitFrameView, JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame,
+    JitNativeCallKind, JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord,
+    JitNativeControlResult, JitNativeDestructorPoint, JitNativeDirectArrayEntry,
+    JitNativeDirectArrayState, JitNativeDispatchTrampoline, JitNativeDynamicCodeKind,
+    JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
+    JitNativeFastStateHeader, JitNativeFiberState, JitNativeForeachEntry, JitNativeForeachView,
+    JitNativeFrameHeader, JitNativeGeneratorState, JitNativeIndirectionEntry,
+    JitNativeInstanceOfEntry, JitNativeInstanceOfPlan, JitNativePcMetadata,
+    JitNativePreparedClassPlan, JitNativePreparedClosureView, JitNativeReferenceArrayEntry,
+    JitNativeReferenceArrayView, JitNativeReferenceScalarView, JitNativeRequestLocalSlot,
+    JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind, JitNativeRuntimeView,
+    JitNativeRuntimeViewGuard, JitNativeStaticPropertySlot, JitNativeSuspendKind,
+    JitNativeSuspensionGenerationPolicy, JitNativeTransitionState, JitNativeTrustedConstantSlot,
+    JitNativeTrustedGlobalReferenceSlot, JitNativeTrustedLiteralSlot, JitNativeTrustedPropertySlot,
+    JitNativeTrustedStaticLocalSlot, JitNativeTrustedStaticPropertySlot, JitNativeValueSlot,
+    JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
+    JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
+    activate_native_runtime_view, jit_native_direct_array_cursor, jit_native_direct_array_flags,
+    jit_native_direct_string_capacity, jit_native_direct_string_reserved,
+    jit_native_instanceof_index,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -126,6 +140,10 @@ const JIT_NATIVE_HANDLER_RESUME_TAG: u32 = 0x8000_0000;
 const JIT_NATIVE_SUSPENSION_RESUME_TAG: u32 = 0x4000_0000;
 pub const JIT_NATIVE_TRANSITION_RESUME_TAG: u32 = 0x2000_0000;
 pub const JIT_NATIVE_OPTIMIZING_BLOCK_RESUME_TAG: u32 = 0x1000_0000;
+/// Optimizing catch-entry binding deliberately resumes at the baseline
+/// handler entry so the overwritten local is finalized exactly once before
+/// the catch body executes.
+pub const JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL: u32 = 0x4341_5443;
 /// Cranelift release included in restart-persistent native cache identity.
 pub const CRANELIFT_VERSION: &str = "0.133.1";
 
@@ -166,6 +184,7 @@ pub struct JitRuntimeHelperAddresses {
     pub native_builtin_dispatch: usize,
     /// Exact prepared symbol/reflection query handlers. Each address names one
     /// fixed builtin; optimizing code never supplies an operation or registry ID.
+    pub native_define: usize,
     pub native_defined: usize,
     pub native_function_exists: usize,
     pub native_class_exists: usize,
@@ -174,6 +193,9 @@ pub struct JitRuntimeHelperAddresses {
     pub native_enum_exists: usize,
     pub native_method_exists: usize,
     pub native_property_exists: usize,
+    /// Exact cold include compiler/invoker. Optimizing code calls this
+    /// operation directly and resumes in the same optimizing frame.
+    pub native_include: usize,
     /// Exact prepared PCRE handlers. Each address names one fixed builtin;
     /// optimizing code never supplies an operation or registry ID.
     pub native_preg_match: usize,
@@ -203,6 +225,9 @@ pub struct JitRuntimeHelperAddresses {
     pub native_dirname: usize,
     pub native_realpath: usize,
     pub native_file_exists: usize,
+    pub native_fopen: usize,
+    pub native_fwrite: usize,
+    pub native_fclose: usize,
     /// Direct typed PHP semantic operation over packed i64 operands.
     pub native_semantic_dispatch: usize,
     /// Resolves or compiles one statically known PHP callee without invoking it.
@@ -237,6 +262,9 @@ pub struct JitRuntimeHelperAddresses {
     pub native_object_class_name: usize,
     /// Exact allocation from a request-published immutable class plan.
     pub native_prepared_object_new: usize,
+    /// Exact closure allocation from immutable callsite metadata and native
+    /// capture owners.
+    pub native_prepared_closure_new: usize,
     /// Exact shallow clone for an SSA-exact class without `__clone`.
     pub native_plain_object_clone: usize,
     /// Resolves one local load, including superglobal seeding and warnings.
@@ -693,6 +721,18 @@ pub struct JitNativeSuspensionMetadata {
     pub kind: JitNativeSuspendKind,
     pub span: IrSpan,
     pub live_locals: Vec<LocalId>,
+    /// Frame-local owners that must be released if the suspended activation
+    /// is abandoned instead of resumed through its generated epilogue.
+    #[serde(default)]
+    pub owned_locals: Vec<LocalId>,
+    /// Sparse register snapshot order stored in `JitDeoptState::registers`.
+    #[serde(default)]
+    pub live_registers: Vec<php_ir::RegId>,
+    /// Snapshot registers that carry an independent runtime owner. Borrowed
+    /// local loads are deliberately excluded so abandon cannot double-release
+    /// the local owner holding the same encoded value.
+    #[serde(default)]
+    pub owned_registers: Vec<php_ir::RegId>,
     pub owning_generation_required: bool,
 }
 
@@ -719,6 +759,15 @@ pub struct JitNativeTransitionMetadata {
     pub span: IrSpan,
     pub live_locals: Vec<LocalId>,
     pub live_registers: Vec<php_ir::RegId>,
+    /// Frame-local owners captured by this transition. These are normally
+    /// consumed by the generated continuation; a discarded suspended caller
+    /// uses this list to run the same ownership cleanup without decoding.
+    #[serde(default)]
+    pub owned_locals: Vec<LocalId>,
+    /// Independently owned sparse register snapshots. Borrowed register
+    /// aliases are excluded by executable value-flow analysis.
+    #[serde(default)]
+    pub owned_registers: Vec<php_ir::RegId>,
     pub result_register: Option<php_ir::RegId>,
 }
 
@@ -838,6 +887,10 @@ pub struct JitRegionStateMetadata {
     pub tail_call_sites: u64,
     #[serde(default)]
     pub inline_rejected_by_reason: std::collections::BTreeMap<String, u64>,
+    /// Stable userland callees whose publication cells must be initialized
+    /// before this optimizing entry becomes callable.
+    #[serde(default)]
+    pub direct_callees: Vec<FunctionId>,
     pub continuations: Vec<JitContinuationMetadata>,
     pub native_pc_ranges: Vec<JitNativePcRange>,
     pub osr_entries: Vec<JitOsrEntryMetadata>,
@@ -1369,6 +1422,28 @@ impl JitFunctionHandle {
         self.invoke_i64_transition_impl(state, runtime_abi_hash, false, runtime)
     }
 
+    /// Re-enters a same-generation call continuation and completes PHP
+    /// catch/finally selection without demoting an already encoded throwable.
+    /// Fiber suspension uses this after a nested callee finishes or unwinds.
+    pub fn invoke_i64_same_artifact_transition_with_unwind_runtime(
+        &self,
+        state: &JitNativeTransitionState,
+        runtime_abi_hash: u64,
+        runtime: *mut std::ffi::c_void,
+        catch_matches: impl FnMut(&[String], i64) -> bool,
+    ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
+        let outcome = self.invoke_i64_transition_impl(state, runtime_abi_hash, false, runtime)?;
+        let arity = self.native_entry.map_or(0, |entry| entry.arity);
+        let args = vec![0_i64; usize::from(arity)];
+        self.continue_i64_with_native_unwind_runtime(
+            &args,
+            runtime_abi_hash,
+            runtime,
+            outcome,
+            catch_matches,
+        )
+    }
+
     fn invoke_i64_transition_impl(
         &self,
         state: &JitNativeTransitionState,
@@ -1390,6 +1465,43 @@ impl JitFunctionHandle {
                 })?;
         if require_baseline && metadata.compiler_tier != region_ir::NativeCompilerTier::Baseline {
             return Err(JitInvokeError::NativeTransitionRequiresBaseline);
+        }
+        if state.control_reserved == JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL {
+            let block = BlockId::new(state.continuation_id);
+            let handler_exists = metadata.exception_handlers.iter().any(|entry| {
+                entry.function.raw() == state.function_id
+                    && (entry.catch == Some(block) || entry.finally == Some(block))
+            });
+            if !handler_exists {
+                return Err(JitInvokeError::MissingNativeTransition {
+                    function: state.function_id,
+                    continuation: state.continuation_id,
+                });
+            }
+            let function_entry = metadata
+                .function_entries
+                .iter()
+                .find(|entry| entry.function.raw() == state.function_id)
+                .ok_or(JitInvokeError::MissingNativeTransition {
+                    function: state.function_id,
+                    continuation: state.continuation_id,
+                })?;
+            let Some(mut entry) = self.native_entry else {
+                return Err(JitInvokeError::MissingNativeEntry);
+            };
+            entry.address = function_entry.address;
+            entry.arity = function_entry.arity;
+            let args = vec![0_i64; usize::from(function_entry.arity)];
+            let mut resume_state = *state;
+            resume_state.control_reserved = 0;
+            return entry.invoke_i64_handler_resume(
+                &args,
+                block,
+                state.control_status,
+                state.control_value,
+                resume_state,
+                runtime,
+            );
         }
         let transition = metadata
             .native_transitions
@@ -1607,22 +1719,15 @@ impl JitFunctionHandle {
             ) {
                 JitNativeUnwindTarget::Catch {
                     block,
-                    exception_local,
+                    exception_local: _,
                     handler_index: _,
                 } => {
-                    let mut resume_state = state;
-                    if let Some(local) = exception_local
-                        && local.index() < JIT_DEOPT_MAX_SLOTS
-                    {
-                        resume_state.slots[local.index()] = value;
-                        resume_state.mark_local_initialized(local);
-                    }
                     outcome = entry.invoke_i64_handler_resume(
                         args,
                         block,
                         JitCallStatus::CONTINUE,
                         value,
-                        resume_state,
+                        state,
                         runtime,
                     )?;
                 }
@@ -1810,22 +1915,15 @@ impl JitFunctionHandle {
             ) {
                 JitNativeUnwindTarget::Catch {
                     block,
-                    exception_local,
+                    exception_local: _,
                     handler_index: _,
                 } => {
-                    let mut resume_state = state;
-                    if let Some(local) = exception_local
-                        && local.index() < JIT_DEOPT_MAX_SLOTS
-                    {
-                        resume_state.slots[local.index()] = value;
-                        resume_state.mark_local_initialized(local);
-                    }
                     outcome = entry.invoke_i64_handler_resume(
                         args,
                         block,
                         JitCallStatus::CONTINUE,
                         value,
-                        resume_state,
+                        state,
                         runtime,
                     )?;
                 }

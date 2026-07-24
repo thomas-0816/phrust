@@ -2,11 +2,27 @@ use super::*;
 use crate::region_ir::{
     SsaOwnership, analyze_baseline_value_ownership, analyze_executable_value_flow,
 };
-use php_ir::instruction::IrCallPropertyTarget;
+use php_ir::instruction::{ClosureCaptureArg, IrCallDimTarget, IrCallPropertyTarget};
 use php_ir::{
-    ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags, FunctionFlags, IrBuilder,
-    IrCapture, IrParam, IrSpan, UnitId,
+    ClassEntry, ClassFlags, ClassId, ClassMethodEntry, ClassMethodFlags, ConstId, FunctionFlags,
+    IrBuilder, IrCapture, IrParam, IrSpan, UnitId,
 };
+
+#[test]
+fn colliding_integer_constant_keeps_its_constant_identity_until_direct_publication() {
+    let mut unit = php_ir::IrUnit::new(UnitId::new(0));
+    unit.constants.push(IrConstant::Int(0x7ff1_0000_0000_0000));
+    unit.constants.push(IrConstant::Int(42));
+
+    assert_eq!(
+        lower_constant(&unit, ConstId::new(0)),
+        RegionOperand::Constant(0)
+    );
+    assert_eq!(
+        lower_constant(&unit, ConstId::new(1)),
+        RegionOperand::I64(42)
+    );
+}
 
 fn builtin_call_with_local_arguments(name: &str, argument_count: usize) -> RegionNativeCall {
     let local = LocalId::new(0);
@@ -164,6 +180,109 @@ fn namespaced_builtin_reference_argument_load_is_quiet() {
             } if dst == loaded && local == matches
         )
     }));
+}
+
+#[test]
+fn known_by_reference_dimension_binds_the_existing_slot_identity() {
+    let mut builder = IrBuilder::new(UnitId::new(9_701));
+    let file = builder.add_file("by-reference-dimension.php");
+    let span = IrSpan::new(file, 0, 40);
+
+    let caller = builder.start_function("caller", FunctionFlags::default(), span);
+    let array = builder.intern_local(caller, "array");
+    let caller_block = builder.append_block(caller);
+    let zero = builder.intern_constant(IrConstant::Int(0));
+    let key = builder.alloc_register(caller);
+    builder.emit_load_const(caller, caller_block, key, zero, span);
+    let value = builder.alloc_register(caller);
+    builder.emit(
+        caller,
+        caller_block,
+        InstructionKind::FetchDim {
+            dst: value,
+            array: Operand::Local(array),
+            key: Operand::Register(key),
+            quiet: false,
+            mode: php_ir::instruction::DimFetchMode::Lvalue,
+        },
+        span,
+    );
+
+    let callee = builder.start_function("callee", FunctionFlags::default(), span);
+    builder.register_function_name("callee", callee);
+    let parameter = builder.intern_local(callee, "value");
+    builder.push_param(
+        callee,
+        IrParam {
+            name: "value".to_owned(),
+            local: parameter,
+            required: true,
+            type_: None,
+            by_ref: true,
+            variadic: false,
+            default: None,
+            attributes: Vec::new(),
+        },
+    );
+    let callee_block = builder.append_block(callee);
+    builder.terminate_return(callee, callee_block, None, span);
+
+    let result = builder.alloc_register(caller);
+    builder.emit(
+        caller,
+        caller_block,
+        InstructionKind::CallFunction {
+            dst: result,
+            name: "callee".to_owned(),
+            args: vec![IrCallArg {
+                name: None,
+                value: Operand::Register(value),
+                unpack: false,
+                value_kind: IrCallArgValueKind::Direct,
+                by_ref_local: None,
+                by_ref_dim: Some(IrCallDimTarget {
+                    local: array,
+                    dims: vec![Operand::Register(key)],
+                }),
+                by_ref_property: None,
+                by_ref_property_dim: None,
+            }],
+        },
+        span,
+    );
+    builder.terminate_return(caller, caller_block, None, span);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, caller).expect("by-reference dimension region");
+    let binding = region.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|instruction| match &instruction.kind {
+            RegionInstructionKind::BindReferenceDim {
+                target,
+                array: bound_array,
+                keys,
+            } => Some((*target, *bound_array, keys.clone())),
+            _ => None,
+        })
+        .expect("dimension reference binding");
+    assert_eq!(binding.1, array);
+    assert_eq!(binding.2, vec![RegionOperand::Register(key)]);
+    assert!(!region.blocks[0].instructions.iter().any(|instruction| {
+        matches!(
+            instruction.kind,
+            RegionInstructionKind::BindReferenceIntoDim { .. }
+        )
+    }));
+    let call = region.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|instruction| match &instruction.kind {
+            RegionInstructionKind::NativeCall(call) => Some(call),
+            _ => None,
+        })
+        .expect("native call");
+    assert_eq!(call.args[0].by_ref_local, Some(binding.0));
 }
 
 #[test]
@@ -452,8 +571,16 @@ fn formerly_missing_instruction_families_enter_native_region_ir() {
         RegionInstructionKind::BindReferenceFromPropertyDim { .. }
     )));
     assert!(instructions.iter().any(|instruction| matches!(
-        instruction.kind,
-        RegionInstructionKind::BindReferenceStaticProperty { .. }
+        &instruction.kind,
+        RegionInstructionKind::NativeCall(RegionNativeCall {
+            target: RegionCallTarget::Semantic {
+                operation: RegionSemanticOp::StaticPropertyReference {
+                    bind_source_into_property: true,
+                    ..
+                },
+            },
+            ..
+        })
     )));
     assert!(instructions.iter().any(|instruction| matches!(
         instruction.kind,
@@ -942,6 +1069,110 @@ fn object_syntax_static_method_call_omits_receiver_from_native_abi() {
     assert_eq!(call.direct_arity, Some(1));
     assert_eq!(call.operands.len(), 1);
     assert_eq!(call.direct_compiled_target(), Some(function));
+}
+
+#[test]
+fn named_user_call_prepares_native_parameter_order() {
+    let mut builder = IrBuilder::new(UnitId::new(9_801));
+    let file = builder.add_file("named-direct-call.php");
+    let span = IrSpan::new(file, 0, 40);
+    let function = builder.start_function("named_target", FunctionFlags::default(), span);
+    let first = builder.intern_local(function, "first");
+    let second = builder.intern_local(function, "second");
+    let third = builder.intern_local(function, "third");
+    let second_default = IrConstant::Int(20);
+    builder.intern_constant(second_default.clone());
+    for parameter in [
+        IrParam {
+            name: "first".to_owned(),
+            local: first,
+            required: true,
+            default: None,
+            type_: None,
+            by_ref: true,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+        IrParam {
+            name: "second".to_owned(),
+            local: second,
+            required: false,
+            default: Some(second_default),
+            type_: None,
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+        IrParam {
+            name: "third".to_owned(),
+            local: third,
+            required: true,
+            default: None,
+            type_: None,
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+    ] {
+        builder.push_param(function, parameter);
+    }
+    let block = builder.append_block(function);
+    builder.terminate_return(function, block, None, span);
+
+    let caller = builder.start_function("named_caller", FunctionFlags::default(), span);
+    let first_source = builder.intern_local(caller, "first_source");
+    let third_value = builder.intern_constant(IrConstant::Int(30));
+    let unit = builder.finish();
+    let args = vec![
+        IrCallArg {
+            name: Some("third".to_owned()),
+            value: Operand::Constant(third_value),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: None,
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        },
+        IrCallArg {
+            name: Some("first".to_owned()),
+            value: Operand::Local(first_source),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: Some(first_source),
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        },
+    ];
+    let RegionInstructionKind::NativeCall(call) = lower_direct_function_call(
+        &unit,
+        RegId::new(0),
+        "named_target".to_owned(),
+        function,
+        &args,
+    ) else {
+        panic!("named target should use the unified native call model");
+    };
+
+    assert_eq!(call.direct_arity, Some(3));
+    assert_eq!(call.direct_compiled_target(), Some(function));
+    assert_eq!(
+        call.prepared_argument_sources(&unit.functions[function.index()].params),
+        Some(vec![Some(1), None, Some(0)])
+    );
+    assert_eq!(
+        call.operands,
+        vec![
+            Some(RegionOperand::Local(first_source)),
+            Some(RegionOperand::Constant(0)),
+            Some(RegionOperand::I64(30)),
+        ]
+    );
+    assert_eq!(
+        call.args[1].value_kind,
+        IrCallArgValueKind::ByRefLocationPlaceholder
+    );
 }
 
 #[test]
@@ -1435,6 +1666,170 @@ fn closure_and_constant_fetch_remain_in_the_semantic_graph() {
         InstructionKind::FetchConst { .. }
     ));
     assert_eq!(instruction.span, span);
+}
+
+#[test]
+fn direct_closure_call_reads_the_authoritative_prepared_capture() {
+    let mut builder = IrBuilder::new(UnitId::new(94));
+    let file = builder.add_file("closure-capture-snapshot.php");
+    let span = IrSpan::new(file, 0, 20);
+    let closure = builder.start_function(
+        "{closure}",
+        FunctionFlags {
+            is_closure: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    let captured = builder.intern_local(closure, "x");
+    builder.push_capture(
+        closure,
+        IrCapture {
+            name: "x".to_owned(),
+            local: captured,
+            by_ref: false,
+        },
+    );
+    let parameter = builder.intern_local(closure, "y");
+    builder.push_param(
+        closure,
+        IrParam {
+            name: "y".to_owned(),
+            local: parameter,
+            required: true,
+            default: None,
+            type_: None,
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+    );
+    let closure_block = builder.append_block(closure);
+    builder.terminate_return(closure, closure_block, Some(Operand::Local(captured)), span);
+
+    let main = builder.start_function(
+        "main",
+        FunctionFlags {
+            is_top_level: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    let source = builder.intern_local(main, "x");
+    let callable = builder.intern_local(main, "f");
+    let block = builder.append_block(main);
+    let two = builder.intern_constant(IrConstant::Int(2));
+    let hundred = builder.intern_constant(IrConstant::Int(100));
+    let three = builder.intern_constant(IrConstant::Int(3));
+    builder.emit(
+        main,
+        block,
+        InstructionKind::StoreLocal {
+            local: source,
+            src: Operand::Constant(two),
+        },
+        span,
+    );
+    let closure_value = builder.alloc_register(main);
+    builder.emit(
+        main,
+        block,
+        InstructionKind::MakeClosure {
+            dst: closure_value,
+            function: closure,
+            captures: vec![ClosureCaptureArg {
+                name: "x".to_owned(),
+                src: Operand::Local(source),
+                by_ref: false,
+            }],
+        },
+        span,
+    );
+    builder.emit(
+        main,
+        block,
+        InstructionKind::StoreLocal {
+            local: callable,
+            src: Operand::Register(closure_value),
+        },
+        span,
+    );
+    builder.emit(
+        main,
+        block,
+        InstructionKind::StoreLocal {
+            local: source,
+            src: Operand::Constant(hundred),
+        },
+        span,
+    );
+    let loaded_callable = builder.alloc_register(main);
+    builder.emit(
+        main,
+        block,
+        InstructionKind::LoadLocal {
+            dst: loaded_callable,
+            local: callable,
+        },
+        span,
+    );
+    let result = builder.alloc_register(main);
+    builder.emit(
+        main,
+        block,
+        InstructionKind::CallCallable {
+            dst: result,
+            callee: Operand::Register(loaded_callable),
+            args: vec![IrCallArg {
+                name: None,
+                value: Operand::Constant(three),
+                unpack: false,
+                value_kind: IrCallArgValueKind::Direct,
+                by_ref_local: None,
+                by_ref_dim: None,
+                by_ref_property: None,
+                by_ref_property_dim: None,
+            }],
+        },
+        span,
+    );
+    builder.terminate_return(main, block, Some(Operand::Register(result)), span);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, main).expect("direct closure region");
+    let call_instruction = region.blocks[0]
+        .instructions
+        .iter()
+        .find(|instruction| {
+            matches!(
+                &instruction.kind,
+                RegionInstructionKind::NativeCall(call)
+                    if matches!(
+                        call.target,
+                        RegionCallTarget::Closure {
+                            function: Some(candidate),
+                            capture_count: 1,
+                            ..
+                        } if candidate == closure
+                    )
+            )
+        })
+        .expect("direct closure call");
+    let RegionInstructionKind::NativeCall(call) = &call_instruction.kind else {
+        unreachable!("filtered above");
+    };
+    assert_eq!(
+        region.local_count,
+        unit.functions[main.index()].local_count,
+        "direct closure calls must not retain a second mutable capture plane"
+    );
+    assert_eq!(call.argument_operand_offset, 1);
+    assert_eq!(call.operands[0], Some(RegionOperand::I64(0)));
+    assert_eq!(call.operands[1], Some(RegionOperand::I64(3)));
+    assert!(
+        call_instruction.register_uses().contains(&loaded_callable),
+        "the prepared closure source must remain live even though it is not packed into the callee frame"
+    );
 }
 
 #[test]

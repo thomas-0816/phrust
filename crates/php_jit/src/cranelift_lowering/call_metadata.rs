@@ -115,10 +115,11 @@ pub(super) fn stable_builtin_error_reporting(target: &RegionCallTarget) -> bool 
     !normalized.contains('\\') && normalized.eq_ignore_ascii_case("error_reporting")
 }
 
-/// Exact read-only symbol queries. The selector is part of the dedicated
-/// native ABI and never enters the prepared builtin dispatcher.
+/// Exact symbol operations. The selector is part of the dedicated native ABI
+/// and never enters the prepared builtin dispatcher.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StableSymbolQueryBuiltin {
+    Define,
     Defined,
     FunctionExists,
     ClassExists,
@@ -130,23 +131,25 @@ pub(super) enum StableSymbolQueryBuiltin {
 }
 
 impl StableSymbolQueryBuiltin {
-    pub(super) const COUNT: usize = 8;
+    pub(super) const COUNT: usize = 9;
 
     pub(super) const fn index(self) -> usize {
         match self {
-            Self::Defined => 0,
-            Self::FunctionExists => 1,
-            Self::ClassExists => 2,
-            Self::InterfaceExists => 3,
-            Self::TraitExists => 4,
-            Self::EnumExists => 5,
-            Self::MethodExists => 6,
-            Self::PropertyExists => 7,
+            Self::Define => 0,
+            Self::Defined => 1,
+            Self::FunctionExists => 2,
+            Self::ClassExists => 3,
+            Self::InterfaceExists => 4,
+            Self::TraitExists => 5,
+            Self::EnumExists => 6,
+            Self::MethodExists => 7,
+            Self::PropertyExists => 8,
         }
     }
 
     pub(super) const fn symbol(self) -> &'static str {
         match self {
+            Self::Define => "phrust_native_define",
             Self::Defined => "phrust_native_defined",
             Self::FunctionExists => "phrust_native_function_exists",
             Self::ClassExists => "phrust_native_class_exists",
@@ -160,6 +163,7 @@ impl StableSymbolQueryBuiltin {
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
         [
+            Self::Define,
             Self::Defined,
             Self::FunctionExists,
             Self::ClassExists,
@@ -173,6 +177,7 @@ impl StableSymbolQueryBuiltin {
 
     pub(super) const fn accepts_arity(self, arity: usize) -> bool {
         match self {
+            Self::Define => arity == 2,
             Self::Defined | Self::FunctionExists => arity == 1,
             Self::ClassExists | Self::InterfaceExists | Self::TraitExists | Self::EnumExists => {
                 arity == 1 || arity == 2
@@ -193,6 +198,7 @@ pub(super) fn stable_builtin_symbol_query(
         return None;
     }
     match normalized.to_ascii_lowercase().as_str() {
+        "define" => Some(StableSymbolQueryBuiltin::Define),
         "defined" => Some(StableSymbolQueryBuiltin::Defined),
         "function_exists" => Some(StableSymbolQueryBuiltin::FunctionExists),
         "class_exists" => Some(StableSymbolQueryBuiltin::ClassExists),
@@ -254,6 +260,17 @@ impl StablePcreBuiltin {
             (self, index),
             (Self::Match | Self::MatchAll, 2) | (Self::Replace | Self::Filter, 4)
         )
+    }
+
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Match | Self::MatchAll => arity >= 2 && arity <= 5,
+            Self::Replace | Self::Filter => arity >= 3 && arity <= 5,
+            Self::Split => arity >= 2 && arity <= 4,
+            Self::Grep => arity == 2 || arity == 3,
+            Self::Quote => arity == 1 || arity == 2,
+            Self::LastError | Self::LastErrorMessage => arity == 0,
+        }
     }
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
@@ -337,6 +354,14 @@ impl StableJsonBuiltin {
             Self::LastErrorMessage,
         ]
     }
+
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Encode | Self::Validate => arity >= 1 && arity <= 3,
+            Self::Decode => arity >= 2 && arity <= 4,
+            Self::LastError | Self::LastErrorMessage => arity == 0,
+        }
+    }
 }
 
 pub(super) fn stable_builtin_json(target: &RegionCallTarget) -> Option<StableJsonBuiltin> {
@@ -389,6 +414,13 @@ impl StableFormatBuiltin {
     pub(super) const fn all() -> [Self; Self::COUNT] {
         [Self::Sprintf, Self::Printf, Self::Vsprintf, Self::Vprintf]
     }
+
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Sprintf | Self::Printf => arity >= 1 && arity <= 6,
+            Self::Vsprintf | Self::Vprintf => arity == 2,
+        }
+    }
 }
 
 pub(super) fn stable_builtin_format(target: &RegionCallTarget) -> Option<StableFormatBuiltin> {
@@ -415,10 +447,13 @@ pub(super) enum StablePathBuiltin {
     Dirname,
     Realpath,
     FileExists,
+    Fopen,
+    Fwrite,
+    Fclose,
 }
 
 impl StablePathBuiltin {
-    pub(super) const COUNT: usize = 4;
+    pub(super) const COUNT: usize = 7;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -426,6 +461,9 @@ impl StablePathBuiltin {
             Self::Dirname => 1,
             Self::Realpath => 2,
             Self::FileExists => 3,
+            Self::Fopen => 4,
+            Self::Fwrite => 5,
+            Self::Fclose => 6,
         }
     }
 
@@ -435,6 +473,9 @@ impl StablePathBuiltin {
             Self::Dirname => "phrust_native_dirname",
             Self::Realpath => "phrust_native_realpath",
             Self::FileExists => "phrust_native_file_exists",
+            Self::Fopen => "phrust_native_fopen",
+            Self::Fwrite => "phrust_native_fwrite",
+            Self::Fclose => "phrust_native_fclose",
         }
     }
 
@@ -442,6 +483,11 @@ impl StablePathBuiltin {
         match self {
             Self::Basename | Self::Dirname => arity == 1 || arity == 2,
             Self::Realpath | Self::FileExists => arity == 1,
+            // Optional fopen include-path/context shapes retain their one
+            // baseline continuation until those capabilities are published.
+            Self::Fopen => arity == 2,
+            Self::Fwrite => arity == 2 || arity == 3,
+            Self::Fclose => arity == 1,
         }
     }
 
@@ -451,6 +497,9 @@ impl StablePathBuiltin {
             Self::Dirname,
             Self::Realpath,
             Self::FileExists,
+            Self::Fopen,
+            Self::Fwrite,
+            Self::Fclose,
         ]
     }
 }
@@ -468,6 +517,9 @@ pub(super) fn stable_builtin_path(target: &RegionCallTarget) -> Option<StablePat
         "dirname" => Some(StablePathBuiltin::Dirname),
         "realpath" => Some(StablePathBuiltin::Realpath),
         "file_exists" => Some(StablePathBuiltin::FileExists),
+        "fopen" => Some(StablePathBuiltin::Fopen),
+        "fwrite" => Some(StablePathBuiltin::Fwrite),
+        "fclose" => Some(StablePathBuiltin::Fclose),
         _ => None,
     }
 }
@@ -850,6 +902,18 @@ pub(super) fn known_user_argument_requires_reference(
     caller: FunctionId,
 ) -> Option<bool> {
     let argument = call.args.get(index)?;
+    if let Some(requirement) = call.declared_argument_reference_requirement(index) {
+        return Some(requirement);
+    }
+    if matches!(call.target, RegionCallTarget::Method { .. }) {
+        // A dynamic receiver may resolve to any visible userland or internal
+        // class. Method-name-only arginfo is therefore not authoritative:
+        // an unrelated internal `get()` must not classify a userland
+        // `get(&$value)` as by-value. The resolved dispatcher publishes the
+        // exact parameter flags and the caller restores speculative local
+        // bindings after the call.
+        return None;
+    }
     if let RegionCallTarget::Function {
         name,
         function: None,
@@ -944,10 +1008,7 @@ pub(super) fn known_user_argument_requires_reference(
                 |metadata| vec![metadata],
             )
         }
-        RegionCallTarget::Method { method, .. } => function_params
-            .values()
-            .filter(|(candidate, ..)| method_matches(candidate, method))
-            .collect(),
+        RegionCallTarget::Method { .. } => unreachable!("handled before metadata lookup"),
         RegionCallTarget::Constructor { class_name, .. } => function_params
             .values()
             .filter(|(candidate, ..)| {

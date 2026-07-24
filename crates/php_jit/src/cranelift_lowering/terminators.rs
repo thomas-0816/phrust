@@ -54,6 +54,155 @@ impl NativeOptimizingTerminatorTransition<'_> {
     }
 }
 
+fn lower_optimizing_terminator_reference_local(
+    builder: &mut FunctionBuilder<'_>,
+    local: ir::Value,
+    transition: NativeOptimizingTerminatorTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let inspect = builder.create_block();
+    let direct = builder.create_block();
+    let plain = builder.create_block();
+    let rejected = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::I64);
+
+    let reference = lower_value_has_tag(builder, local, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
+    builder.ins().brif(reference, inspect, &[], plain, &[]);
+
+    builder.switch_to_block(plain);
+    builder.ins().jump(merge, &[local.into()]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, local, transition.deopt_out);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let flags = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
+    );
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    let direct_kind = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
+    );
+    let version = builder.ins().icmp_imm(
+        IntCC::Equal,
+        flags,
+        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION),
+    );
+    let published = builder.ins().icmp_imm(
+        IntCC::NotEqual,
+        state,
+        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
+    );
+    let admitted = builder.ins().band(direct_kind, version);
+    let admitted = builder.ins().band(admitted, published);
+    builder.ins().brif(admitted, direct, &[], rejected, &[]);
+
+    builder.switch_to_block(direct);
+    let value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    builder.ins().jump(merge, &[value.into()]);
+
+    builder.switch_to_block(rejected);
+    transition.emit(builder)?;
+    let placeholder = builder
+        .ins()
+        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+    builder.ins().jump(merge, &[placeholder.into()]);
+
+    builder.switch_to_block(merge);
+    Ok(builder.block_params(merge)[0])
+}
+
+fn lower_optimizing_require_authoritative_return(
+    builder: &mut FunctionBuilder<'_>,
+    value: ir::Value,
+    by_reference: bool,
+    transition: NativeOptimizingTerminatorTransition<'_>,
+) -> Result<(), CraneliftLoweringError> {
+    let authoritative = lower_optimizing_call_value_is_authoritative(builder, value);
+    let direct = builder.create_block();
+    let rejected = builder.create_block();
+    if !by_reference {
+        builder
+            .ins()
+            .brif(authoritative, direct, &[], rejected, &[]);
+    } else {
+        let inspect = builder.create_block();
+        let reference = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
+        let index = builder.ins().ireduce(types::I32, value);
+        let direct_index = builder.ins().icmp_imm(
+            IntCC::UnsignedGreaterThanOrEqual,
+            index,
+            i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+        );
+        let candidate = builder.ins().band(reference, direct_index);
+        builder.ins().brif(candidate, inspect, &[], rejected, &[]);
+
+        builder.switch_to_block(inspect);
+        let slot = lower_optimizing_slot_address(builder, value, transition.deopt_out);
+        let kind = builder.ins().load(
+            types::I32,
+            MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+        );
+        let flags = builder.ins().load(
+            types::I32,
+            MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
+        );
+        let state = builder.ins().load(
+            types::I32,
+            MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+        );
+        let direct_kind = builder.ins().icmp_imm(
+            IntCC::Equal,
+            kind,
+            i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
+        );
+        let version = builder.ins().icmp_imm(
+            IntCC::Equal,
+            flags,
+            i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION),
+        );
+        let published = builder.ins().icmp_imm(
+            IntCC::NotEqual,
+            state,
+            i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
+        );
+        let mut admitted = builder.ins().band(authoritative, direct_kind);
+        admitted = builder.ins().band(admitted, version);
+        admitted = builder.ins().band(admitted, published);
+        builder.ins().brif(admitted, direct, &[], rejected, &[]);
+    }
+    builder.switch_to_block(rejected);
+    transition.emit(builder)?;
+    builder.ins().jump(direct, &[]);
+    builder.switch_to_block(direct);
+    Ok(())
+}
+
 fn lower_optimizing_frame_cleanup(
     builder: &mut FunctionBuilder<'_>,
     cleanup: &[(LocalId, ir::Value)],
@@ -99,13 +248,46 @@ fn lower_optimizing_condition(
     transition: NativeOptimizingTerminatorTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let value = lower_region_operand(builder, locals, registers, condition)?;
+    let value = if let RegionOperand::Local(local) = condition
+        && value_flow.local_storage(local).is_reference_slot()
+    {
+        lower_optimizing_terminator_reference_local(builder, value, transition)?
+    } else {
+        value
+    };
     let fact = value_flow.operand_fact(constants, condition);
+    if fact.certainty != crate::region_ir::SsaCertainty::Unknown && fact.class == SsaValueClass::Int
+    {
+        if let RegionOperand::Constant(index) = condition
+            && let Some(IrConstant::Int(value)) = constants.get(index as usize)
+        {
+            return Ok(builder.ins().iconst(types::I8, i64::from(*value != 0)));
+        }
+        let accepted = builder.create_block();
+        let rejected = builder.create_block();
+        let merge = builder.create_block();
+        builder.append_block_param(merge, types::I8);
+        let (is_integer, integer) =
+            lower_optimizing_integer_candidate(builder, value, transition.deopt_out);
+        builder.ins().brif(is_integer, accepted, &[], rejected, &[]);
+        builder.switch_to_block(accepted);
+        let truthy = builder.ins().icmp_imm(IntCC::NotEqual, integer, 0);
+        builder.ins().jump(merge, &[truthy.into()]);
+        builder.switch_to_block(rejected);
+        transition.emit(builder)?;
+        let unreachable = builder.ins().iconst(types::I8, 0);
+        builder.ins().jump(merge, &[unreachable.into()]);
+        builder.switch_to_block(merge);
+        return Ok(builder.block_params(merge)[0]);
+    }
     if let Some(truthy) = scalar_truthy(builder, value, fact.class)
         && fact.certainty != crate::region_ir::SsaCertainty::Unknown
     {
         return Ok(truthy);
     }
 
+    let integer = builder.create_block();
+    let inspect_value = builder.create_block();
     let inspect_runtime = builder.create_block();
     let inspect_non_runtime = builder.create_block();
     let inspect_descriptor = builder.create_block();
@@ -113,6 +295,16 @@ fn lower_optimizing_condition(
     let merge = builder.create_block();
     builder.append_block_param(merge, types::I8);
 
+    let (is_integer, integer_value) =
+        lower_optimizing_integer_candidate(builder, value, transition.deopt_out);
+    builder
+        .ins()
+        .brif(is_integer, integer, &[], inspect_value, &[]);
+    builder.switch_to_block(integer);
+    let truthy = builder.ins().icmp_imm(IntCC::NotEqual, integer_value, 0);
+    builder.ins().jump(merge, &[truthy.into()]);
+
+    builder.switch_to_block(inspect_value);
     let is_true = builder.ins().icmp_imm(
         IntCC::Equal,
         value,
@@ -579,18 +771,22 @@ pub(super) fn lower_region_terminator(
             )?;
         }
         RegionTerminator::ReturnReference { local, finally } => {
-            let mut value = use_local_variable(builder, locals, *local)?;
-            if value_flow.local_fact(*local).ownership == SsaOwnership::Borrowed {
-                value = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(0, function, 0),
-                    value,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
+            // The returned reference is a new ABI owner independently of the
+            // callee frame. This is required even when value-flow marks the
+            // parameter/local as owned: frame cleanup releases that owner
+            // immediately below. Returning the same handle without retaining
+            // it lets the caller install a recycled direct-reference slot and
+            // breaks aliases such as `$b =& identity_ref($a)`.
+            let local_value = use_local_variable(builder, locals, *local)?;
+            let value = lower_guarded_value_release(
+                module,
+                builder,
+                native_operations.value_release,
+                native_dim_operation(0, function, 0),
+                local_value,
+                result_out,
+                deopt_out,
+            )?;
             let status = builder.ins().iconst(
                 types::I32,
                 i64::from(crate::JitCallStatus::RETURN_REFERENCE.0),
@@ -776,11 +972,20 @@ pub(super) fn lower_optimizing_region_terminator(
                 )
             });
             let fact = lowering_operand_fact(value_flow, constants, *value);
+            let reference_local = match *value {
+                RegionOperand::Local(local) => value_flow.local_storage(local).is_reference_slot(),
+                _ => false,
+            };
             let value = lower_region_operand(builder, locals, registers, *value)?;
+            let value = if reference_local {
+                lower_optimizing_terminator_reference_local(builder, value, transition)?
+            } else {
+                value
+            };
             if return_check_required {
-                let Some(matches_return_type) = return_type
-                    .and_then(|type_| lower_optimizing_type_guard(builder, value, type_))
-                else {
+                let Some(matches_return_type) = return_type.and_then(|type_| {
+                    lower_optimizing_type_guard(builder, value, type_, deopt_out)
+                }) else {
                     transition.emit(builder)?;
                     return Ok(EmittedOptimizingInstruction {
                         class: crate::JitProductionLoweringClass::BaselineFragmentTransition,
@@ -797,7 +1002,8 @@ pub(super) fn lower_optimizing_region_terminator(
                 builder.ins().jump(admitted, &[]);
                 builder.switch_to_block(admitted);
             }
-            if fact.ownership == SsaOwnership::Borrowed {
+            lower_optimizing_require_authoritative_return(builder, value, false, transition)?;
+            if reference_local || fact.ownership == SsaOwnership::Borrowed {
                 lower_optimizing_retain(builder, value, deopt_out);
             }
             let cleanup = frame_cleanup_locals
@@ -824,6 +1030,7 @@ pub(super) fn lower_optimizing_region_terminator(
             // both cases. Direct compiled callers consume this owner when
             // they install the returned alias.
             let value = use_local_variable(builder, locals, *local)?;
+            lower_optimizing_require_authoritative_return(builder, value, true, transition)?;
             lower_optimizing_retain(builder, value, deopt_out);
             let cleanup = frame_cleanup_locals
                 .iter()
@@ -844,10 +1051,21 @@ pub(super) fn lower_optimizing_region_terminator(
             value,
             finally: None,
         } => {
+            let reference_local = value.is_some_and(|value| {
+                matches!(value, RegionOperand::Local(local) if value_flow.local_storage(local).is_reference_slot())
+            });
             let value = value
                 .map(|value| lower_region_operand(builder, locals, registers, value))
                 .transpose()?
                 .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+            let value = if reference_local {
+                let value =
+                    lower_optimizing_terminator_reference_local(builder, value, transition)?;
+                lower_optimizing_retain(builder, value, deopt_out);
+                value
+            } else {
+                value
+            };
             let cleanup = frame_cleanup_locals
                 .iter()
                 .copied()

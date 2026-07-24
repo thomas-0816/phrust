@@ -38,6 +38,14 @@ impl LocalStorageClass {
             Self::RequestGlobal | Self::Superglobal | Self::Globals
         )
     }
+
+    #[must_use]
+    pub const fn is_reference_slot(self) -> bool {
+        matches!(
+            self,
+            Self::MemoryReference | Self::RequestGlobal | Self::Superglobal
+        )
+    }
 }
 
 /// Facts that directly alter executable lowering decisions.
@@ -50,6 +58,7 @@ pub struct ExecutableValueFlow {
     reference_dimension_loads: BTreeMap<u32, RegId>,
     moved_local_stores: BTreeSet<u32>,
     moved_register_copies: BTreeSet<u32>,
+    consumed_semantic_operands: BTreeSet<(u32, RegId)>,
     elided_discards: BTreeSet<u32>,
     frame_cleanup_locals: BTreeSet<LocalId>,
     ssa: ExecutableSsaGraph,
@@ -135,6 +144,15 @@ impl ExecutableValueFlow {
     #[must_use]
     pub fn moves_value_into_register(&self, continuation_id: u32) -> bool {
         self.moved_register_copies.contains(&continuation_id)
+    }
+
+    /// Whether this semantic call is the final owner-bearing use of a
+    /// register and therefore must release the synchronous ABI borrow after
+    /// the call returns.
+    #[must_use]
+    pub fn consumes_semantic_operand(&self, continuation_id: u32, register: RegId) -> bool {
+        self.consumed_semantic_operands
+            .contains(&(continuation_id, register))
     }
 
     #[must_use]
@@ -378,7 +396,12 @@ pub fn analyze_executable_value_flow(
                 continue;
             };
             if let Some(fact) = register_facts.get_mut(&dst) {
-                if borrowed_local_loads.contains(&instruction.continuation_id) {
+                let globals_proxy = matches!(
+                    instruction.kind,
+                    RegionInstructionKind::LoadLocal { local, .. }
+                        if local_storage.get(&local) == Some(&LocalStorageClass::Globals)
+                );
+                if globals_proxy || borrowed_local_loads.contains(&instruction.continuation_id) {
                     fact.ownership = SsaOwnership::Borrowed;
                 } else if fact.has_runtime_lifecycle() {
                     fact.ownership = SsaOwnership::Owned;
@@ -391,6 +414,9 @@ pub fn analyze_executable_value_flow(
     let (moved_register_copies, moved_copy_discards) =
         find_moved_register_copies(region, &register_facts);
     elided_discards.extend(moved_copy_discards);
+    let (consumed_semantic_operands, semantic_operand_discards) =
+        find_consumed_semantic_operands(region, &register_facts);
+    elided_discards.extend(semantic_operand_discards);
     // Compiled call inputs are borrowed for the duration of the callee. Keep
     // an explicit boundary owner instead of moving an SSA owner into the
     // call: the caller can then release that boundary owner on every returned
@@ -406,6 +432,7 @@ pub fn analyze_executable_value_flow(
         reference_dimension_loads,
         moved_local_stores,
         moved_register_copies,
+        consumed_semantic_operands,
         elided_discards,
         frame_cleanup_locals,
         ssa,
@@ -452,21 +479,35 @@ pub fn analyze_baseline_value_ownership(region: &RegionGraph) -> ExecutableValue
     let mut register_facts = BTreeMap::new();
     for block in &region.blocks {
         for instruction in &block.instructions {
-            let RegionInstructionKind::LoadLocal { dst, .. } = instruction.kind else {
-                continue;
-            };
-            if borrowed_local_loads.contains(&instruction.continuation_id) {
+            if let RegionInstructionKind::LoadLocal { dst, .. } = instruction.kind {
                 register_facts.insert(
                     dst,
                     SsaValueFact {
                         class: SsaValueClass::MixedHandle,
                         certainty: super::SsaCertainty::Unknown,
-                        ownership: SsaOwnership::Borrowed,
+                        ownership: if borrowed_local_loads.contains(&instruction.continuation_id) {
+                            SsaOwnership::Borrowed
+                        } else {
+                            // A non-borrowed local fetch creates one explicit
+                            // boundary owner even when baseline compilation
+                            // does not know the PHP value class.
+                            SsaOwnership::Owned
+                        },
                     },
                 );
+                continue;
+            }
+            if let Some((register, fact)) =
+                instruction_result_fact(&instruction.kind, &[], &local_facts, &register_facts)
+                && fact.ownership == SsaOwnership::Owned
+            {
+                register_facts.insert(register, fact);
             }
         }
     }
+
+    let (consumed_semantic_operands, semantic_operand_discards) =
+        find_consumed_semantic_operands(region, &register_facts);
 
     ExecutableValueFlow {
         local_storage,
@@ -474,6 +515,8 @@ pub fn analyze_baseline_value_ownership(region: &RegionGraph) -> ExecutableValue
         register_facts,
         borrowed_local_loads,
         reference_dimension_loads,
+        consumed_semantic_operands,
+        elided_discards: semantic_operand_discards,
         ..ExecutableValueFlow::default()
     }
 }
@@ -679,6 +722,88 @@ fn find_moved_register_copies(
         }
     }
     (moved, elided_discards)
+}
+
+/// Find semantic-call operands whose register owner ends at that call.
+///
+/// The typed semantic ABI only borrows packed operands while it executes and
+/// returns an independently owned result. Region IR, however, does not emit a
+/// trailing `Discard` when the call itself is the last use of an expression.
+/// Release exactly those last-use owners. A register that is read later must
+/// stay live, and a repeated operand in one call still represents one owner.
+fn find_consumed_semantic_operands(
+    region: &RegionGraph,
+    register_facts: &BTreeMap<RegId, SsaValueFact>,
+) -> (BTreeSet<(u32, RegId)>, BTreeSet<u32>) {
+    let mut uses = BTreeMap::<RegId, Vec<(usize, usize, bool, u32)>>::new();
+    let mut terminator_uses = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let discarded = matches!(instruction.kind, RegionInstructionKind::Discard { .. });
+            for register in instruction.register_uses() {
+                uses.entry(register).or_default().push((
+                    block_index,
+                    instruction_index,
+                    discarded,
+                    instruction.continuation_id,
+                ));
+            }
+        }
+        terminator_uses.extend(block.terminator.register_uses());
+    }
+
+    let mut consumed = BTreeSet::new();
+    let mut elided_discards = BTreeSet::new();
+    for (block_index, block) in region.blocks.iter().enumerate() {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            let RegionInstructionKind::NativeCall(call) = &instruction.kind else {
+                continue;
+            };
+            if !matches!(call.target, RegionCallTarget::Semantic { .. }) {
+                continue;
+            }
+            let operand_registers = call
+                .operands
+                .iter()
+                .flatten()
+                .filter_map(|operand| match operand {
+                    RegionOperand::Register(register) => Some(*register),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            for register in operand_registers {
+                if register_facts
+                    .get(&register)
+                    .is_none_or(|fact| fact.ownership != SsaOwnership::Owned)
+                    || terminator_uses.contains(&register)
+                {
+                    continue;
+                }
+                let remaining = uses
+                    .get(&register)
+                    .into_iter()
+                    .flatten()
+                    .filter(|&&(use_block, use_index, _, _)| {
+                        (use_block, use_index) != (block_index, instruction_index)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                match remaining.as_slice() {
+                    [] => {
+                        consumed.insert((instruction.continuation_id, register));
+                    }
+                    [(use_block, use_index, true, discard_continuation)]
+                        if *use_block == block_index && *use_index > instruction_index =>
+                    {
+                        consumed.insert((instruction.continuation_id, register));
+                        elided_discards.insert(*discard_continuation);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (consumed, elided_discards)
 }
 
 fn find_borrowed_local_loads(
@@ -913,7 +1038,6 @@ fn instruction_mutated_locals(kind: &RegionInstructionKind) -> Vec<LocalId> {
             ..
         } => locals.extend([*array, *source]),
         RegionInstructionKind::BindReferenceProperty { source, .. }
-        | RegionInstructionKind::BindReferenceStaticProperty { source }
         | RegionInstructionKind::BindReferenceIntoPropertyDim { source, .. } => {
             locals.push(*source);
         }
@@ -934,6 +1058,27 @@ fn instruction_mutated_locals(kind: &RegionInstructionKind) -> Vec<LocalId> {
                             .then_some(argument.by_ref_local)
                             .flatten()
                     }),
+            );
+            locals.extend(
+                call.args
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, argument)| {
+                        call.argument_requires_reference_binding(index)
+                            .then_some(argument.by_ref_dim.as_ref().map(|target| target.local))
+                            .flatten()
+                    }),
+            );
+        }
+        RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::MakeClosure {
+            captures,
+            ..
+        }) => {
+            locals.extend(
+                captures
+                    .iter()
+                    .filter(|capture| capture.by_ref)
+                    .map(|capture| capture.local),
             );
         }
         _ => {}
@@ -973,7 +1118,6 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
                     references.insert(*source);
                 }
                 RegionInstructionKind::BindReferenceProperty { source, .. }
-                | RegionInstructionKind::BindReferenceStaticProperty { source }
                 | RegionInstructionKind::BindReferenceIntoPropertyDim { source, .. } => {
                     references.insert(*source);
                 }
@@ -998,6 +1142,16 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
                             .filter_map(|argument| argument.by_ref_local),
                     );
                 }
+                RegionInstructionKind::NativeDynamicCode(
+                    RegionNativeDynamicCode::MakeClosure { captures, .. },
+                ) => {
+                    references.extend(
+                        captures
+                            .iter()
+                            .filter(|capture| capture.by_ref)
+                            .map(|capture| capture.local),
+                    );
+                }
                 RegionInstructionKind::NativeSuspend(_) => {
                     suspension.extend(instruction.live_locals.iter().copied());
                 }
@@ -1013,11 +1167,12 @@ fn classify_locals(region: &RegionGraph) -> BTreeMap<LocalId, LocalStorageClass>
         .map(LocalId::new)
         .map(|local| {
             let name = region.locals.get(local.index()).map(String::as_str);
+            let compiler_generated = name.is_some_and(php_ir::is_compiler_generated_local_name);
             let storage = if name == Some("GLOBALS") {
                 LocalStorageClass::Globals
             } else if name.is_some_and(|name| SUPERGLOBALS.contains(&name)) {
                 LocalStorageClass::Superglobal
-            } else if region.flags.is_top_level {
+            } else if region.flags.is_top_level && !compiler_generated {
                 LocalStorageClass::RequestGlobal
             } else if references.contains(&local) {
                 LocalStorageClass::MemoryReference
@@ -1354,7 +1509,134 @@ mod tests {
     };
 
     use super::*;
-    use crate::region_ir::build_baseline_region;
+    use crate::region_ir::{RegionNativeCall, build_baseline_region};
+
+    #[test]
+    fn semantic_call_consumes_only_a_registers_final_owner_use() {
+        let mut builder = IrBuilder::new(UnitId::new(4_240));
+        let file = builder.add_file("semantic-owner.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function("semantic_owner", FunctionFlags::default(), span);
+        let block = builder.append_block(function);
+        let value = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::NewArray { dst: value },
+            span,
+        );
+        let assigned = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::AssignStaticProperty {
+                dst: assigned,
+                class_name: "Holder".to_owned(),
+                property: "slot".to_owned(),
+                value: Operand::Register(value),
+            },
+            span,
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Discard {
+                src: Operand::Register(assigned),
+            },
+            span,
+        );
+        builder.terminate_return(function, block, None, span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let semantic = region.blocks[0]
+            .instructions
+            .iter()
+            .find(|instruction| {
+                matches!(
+                    instruction.kind,
+                    RegionInstructionKind::NativeCall(RegionNativeCall {
+                        target: RegionCallTarget::Semantic { .. },
+                        ..
+                    })
+                )
+            })
+            .expect("static assignment semantic call");
+
+        let baseline = analyze_baseline_value_ownership(&region);
+        assert!(baseline.consumes_semantic_operand(semantic.continuation_id, value));
+    }
+
+    #[test]
+    fn semantic_call_preserves_a_register_with_a_later_use() {
+        let mut builder = IrBuilder::new(UnitId::new(4_241));
+        let file = builder.add_file("semantic-live-owner.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function =
+            builder.start_function("semantic_live_owner", FunctionFlags::default(), span);
+        let block = builder.append_block(function);
+        let value = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::NewArray { dst: value },
+            span,
+        );
+        let assigned = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::AssignStaticProperty {
+                dst: assigned,
+                class_name: "Holder".to_owned(),
+                property: "slot".to_owned(),
+                value: Operand::Register(value),
+            },
+            span,
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Echo {
+                src: Operand::Register(value),
+            },
+            span,
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Discard {
+                src: Operand::Register(value),
+            },
+            span,
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Discard {
+                src: Operand::Register(assigned),
+            },
+            span,
+        );
+        builder.terminate_return(function, block, None, span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let semantic = region.blocks[0]
+            .instructions
+            .iter()
+            .find(|instruction| {
+                matches!(
+                    instruction.kind,
+                    RegionInstructionKind::NativeCall(RegionNativeCall {
+                        target: RegionCallTarget::Semantic { .. },
+                        ..
+                    })
+                )
+            })
+            .expect("static assignment semantic call");
+
+        let baseline = analyze_baseline_value_ownership(&region);
+        assert!(!baseline.consumes_semantic_operand(semantic.continuation_id, value));
+    }
 
     #[test]
     fn promotes_initialized_scalar_local_and_tracks_register_chain() {
@@ -1390,6 +1672,46 @@ mod tests {
         assert_eq!(flow.local_fact(local).class, SsaValueClass::Int);
         assert_eq!(flow.register_fact(loaded).class, SsaValueClass::Int);
         assert_eq!(flow.promoted_local_count(), 1);
+    }
+
+    #[test]
+    fn keeps_compiler_generated_top_level_reference_in_native_frame() {
+        let mut builder = IrBuilder::new(UnitId::new(4_200));
+        let file = builder.add_file("top-level-compiler-local.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function(
+            "{main}",
+            FunctionFlags {
+                is_top_level: true,
+                ..FunctionFlags::default()
+            },
+            span,
+        );
+        let visible = builder.intern_local(function, "visible");
+        let compiler = builder.intern_local(function, "__phrust:by-ref-static-property:1");
+        let block = builder.append_block(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::BindReference {
+                target: compiler,
+                source: visible,
+            },
+            span,
+        );
+        builder.terminate_return(function, block, None, span);
+        let unit = builder.finish();
+        let region = build_baseline_region(&unit, function).expect("region");
+        let flow = analyze_executable_value_flow(&region, &unit.constants);
+
+        assert_eq!(
+            flow.local_storage(compiler),
+            LocalStorageClass::MemoryReference
+        );
+        assert_eq!(
+            flow.local_storage(visible),
+            LocalStorageClass::RequestGlobal
+        );
     }
 
     #[test]
@@ -1565,7 +1887,7 @@ mod tests {
         assert!(!baseline.can_borrow_local_load(region.blocks[0].instructions[0].continuation_id));
         assert_eq!(
             baseline.register_fact(loaded).ownership,
-            SsaOwnership::Unknown
+            SsaOwnership::Owned
         );
     }
 

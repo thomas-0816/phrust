@@ -163,6 +163,15 @@ pub(super) extern "C" fn test_native_prepared_object_new_fallback(
     crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
 }
 
+pub(super) extern "C" fn test_native_prepared_closure_new_fallback(
+    _runtime: *mut std::ffi::c_void,
+    _prepared: u64,
+    _captures: *const i64,
+    _implicit_this: i64,
+) -> crate::JitNativeControlResult {
+    crate::JitNativeControlResult::control(crate::JitCallStatus::RUNTIME_ERROR, 0, 0)
+}
+
 pub(super) extern "C" fn test_native_plain_object_clone_fallback(
     _runtime: *mut std::ffi::c_void,
     _object: i64,
@@ -421,6 +430,7 @@ pub(super) extern "C" fn test_native_foreach_next_fallback(
     _key_out: *mut i64,
     _value_out: *mut i64,
     _has_out: *mut i64,
+    _state_out: *mut crate::JitDeoptState,
 ) -> i32 {
     crate::JitCallStatus::RUNTIME_ERROR.0 as i32
 }

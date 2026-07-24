@@ -156,16 +156,6 @@ pub(super) fn encode_native_throwable_at(
     encode_native_throwable_fields(context, class, message, Some(span), None)
 }
 
-pub(super) fn encode_native_throwable_at_with_code(
-    context: &mut NativeRequestColdState<'_>,
-    class: &str,
-    message: &str,
-    span: php_ir::IrSpan,
-    code: i64,
-) -> Result<i64, String> {
-    encode_native_throwable_fields(context, class, message, Some(span), Some(code))
-}
-
 pub(super) fn initialize_native_throwable_parent(
     context: &mut NativeRequestColdState<'_>,
     class: &str,
@@ -232,52 +222,95 @@ fn encode_native_throwable_fields(
     span: Option<php_ir::IrSpan>,
     code: Option<i64>,
 ) -> Result<i64, String> {
-    let mut exception = php_runtime::api::PhpArray::new();
-    for (name, value) in [
-        ("class", class),
-        ("message", message),
-        (
-            "file",
-            context
-                .unit
-                .files
-                .first()
-                .map_or("<unknown>", |file| file.path.as_str()),
-        ),
-    ] {
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(name.as_bytes().to_vec())),
-            Value::String(PhpString::from_bytes(value.as_bytes().to_vec())),
-        );
-    }
-    if let Some(span) = span {
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"line".to_vec())),
-            Value::Int(
-                i64::try_from(native_source_line_for_span(context, span)).unwrap_or(i64::MAX),
-            ),
-        );
-    }
-    if let Some(code) = code {
-        exception.insert(
-            php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"code".to_vec())),
-            Value::Int(code),
-        );
-    }
-    context.encode(Value::Array(exception))
+    let normalized = normalize_class_name(class);
+    let descriptor = php_std::ExtensionRegistry::standard_library().enabled_class(&normalized);
+    let display_name = descriptor.map_or_else(
+        || class.trim_start_matches('\\').to_owned(),
+        |descriptor| descriptor.name().to_owned(),
+    );
+    let source = descriptor.and_then(php_std::ClassDescriptor::source_metadata);
+    let parent = source
+        .and_then(|metadata| metadata.parent)
+        .map(ToOwned::to_owned)
+        .or_else(|| match normalized.as_str() {
+            "argumentcounterror" => Some("TypeError".to_owned()),
+            "typeerror"
+            | "valueerror"
+            | "arithmeticerror"
+            | "divisionbyzeroerror"
+            | "compileerror"
+            | "parseerror"
+            | "fibererror"
+            | "unhandledmatcherror" => Some("Error".to_owned()),
+            "errorexception" => Some("Exception".to_owned()),
+            _ if normalized.ends_with("exception") && normalized != "exception" => {
+                Some("Exception".to_owned())
+            }
+            _ => None,
+        });
+    let interfaces = source
+        .map(|metadata| {
+            metadata
+                .interfaces
+                .iter()
+                .map(|interface| (*interface).to_owned())
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["Throwable".to_owned()]);
+    let runtime_class = php_runtime::api::ClassEntry {
+        name: Arc::from(normalized),
+        parent,
+        interfaces,
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: php_runtime::api::ClassFlags::default(),
+    };
+    let exception =
+        php_runtime::api::ObjectRef::new_with_display_name(&runtime_class, display_name);
+    let file = span
+        .and_then(|span| context.unit.files.get(span.file.index()))
+        .or_else(|| context.unit.files.first())
+        .map_or("<unknown>", |file| file.path.as_str());
+    exception.set_property(
+        "message",
+        Value::String(PhpString::from_bytes(message.as_bytes().to_vec())),
+    );
+    exception.set_property(
+        "file",
+        Value::String(PhpString::from_bytes(file.as_bytes().to_vec())),
+    );
+    exception.set_property(
+        "line",
+        Value::Int(span.map_or(0, |span| {
+            i64::try_from(native_source_line_for_span(context, span)).unwrap_or(i64::MAX)
+        })),
+    );
+    exception.set_property("code", Value::Int(code.unwrap_or(0)));
+    exception.set_property("previous", Value::Null);
+    exception.set_property("trace", Value::Array(php_runtime::api::PhpArray::new()));
+    context.encode_native_object_owner(exception)
 }
 
 pub(super) fn native_throwable_with_frame(
-    mut throwable: Value,
+    throwable: Value,
     function: &str,
     arguments: Vec<Value>,
 ) -> Value {
-    let Value::Array(exception) = &mut throwable else {
-        return throwable;
-    };
     let trace_key = php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"trace".to_vec()));
-    let mut trace = match exception.get(&trace_key) {
-        Some(Value::Array(trace)) => trace.clone(),
+    let mut trace = match &throwable {
+        Value::Array(exception) => match exception.get(&trace_key) {
+            Some(Value::Array(trace)) => trace.clone(),
+            _ => php_runtime::api::PhpArray::new(),
+        },
+        Value::Object(exception) => match exception.get_property("trace") {
+            Some(Value::Array(trace)) => trace,
+            _ => php_runtime::api::PhpArray::new(),
+        },
         _ => php_runtime::api::PhpArray::new(),
     };
     let mut frame = php_runtime::api::PhpArray::new();
@@ -290,20 +323,29 @@ pub(super) fn native_throwable_with_frame(
         Value::Array(php_runtime::api::PhpArray::from_packed(arguments)),
     );
     trace.append(Value::Array(frame));
-    exception.insert(trace_key, Value::Array(trace));
+    match &throwable {
+        Value::Array(exception) => {
+            let mut exception = exception.clone();
+            exception.insert(trace_key, Value::Array(trace));
+            return Value::Array(exception);
+        }
+        Value::Object(exception) => exception.set_property("trace", Value::Array(trace)),
+        _ => {}
+    }
     throwable
 }
 
 pub(super) fn native_throwable_with_internal_frame(
     context: &NativeRequestColdState<'_>,
-    mut throwable: Value,
+    throwable: Value,
     source: &php_ir::Instruction,
 ) -> Value {
-    let Value::Array(exception) = &mut throwable else {
-        return throwable;
-    };
     let trace_key = php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"trace".to_vec()));
-    let Some(Value::Array(mut trace)) = exception.get(&trace_key).cloned() else {
+    let Some(Value::Array(mut trace)) = (match &throwable {
+        Value::Array(exception) => exception.get(&trace_key).cloned(),
+        Value::Object(exception) => exception.get_property("trace"),
+        _ => None,
+    }) else {
         return throwable;
     };
     let Some(index) = trace.len().checked_sub(1) else {
@@ -333,20 +375,29 @@ pub(super) fn native_throwable_with_internal_frame(
         Value::Bool(true),
     );
     trace.insert(frame_key, Value::Array(frame));
-    exception.insert(trace_key, Value::Array(trace));
+    match &throwable {
+        Value::Array(exception) => {
+            let mut exception = exception.clone();
+            exception.insert(trace_key, Value::Array(trace));
+            return Value::Array(exception);
+        }
+        Value::Object(exception) => exception.set_property("trace", Value::Array(trace)),
+        _ => {}
+    }
     throwable
 }
 
 pub(super) fn native_throwable_with_call_source(
     context: &NativeRequestColdState<'_>,
-    mut throwable: Value,
+    throwable: Value,
     source_span: php_ir::IrSpan,
 ) -> Value {
-    let Value::Array(exception) = &mut throwable else {
-        return throwable;
-    };
     let trace_key = php_runtime::api::ArrayKey::String(PhpString::from_bytes(b"trace".to_vec()));
-    let Some(Value::Array(mut trace)) = exception.get(&trace_key).cloned() else {
+    let Some(Value::Array(mut trace)) = (match &throwable {
+        Value::Array(exception) => exception.get(&trace_key).cloned(),
+        Value::Object(exception) => exception.get_property("trace"),
+        _ => None,
+    }) else {
         return throwable;
     };
     let Some(index) = trace.len().checked_sub(1) else {
@@ -372,6 +423,14 @@ pub(super) fn native_throwable_with_call_source(
         ),
     );
     trace.insert(frame_key, Value::Array(frame));
-    exception.insert(trace_key, Value::Array(trace));
+    match &throwable {
+        Value::Array(exception) => {
+            let mut exception = exception.clone();
+            exception.insert(trace_key, Value::Array(trace));
+            return Value::Array(exception);
+        }
+        Value::Object(exception) => exception.set_property("trace", Value::Array(trace)),
+        _ => {}
+    }
     throwable
 }

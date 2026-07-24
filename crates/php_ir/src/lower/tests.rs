@@ -2833,6 +2833,35 @@ fn call_arg_property_dimension_emits_by_ref_metadata() {
 }
 
 #[test]
+fn unresolved_call_preserves_plain_property_location_for_runtime_signature() {
+    let frontend = analyze_source(
+        "<?php class C { public $value = []; function run() { return later($this->value); } }",
+    );
+    let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+    assert!(result.verification.is_ok(), "{:#?}", result.verification);
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let snapshot = result.unit.to_snapshot_text();
+    assert!(snapshot.contains("\"later\""), "{snapshot}");
+    assert!(snapshot.contains("by_ref_property="), "{snapshot}");
+}
+
+#[test]
+fn static_method_call_preserves_dimension_location_for_runtime_signature() {
+    let frontend = analyze_source(
+        "<?php class C { static function mutate(&$value) {} static function run($data) { static::mutate($data['settings']); } }",
+    );
+    let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+    assert!(result.verification.is_ok(), "{:#?}", result.verification);
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let snapshot = result.unit.to_snapshot_text();
+    assert!(snapshot.contains("call_static_method"), "{snapshot}");
+    assert!(snapshot.contains("by_ref_dim="), "{snapshot}");
+    assert!(snapshot.contains("mode=lvalue"), "{snapshot}");
+}
+
+#[test]
 fn direct_builtin_call_uses_generated_by_ref_metadata() {
     let frontend = analyze_source("<?php $status = -1; pcntl_waitpid(123, $status); echo $status;");
     let result = lower_frontend_result(&frontend, LoweringOptions::default());

@@ -1625,6 +1625,24 @@ impl PhpArray {
         self.storage.mutation_epoch()
     }
 
+    /// Exact next integer used by PHP's implicit array append operation.
+    ///
+    /// Native execution must carry this independently from the live key set:
+    /// `unset` preserves it and `array_pop` can move it backwards.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_next_append_key(&self) -> Option<i64> {
+        self.storage.next_append_key()
+    }
+
+    /// Restores auto-index metadata when an authoritative native array crosses
+    /// the explicit compatibility boundary back into `PhpArray`.
+    #[doc(hidden)]
+    pub fn set_native_next_append_key(&mut self, next_append_key: Option<i64>) {
+        self.storage_mut_for(PhpArrayWriteIntent::PointerMutation)
+            .set_next_append_key(next_append_key);
+    }
+
     /// Returns packed-array guard metadata for VM and JIT consumers.
     #[must_use]
     pub fn packed_metadata(&self) -> PhpArrayPackedMetadata {
