@@ -113,10 +113,11 @@ pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
         with_native_context_for(runtime, "function_resolve", |context| {
             let function = php_ir::FunctionId::new(function);
             // This helper is imported exclusively by streaming-baseline
-            // artifacts. Keep the tier boundary physical: a baseline call
-            // miss may compile and publish only the baseline callee. The
-            // optimizing tier has no resolver-helper relocation and reaches
-            // publication-validated native cells directly.
+            // artifacts. Keep the tier boundary physical: the current call
+            // always enters the baseline callee. A foreground production
+            // worker also compiles the actually reached optimizing product
+            // here and publishes it only to the preferred cell for later
+            // optimizing callers.
             let handle = ensure_native_baseline_entry(context, function)?;
             let address = handle.native_entry_address().ok_or_else(|| {
                 format!(
@@ -127,15 +128,30 @@ pub(in crate::vm) extern "C" fn jit_native_function_resolve_abi(
             context.publish_native_entry_address(function, address);
             if context.options.native_optimization
                 == super::super::NativeOptimizationPolicy::Optimizing
+                && context.options.tiering.enabled
             {
                 let compiled = context.compiled.clone();
                 let external_signatures =
                     visible_external_function_signatures(context, &compiled, function);
-                context.worker_state.schedule_on_demand_optimization(
-                    compiled,
-                    function,
-                    external_signatures,
-                );
+                if context
+                    .worker_state
+                    .defers_optimizing_compilation(context.options)
+                {
+                    context.worker_state.schedule_on_demand_optimization(
+                        compiled,
+                        function,
+                        external_signatures,
+                    );
+                } else {
+                    let optimizing = context.worker_state.resolve_native_function(
+                        &compiled,
+                        function,
+                        context.options,
+                        &external_signatures,
+                    )?;
+                    std::sync::Arc::make_mut(&mut context.native_entries)
+                        .insert(function, optimizing);
+                }
             }
             Ok(address)
         })
@@ -346,8 +362,20 @@ pub(super) fn ensure_native_entry(
         visible_external_function_signatures(context, &context.compiled, function);
 
     if context.options.native_optimization == super::super::NativeOptimizationPolicy::Optimizing
-        && context.options.tiering.enabled
-        && !context.options.tiering.native_eager
+        && !context.options.tiering.enabled
+    {
+        let handle = if let Some(handle) = context.native_entries.get(&function) {
+            handle.clone()
+        } else {
+            ensure_native_baseline_entry(context, function)?
+        };
+        std::sync::Arc::make_mut(&mut context.native_entries).insert(function, handle.clone());
+        return Ok(handle);
+    }
+
+    if context
+        .worker_state
+        .defers_optimizing_compilation(context.options)
     {
         if let Some(handle) = context.worker_state.resolved_native_function(
             &context.compiled,
@@ -373,7 +401,14 @@ pub(super) fn ensure_native_entry(
         return Ok(handle);
     }
 
-    if let Some(handle) = context.native_entries.get(&function) {
+    if let Some(handle) = context.native_entries.get(&function)
+        && (context.options.native_optimization
+            != super::super::NativeOptimizationPolicy::Optimizing
+            || !context.options.tiering.enabled
+            || handle.region_state_metadata().is_some_and(|metadata| {
+                metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
+            }))
+    {
         return Ok(handle.clone());
     }
     let handle = context.worker_state.resolve_native_function(
@@ -422,8 +457,9 @@ pub(super) fn prepare_dynamic_native_entry(
         .dynamic_units
         .get(unit)
         .ok_or_else(|| "dynamic native unit is missing".to_owned())?;
-    let wants_optimizing =
-        context.options.native_optimization == super::super::NativeOptimizationPolicy::Optimizing;
+    let wants_optimizing = context.options.native_optimization
+        == super::super::NativeOptimizationPolicy::Optimizing
+        && context.options.tiering.enabled;
     if package.native_entry_signature_epochs.get(&function) == Some(&signature_epoch)
         && package.native_entries.contains_key(&function)
     {
@@ -464,9 +500,9 @@ pub(super) fn prepare_dynamic_native_entry(
     {
         preferred.store(address, std::sync::atomic::Ordering::Release);
     }
-    let deferred_optimization = wants_optimizing
-        && context.options.tiering.enabled
-        && !context.options.tiering.native_eager;
+    let deferred_optimization = context
+        .worker_state
+        .defers_optimizing_compilation(context.options);
     let preferred = if deferred_optimization {
         // Dynamic callback resolution is a publication boundary, not an
         // instruction to synchronously compile a second tier. Reuse an

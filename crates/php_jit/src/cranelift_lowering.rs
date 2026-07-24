@@ -20665,6 +20665,17 @@ fn lower_optimizing_region_instruction(
                     builder
                         .ins()
                         .atomic_load(pointer_type, MemFlagsData::new(), preferred_entry);
+                let address_ready = builder.create_block();
+                let unpublished = builder.create_block();
+                let published = builder.ins().icmp_imm(IntCC::NotEqual, address, 0);
+                builder
+                    .ins()
+                    .brif(published, address_ready, &[], unpublished, &[]);
+
+                builder.switch_to_block(unpublished);
+                let _ = transition.emit_value_with_detail(builder, 0x1205)?;
+
+                builder.switch_to_block(address_ready);
                 for (index, value) in call_args.iter().copied().enumerate() {
                     if !owned_call_arguments.contains(&index)
                         && !nonowning_call_arguments.contains(&index)

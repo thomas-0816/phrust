@@ -4277,10 +4277,6 @@ fn published_same_unit_entry_bypasses_the_warm_resolver() {
         published_callee as *const () as usize,
         std::sync::atomic::Ordering::Release,
     );
-    optimizing_entries[callee.index()].store(
-        published_callee as *const () as usize,
-        std::sync::atomic::Ordering::Release,
-    );
     let _view = crate::activate_native_runtime_view(crate::JitNativeRuntimeView {
         abi_version: crate::JIT_RUNTIME_ABI_VERSION,
         trusted_function_entries: entries.as_mut_ptr() as usize as u64,
@@ -4289,6 +4285,20 @@ fn published_same_unit_entry_bypasses_the_warm_resolver() {
         trusted_preferred_function_entry_count: optimizing_entries.len() as u32,
         ..crate::JitNativeRuntimeView::default()
     });
+    let crate::JitI64InvokeOutcome::SideExit { status, state, .. } = handle
+        .invoke_i64_with_deopt(&[41], JIT_RUNTIME_ABI_HASH)
+        .expect("an unpublished preferred callee must take the baseline continuation")
+    else {
+        panic!("an unpublished preferred callee was called as a null address");
+    };
+    assert_eq!(status, crate::JitCallStatus::RECOMPILE_REQUESTED.0 as i32);
+    assert_eq!(state.function_id, function.raw());
+    assert_eq!(state.control_reserved, 0x1205);
+
+    optimizing_entries[callee.index()].store(
+        published_callee as *const () as usize,
+        std::sync::atomic::Ordering::Release,
+    );
     assert_eq!(
         handle
             .invoke_i64(&[41], JIT_RUNTIME_ABI_HASH)

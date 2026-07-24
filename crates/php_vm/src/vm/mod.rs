@@ -310,13 +310,6 @@ impl VmWorkerState {
             self.native_compiles.get_or_compile(key, compile)
         }?;
         if options.native_optimization == NativeOptimizationPolicy::Optimizing {
-            for handle in compiled
-                .0
-                .iter()
-                .filter_map(|record| record.result.handle.as_ref())
-            {
-                self.prepare_optimizing_direct_callees(unit, handle, options, external_signatures)?;
-            }
             for record in compiled.0.iter() {
                 let Some(address) = record
                     .result
@@ -420,29 +413,13 @@ impl VmWorkerState {
         Ok(address)
     }
 
-    fn prepare_optimizing_direct_callees(
-        &self,
-        unit: &CompiledUnit,
-        handle: &php_jit::JitFunctionHandle,
-        options: &VmOptions,
-        external_signatures: &[php_jit::JitExternalFunctionSignature],
-    ) -> Result<(), String> {
-        let Some(metadata) = handle.region_state_metadata() else {
-            return Ok(());
-        };
-        let direct_callees = metadata.direct_callees.clone();
-        if direct_callees.is_empty() {
-            return Ok(());
-        }
-        for callee in direct_callees {
-            self.prepare_native_baseline_entry(unit, callee, options, external_signatures)?;
-            self.schedule_on_demand_optimization(
-                unit.clone(),
-                callee,
-                external_signatures.to_vec(),
-            );
-        }
-        Ok(())
+    fn defers_optimizing_compilation(&self, options: &VmOptions) -> bool {
+        self.background_tiering
+            && self.tiering_options.enabled
+            && !self.tiering_options.native_eager
+            && options.tiering.enabled
+            && !options.tiering.native_eager
+            && options.native_optimization == NativeOptimizationPolicy::Optimizing
     }
 
     fn background_tiering_decision(
@@ -578,7 +555,10 @@ impl VmWorkerState {
         function: php_ir::FunctionId,
         external_signatures: Vec<php_jit::JitExternalFunctionSignature>,
     ) {
-        if !self.tiering_options.enabled || self.tiering_options.native_eager {
+        if !self.background_tiering
+            || !self.tiering_options.enabled
+            || self.tiering_options.native_eager
+        {
             return;
         }
         let key = native_compile_cache::NativeCompileCacheKey::new(
@@ -3297,17 +3277,15 @@ mod tests {
         let mut tiering = crate::tiering::TieringOptions::default();
         tiering.collect_stats = true;
         let worker = VmWorkerState::new(tiering.clone());
-        let result = Vm::with_options_and_worker_state(
-            VmOptions {
-                native_optimization: NativeOptimizationPolicy::Optimizing,
-                native_cache: php_jit::NativeCacheMode::Off,
-                collect_counters: true,
-                tiering,
-                ..VmOptions::default()
-            },
-            worker.clone(),
-        )
-        .execute(unit.clone());
+        let options = VmOptions {
+            native_optimization: NativeOptimizationPolicy::Optimizing,
+            native_cache: php_jit::NativeCacheMode::Off,
+            collect_counters: true,
+            tiering,
+            ..VmOptions::default()
+        };
+        let result = Vm::with_options_and_worker_state(options.clone(), worker.clone())
+            .execute(unit.clone());
         assert_eq!(result.return_value, Some(Value::Int(42)), "{result:#?}");
 
         let callee = unit
@@ -3326,22 +3304,15 @@ mod tests {
             0,
         );
         let manager = php_jit::global_code_manager().expect("global code manager");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let optimizing_address = loop {
-            if let Some((cell, handle)) = manager.published_function_exact(&optimizing_key)
-                && handle.region_state_metadata().is_some_and(|metadata| {
+        let optimizing_address = manager
+            .published_function_exact(&optimizing_key)
+            .filter(|(_, handle)| {
+                handle.region_state_metadata().is_some_and(|metadata| {
                     metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
                 })
-                && let Some(address) = cell.resolve(optimizing_key.signature_hash, 0)
-            {
-                break address;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "on-demand callee optimization was not published"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
+            })
+            .and_then(|(cell, _)| cell.resolve(optimizing_key.signature_hash, 0))
+            .expect("the reached callee must be optimized synchronously");
         let baseline_key = php_jit::native_function_key(
             unit.prepared_ir_fingerprint().to_owned(),
             callee.raw(),
@@ -3363,6 +3334,27 @@ mod tests {
             unit.prepared_deployment_image().preferred_function_entries[callee.index()]
                 .load(std::sync::atomic::Ordering::Acquire),
             optimizing_address
+        );
+        assert_eq!(
+            worker.tiering_stats().optimized_candidates,
+            0,
+            "a foreground worker must not enqueue speculative optimizer work"
+        );
+
+        let warm = Vm::with_options_and_worker_state(options, worker.clone()).execute(unit.clone());
+        assert_eq!(warm.return_value, Some(Value::Int(42)), "{warm:#?}");
+        assert_eq!(
+            warm.counters
+                .as_ref()
+                .expect("warm diagnostic counters")
+                .native_transition_count,
+            0,
+            "the published optimizing callee must keep the warm call in optimizing code"
+        );
+        assert_eq!(
+            worker.native_compile_cache_stats().entries,
+            4,
+            "only the root and actually reached callee need baseline and optimizing products"
         );
     }
 
