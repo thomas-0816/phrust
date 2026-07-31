@@ -108,12 +108,12 @@ impl<T: NativeZeroed> StableNativeArena<T> {
                 );
             }
             let ptr = NonNull::new(address.cast::<T>()).expect("mmap returned null");
-            return Self {
+            Self {
                 ptr,
                 capacity,
                 bytes,
                 mapped: true,
-            };
+            }
         }
 
         #[cfg(not(all(unix, feature = "full-runtime")))]

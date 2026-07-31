@@ -13,7 +13,9 @@ use crate::builtins::{
     RuntimeSourceSpan,
 };
 use crate::{ArrayKey, PhpString, Value, to_bool};
+use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 use serde_json::Value as JsonValue;
+use std::fmt;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("json_decode", exact_json_decode, BuiltinCompatibility::Php),
@@ -194,56 +196,391 @@ fn json_decode_failure(
     }
 }
 
-/// Temporary typed parse tree returned by the exact associative JSON decoder.
-/// It contains JSON data only and is consumed immediately into authoritative
-/// native slots; it is not a second PHP value representation.
-#[derive(Debug)]
-pub enum NativeJsonDecodedValue {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(Vec<u8>),
-    Array(Vec<Self>),
-    Object(Vec<(Vec<u8>, Self)>),
+/// Exact structured-output sink implemented by the authoritative native value
+/// plane. Composite publication consumes all child owners and must roll them
+/// back itself when it cannot publish the container.
+#[doc(hidden)]
+pub trait NativeStructuredValuePublisher {
+    type Output;
+
+    fn publish_null(&mut self) -> Option<Self::Output>;
+    fn publish_bool(&mut self, value: bool) -> Option<Self::Output>;
+    fn publish_int(&mut self, value: i64) -> Option<Self::Output>;
+    fn publish_float(&mut self, value: f64) -> Option<Self::Output>;
+    fn publish_string(&mut self, value: &[u8]) -> Option<Self::Output>;
+    fn rollback(&mut self, value: Self::Output);
+    fn publish_array_stream<E>(
+        &mut self,
+        build: impl FnOnce(
+            &mut Self,
+            &mut dyn FnMut(&mut Self, Self::Output) -> Option<()>,
+        ) -> Result<(), E>,
+    ) -> Result<Option<Self::Output>, E>
+    where
+        Self: Sized;
+    fn publish_object_stream<E>(
+        &mut self,
+        build: impl FnOnce(
+            &mut Self,
+            &mut dyn FnMut(&mut Self, &[u8], Self::Output) -> Option<()>,
+        ) -> Result<(), E>,
+    ) -> Result<Option<Self::Output>, E>
+    where
+        Self: Sized;
+    fn publish_array_with(
+        &mut self,
+        length: usize,
+        build: impl FnMut(&mut Self, usize) -> Option<Self::Output>,
+    ) -> Option<Self::Output>
+    where
+        Self: Sized;
 }
 
-fn native_json_decoded_value(value: JsonValue) -> NativeJsonDecodedValue {
-    match value {
-        JsonValue::Null => NativeJsonDecodedValue::Null,
-        JsonValue::Bool(value) => NativeJsonDecodedValue::Bool(value),
-        JsonValue::Number(value) => value.as_i64().map_or_else(
-            || {
-                NativeJsonDecodedValue::Float(
-                    value
-                        .as_f64()
-                        .or_else(|| value.to_string().parse().ok())
-                        .unwrap_or(0.0),
-                )
-            },
-            NativeJsonDecodedValue::Int,
-        ),
-        JsonValue::String(value) => NativeJsonDecodedValue::String(value.into_bytes()),
-        JsonValue::Array(values) => NativeJsonDecodedValue::Array(
-            values.into_iter().map(native_json_decoded_value).collect(),
-        ),
-        JsonValue::Object(values) => NativeJsonDecodedValue::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key.into_bytes(), native_json_decoded_value(value)))
-                .collect(),
-        ),
+struct NativeJsonSeed<'a, P> {
+    publisher: &'a mut P,
+    depth: usize,
+    maximum_depth: usize,
+    depth_exceeded: &'a mut bool,
+    publisher_failed: &'a mut bool,
+}
+
+struct NativeJsonVisitor<'a, P> {
+    publisher: &'a mut P,
+    depth: usize,
+    maximum_depth: usize,
+    depth_exceeded: &'a mut bool,
+    publisher_failed: &'a mut bool,
+}
+
+struct NativeJsonValidationSeed<'a> {
+    depth: usize,
+    maximum_depth: usize,
+    depth_exceeded: &'a mut bool,
+}
+
+struct NativeJsonValidationVisitor<'a> {
+    depth: usize,
+    maximum_depth: usize,
+    depth_exceeded: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for NativeJsonValidationSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(NativeJsonValidationVisitor {
+            depth: self.depth,
+            maximum_depth: self.maximum_depth,
+            depth_exceeded: self.depth_exceeded,
+        })
+    }
+}
+
+impl NativeJsonValidationVisitor<'_> {
+    fn check_container_depth<E: serde::de::Error>(&mut self) -> Result<(), E> {
+        if self.depth >= self.maximum_depth {
+            *self.depth_exceeded = true;
+            return Err(E::custom("native JSON maximum depth exceeded"));
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Visitor<'de> for NativeJsonValidationVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_i128<E>(self, _value: i128) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_u128<E>(self, _value: u128) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_borrowed_str<E>(self, _value: &'de str) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_string<E>(self, _value: String) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        self.check_container_depth()?;
+        while sequence
+            .next_element_seed(NativeJsonValidationSeed {
+                depth: self.depth + 1,
+                maximum_depth: self.maximum_depth,
+                depth_exceeded: self.depth_exceeded,
+            })?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<Self::Value, A::Error> {
+        let first_key = map.next_key::<String>()?;
+        if first_key.as_deref() == Some("$serde_json::private::Number") {
+            let _ = map.next_value::<String>()?;
+            return Ok(());
+        }
+        self.check_container_depth()?;
+        if first_key.is_some() {
+            map.next_value_seed(NativeJsonValidationSeed {
+                depth: self.depth + 1,
+                maximum_depth: self.maximum_depth,
+                depth_exceeded: self.depth_exceeded,
+            })?;
+        }
+        while map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+            map.next_value_seed(NativeJsonValidationSeed {
+                depth: self.depth + 1,
+                maximum_depth: self.maximum_depth,
+                depth_exceeded: self.depth_exceeded,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de, P: NativeStructuredValuePublisher> DeserializeSeed<'de> for NativeJsonSeed<'_, P> {
+    type Value = P::Output;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(NativeJsonVisitor {
+            publisher: self.publisher,
+            depth: self.depth,
+            maximum_depth: self.maximum_depth,
+            depth_exceeded: self.depth_exceeded,
+            publisher_failed: self.publisher_failed,
+        })
+    }
+}
+
+impl<P: NativeStructuredValuePublisher> NativeJsonVisitor<'_, P> {
+    fn published<E: serde::de::Error>(&mut self, value: Option<P::Output>) -> Result<P::Output, E> {
+        match value {
+            Some(value) => Ok(value),
+            None => {
+                *self.publisher_failed = true;
+                Err(E::custom("native JSON publication failed"))
+            }
+        }
+    }
+
+    fn check_container_depth<E: serde::de::Error>(&mut self) -> Result<(), E> {
+        if self.depth >= self.maximum_depth {
+            *self.depth_exceeded = true;
+            return Err(E::custom("native JSON maximum depth exceeded"));
+        }
+        Ok(())
+    }
+}
+
+impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<'_, P> {
+    type Value = P::Output;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_unit<E: serde::de::Error>(mut self) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_null();
+        self.published(value)
+    }
+
+    fn visit_bool<E: serde::de::Error>(mut self, value: bool) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_bool(value);
+        self.published(value)
+    }
+
+    fn visit_i64<E: serde::de::Error>(mut self, value: i64) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_int(value);
+        self.published(value)
+    }
+
+    fn visit_u64<E: serde::de::Error>(mut self, value: u64) -> Result<Self::Value, E> {
+        let published = match i64::try_from(value) {
+            Ok(value) => self.publisher.publish_int(value),
+            Err(_) => self.publisher.publish_float(value as f64),
+        };
+        self.published(published)
+    }
+
+    fn visit_i128<E: serde::de::Error>(mut self, value: i128) -> Result<Self::Value, E> {
+        let published = match i64::try_from(value) {
+            Ok(value) => self.publisher.publish_int(value),
+            Err(_) => self.publisher.publish_float(value as f64),
+        };
+        self.published(published)
+    }
+
+    fn visit_u128<E: serde::de::Error>(mut self, value: u128) -> Result<Self::Value, E> {
+        let published = match i64::try_from(value) {
+            Ok(value) => self.publisher.publish_int(value),
+            Err(_) => self.publisher.publish_float(value as f64),
+        };
+        self.published(published)
+    }
+
+    fn visit_f64<E: serde::de::Error>(mut self, value: f64) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_float(value);
+        self.published(value)
+    }
+
+    fn visit_str<E: serde::de::Error>(mut self, value: &str) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_string(value.as_bytes());
+        self.published(value)
+    }
+
+    fn visit_borrowed_str<E: serde::de::Error>(
+        mut self,
+        value: &'de str,
+    ) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_string(value.as_bytes());
+        self.published(value)
+    }
+
+    fn visit_string<E: serde::de::Error>(mut self, value: String) -> Result<Self::Value, E> {
+        let value = self.publisher.publish_string(value.as_bytes());
+        self.published(value)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        self.check_container_depth()?;
+        let depth = self.depth;
+        let maximum_depth = self.maximum_depth;
+        let depth_exceeded = self.depth_exceeded;
+        let publisher_failed = self.publisher_failed;
+        let published = self.publisher.publish_array_stream(|publisher, push| {
+            loop {
+                let Some(value) = sequence.next_element_seed(NativeJsonSeed {
+                    publisher,
+                    depth: depth + 1,
+                    maximum_depth,
+                    depth_exceeded,
+                    publisher_failed,
+                })?
+                else {
+                    break;
+                };
+                if push(publisher, value).is_none() {
+                    *publisher_failed = true;
+                    return Err(A::Error::custom("native JSON array insertion failed"));
+                }
+            }
+            Ok(())
+        })?;
+        match published {
+            Some(value) => Ok(value),
+            None => {
+                *publisher_failed = true;
+                Err(A::Error::custom("native JSON array publication failed"))
+            }
+        }
+    }
+
+    fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<Self::Value, A::Error> {
+        let first_key = map.next_key::<String>()?;
+        if first_key.as_deref() == Some("$serde_json::private::Number") {
+            let number = map.next_value::<String>()?;
+            let value = number
+                .parse::<f64>()
+                .map_err(|_| A::Error::custom("invalid arbitrary-precision JSON number"))?;
+            let published = self.publisher.publish_float(value);
+            return self.published(published);
+        }
+        self.check_container_depth()?;
+        let depth = self.depth;
+        let maximum_depth = self.maximum_depth;
+        let depth_exceeded = self.depth_exceeded;
+        let publisher_failed = self.publisher_failed;
+        let published = self.publisher.publish_object_stream(|publisher, push| {
+            if let Some(key) = first_key {
+                let value = map.next_value_seed(NativeJsonSeed {
+                    publisher,
+                    depth: depth + 1,
+                    maximum_depth,
+                    depth_exceeded,
+                    publisher_failed,
+                })?;
+                if push(publisher, key.as_bytes(), value).is_none() {
+                    *publisher_failed = true;
+                    return Err(A::Error::custom("native JSON object insertion failed"));
+                }
+            }
+            loop {
+                let Some(key) = map.next_key::<String>()? else {
+                    break;
+                };
+                let value = map.next_value_seed(NativeJsonSeed {
+                    publisher,
+                    depth: depth + 1,
+                    maximum_depth,
+                    depth_exceeded,
+                    publisher_failed,
+                })?;
+                if push(publisher, key.as_bytes(), value).is_none() {
+                    *publisher_failed = true;
+                    return Err(A::Error::custom("native JSON object insertion failed"));
+                }
+            }
+            Ok(())
+        })?;
+        match published {
+            Some(value) => Ok(value),
+            None => {
+                *publisher_failed = true;
+                Err(A::Error::custom("native JSON object publication failed"))
+            }
+        }
     }
 }
 
 /// Parses the exact `json_decode($bytes, true, $depth, 0)` capability without
-/// constructing `PhpArray`, `ObjectRef`, or PHP `Value` instances.
+/// constructing `PhpArray`, `ObjectRef`, PHP `Value`, or a second decoded
+/// value tree. Parsed children move directly into the supplied native sink.
 #[doc(hidden)]
-pub fn decode_native_json_associative(
+pub fn decode_native_json_associative_into<P: NativeStructuredValuePublisher>(
     state: &mut crate::builtins::JsonRequestState,
     input: &[u8],
     depth: i64,
-) -> Result<NativeJsonDecodedValue, BuiltinError> {
+    publisher: &mut P,
+) -> Result<Option<P::Output>, BuiltinError> {
     if depth <= 0 {
         return Err(argument_value_error(
             "json_decode",
@@ -262,21 +599,40 @@ pub fn decode_native_json_associative(
         Ok(input) => input,
         Err(code) => {
             state.set(code);
-            return Ok(NativeJsonDecodedValue::Null);
+            return Ok(publisher.publish_null());
         }
     };
-    match serde_json::from_str::<JsonValue>(&input) {
-        Ok(json) if json_depth(&json) <= depth as usize => {
-            state.set(JSON_ERROR_NONE);
-            Ok(native_json_decoded_value(json))
-        }
-        Ok(_) => {
+    let mut depth_exceeded = false;
+    let mut publisher_failed = false;
+    let mut deserializer = serde_json::Deserializer::from_str(&input);
+    let parsed = NativeJsonSeed {
+        publisher,
+        depth: 0,
+        maximum_depth: depth as usize,
+        depth_exceeded: &mut depth_exceeded,
+        publisher_failed: &mut publisher_failed,
+    }
+    .deserialize(&mut deserializer);
+    match parsed {
+        Ok(value) => match deserializer.end() {
+            Ok(()) => {
+                state.set(JSON_ERROR_NONE);
+                Ok(Some(value))
+            }
+            Err(error) => {
+                publisher.rollback(value);
+                state.set(classify_json_decode_error(&input, &error));
+                Ok(publisher.publish_null())
+            }
+        },
+        Err(_) if publisher_failed => Ok(None),
+        Err(_) if depth_exceeded => {
             state.set(JSON_ERROR_DEPTH);
-            Ok(NativeJsonDecodedValue::Null)
+            Ok(publisher.publish_null())
         }
         Err(error) => {
             state.set(classify_json_decode_error(&input, &error));
-            Ok(NativeJsonDecodedValue::Null)
+            Ok(publisher.publish_null())
         }
     }
 }
@@ -531,12 +887,21 @@ pub fn validate_native_json(
             return Ok(false);
         }
     };
-    match serde_json::from_str::<JsonValue>(&input) {
-        Ok(json) if json_depth(&json) <= depth as usize => {
+    let mut depth_exceeded = false;
+    let mut deserializer = serde_json::Deserializer::from_str(&input);
+    let parsed = NativeJsonValidationSeed {
+        depth: 0,
+        maximum_depth: depth as usize,
+        depth_exceeded: &mut depth_exceeded,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|()| deserializer.end());
+    match parsed {
+        Ok(()) => {
             state.set(JSON_ERROR_NONE);
             Ok(true)
         }
-        Ok(_) => {
+        Err(_) if depth_exceeded => {
             state.set(JSON_ERROR_DEPTH);
             Ok(false)
         }

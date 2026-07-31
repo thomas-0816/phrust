@@ -17,6 +17,8 @@ pub(super) struct NativeBacktraceFrame {
     /// cloning PHP values on every call; exceptional/introspection paths
     /// materialize values lazily while the synchronous caller still owns them.
     pub(super) arguments: NativeTraceArguments,
+    /// Leading visible arguments backed by mutable fixed parameter locals.
+    pub(super) fixed_argument_count: u32,
 }
 
 /// Persistent, structurally shared function visibility for nested PHP units.
@@ -25,7 +27,7 @@ pub(super) struct NativeBacktraceFrame {
 /// Keeping parent scopes avoids cloning the complete request symbol table for
 /// every include while preserving PHP's request-wide function visibility.
 #[derive(Default)]
-pub(super) struct NativeFunctionNameScope {
+pub(crate) struct NativeFunctionNameScope {
     parent: Option<Rc<Self>>,
     names: BTreeSet<String>,
 }
@@ -56,11 +58,11 @@ impl NativeFunctionNameScope {
 }
 
 #[derive(Clone)]
-pub(super) struct NativeLastError {
-    pub(super) error_type: i64,
-    pub(super) message: String,
-    pub(super) file: String,
-    pub(super) line: usize,
+pub(crate) struct NativeLastError {
+    pub(crate) error_type: i64,
+    pub(crate) message: String,
+    pub(crate) file: String,
+    pub(crate) line: usize,
 }
 
 #[derive(Debug)]
@@ -85,7 +87,8 @@ pub(super) struct NativeRegisteredExtensionRequestState {
     ssh2: php_runtime::api::Ssh2State,
     sockets: php_runtime::api::SocketState,
     filesystem: php_runtime::api::FilesystemRuntimeState,
-    stream_context: php_runtime::api::StreamContextState,
+    pub(super) stream_context: php_runtime::api::StreamContextState,
+    bcmath_scale: usize,
     mb_internal_encoding: String,
     mb_substitute_character: php_runtime::api::MbSubstituteCharacter,
     postgres: php_runtime::api::PostgresState,
@@ -119,6 +122,7 @@ impl Default for NativeRegisteredExtensionRequestState {
             sockets: Default::default(),
             filesystem: Default::default(),
             stream_context: Default::default(),
+            bcmath_scale: 0,
             mb_internal_encoding: "UTF-8".to_owned(),
             mb_substitute_character: Default::default(),
             postgres: Default::default(),
@@ -133,6 +137,24 @@ impl NativeRegisteredExtensionRequestState {
 
     pub(super) fn sysvshm_object_destroyed(&self, object_id: u64) -> bool {
         self.sysvshm.object_destroyed(object_id)
+    }
+
+    pub(super) fn mb_internal_encoding_ptr(&mut self) -> *mut String {
+        std::ptr::from_mut(&mut self.mb_internal_encoding)
+    }
+
+    pub(super) fn bcmath_scale_ptr(&mut self) -> *mut usize {
+        std::ptr::from_mut(&mut self.bcmath_scale)
+    }
+
+    pub(super) fn mb_substitute_character_ptr(
+        &mut self,
+    ) -> *mut php_runtime::api::MbSubstituteCharacter {
+        std::ptr::from_mut(&mut self.mb_substitute_character)
+    }
+
+    pub(super) fn filesystem_ptr(&mut self) -> *mut php_runtime::api::FilesystemRuntimeState {
+        std::ptr::from_mut(&mut self.filesystem)
     }
 
     pub(super) fn bind<'a>(&'a mut self, context: &mut php_runtime::api::BuiltinContext<'a>) {
@@ -156,6 +178,7 @@ impl NativeRegisteredExtensionRequestState {
         context.set_socket_state(&mut self.sockets);
         context.set_filesystem_state(&mut self.filesystem);
         context.set_stream_context_state(&mut self.stream_context);
+        context.set_bcmath_scale_state(&mut self.bcmath_scale);
         context.set_mb_internal_encoding_state(&mut self.mb_internal_encoding);
         context.set_mb_substitute_character_state(&mut self.mb_substitute_character);
         context.set_postgres_state(&mut self.postgres);

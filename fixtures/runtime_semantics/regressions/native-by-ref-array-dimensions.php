@@ -1,4 +1,5 @@
 <?php
+// runtime-semantics: expect=pass regression_category=refs-arrays reference_behavior=stdout:nested-dimension-alias-cow-matrix regression_case=native-by-ref-array-dimensions
 
 function increment_native_array_dimension(&$value) {
     $value++;

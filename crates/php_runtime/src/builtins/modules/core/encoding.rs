@@ -153,6 +153,313 @@ pub(in crate::builtins::modules) fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     output
 }
 
+#[derive(Clone, Copy)]
+struct NativeDigest {
+    bytes: [u8; 64],
+    length: usize,
+}
+
+impl NativeDigest {
+    fn from_slice(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() <= 64);
+        let mut digest = Self {
+            bytes: [0; 64],
+            length: bytes.len(),
+        };
+        digest.bytes[..bytes.len()].copy_from_slice(bytes);
+        digest
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
+
+fn normalized_native_hash_algorithm<'a>(
+    algorithm: &[u8],
+    buffer: &'a mut [u8; 16],
+) -> Option<&'a str> {
+    let mut length = 0;
+    for byte in algorithm.iter().copied() {
+        let slot = buffer.get_mut(length)?;
+        *slot = byte.to_ascii_lowercase();
+        length += 1;
+    }
+    let external = std::str::from_utf8(&buffer[..length]).ok()?;
+    match external {
+        "sha512/224" => Some("sha512224"),
+        "sha512/256" => Some("sha512256"),
+        "sha3-224" => Some("sha3224"),
+        "sha3-256" => Some("sha3256"),
+        "sha3-384" => Some("sha3384"),
+        "sha3-512" => Some("sha3512"),
+        "gost-crypto" => Some("gostcrypto"),
+        "md2" | "md4" | "md5" | "sha1" | "sha224" | "sha256" | "sha384" | "sha512"
+        | "ripemd128" | "ripemd160" | "ripemd256" | "ripemd320" | "whirlpool" | "tiger128,3"
+        | "tiger160,3" | "tiger192,3" | "tiger128,4" | "tiger160,4" | "tiger192,4" | "snefru"
+        | "snefru256" | "gost" | "adler32" | "crc32" | "crc32b" | "crc32c" | "fnv132"
+        | "fnv1a32" | "fnv164" | "fnv1a64" | "joaat" | "murmur3a" | "murmur3c" | "murmur3f"
+        | "xxh32" | "xxh64" | "xxh3" | "xxh128" | "haval128,3" | "haval160,3" | "haval192,3"
+        | "haval224,3" | "haval256,3" | "haval128,4" | "haval160,4" | "haval192,4"
+        | "haval224,4" | "haval256,4" | "haval128,5" | "haval160,5" | "haval192,5"
+        | "haval224,5" | "haval256,5" => Some(external),
+        _ => None,
+    }
+}
+
+fn native_hash_digest_length(algorithm: &str) -> Option<usize> {
+    match algorithm {
+        "md2" | "md4" | "md5" | "ripemd128" | "tiger128,3" | "tiger128,4" | "murmur3c"
+        | "murmur3f" | "xxh128" => Some(16),
+        "sha1" | "ripemd160" | "tiger160,3" | "tiger160,4" => Some(20),
+        "tiger192,3" | "tiger192,4" => Some(24),
+        "sha224" | "sha3224" => Some(28),
+        "sha256" | "sha3256" | "ripemd256" | "gost" | "gostcrypto" => Some(32),
+        "sha384" | "sha3384" => Some(48),
+        "sha512224" => Some(28),
+        "sha512256" => Some(32),
+        "sha512" | "sha3512" | "whirlpool" => Some(64),
+        "ripemd320" => Some(40),
+        "adler32" | "crc32" | "crc32b" | "crc32c" | "fnv132" | "fnv1a32" | "joaat" | "murmur3a"
+        | "xxh32" => Some(4),
+        "fnv164" | "fnv1a64" | "xxh64" | "xxh3" => Some(8),
+        _ => None,
+    }
+}
+
+macro_rules! fixed_native_digest {
+    ($digest:ty, $input:expr) => {
+        NativeDigest::from_slice(&<$digest>::digest($input))
+    };
+}
+
+fn native_digest_from_u32_words(words: [u32; 4]) -> NativeDigest {
+    let mut bytes = [0; 16];
+    for (word, chunk) in words.into_iter().zip(bytes.chunks_exact_mut(4)) {
+        chunk.copy_from_slice(&word.to_be_bytes());
+    }
+    NativeDigest::from_slice(&bytes)
+}
+
+fn native_digest_from_u64_words(words: [u64; 2]) -> NativeDigest {
+    let mut bytes = [0; 16];
+    for (word, chunk) in words.into_iter().zip(bytes.chunks_exact_mut(8)) {
+        chunk.copy_from_slice(&word.to_be_bytes());
+    }
+    NativeDigest::from_slice(&bytes)
+}
+
+fn native_hash_digest(algorithm: &str, input: &[u8]) -> Option<NativeDigest> {
+    Some(match algorithm {
+        "md2" => fixed_native_digest!(Md2, input),
+        "md4" => fixed_native_digest!(Md4, input),
+        "md5" => fixed_native_digest!(Md5, input),
+        "sha1" => fixed_native_digest!(Sha1, input),
+        "sha224" => fixed_native_digest!(Sha224, input),
+        "sha256" => fixed_native_digest!(Sha256, input),
+        "sha384" => fixed_native_digest!(Sha384, input),
+        "sha512224" => fixed_native_digest!(Sha512_224, input),
+        "sha512256" => fixed_native_digest!(Sha512_256, input),
+        "sha512" => fixed_native_digest!(Sha512, input),
+        "sha3224" => fixed_native_digest!(Sha3_224, input),
+        "sha3256" => fixed_native_digest!(Sha3_256, input),
+        "sha3384" => fixed_native_digest!(Sha3_384, input),
+        "sha3512" => fixed_native_digest!(Sha3_512, input),
+        "ripemd128" => fixed_native_digest!(Ripemd128, input),
+        "ripemd160" => fixed_native_digest!(Ripemd160, input),
+        "ripemd256" => fixed_native_digest!(Ripemd256, input),
+        "ripemd320" => fixed_native_digest!(Ripemd320, input),
+        "whirlpool" => fixed_native_digest!(Whirlpool, input),
+        "tiger128,3" => NativeDigest::from_slice(&<Tiger as TigerDigest>::digest(input)[..16]),
+        "tiger160,3" => NativeDigest::from_slice(&<Tiger as TigerDigest>::digest(input)[..20]),
+        "tiger192,3" => fixed_native_digest!(Tiger, input),
+        "tiger128,4" => NativeDigest::from_slice(&<Tiger4 as TigerDigest>::digest(input)[..16]),
+        "tiger160,4" => NativeDigest::from_slice(&<Tiger4 as TigerDigest>::digest(input)[..20]),
+        "tiger192,4" => fixed_native_digest!(Tiger4, input),
+        "gost" => NativeDigest::from_slice(&<Gost94Test as GostDigest>::digest(input)),
+        "gostcrypto" => NativeDigest::from_slice(&<Gost94CryptoPro as GostDigest>::digest(input)),
+        "adler32" => NativeDigest::from_slice(&adler32(input).to_be_bytes()),
+        "crc32" => NativeDigest::from_slice(&crc32_bzip2(input).to_le_bytes()),
+        "crc32b" => NativeDigest::from_slice(&crc32fast::hash(input).to_be_bytes()),
+        "crc32c" => NativeDigest::from_slice(&crc32c(input).to_be_bytes()),
+        "fnv132" => NativeDigest::from_slice(&fnv1_32(input).to_be_bytes()),
+        "fnv1a32" => NativeDigest::from_slice(&fnv1a_32(input).to_be_bytes()),
+        "fnv164" => NativeDigest::from_slice(&fnv1_64(input).to_be_bytes()),
+        "fnv1a64" => NativeDigest::from_slice(&fnv1a_64(input).to_be_bytes()),
+        "joaat" => NativeDigest::from_slice(&joaat(input).to_be_bytes()),
+        "murmur3a" => NativeDigest::from_slice(&murmur3_x86_32(input, 0).to_be_bytes()),
+        "murmur3c" => native_digest_from_u32_words(murmur3_x86_128(input, 0)),
+        "murmur3f" => native_digest_from_u64_words(murmur3_x64_128(input, 0)),
+        "xxh32" => NativeDigest::from_slice(&xxh32(input, 0).to_be_bytes()),
+        "xxh64" => NativeDigest::from_slice(&xxh64(input, 0).to_be_bytes()),
+        "xxh3" => NativeDigest::from_slice(&xxh3_64(input).to_be_bytes()),
+        "xxh128" => NativeDigest::from_slice(&xxh3_128(input).to_be_bytes()),
+        _ => return None,
+    })
+}
+
+fn write_native_digest(digest: &NativeDigest, binary: bool, output: &mut [u8]) -> bool {
+    if binary {
+        if output.len() != digest.length {
+            return false;
+        }
+        output.copy_from_slice(digest.as_bytes());
+        return true;
+    }
+    if output.len() != digest.length * 2 {
+        return false;
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (byte, pair) in digest.as_bytes().iter().zip(output.chunks_exact_mut(2)) {
+        pair[0] = HEX[(byte >> 4) as usize];
+        pair[1] = HEX[(byte & 0x0f) as usize];
+    }
+    true
+}
+
+pub(in crate::builtins::modules) fn direct_hash_output_length(
+    algorithm: &[u8],
+    binary: bool,
+) -> Option<usize> {
+    let mut normalized = [0; 16];
+    let digest_length = native_hash_digest_length(normalized_native_hash_algorithm(
+        algorithm,
+        &mut normalized,
+    )?)?;
+    if binary {
+        Some(digest_length)
+    } else {
+        digest_length.checked_mul(2)
+    }
+}
+
+pub(in crate::builtins::modules) fn direct_hash_into(
+    algorithm: &[u8],
+    input: &[u8],
+    binary: bool,
+    output: &mut [u8],
+) -> bool {
+    if direct_hash_output_length(algorithm, binary) != Some(output.len()) {
+        return false;
+    }
+    let mut normalized = [0; 16];
+    let Some(algorithm) = normalized_native_hash_algorithm(algorithm, &mut normalized) else {
+        return false;
+    };
+    let Some(digest) = native_hash_digest(algorithm, input) else {
+        return false;
+    };
+    write_native_digest(&digest, binary, output)
+}
+
+fn native_hmac_digest<D: Digest + Default>(
+    key: &[u8],
+    input: &[u8],
+    block_size: usize,
+    digest_length: usize,
+) -> NativeDigest {
+    debug_assert!(block_size <= 144);
+    let mut pad = [0_u8; 144];
+    if key.len() > block_size {
+        let key_digest = D::digest(key);
+        pad[..digest_length].copy_from_slice(&key_digest[..digest_length]);
+    } else {
+        pad[..key.len()].copy_from_slice(key);
+    }
+
+    for byte in &mut pad[..block_size] {
+        *byte ^= 0x36;
+    }
+    let mut inner = D::new();
+    inner.update(&pad[..block_size]);
+    inner.update(input);
+    let inner_digest = inner.finalize();
+
+    for byte in &mut pad[..block_size] {
+        *byte ^= 0x36 ^ 0x5c;
+    }
+    let mut outer = D::new();
+    outer.update(&pad[..block_size]);
+    outer.update(&inner_digest[..digest_length]);
+    NativeDigest::from_slice(&outer.finalize()[..digest_length])
+}
+
+fn native_hmac_digest_for_algorithm(
+    algorithm: &str,
+    key: &[u8],
+    input: &[u8],
+) -> Option<NativeDigest> {
+    Some(match algorithm {
+        "md2" => native_hmac_digest::<Md2>(key, input, 16, 16),
+        "md4" => native_hmac_digest::<Md4>(key, input, 64, 16),
+        "md5" => native_hmac_digest::<Md5>(key, input, 64, 16),
+        "sha1" => native_hmac_digest::<Sha1>(key, input, 64, 20),
+        "sha224" => native_hmac_digest::<Sha224>(key, input, 64, 28),
+        "sha256" => native_hmac_digest::<Sha256>(key, input, 64, 32),
+        "sha384" => native_hmac_digest::<Sha384>(key, input, 128, 48),
+        "sha512224" => native_hmac_digest::<Sha512_224>(key, input, 128, 28),
+        "sha512256" => native_hmac_digest::<Sha512_256>(key, input, 128, 32),
+        "sha512" => native_hmac_digest::<Sha512>(key, input, 128, 64),
+        "sha3224" => native_hmac_digest::<Sha3_224>(key, input, 144, 28),
+        "sha3256" => native_hmac_digest::<Sha3_256>(key, input, 136, 32),
+        "sha3384" => native_hmac_digest::<Sha3_384>(key, input, 104, 48),
+        "sha3512" => native_hmac_digest::<Sha3_512>(key, input, 72, 64),
+        "ripemd128" => native_hmac_digest::<Ripemd128>(key, input, 64, 16),
+        "ripemd160" => native_hmac_digest::<Ripemd160>(key, input, 64, 20),
+        "ripemd256" => native_hmac_digest::<Ripemd256>(key, input, 64, 32),
+        "ripemd320" => native_hmac_digest::<Ripemd320>(key, input, 64, 40),
+        "whirlpool" => native_hmac_digest::<Whirlpool>(key, input, 64, 64),
+        // The custom and digest-0.11 implementations are retained only behind
+        // the exact call's single baseline continuation. Connecting the two
+        // digest ABIs here would create the adapter boundary forbidden by the
+        // native cutover contract.
+        _ => return None,
+    })
+}
+
+pub(in crate::builtins::modules) fn direct_hash_hmac_output_length(
+    algorithm: &[u8],
+    binary: bool,
+) -> Option<usize> {
+    let mut normalized = [0; 16];
+    let algorithm = normalized_native_hash_algorithm(algorithm, &mut normalized)?;
+    let digest_length = match algorithm {
+        "md2" | "md4" | "md5" | "ripemd128" => 16,
+        "sha1" | "ripemd160" => 20,
+        "sha224" | "sha3224" | "sha512224" => 28,
+        "sha256" | "sha3256" | "sha512256" | "ripemd256" => 32,
+        "ripemd320" => 40,
+        "sha384" | "sha3384" => 48,
+        "sha512" | "sha3512" | "whirlpool" => 64,
+        _ => return None,
+    };
+    if binary {
+        Some(digest_length)
+    } else {
+        digest_length.checked_mul(2)
+    }
+}
+
+pub(in crate::builtins::modules) fn direct_hash_hmac_into(
+    algorithm: &[u8],
+    input: &[u8],
+    key: &[u8],
+    binary: bool,
+    output: &mut [u8],
+) -> bool {
+    if direct_hash_hmac_output_length(algorithm, binary) != Some(output.len()) {
+        return false;
+    }
+    let mut normalized = [0; 16];
+    let Some(algorithm) = normalized_native_hash_algorithm(algorithm, &mut normalized) else {
+        return false;
+    };
+    let Some(digest) = native_hmac_digest_for_algorithm(algorithm, key, input) else {
+        return false;
+    };
+    write_native_digest(&digest, binary, output)
+}
+
 pub(in crate::builtins::modules) fn hash_digest_bytes(
     name: &str,
     algorithm: &str,
@@ -680,7 +987,7 @@ pub(in crate::builtins::modules) fn hmac_with_block(
 }
 
 pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -> Option<String> {
-    let normalized = algorithm.to_ascii_lowercase().replace('-', "");
+    let normalized = algorithm.to_ascii_lowercase();
     match normalized.as_str() {
         "md2" | "md4" | "md5" | "sha1" | "adler32" | "crc32" | "crc32b" | "crc32c" => {
             Some(normalized)
@@ -689,9 +996,13 @@ pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -
         "murmur3a" | "murmur3c" | "murmur3f" => Some(normalized),
         "xxh32" | "xxh64" | "xxh3" | "xxh128" => Some(normalized),
         "sha224" | "sha256" | "sha384" | "sha512" => Some(normalized),
-        "sha3224" | "sha3256" | "sha3384" | "sha3512" => Some(normalized),
+        "sha3-224" => Some("sha3224".to_owned()),
+        "sha3-256" => Some("sha3256".to_owned()),
+        "sha3-384" => Some("sha3384".to_owned()),
+        "sha3-512" => Some("sha3512".to_owned()),
         "ripemd128" | "ripemd160" | "ripemd256" | "ripemd320" => Some(normalized),
-        "whirlpool" | "gost" | "gostcrypto" | "snefru" | "snefru256" => Some(normalized),
+        "whirlpool" | "gost" | "snefru" | "snefru256" => Some(normalized),
+        "gost-crypto" => Some("gostcrypto".to_owned()),
         "haval128,3" | "haval160,3" | "haval192,3" | "haval224,3" | "haval256,3" | "haval128,4"
         | "haval160,4" | "haval192,4" | "haval224,4" | "haval256,4" | "haval128,5"
         | "haval160,5" | "haval192,5" | "haval224,5" | "haval256,5" => Some(normalized),
@@ -700,7 +1011,6 @@ pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -
         }
         "sha512/224" => Some("sha512224".to_owned()),
         "sha512/256" => Some("sha512256".to_owned()),
-        "sha512224" | "sha512256" => Some(normalized),
         _ => None,
     }
 }
@@ -726,17 +1036,6 @@ fn haval_variant(algorithm: &str) -> Option<(usize, usize)> {
     }
 }
 
-pub(in crate::builtins::modules) fn hex_decode(bytes: &[u8]) -> Option<Vec<u8>> {
-    if !bytes.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut output = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        output.push((hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?);
-    }
-    Some(output)
-}
-
 pub(in crate::builtins::modules) fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -756,33 +1055,108 @@ const ENT_XML1: i64 = 16;
 const ENT_XHTML: i64 = 32;
 const ENT_HTML5: i64 = 48;
 
+fn visit_html_escape(
+    bytes: &[u8],
+    flags: i64,
+    double_encode: bool,
+    all_entities: bool,
+    mut emit: impl FnMut(&[u8]),
+) -> Option<usize> {
+    let mut length = 0_usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let encoded = match byte {
+            b'&' if !double_encode => {
+                if let Some(entity_length) = valid_html_entity_len(&bytes[index..], flags) {
+                    let entity = &bytes[index..index + entity_length];
+                    emit(entity);
+                    length = length.checked_add(entity.len())?;
+                    index += entity_length;
+                    continue;
+                }
+                Some(b"&amp;".as_slice())
+            }
+            b'&' => Some(b"&amp;".as_slice()),
+            b'<' => Some(b"&lt;".as_slice()),
+            b'>' => Some(b"&gt;".as_slice()),
+            b'"' if flags & 2 != 0 => Some(b"&quot;".as_slice()),
+            b'\'' if flags & 1 != 0 => Some(if all_entities {
+                html_translation_single_quote_entity(html_document_type(flags))
+            } else {
+                b"&#039;"
+            }),
+            _ => None,
+        };
+        if let Some(encoded) = encoded {
+            emit(encoded);
+            length = length.checked_add(encoded.len())?;
+            index += 1;
+            continue;
+        }
+        if all_entities
+            && let Ok(rest) = std::str::from_utf8(&bytes[index..])
+            && let Some(character) = rest.chars().next()
+            && character.len_utf8() > 1
+            && let Some(entity) = html4_named_entity(character)
+        {
+            emit(entity);
+            length = length.checked_add(entity.len())?;
+            index += character.len_utf8();
+            continue;
+        }
+        emit(&bytes[index..index + 1]);
+        length = length.checked_add(1)?;
+        index += 1;
+    }
+    Some(length)
+}
+
+pub(in crate::builtins::modules) fn direct_html_escape_output_length(
+    bytes: &[u8],
+    flags: i64,
+    double_encode: bool,
+    all_entities: bool,
+) -> Option<usize> {
+    visit_html_escape(bytes, flags, double_encode, all_entities, |_| {})
+}
+
+pub(in crate::builtins::modules) fn direct_html_escape_into(
+    bytes: &[u8],
+    flags: i64,
+    double_encode: bool,
+    all_entities: bool,
+    output: &mut [u8],
+) -> bool {
+    if direct_html_escape_output_length(bytes, flags, double_encode, all_entities)
+        != Some(output.len())
+    {
+        return false;
+    }
+    let mut cursor = 0;
+    visit_html_escape(bytes, flags, double_encode, all_entities, |encoded| {
+        output[cursor..cursor + encoded.len()].copy_from_slice(encoded);
+        cursor += encoded.len();
+    }) == Some(output.len())
+        && cursor == output.len()
+}
+
 pub(in crate::builtins::modules) fn html_escape_with_options(
     bytes: &[u8],
     flags: i64,
     double_encode: bool,
 ) -> Vec<u8> {
-    let mut output = Vec::with_capacity(html_escaped_capacity(bytes, flags));
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        match byte {
-            b'&' if !double_encode => {
-                if let Some(entity_len) = valid_html_entity_len(&bytes[index..], flags) {
-                    output.extend_from_slice(&bytes[index..index + entity_len]);
-                    index += entity_len;
-                    continue;
-                }
-                output.extend_from_slice(b"&amp;");
-            }
-            b'&' => output.extend_from_slice(b"&amp;"),
-            b'<' => output.extend_from_slice(b"&lt;"),
-            b'>' => output.extend_from_slice(b"&gt;"),
-            b'"' if flags & 2 != 0 => output.extend_from_slice(b"&quot;"),
-            b'\'' if flags & 1 != 0 => output.extend_from_slice(b"&#039;"),
-            _ => output.push(byte),
-        }
-        index += 1;
-    }
+    let Some(length) = direct_html_escape_output_length(bytes, flags, double_encode, false) else {
+        return Vec::new();
+    };
+    let mut output = vec![0; length];
+    debug_assert!(direct_html_escape_into(
+        bytes,
+        flags,
+        double_encode,
+        false,
+        &mut output
+    ));
     output
 }
 
@@ -791,64 +1165,17 @@ pub(in crate::builtins::modules) fn htmlentities_escape_with_options(
     flags: i64,
     double_encode: bool,
 ) -> Vec<u8> {
-    let mut output = Vec::with_capacity(html_escaped_capacity(bytes, flags));
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        match byte {
-            b'&' if !double_encode => {
-                if let Some(entity_len) = valid_html_entity_len(&bytes[index..], flags) {
-                    output.extend_from_slice(&bytes[index..index + entity_len]);
-                    index += entity_len;
-                    continue;
-                }
-                output.extend_from_slice(b"&amp;");
-                index += 1;
-                continue;
-            }
-            b'&' => {
-                output.extend_from_slice(b"&amp;");
-                index += 1;
-                continue;
-            }
-            b'<' => {
-                output.extend_from_slice(b"&lt;");
-                index += 1;
-                continue;
-            }
-            b'>' => {
-                output.extend_from_slice(b"&gt;");
-                index += 1;
-                continue;
-            }
-            b'"' if flags & 2 != 0 => {
-                output.extend_from_slice(b"&quot;");
-                index += 1;
-                continue;
-            }
-            b'\'' if flags & 1 != 0 => {
-                output.extend_from_slice(html_translation_single_quote_entity(html_document_type(
-                    flags,
-                )));
-                index += 1;
-                continue;
-            }
-            _ => {}
-        }
-
-        if let Some(rest) = std::str::from_utf8(&bytes[index..]).ok()
-            && let Some(character) = rest.chars().next()
-            && character.len_utf8() > 1
-            && let Some(entity) = html4_named_entity(character)
-        {
-            output.extend_from_slice(entity);
-            index += character.len_utf8();
-            continue;
-        }
-
-        output.push(byte);
-        index += 1;
-    }
+    let Some(length) = direct_html_escape_output_length(bytes, flags, double_encode, true) else {
+        return Vec::new();
+    };
+    let mut output = vec![0; length];
+    debug_assert!(direct_html_escape_into(
+        bytes,
+        flags,
+        double_encode,
+        true,
+        &mut output
+    ));
     output
 }
 
@@ -955,22 +1282,6 @@ fn html4_named_entity(character: char) -> Option<&'static [u8]> {
     }
 }
 
-/// Exact escaped length for `double_encode` output; an upper bound when
-/// existing entities are passed through (a literal `&` never expands past
-/// `&amp;`).
-fn html_escaped_capacity(bytes: &[u8], flags: i64) -> usize {
-    bytes
-        .iter()
-        .map(|byte| match byte {
-            b'&' => 5,
-            b'<' | b'>' => 4,
-            b'"' if flags & 2 != 0 => 6,
-            b'\'' if flags & 1 != 0 => 6,
-            _ => 1,
-        })
-        .sum()
-}
-
 fn valid_html_entity_len(bytes: &[u8], flags: i64) -> Option<usize> {
     debug_assert_eq!(bytes.first(), Some(&b'&'));
     let semicolon = php_source::byte_kernel::find_byte(bytes, b';')?;
@@ -1008,12 +1319,13 @@ fn is_html4_named_entity(name: &[u8]) -> bool {
         .any(|encoded| encoded.get(1..encoded.len() - 1) == Some(name))
 }
 
-pub(in crate::builtins::modules) fn html_entity_decode_with_flags(
-    text: &str,
+fn visit_html_entity_decode(
+    bytes: &[u8],
     flags: i64,
-) -> Vec<u8> {
-    let bytes = text.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
+    special_only: bool,
+    mut emit: impl FnMut(&[u8]),
+) -> Option<usize> {
+    let mut output_length = 0_usize;
     let mut index = 0;
     while index < bytes.len() {
         let remaining = &bytes[index..];
@@ -1036,20 +1348,73 @@ pub(in crate::builtins::modules) fn html_entity_decode_with_flags(
             && let Some((decoded, len)) = decode_numeric_html_entity(remaining, flags)
         {
             let mut buffer = [0_u8; 4];
-            output.extend_from_slice(decoded.encode_utf8(&mut buffer).as_bytes());
-            index += len;
-            continue;
+            let encoded = decoded.encode_utf8(&mut buffer).as_bytes();
+            if !special_only
+                || encoded.len() == 1
+                    && (matches!(encoded[0], b'&' | b'<' | b'>')
+                        || encoded[0] == b'"' && flags & 2 != 0
+                        || encoded[0] == b'\'' && flags & 1 != 0)
+            {
+                emit(encoded);
+                output_length = output_length.checked_add(encoded.len())?;
+                index += len;
+                continue;
+            }
+            None
         } else {
             None
         };
         if let Some((entity, len)) = decoded {
-            output.extend_from_slice(entity);
+            emit(entity);
+            output_length = output_length.checked_add(entity.len())?;
             index += len;
         } else {
-            output.push(bytes[index]);
+            emit(&bytes[index..index + 1]);
+            output_length = output_length.checked_add(1)?;
             index += 1;
         }
     }
+    Some(output_length)
+}
+
+pub(in crate::builtins::modules) fn direct_html_entity_decode_output_length(
+    bytes: &[u8],
+    flags: i64,
+    special_only: bool,
+) -> Option<usize> {
+    std::str::from_utf8(bytes).ok()?;
+    visit_html_entity_decode(bytes, flags, special_only, |_| {})
+}
+
+pub(in crate::builtins::modules) fn direct_html_entity_decode_into(
+    bytes: &[u8],
+    flags: i64,
+    special_only: bool,
+    output: &mut [u8],
+) -> bool {
+    if direct_html_entity_decode_output_length(bytes, flags, special_only) != Some(output.len()) {
+        return false;
+    }
+    let mut cursor = 0;
+    visit_html_entity_decode(bytes, flags, special_only, |decoded| {
+        output[cursor..cursor + decoded.len()].copy_from_slice(decoded);
+        cursor += decoded.len();
+    }) == Some(output.len())
+        && cursor == output.len()
+}
+
+pub(in crate::builtins::modules) fn html_entity_decode_with_flags(
+    text: &str,
+    flags: i64,
+) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let length = visit_html_entity_decode(bytes, flags, false, |_| {}).unwrap_or(0);
+    let mut output = vec![0; length];
+    let mut cursor = 0;
+    let _ = visit_html_entity_decode(bytes, flags, false, |decoded| {
+        output[cursor..cursor + decoded.len()].copy_from_slice(decoded);
+        cursor += decoded.len();
+    });
     output
 }
 
@@ -1208,72 +1573,14 @@ pub(in crate::builtins::modules) fn htmlspecialchars_decode_with_flags(
     flags: i64,
 ) -> Vec<u8> {
     let bytes = text.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let remaining = &bytes[index..];
-        let decoded = if remaining.starts_with(b"&lt;") {
-            Some((b'<', 4))
-        } else if remaining.starts_with(b"&gt;") {
-            Some((b'>', 4))
-        } else if remaining.starts_with(b"&amp;") {
-            Some((b'&', 5))
-        } else if flags & 2 != 0 && remaining.starts_with(b"&quot;") {
-            Some((b'"', 6))
-        } else if flags & 1 != 0
-            && (remaining.starts_with(b"&#039;")
-                || remaining.starts_with(b"&#x27;")
-                || (html_document_type(flags) != HtmlDocumentType::Html401
-                    && remaining.starts_with(b"&apos;")))
-        {
-            Some((b'\'', 6))
-        } else if remaining.starts_with(b"&#")
-            && let Some((byte, len)) = decode_numeric_special_html_entity(remaining, flags)
-        {
-            Some((byte, len))
-        } else {
-            None
-        };
-        if let Some((byte, len)) = decoded {
-            output.push(byte);
-            index += len;
-        } else {
-            output.push(bytes[index]);
-            index += 1;
-        }
-    }
+    let length = visit_html_entity_decode(bytes, flags, true, |_| {}).unwrap_or(0);
+    let mut output = vec![0; length];
+    let mut cursor = 0;
+    let _ = visit_html_entity_decode(bytes, flags, true, |decoded| {
+        output[cursor..cursor + decoded.len()].copy_from_slice(decoded);
+        cursor += decoded.len();
+    });
     output
-}
-
-fn decode_numeric_special_html_entity(bytes: &[u8], flags: i64) -> Option<(u8, usize)> {
-    debug_assert_eq!(bytes.first(), Some(&b'&'));
-    let semicolon = php_source::byte_kernel::find_byte(bytes, b';')?;
-    let entity = &bytes[1..semicolon];
-    let codepoint = if let Some(decimal) = entity.strip_prefix(b"#")
-        && !decimal.is_empty()
-        && php_source::byte_kernel::all_ascii_digits(decimal)
-    {
-        parse_entity_codepoint(decimal, 10)?
-    } else if let Some(hex) = entity
-        .strip_prefix(b"#x")
-        .or_else(|| entity.strip_prefix(b"#X"))
-        && !hex.is_empty()
-        && hex.iter().all(u8::is_ascii_hexdigit)
-    {
-        parse_entity_codepoint(hex, 16)?
-    } else {
-        return None;
-    };
-
-    let decoded = match codepoint {
-        0x22 if flags & 2 != 0 => b'"',
-        0x27 if flags & 1 != 0 => b'\'',
-        0x26 => b'&',
-        0x3c => b'<',
-        0x3e => b'>',
-        _ => return None,
-    };
-    Some((decoded, semicolon + 1))
 }
 
 pub(in crate::builtins::modules) fn url_encode(bytes: &[u8], raw: bool) -> Vec<u8> {
@@ -1289,29 +1596,6 @@ pub(in crate::builtins::modules) fn url_encode(bytes: &[u8], raw: bool) -> Vec<u
             output.push(b'+');
         } else {
             output.extend_from_slice(format!("%{byte:02X}").as_bytes());
-        }
-    }
-    output
-}
-
-pub(in crate::builtins::modules) fn url_decode(bytes: &[u8], raw: bool) -> Vec<u8> {
-    let mut output = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && index + 2 < bytes.len()
-            && let (Some(high), Some(low)) =
-                (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
-        {
-            output.push((high << 4) | low);
-            index += 3;
-        } else {
-            output.push(if !raw && bytes[index] == b'+' {
-                b' '
-            } else {
-                bytes[index]
-            });
-            index += 1;
         }
     }
     output

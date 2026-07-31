@@ -299,7 +299,7 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
     ),
     native_helper!(
         1010,
-        "scalar_unary",
+        "baseline_scalar_unary",
         ScalarOperators,
         UNARY_VALUE_OUT,
         Status,
@@ -310,11 +310,11 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         false,
         true,
-        "php_runtime::api::native_unary"
+        "php_runtime::api::baseline_unary"
     ),
     native_helper!(
         1011,
-        "scalar_binary",
+        "baseline_scalar_binary",
         ScalarOperators,
         BINARY_VALUE_VALUE_OUT,
         Status,
@@ -325,11 +325,11 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         false,
         true,
-        "php_runtime::api::native_binary"
+        "php_runtime::api::baseline_binary"
     ),
     native_helper!(
         1012,
-        "scalar_compare",
+        "baseline_scalar_compare",
         ScalarOperators,
         COMPARE_VALUE_VALUE_OUT,
         Status,
@@ -340,11 +340,11 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         false,
         true,
-        "php_runtime::api::native_compare"
+        "php_runtime::api::baseline_compare"
     ),
     native_helper!(
         1013,
-        "scalar_cast",
+        "baseline_scalar_cast",
         ScalarOperators,
         CAST_VALUE_OUT,
         Status,
@@ -355,7 +355,7 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         false,
         true,
-        "php_runtime::api::native_cast"
+        "php_runtime::api::baseline_cast"
     ),
     native_helper!(
         1020,
@@ -649,7 +649,10 @@ pub fn native_operation_registry_is_stable() -> bool {
                 && (!operation.native_callable
                     || operation
                         .implementation
-                        .starts_with("php_runtime::api::native_"))
+                        .starts_with("php_runtime::api::native_")
+                    || operation
+                        .implementation
+                        .starts_with("php_runtime::api::baseline_"))
                 && (!(operation.may_allocate
                     || operation.may_throw
                     || operation.may_call_user_code
@@ -754,7 +757,7 @@ fn publish_operation(
 }
 
 /// Executes one unary semantic operation into a caller-owned result slot.
-pub fn native_unary(
+pub fn baseline_unary(
     context: &mut NativeOperationContext,
     op: NativeUnaryOp,
     src: &Value,
@@ -790,7 +793,7 @@ pub fn native_unary(
 }
 
 /// Executes one binary semantic operation into a caller-owned result slot.
-pub fn native_binary(
+pub fn baseline_binary(
     context: &mut NativeOperationContext,
     op: NativeBinaryOp,
     lhs: &Value,
@@ -838,7 +841,7 @@ pub fn native_binary(
 }
 
 /// Executes one comparison semantic operation into a caller-owned result slot.
-pub fn native_compare(
+pub fn baseline_compare(
     context: &mut NativeOperationContext,
     op: NativeCompareOp,
     lhs: &Value,
@@ -883,7 +886,7 @@ pub fn native_compare(
 }
 
 /// Executes one cast semantic operation into a caller-owned result slot.
-pub fn native_cast(
+pub fn baseline_cast(
     context: &mut NativeOperationContext,
     op: NativeCastOp,
     src: &Value,
@@ -1000,7 +1003,11 @@ fn native_power(lhs: NumericValue, rhs: NumericValue) -> Value {
 }
 
 fn native_bitwise(op: NativeBinaryOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
-    if let (Value::String(lhs), Value::String(rhs)) = (lhs, rhs) {
+    if matches!(
+        op,
+        NativeBinaryOp::BitAnd | NativeBinaryOp::BitOr | NativeBinaryOp::BitXor
+    ) && let (Value::String(lhs), Value::String(rhs)) = (lhs, rhs)
+    {
         let bytes = match op {
             NativeBinaryOp::BitAnd => lhs
                 .as_bytes()
@@ -1088,7 +1095,7 @@ mod tests {
         let mut context = NativeOperationContext::default();
         let mut out = Value::Uninitialized;
         assert_eq!(
-            native_binary(
+            baseline_binary(
                 &mut context,
                 NativeBinaryOp::Add,
                 &Value::Int(20),

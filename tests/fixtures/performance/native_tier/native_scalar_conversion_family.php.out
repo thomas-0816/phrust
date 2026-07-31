@@ -1,0 +1,11 @@
+001
+12.5:0
+7:12:1:0:255
+[]:[]:[1]:[42]:[2.5]
+integer/int
+double/float
+string/string
+array/array
+object/ScalarConsumerBox
+object/Closure
+8.5:8:[8.5]

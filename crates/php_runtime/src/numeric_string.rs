@@ -185,6 +185,21 @@ pub fn classify_array_key(value: &PhpString) -> NumericStringArrayKey {
     }
 }
 
+/// Returns the integer key represented by one canonical PHP array-key byte
+/// string. This is the allocation-free form used by authoritative native
+/// object-to-array conversion.
+#[must_use]
+pub fn array_key_integer_bytes(value: &[u8]) -> Option<i64> {
+    if !matches!(value.first(), Some(b'-' | b'0'..=b'9')) {
+        return None;
+    }
+    let classified = classify(value);
+    match (classified.canonical, classified.value) {
+        (NumericStringCanonicalKind::Integer, Some(NumericStringValue::Int(value))) => Some(value),
+        _ => None,
+    }
+}
+
 /// Returns true when a string key looks numeric but does not normalize to an
 /// integer key under PHP array-key rules.
 #[must_use]

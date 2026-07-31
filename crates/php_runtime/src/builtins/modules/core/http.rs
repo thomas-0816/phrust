@@ -94,24 +94,46 @@ pub(in crate::builtins::modules) fn builtin_headers_sent(
     Ok(Value::Bool(context.http_response().headers_sent))
 }
 
-pub(in crate::builtins::modules) fn builtin_memory_get_usage(
+fn builtin_memory_query(
+    name: &str,
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
-        return Err(arity_error("memory_get_usage", "zero or one argument(s)"));
+        return Err(arity_error(name, "zero or one argument(s)"));
+    }
+    if let Some(argument) = args.first() {
+        let argument = deref_value(argument);
+        if !matches!(
+            argument,
+            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_)
+        ) {
+            return Err(argument_type_error(
+                name,
+                "#1 ($real_usage)",
+                "bool",
+                &argument,
+            ));
+        }
     }
     let output_bytes = context.output().len() as i64;
     Ok(Value::Int(output_bytes.max(0)))
 }
 
+pub(in crate::builtins::modules) fn builtin_memory_get_usage(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    builtin_memory_query("memory_get_usage", context, args)
+}
+
 pub(in crate::builtins::modules) fn builtin_memory_get_peak_usage(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    span: RuntimeSourceSpan,
+    _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    builtin_memory_get_usage(context, args, span)
+    builtin_memory_query("memory_get_peak_usage", context, args)
 }
 
 pub(in crate::builtins::modules) fn builtin_setcookie(
@@ -145,7 +167,7 @@ fn builtin_cookie(
         string_arg(function, value).map(|value| value.to_string_lossy())
     })?;
     let options = parse_cookie_options(function, &args)?;
-    let Some(header_value) = build_cookie_header_value(&name, &value, &options, raw) else {
+    let Some(header_value) = build_native_cookie_header_value(&name, &value, &options, raw) else {
         context.php_warning(
             "E_PHP_RUNTIME_INVALID_COOKIE",
             format!("{function}(): invalid cookie name or value"),
@@ -169,17 +191,20 @@ fn builtin_cookie(
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct CookieOptions {
-    expires: i64,
-    path: String,
-    domain: String,
-    secure: bool,
-    httponly: bool,
-    samesite: String,
+pub struct NativeCookieOptions {
+    pub expires: i64,
+    pub path: String,
+    pub domain: String,
+    pub secure: bool,
+    pub httponly: bool,
+    pub samesite: String,
 }
 
-fn parse_cookie_options(function: &str, args: &[Value]) -> Result<CookieOptions, BuiltinError> {
-    let mut options = CookieOptions::default();
+fn parse_cookie_options(
+    function: &str,
+    args: &[Value],
+) -> Result<NativeCookieOptions, BuiltinError> {
+    let mut options = NativeCookieOptions::default();
     let Some(third) = args.get(2) else {
         return Ok(options);
     };
@@ -208,7 +233,7 @@ fn parse_cookie_options(function: &str, args: &[Value]) -> Result<CookieOptions,
 fn parse_cookie_options_array(
     function: &str,
     array: &PhpArray,
-    options: &mut CookieOptions,
+    options: &mut NativeCookieOptions,
 ) -> Result<(), BuiltinError> {
     for (key, value) in array.iter() {
         let ArrayKey::String(key) = key else {
@@ -242,10 +267,10 @@ fn parse_cookie_options_array(
     Ok(())
 }
 
-fn build_cookie_header_value(
+pub fn build_native_cookie_header_value(
     name: &str,
     value: &str,
-    options: &CookieOptions,
+    options: &NativeCookieOptions,
     raw: bool,
 ) -> Option<String> {
     if !valid_cookie_name(name)

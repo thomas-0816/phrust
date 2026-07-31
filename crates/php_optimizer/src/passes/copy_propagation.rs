@@ -211,6 +211,15 @@ fn rewrite_instruction_register_operands(
             rewrite_operand_registers(object, aliases);
             rewrite_operand_registers(property, aliases);
         }
+        InstructionKind::UnsetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(property, aliases);
+            rewrite_operands_registers(dims, aliases);
+        }
         InstructionKind::Binary { lhs, rhs, .. }
         | InstructionKind::Compare { lhs, rhs, .. }
         | InstructionKind::DynamicInstanceOf {
@@ -336,6 +345,18 @@ fn rewrite_instruction_register_operands(
         } => {
             rewrite_operand_registers(object, aliases);
             rewrite_operand_registers(property, aliases);
+            rewrite_operand_registers(value, aliases);
+        }
+        InstructionKind::AssignDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            value,
+            ..
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(property, aliases);
+            rewrite_operands_registers(dims, aliases);
             rewrite_operand_registers(value, aliases);
         }
         InstructionKind::IssetPropertyDim { object, dims, .. }

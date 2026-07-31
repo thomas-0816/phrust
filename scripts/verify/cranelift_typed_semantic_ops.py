@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SEMANTIC_OPS = ROOT / "crates/php_jit/src/region_ir/semantic_ops.rs"
 EXECUTABLE = ROOT / "crates/php_jit/src/region_ir/executable.rs"
 CALL_METADATA = ROOT / "crates/php_jit/src/cranelift_lowering/call_metadata.rs"
-SEMANTIC_DISPATCH = ROOT / "crates/php_vm/src/vm/jit_abi/semantic_dispatch/mod.rs"
-CALL_DISPATCH = ROOT / "crates/php_vm/src/vm/jit_abi/call_dispatch.rs"
+SEMANTIC_DISPATCH = ROOT / "crates/php_vm/src/vm/jit_abi/baseline_semantic_dispatch.rs"
+CALL_DISPATCH = ROOT / "crates/php_vm/src/vm/jit_abi/baseline_call_dispatch.rs"
 
 
 def main() -> int:

@@ -130,16 +130,6 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
             "production_lowering_by_site".to_owned(),
             counter_map_json(&counters.native_production_lowering_by_site),
         );
-        let operation_local_transition_executions = counters
-            .native_transition_by_reason
-            .iter()
-            .filter(|(reason, _)| reason.starts_with("optimizer_"))
-            .map(|(_, count)| *count)
-            .sum::<u64>();
-        native.insert(
-            "operation_local_transition_executions".to_owned(),
-            Value::from(operation_local_transition_executions),
-        );
         let optimizer_transition_time_nanos = counters
             .native_transition_time_nanos_by_reason
             .iter()

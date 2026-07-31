@@ -42,7 +42,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("filter_var", builtin_filter_var, BuiltinCompatibility::Php),
 ];
 
-const FILTER_DEFAULT: i64 = 516;
+pub const FILTER_DEFAULT: i64 = 516;
 const FILTER_UNSAFE_RAW: i64 = 516;
 const FILTER_VALIDATE_BOOL: i64 = 258;
 const FILTER_VALIDATE_INT: i64 = 257;
@@ -64,10 +64,10 @@ const FILTER_SANITIZE_FULL_SPECIAL_CHARS: i64 = 522;
 const FILTER_SANITIZE_ADD_SLASHES: i64 = 523;
 const FILTER_CALLBACK: i64 = 1_024;
 const FILTER_FLAG_NONE: i64 = 0;
-const FILTER_REQUIRE_ARRAY: i64 = 16_777_216;
-const FILTER_REQUIRE_SCALAR: i64 = 33_554_432;
-const FILTER_FORCE_ARRAY: i64 = 67_108_864;
-const FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
+pub const FILTER_REQUIRE_ARRAY: i64 = 16_777_216;
+pub const FILTER_REQUIRE_SCALAR: i64 = 33_554_432;
+pub const FILTER_FORCE_ARRAY: i64 = 67_108_864;
+pub const FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
 const FILTER_FLAG_ALLOW_OCTAL: i64 = 1;
 const FILTER_FLAG_ALLOW_HEX: i64 = 2;
 const FILTER_FLAG_STRIP_LOW: i64 = 4;
@@ -1716,6 +1716,383 @@ fn is_email_sanitize_byte(byte: u8) -> bool {
 
 fn is_url_sanitize_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"$-_.+!*'(),{}|\\^~[]`<>#%\";/?:@&=".contains(&byte)
+}
+
+/// Result of one Value-free FILTER_* scalar operation.
+///
+/// `InputString` lets the native caller retain the already authoritative
+/// string handle instead of allocating a duplicate. All other strings own
+/// their transformed/coerced bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativeFilterValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    InputString,
+    Bytes(Vec<u8>),
+}
+
+/// A fixed filter handler can either produce a native result or request its
+/// single baseline continuation for option shapes that require callbacks,
+/// PCRE state, or richer PHP values.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativeFilterResult {
+    Value(NativeFilterValue),
+    Unsupported,
+    UnknownFilter,
+}
+
+/// Stable FILTER_* name table used by the exact `filter_list()` and
+/// `filter_id()` handlers.
+pub fn native_filter_names() -> impl ExactSizeIterator<Item = (&'static str, i64)> {
+    FILTER_NAMES.iter().copied()
+}
+
+pub fn native_filter_id(name: &[u8]) -> Option<i64> {
+    FILTER_NAMES
+        .iter()
+        .find_map(|(candidate, id)| (candidate.as_bytes() == name).then_some(*id))
+}
+
+pub fn native_filter_input_source_index(source: i64) -> Option<usize> {
+    match source {
+        INPUT_POST => Some(0),
+        INPUT_GET => Some(1),
+        INPUT_COOKIE => Some(2),
+        INPUT_ENV => Some(3),
+        INPUT_SERVER => Some(4),
+        _ => None,
+    }
+}
+
+fn native_filter_failure(flags: i64) -> NativeFilterValue {
+    if flags & FILTER_NULL_ON_FAILURE != 0 {
+        NativeFilterValue::Null
+    } else {
+        NativeFilterValue::Bool(false)
+    }
+}
+
+fn native_filter_scalar_bytes<'a>(
+    value: super::core::NativePrintfScalar<'a>,
+) -> Option<(std::borrow::Cow<'a, [u8]>, bool)> {
+    match value {
+        super::core::NativePrintfScalar::Null => Some((std::borrow::Cow::Borrowed(&[]), false)),
+        super::core::NativePrintfScalar::Bool(true) => {
+            Some((std::borrow::Cow::Borrowed(b"1"), false))
+        }
+        super::core::NativePrintfScalar::Bool(false) => {
+            Some((std::borrow::Cow::Borrowed(&[]), false))
+        }
+        super::core::NativePrintfScalar::Int(value) => Some((
+            std::borrow::Cow::Owned(value.to_string().into_bytes()),
+            false,
+        )),
+        // PHP's float-to-string rules are centralized elsewhere. Do not grow
+        // a second formatter in the filter family.
+        super::core::NativePrintfScalar::Float(_) => None,
+        super::core::NativePrintfScalar::String(bytes) => {
+            Some((std::borrow::Cow::Borrowed(bytes), true))
+        }
+    }
+}
+
+fn native_filter_string_result(
+    bytes: std::borrow::Cow<'_, [u8]>,
+    is_input_string: bool,
+) -> NativeFilterValue {
+    if is_input_string && matches!(bytes, std::borrow::Cow::Borrowed(_)) {
+        NativeFilterValue::InputString
+    } else {
+        NativeFilterValue::Bytes(bytes.into_owned())
+    }
+}
+
+/// Applies the common integer-flags form of `filter_var()` without decoding a
+/// Rust `Value`. Rich option arrays, callback execution, and regexp state use
+/// the exact handler's one baseline continuation.
+pub fn native_filter_scalar(
+    value: super::core::NativePrintfScalar<'_>,
+    filter: i64,
+    flags: i64,
+) -> NativeFilterResult {
+    if !is_known_filter_id(filter) {
+        return NativeFilterResult::UnknownFilter;
+    }
+    if matches!(filter, FILTER_VALIDATE_REGEXP | FILTER_CALLBACK) {
+        return NativeFilterResult::Unsupported;
+    }
+    let is_null = matches!(value, super::core::NativePrintfScalar::Null);
+    let Some((input, is_input_string)) = native_filter_scalar_bytes(value) else {
+        return NativeFilterResult::Unsupported;
+    };
+    let failure = || NativeFilterResult::Value(native_filter_failure(flags));
+    let success_input =
+        || NativeFilterResult::Value(native_filter_string_result(input.clone(), is_input_string));
+
+    match filter {
+        FILTER_DEFAULT => {
+            if input.is_empty() && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+                return NativeFilterResult::Value(NativeFilterValue::Null);
+            }
+            let relevant_flags = FILTER_FLAG_STRIP_LOW
+                | FILTER_FLAG_STRIP_HIGH
+                | FILTER_FLAG_ENCODE_LOW
+                | FILTER_FLAG_ENCODE_HIGH
+                | FILTER_FLAG_ENCODE_AMP
+                | FILTER_FLAG_STRIP_BACKTICK;
+            if flags & relevant_flags == 0 {
+                return success_input();
+            }
+            let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+            let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+            let strip_backtick = flags & FILTER_FLAG_STRIP_BACKTICK != 0;
+            let encoded = encode_filter_entities(&input, |byte| {
+                (flags & FILTER_FLAG_ENCODE_AMP != 0 && byte == b'&')
+                    || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+                    || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
+            });
+            let output = encoded
+                .into_iter()
+                .filter(|byte| {
+                    !(strip_low && is_filter_low(*byte)
+                        || strip_high && is_filter_high(*byte)
+                        || strip_backtick && *byte == b'`')
+                })
+                .collect::<Vec<_>>();
+            if output.is_empty() && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+                NativeFilterResult::Value(NativeFilterValue::Null)
+            } else {
+                NativeFilterResult::Value(NativeFilterValue::Bytes(output))
+            }
+        }
+        FILTER_VALIDATE_BOOL => {
+            if is_null && flags & FILTER_NULL_ON_FAILURE != 0 {
+                return NativeFilterResult::Value(NativeFilterValue::Null);
+            }
+            match String::from_utf8_lossy(&input)
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "1" | "true" | "on" | "yes" => {
+                    NativeFilterResult::Value(NativeFilterValue::Bool(true))
+                }
+                "0" | "false" | "off" | "no" | "" => {
+                    NativeFilterResult::Value(NativeFilterValue::Bool(false))
+                }
+                _ => failure(),
+            }
+        }
+        FILTER_VALIDATE_INT => {
+            let text = String::from_utf8_lossy(&input);
+            parse_filter_int(text.trim(), flags).map_or_else(failure, |value| {
+                NativeFilterResult::Value(NativeFilterValue::Int(value))
+            })
+        }
+        FILTER_VALIDATE_FLOAT => {
+            let text = String::from_utf8_lossy(&input);
+            let trimmed = text.trim();
+            let normalized = if flags & FILTER_FLAG_ALLOW_THOUSAND != 0
+                && has_valid_float_thousand_groups(trimmed, ",", None)
+            {
+                trimmed.replace(',', "")
+            } else {
+                trimmed.to_owned()
+            };
+            normalized
+                .parse::<f64>()
+                .ok()
+                .filter(|value| {
+                    value.is_finite() && !float_underflowed_to_zero(*value, &normalized)
+                })
+                .map_or_else(failure, |value| {
+                    NativeFilterResult::Value(NativeFilterValue::Float(value))
+                })
+        }
+        FILTER_VALIDATE_EMAIL => {
+            if input.len() > 320 {
+                return failure();
+            }
+            let text = String::from_utf8_lossy(&input);
+            let Some((local, domain)) = split_email_address(&text) else {
+                return failure();
+            };
+            let valid = !local.is_empty()
+                && local.len() <= 64
+                && is_valid_email_local(local, flags & FILTER_FLAG_EMAIL_UNICODE != 0)
+                && is_valid_email_domain(domain);
+            if valid { success_input() } else { failure() }
+        }
+        FILTER_VALIDATE_URL => {
+            let text = String::from_utf8_lossy(&input);
+            let Some((scheme, rest)) = text.split_once(':') else {
+                return failure();
+            };
+            let scheme = scheme.to_ascii_lowercase();
+            let valid = (flags & FILTER_FLAG_PATH_REQUIRED == 0 || url_rest_has_path(rest))
+                && (flags & FILTER_FLAG_QUERY_REQUIRED == 0 || rest.contains('?'))
+                && is_valid_url_scheme(&scheme)
+                && is_valid_url_rest(&scheme, rest)
+                && !php_source::byte_kernel::contains_ascii_whitespace(&input);
+            if valid { success_input() } else { failure() }
+        }
+        FILTER_VALIDATE_IP => {
+            let text = String::from_utf8_lossy(&input);
+            let valid = match text.parse::<IpAddr>() {
+                Ok(IpAddr::V4(address)) => {
+                    flags & FILTER_FLAG_IPV6 == 0 && ipv4_allowed_by_filter_flags(address, flags)
+                }
+                Ok(IpAddr::V6(address)) => {
+                    flags & FILTER_FLAG_IPV4 == 0 && ipv6_allowed_by_filter_flags(address, flags)
+                }
+                Err(_) => false,
+            };
+            if valid { success_input() } else { failure() }
+        }
+        FILTER_VALIDATE_MAC => {
+            let valid = mac_shape(&input).is_some_and(|(tokens, token_len, separator)| {
+                (0..tokens).all(|token| {
+                    let offset = token * (token_len + 1);
+                    (token == tokens - 1 || input[offset + token_len] == separator)
+                        && input[offset..offset + token_len]
+                            .iter()
+                            .all(u8::is_ascii_hexdigit)
+                })
+            });
+            if valid { success_input() } else { failure() }
+        }
+        FILTER_VALIDATE_DOMAIN => {
+            if is_valid_domain(&input, flags & FILTER_FLAG_HOSTNAME != 0) {
+                success_input()
+            } else {
+                failure()
+            }
+        }
+        FILTER_SANITIZE_EMAIL => NativeFilterResult::Value(NativeFilterValue::Bytes(
+            input
+                .iter()
+                .copied()
+                .filter(|byte| is_email_sanitize_byte(*byte))
+                .collect(),
+        )),
+        FILTER_SANITIZE_URL => NativeFilterResult::Value(NativeFilterValue::Bytes(
+            input
+                .iter()
+                .copied()
+                .filter(|byte| is_url_sanitize_byte(*byte))
+                .collect(),
+        )),
+        FILTER_SANITIZE_NUMBER_INT => NativeFilterResult::Value(NativeFilterValue::Bytes(
+            input
+                .iter()
+                .copied()
+                .filter(|byte| byte.is_ascii_digit() || matches!(*byte, b'+' | b'-'))
+                .collect(),
+        )),
+        FILTER_SANITIZE_NUMBER_FLOAT => NativeFilterResult::Value(NativeFilterValue::Bytes(
+            input
+                .iter()
+                .copied()
+                .filter(|byte| {
+                    byte.is_ascii_digit()
+                        || matches!(*byte, b'+' | b'-')
+                        || (*byte == b'.' && flags & FILTER_FLAG_ALLOW_FRACTION != 0)
+                        || (*byte == b',' && flags & FILTER_FLAG_ALLOW_THOUSAND != 0)
+                        || (matches!(*byte, b'e' | b'E')
+                            && flags & FILTER_FLAG_ALLOW_SCIENTIFIC != 0)
+                })
+                .collect(),
+        )),
+        FILTER_SANITIZE_ADD_SLASHES => {
+            let mut output = Vec::with_capacity(input.len());
+            for byte in input.iter().copied() {
+                match byte {
+                    b'\0' => output.extend_from_slice(br"\0"),
+                    b'\'' | b'"' | b'\\' => {
+                        output.push(b'\\');
+                        output.push(byte);
+                    }
+                    _ => output.push(byte),
+                }
+            }
+            NativeFilterResult::Value(NativeFilterValue::Bytes(output))
+        }
+        FILTER_SANITIZE_ENCODED => {
+            let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+            let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+            let stripped = input
+                .iter()
+                .copied()
+                .filter(|byte| {
+                    !(strip_low && is_filter_low(*byte) || strip_high && is_filter_high(*byte))
+                })
+                .collect::<Vec<_>>();
+            NativeFilterResult::Value(NativeFilterValue::Bytes(encode_filter_bytes(
+                &stripped,
+                |byte| {
+                    !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+                        || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+                        || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
+                },
+            )))
+        }
+        FILTER_SANITIZE_STRING => {
+            let stripped = strip_filter_control_bytes(&input, flags);
+            let encoded = encode_filter_entities(&stripped, |byte| {
+                (flags & FILTER_FLAG_ENCODE_AMP != 0 && byte == b'&')
+                    || (flags & FILTER_FLAG_NO_ENCODE_QUOTES == 0 && matches!(byte, b'\'' | b'"'))
+                    || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+                    || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
+            });
+            let output = strip_filter_tags(&encoded);
+            if output.is_empty() && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+                NativeFilterResult::Value(NativeFilterValue::Null)
+            } else {
+                NativeFilterResult::Value(NativeFilterValue::Bytes(output))
+            }
+        }
+        FILTER_SANITIZE_SPECIAL_CHARS | FILTER_SANITIZE_FULL_SPECIAL_CHARS => {
+            let full = filter == FILTER_SANITIZE_FULL_SPECIAL_CHARS;
+            let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+            let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+            let mut output = Vec::new();
+            for byte in input.iter().copied() {
+                if (strip_low && is_filter_low(byte)) || (strip_high && is_filter_high(byte)) {
+                    continue;
+                }
+                if full {
+                    match byte {
+                        b'<' => output.extend_from_slice(b"&lt;"),
+                        b'>' => output.extend_from_slice(b"&gt;"),
+                        b'&' => output.extend_from_slice(b"&amp;"),
+                        b'\'' if flags & FILTER_FLAG_NO_ENCODE_QUOTES == 0 => {
+                            output.extend_from_slice(b"&#039;")
+                        }
+                        b'"' if flags & FILTER_FLAG_NO_ENCODE_QUOTES == 0 => {
+                            output.extend_from_slice(b"&quot;")
+                        }
+                        byte if flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte) => {
+                            output.extend_from_slice(format!("&#{byte};").as_bytes())
+                        }
+                        byte if flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte) => {
+                            output.extend_from_slice(format!("&#{byte};").as_bytes())
+                        }
+                        byte => output.push(byte),
+                    }
+                } else if matches!(byte, b'<' | b'>' | b'&' | b'\'' | b'"')
+                    || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+                    || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
+                {
+                    output.extend_from_slice(format!("&#{byte};").as_bytes());
+                } else {
+                    output.push(byte);
+                }
+            }
+            NativeFilterResult::Value(NativeFilterValue::Bytes(output))
+        }
+        _ => NativeFilterResult::Unsupported,
+    }
 }
 
 #[cfg(test)]

@@ -359,9 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn unrendered_runtime_error_keeps_structured_stderr() {
-        // Undefined function calls render as uncaught Errors now, so an
-        // unresolved callable is the unrendered runtime-error example.
+    fn unresolved_call_user_func_renders_php_fatal_without_structured_stderr() {
         let input = test_input("<?php call_user_func('missing_runtime_function');");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -369,13 +367,17 @@ mod tests {
         let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
 
         assert_eq!(status, EXIT_PHP_ERROR);
-        assert_eq!(stdout, b"");
-        let stderr = String::from_utf8(stderr).expect("stderr utf8");
-        assert!(stderr.contains("runtime-diagnostic"), "{stderr}");
+        let stdout = String::from_utf8(stdout).expect("stdout utf8");
         assert!(
-            stderr.contains("engine-compat-test.php: runtime_error"),
-            "{stderr}"
+            stdout.contains(
+                "Fatal error: Uncaught TypeError: call_user_func(): Argument #1 ($callback) must be \
+                 a valid callback, function \"missing_runtime_function\" not found or invalid \
+                 function name"
+            ),
+            "stdout={stdout} stderr={}",
+            String::from_utf8_lossy(&stderr)
         );
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
     }
 
     #[test]

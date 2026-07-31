@@ -1,0 +1,9 @@
+only=yellow;
+2=blue;d=red;only=yellow;
+d=red;only=yellow;
+a=red;d=red;
+a=red;
+a=red;
+a=red;2=orange;c=green;d=red;only=yellow;3=blue;x=black;
+1=2;2=3;
+0=1;1=2;

@@ -33,6 +33,8 @@ Start here when changing the engine, tests, compatibility fixtures, or docs.
 
 These pages explain the implementation structure and accepted boundaries.
 
+- [Authoritative native value, call, and storage cutover goal](../goal.md)
+- [Native warm-runtime analysis](../analysis.md)
 - [Architecture index](architecture/README.md)
 - [ADRs](adr/README.md)
 - [Lexer architecture](lexer/lexer-architecture.md)

@@ -7070,14 +7070,6 @@ impl LoweringContext<'_> {
         target: DynamicPropertyDimTarget,
         right: Option<ExprId>,
     ) -> Option<LoweredExpr> {
-        if target.dims.len() > 1 || (target.append && !target.dims.is_empty()) {
-            self.unsupported(
-                UnsupportedFeature::HirStatement,
-                site.range,
-                "only top-level dynamic property array dimension assignment is lowered to IR",
-            );
-            return None;
-        }
         let Some(right) = right else {
             self.unsupported(
                 UnsupportedFeature::HirStatement,
@@ -7094,62 +7086,25 @@ impl LoweringContext<'_> {
             object.block,
             target.property,
         )?;
-        let array = builder.alloc_register(site.function);
-        let fetch = builder.emit(
-            site.function,
-            property.block,
-            InstructionKind::FetchDynamicProperty {
-                dst: array,
-                object: Operand::Register(object.register),
-                property: Operand::Register(property.register),
-            },
-            site.span,
-        );
-        self.add_expr_source_map(
-            builder,
-            site.function,
-            property.block,
-            fetch,
-            site.expr,
-            site.span,
-        );
         let mut current = property.block;
-        let key = if let Some(dim) = target.dims.first().copied() {
+        let mut dims = Vec::with_capacity(target.dims.len());
+        for dim in target.dims {
             let dim = self.lower_expr_to_register(builder, site.function, current, dim)?;
             current = dim.block;
-            Some(Operand::Register(dim.register))
-        } else {
-            None
-        };
+            dims.push(Operand::Register(dim.register));
+        }
         let value = self.lower_expr_to_register(builder, site.function, current, right)?;
-        let insert = builder.emit(
-            site.function,
-            value.block,
-            InstructionKind::ArrayInsert {
-                array,
-                key,
-                value: Operand::Register(value.register),
-                by_ref_local: None,
-            },
-            site.span,
-        );
-        self.add_expr_source_map(
-            builder,
-            site.function,
-            value.block,
-            insert,
-            site.expr,
-            site.span,
-        );
         let dst = builder.alloc_register(site.function);
         let assign = builder.emit(
             site.function,
             value.block,
-            InstructionKind::AssignDynamicProperty {
+            InstructionKind::AssignDynamicPropertyDim {
                 dst,
                 object: Operand::Register(object.register),
                 property: Operand::Register(property.register),
-                value: Operand::Register(array),
+                dims,
+                value: Operand::Register(value.register),
+                append: target.append,
             },
             site.span,
         );
@@ -7162,7 +7117,7 @@ impl LoweringContext<'_> {
             site.span,
         );
         Some(LoweredExpr {
-            register: value.register,
+            register: dst,
             block: value.block,
         })
     }

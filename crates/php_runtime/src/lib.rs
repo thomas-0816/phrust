@@ -56,7 +56,7 @@ mod native_ops;
 mod numeric_string;
 mod object;
 mod output;
-#[cfg(feature = "full-runtime")]
+#[cfg(any(feature = "full-runtime", feature = "pcre-core"))]
 mod pcre;
 #[cfg(feature = "full-runtime")]
 mod phar;
@@ -87,6 +87,11 @@ mod xml_backend;
 /// PHP-visible status/output types. It intentionally excludes debug GC handles,
 /// JIT ABI helpers, and measurement-only counters.
 pub mod api {
+    pub use crate::builtins::{
+        NativeBaseConversion, NativeParsedBaseNumber, baseline_count_recursive_value,
+        native_base_conversion, native_decimal_base_conversion, native_parse_base_digits,
+        native_parse_intval_string_base, native_round_f64,
+    };
     pub use crate::runtime_memory::{NativeZeroed, StableNativeArena, StableNativeArenaUsage};
 
     /// Stable date/time runtime operations consumed by the VM.
@@ -130,29 +135,80 @@ pub mod api {
     pub use crate::builtins::{
         ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
         BuiltinErrorContext, BuiltinExecutionKind, BuiltinHandlerKind, BuiltinOutcome,
-        BuiltinRegistry, BuiltinRequestState, BuiltinResult, CurlState, FilesystemRuntimeState,
-        FtpOptionValue, FtpState, GettextState, IconvEncodingState, ImapConnectionConfig,
-        ImapMailboxSnapshot, ImapState, InternalFunction, JSON_ERROR_RECURSION,
-        JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, JsonRequestState, LdapSearchScope,
-        LdapState, MbSubstituteCharacter, NORMALIZER_FORM_C, NORMALIZER_FORM_D, NORMALIZER_FORM_KC,
-        NORMALIZER_FORM_KD, NativeJsonDecodedValue, NativePregMatchAllResult,
-        NativePregMatchResult, NativePregReplaceManyResult, NativePregReplaceResult,
-        NativePrintfScalar, OpcacheState, OpenSslErrorState, PcntlState, PcreRequestState,
-        ReadlineState, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState,
-        SoapParsedBody, SoapState, SocketState, Ssh2FingerprintHash, Ssh2State, StreamContextState,
-        StrtokState, SysvMessageQueueState, SysvSemaphoreError, SysvSemaphoreState,
-        SysvSharedMemoryState, append_json_default_string, build_soap_envelope,
-        decode_native_json_associative, exact_json_decode, exact_json_encode,
+        BuiltinRegistry, BuiltinRequestState, BuiltinResult, CurlState, FILTER_DEFAULT,
+        FILTER_FORCE_ARRAY, FILTER_NULL_ON_FAILURE, FILTER_REQUIRE_ARRAY, FILTER_REQUIRE_SCALAR,
+        FilesystemRuntimeState, FtpOptionValue, FtpState, GcRequestState, GettextState,
+        IconvEncodingState, ImapConnectionConfig, ImapMailboxSnapshot, ImapState, InternalFunction,
+        JSON_ERROR_RECURSION, JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, JsonRequestState,
+        LdapSearchScope, LdapState, MbSubstituteCharacter, NATIVE_HTML_ESCAPE_DEFAULT_FLAGS,
+        NATIVE_JSON_DIRECT_ENCODE_FLAGS, NATIVE_JSON_FORCE_OBJECT, NATIVE_JSON_HEX_AMP,
+        NATIVE_JSON_HEX_APOS, NATIVE_JSON_HEX_QUOT, NATIVE_JSON_HEX_TAG,
+        NATIVE_JSON_INVALID_UTF8_IGNORE, NATIVE_JSON_INVALID_UTF8_SUBSTITUTE,
+        NATIVE_JSON_NUMERIC_CHECK, NATIVE_JSON_PRESERVE_ZERO_FRACTION, NATIVE_JSON_PRETTY_PRINT,
+        NATIVE_JSON_UNESCAPED_LINE_TERMINATORS, NATIVE_JSON_UNESCAPED_SLASHES,
+        NATIVE_JSON_UNESCAPED_UNICODE, NATIVE_PHP_QUERY_RFC3986, NORMALIZER_FORM_C,
+        NORMALIZER_FORM_D, NORMALIZER_FORM_KC, NORMALIZER_FORM_KD, NativeCookieOptions,
+        NativeFilterResult, NativeFilterValue, NativeGlobPublished, NativeInputKey,
+        NativeInputSegment, NativeNetworkAddress, NativePackArgument, NativePregCallbackPlanResult,
+        NativePregCapturePublisher, NativePregPublishedMatch, NativePregPublishedMatchAll,
+        NativePregReplaceResult, NativePrintfScalar, NativeStatRecord,
+        NativeStructuredValuePublisher, NativeUnpackKey, NativeUnpackValue, NativeZlibDecodePlan,
+        OpcacheState, OpenSslErrorState, PcntlState, PcreRequestState, ReadlineState,
+        SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState, SoapParsedBody, SoapState,
+        SocketState, Ssh2FingerprintHash, Ssh2State, StreamContextState, StrtokState,
+        SysvMessageQueueState, SysvSemaphoreError, SysvSemaphoreState, SysvSharedMemoryState,
+        ZLIB_ENCODING_DEFLATE, ZLIB_ENCODING_GZIP, ZLIB_ENCODING_RAW, append_json_default_string,
+        append_json_string_with_flags, build_native_cookie_header_value, build_soap_envelope,
+        decode_native_json_associative_into, exact_json_decode, exact_json_encode,
         exact_json_last_error, exact_json_last_error_msg, exact_json_validate, exact_preg_filter,
         exact_preg_grep, exact_preg_last_error, exact_preg_last_error_msg, exact_preg_match,
         exact_preg_match_all, exact_preg_quote, exact_preg_replace, exact_preg_split, exact_printf,
-        exact_sprintf, exact_vprintf, exact_vsprintf, format_native_printf_scalars,
-        hash_algorithm_exists, igbinary_serialize_value, igbinary_unserialize_value,
-        is_normalized_string, load_wsdl, msgpack_pack_value, msgpack_unpack_value, native_basename,
-        native_dirname, native_file_exists, native_preg_grep, native_preg_match,
-        native_preg_match_all, native_preg_replace_many, native_preg_replace_scalar,
-        native_preg_split, native_realpath, normalize_string, parse_soap_response, parse_wsdl,
-        soap_http_post, validate_fileinfo_options, validate_native_json,
+        exact_sprintf, exact_vprintf, exact_vsprintf, hash_algorithm_exists,
+        igbinary_serialize_value, igbinary_unserialize_value, is_normalized_string, load_wsdl,
+        msgpack_pack_value, msgpack_unpack_value, native_addcslashes_into,
+        native_addcslashes_output_length, native_base64_decode_into,
+        native_base64_decode_output_length, native_base64_encode_into,
+        native_base64_encode_output_length, native_basename, native_bcadd, native_bccomp,
+        native_bcdiv, native_bcmod, native_bcmul, native_bcpow, native_bcpowmod, native_bcsqrt,
+        native_bcsub, native_bin2hex_into, native_bin2hex_output_length, native_chdir_target,
+        native_chmod, native_convert_uudecode_into, native_convert_uudecode_output_length,
+        native_convert_uuencode_into, native_convert_uuencode_output_length, native_crc32,
+        native_directory_entries, native_dirname, native_disk_space, native_file_exists,
+        native_file_get_contents, native_file_lines_into, native_file_put_contents,
+        native_filegroup, native_filemtime, native_fileowner, native_fileperms, native_filesize,
+        native_filetype, native_filter_id, native_filter_input_source_index, native_filter_names,
+        native_filter_scalar, native_glob_into, native_hash_hmac_into,
+        native_hash_hmac_output_length, native_hash_into, native_hash_output_length,
+        native_hex2bin_into, native_hex2bin_output_length, native_html_entity_decode_into,
+        native_html_entity_decode_output_length, native_html_escape_into,
+        native_html_escape_output_length, native_inet_ntop, native_inet_pton, native_ip2long,
+        native_is_dir, native_is_file, native_is_link, native_is_readable, native_is_writable,
+        native_long2ip, native_mb_canonical_encoding, native_mb_check_encoding, native_mb_chr,
+        native_mb_convert_case, native_mb_convert_encoding, native_mb_convert_simple_case,
+        native_mb_detect_encoding, native_mb_encoding_aliases, native_mb_encoding_names,
+        native_mb_first_char_case, native_mb_ord, native_mb_position, native_mb_strcut,
+        native_mb_strimwidth, native_mb_strlen, native_mb_strwidth, native_mb_substr,
+        native_mb_substr_count, native_md5_into, native_md5_output_length, native_mkdir,
+        native_natural_compare, native_number_format, native_parse_str_into, native_parse_url_into,
+        native_pathinfo_into, native_preg_callback_plan_into, native_preg_grep_into,
+        native_preg_match_all_into, native_preg_match_into, native_preg_replace_many_into,
+        native_preg_replace_scalar, native_preg_split_into, native_quoted_printable_decode_into,
+        native_quoted_printable_decode_output_length, native_quotemeta_into,
+        native_quotemeta_output_length, native_random_fill, native_realpath, native_rename,
+        native_rmdir, native_scandir_into, native_sha1_into, native_sha1_output_length,
+        native_stat, native_str_pad_into, native_str_pad_output_length, native_stream_is_local,
+        native_stream_resolve_include_path, native_string_search_slice, native_stripcslashes_into,
+        native_stripcslashes_output_length, native_stripslashes_into,
+        native_stripslashes_output_length, native_strpbrk, native_strrchr, native_strtr_into,
+        native_substr_compare, native_substr_replace_into, native_substr_replace_output_length,
+        native_symlink, native_tempnam, native_tmpfile, native_touch, native_ucwords_into,
+        native_unlink, native_unpack_hex_into, native_url_decode_into,
+        native_url_decode_output_length, native_url_encode_into, native_url_encode_output_length,
+        native_version_compare, native_version_operator_matches, native_zlib_decode,
+        native_zlib_decode_auto, native_zlib_encode_into, native_zlib_encode_output_capacity,
+        normalize_string, parse_soap_response, parse_wsdl, soap_http_post,
+        validate_fileinfo_options, validate_native_json, visit_json_string_with_flags,
+        visit_native_pack, visit_native_printf_scalars, visit_native_unpack,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -166,8 +222,9 @@ pub mod api {
         parse_form_urlencoded_body, parse_query_string, parse_query_string_with_separators,
     };
     pub use crate::convert::{
-        ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, float_fits_int,
-        float_to_php_string, identical, identical_php, php_float_to_int,
+        ArithmeticNumber, NumericValue, PHP_FLOAT_STRING_BUFFER_CAPACITY, compare, compare_php,
+        equal, equal_php, float_fits_int, float_to_php_string, float_to_php_string_bytes,
+        identical, identical_php, native_bytes_to_number, php_float_to_int,
         reset_float_string_precision, set_float_string_precision, to_arithmetic_number,
         to_arithmetic_number_php, to_array_php, to_bool, to_bool_php, to_float, to_float_php,
         to_int, to_int_php, to_number, to_number_php, to_object_php, to_string, to_string_php,
@@ -217,13 +274,15 @@ pub mod api {
         NATIVE_OPERATION_ABI_VERSION, NATIVE_OPERATION_REGISTRY, NativeAbiType, NativeBinaryOp,
         NativeCastOp, NativeCompareOp, NativeOperationContext, NativeOperationDescriptor,
         NativeOperationFamily, NativeOperationStatus, NativeOwnership, NativeUnaryOp,
-        lookup_native_operation, native_binary, native_cast, native_compare, native_echo,
-        native_operation_registry_is_stable, native_unary,
+        baseline_binary, baseline_cast, baseline_compare, baseline_unary, lookup_native_operation,
+        native_echo, native_operation_registry_is_stable,
     };
+    pub use crate::numeric_string::array_key_integer_bytes;
     pub use crate::object::{
         AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
         ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
-        ClassPropertyFlags, ClassPropertyHooks, NativeDeclaredPropertySlot, ObjectRef, RuntimeType,
+        ClassPropertyFlags, ClassPropertyHooks, NativeDeclaredPropertySlot,
+        NativeDynamicPropertyCell, NativeDynamicPropertySlots, ObjectRef, RuntimeType,
         display_class_name, normalize_class_name,
     };
     pub use crate::output::{OutputBuffer, OutputStats};
@@ -246,20 +305,16 @@ pub mod api {
         SerializationError, UnserializeOptions, serialize, unserialize, unserialize_prefix,
     };
     pub use crate::session::{
-        PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState,
+        NativeSessionControlState, PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE,
+        SessionState, native_session_name_is_valid,
     };
     pub use crate::source_span::RuntimeSourceSpan;
-    #[cfg(feature = "full-runtime")]
-    pub use crate::sqlite::{
-        SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
-        SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,
-        SQLITE3_OPEN_READWRITE, SQLITE3_TEXT, SqliteState,
-    };
     pub use crate::status::{ExecutionStatus, ExitStatus};
     pub use crate::string::{PhpString, SymbolId};
     pub use crate::types::{runtime_type_name, value_matches_runtime_type, value_type_name};
     pub use crate::value::{FloatValue, Value};
     pub use crate::{
+        datetime::normalize_timezone_identifier,
         reference::{
             Lvalue, LvalueError, LvalueKind, ReferenceCell, ReferencePlaceholder, Slot, TempValue,
             ValueSlot,
@@ -268,6 +323,15 @@ pub mod api {
             ErasedExtensionStateSlot, ExtensionStateLayout, ExtensionStateLayoutBuilder,
             ExtensionStateLayoutError, ExtensionStateSlot, RequestState,
         },
+    };
+    #[cfg(feature = "full-runtime")]
+    pub use crate::{
+        sqlite::{
+            SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
+            SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,
+            SQLITE3_OPEN_READWRITE, SQLITE3_TEXT, SqliteState,
+        },
+        tokenizer::{TokenizerToken, native_tokenize_default_into, token_name_for_id, tokenize},
     };
 }
 
@@ -309,7 +373,7 @@ pub mod experimental {
     }
 
     /// PCRE compiler/cache backend coupled to the current VM integration.
-    #[cfg(feature = "full-runtime")]
+    #[cfg(any(feature = "full-runtime", feature = "pcre-core"))]
     pub mod pcre {
         pub use crate::pcre::*;
     }

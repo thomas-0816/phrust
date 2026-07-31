@@ -150,11 +150,12 @@ impl ServerEngineState {
         } else {
             base_options.optimization_level
         };
-        // Warm server requests must not compete with speculative Cranelift
-        // work. Compile the selected production tier on demand and keep the
-        // worker cache stable instead of scheduling threshold-based
-        // background recompilation.
-        let worker_state = VmWorkerState::new(base_options.vm_options.tiering.clone());
+        // A cold request compiles only the reached baseline-native bodies.
+        // Repeated request entries may publish the optimizing tier outside
+        // the request-critical compilation path; published calls still load
+        // the native entry cells directly without a runtime tiering branch.
+        let worker_tiering = base_options.vm_options.tiering.clone();
+        let worker_state = VmWorkerState::new_with_background_tiering(worker_tiering);
         Self {
             engine_profile,
             native_cache,
@@ -337,15 +338,15 @@ pub(crate) fn preload_script_cache(
                     .services
                     .engine
                     .executor(state.services.engine.executor_options());
-                // A restart-persistent read cache is the authoritative cold
-                // native source. Compiling the entry during script preload
-                // defeats restart reuse and makes startup report a compile
-                // before the first request can map the exact function
-                // artifact. Script/CST preload remains useful independently.
-                if !state.services.engine.native_cache.can_read() {
-                    prewarmed_entries = prewarmed_entries
-                        .saturating_add(executor.prewarm_compiled(&lookup.compiled));
-                }
+                // Resolve the optimizing entry before readiness even when the
+                // native cache is readable. A readable cache can be empty;
+                // treating capability as a cache hit left every preferred
+                // entry unpublished until request-time background tiering.
+                // `prewarm_compiled` performs the authoritative cache lookup,
+                // maps an existing artifact on restart, and compiles only a
+                // genuine miss.
+                prewarmed_entries =
+                    prewarmed_entries.saturating_add(executor.prewarm_compiled(&lookup.compiled));
                 preload_include_cache_entry(state, &script_path).map_err(|error| {
                     Box::new(PreloadError::include_entry(
                         preload_file,

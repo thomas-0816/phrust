@@ -1023,6 +1023,16 @@ fn format_instruction(kind: &InstructionKind) -> String {
             format_operand(object),
             format_operand(property)
         ),
+        InstructionKind::UnsetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+        } => format!(
+            "unset_dynamic_property_dim {} {} [{}]",
+            format_operand(object),
+            format_operand(property),
+            format_operands(dims)
+        ),
         InstructionKind::FetchStaticProperty {
             dst,
             class_name,
@@ -1154,6 +1164,26 @@ fn format_instruction(kind: &InstructionKind) -> String {
             dst.raw(),
             format_operand(object),
             format_operand(property),
+            format_operand(value)
+        ),
+        InstructionKind::AssignDynamicPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+            value,
+            append,
+        } => format!(
+            "{} r{} {} {} [{}] {}",
+            if *append {
+                "append_dynamic_property_dim"
+            } else {
+                "assign_dynamic_property_dim"
+            },
+            dst.raw(),
+            format_operand(object),
+            format_operand(property),
+            format_operands(dims),
             format_operand(value)
         ),
         InstructionKind::AssignStaticProperty {

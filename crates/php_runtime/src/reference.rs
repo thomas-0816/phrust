@@ -446,6 +446,21 @@ impl ReferenceCell {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Returns the stable storage identity of an array held by this cell
+    /// without materializing a pending native overlay.
+    ///
+    /// Read-only recursive native operations use this to recognize a
+    /// back-edge before `get()` would separate a shared COW facade and obscure
+    /// the ownership identity that made the edge recursive.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_array_storage_id(&self) -> Option<u64> {
+        match &*self.inner.value.borrow() {
+            Value::Array(array) => Some(array.native_storage_id()),
+            _ => None,
+        }
+    }
+
     /// Returns a process-local cell identity for GC debug snapshots.
     ///
     /// This is not a PHP-visible handle and must only be used by runtime tests

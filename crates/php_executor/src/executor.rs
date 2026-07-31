@@ -275,6 +275,13 @@ mod tests {
     use php_ir::{FunctionFlags, IrConstant, IrReturnType, IrSpan, UnitId};
     use php_ir::{InstructionKind, Operand};
 
+    fn background_tiering_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn replacing_borrowed_variadic_parameter_preserves_call_boundary_owner() {
         let output = PhpExecutor::default().execute_source(PhpExecutionInput {
@@ -356,13 +363,17 @@ echo $created, "\n";
     }
 
     #[test]
-    fn dynamic_scalar_constants_remain_native_through_define_query_and_fetch() {
+    fn dynamic_constants_remain_native_through_define_query_and_fetch() {
         let output = PhpExecutor::default().execute_source(PhpExecutionInput {
             source: r#"<?php
 define('NATIVE_INT_CONSTANT', 41);
 define('NATIVE_STRING_CONSTANT', 'native');
+define('NATIVE_ARRAY_CONSTANT', ['07' => 'leading', 7 => ['nested', 2 => 'integer']]);
 echo NATIVE_INT_CONSTANT + 1, "\n";
 echo NATIVE_STRING_CONSTANT, "\n";
+echo NATIVE_ARRAY_CONSTANT['07'], "\n";
+echo NATIVE_ARRAY_CONSTANT[7][0], "\n";
+echo NATIVE_ARRAY_CONSTANT[7][2], "\n";
 echo defined('NATIVE_STRING_CONSTANT') ? "defined\n" : "missing\n";
 "#
             .to_owned(),
@@ -382,7 +393,10 @@ echo defined('NATIVE_STRING_CONSTANT') ? "defined\n" : "missing\n";
             String::from_utf8_lossy(&output.stdout),
             output.diagnostics_text
         );
-        assert_eq!(output.stdout, b"42\nnative\ndefined\n");
+        assert_eq!(
+            output.stdout,
+            b"42\nnative\nleading\nnested\ninteger\ndefined\n"
+        );
     }
 
     #[test]
@@ -515,6 +529,173 @@ echo $classAvailable && (new ReflectionClass($class))->hasProperty($member) ? "p
         assert!(second.prewarm_compiled(&compiled) > 0);
         let after = second.native_compile_cache_stats();
         assert_eq!(after.misses, before.misses);
-        assert_eq!(after.hits, before.hits + 1);
+        assert_eq!(after.insertions, before.insertions);
+        assert_eq!(after.compile_time_nanos, before.compile_time_nanos);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn hot_function_from_cached_include_enters_optimizing_tier_next_request() {
+        let _guard = background_tiering_test_guard();
+        let root = std::env::temp_dir().join(format!(
+            "phrust-executor-dynamic-tier-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let entry = root.join("index.php");
+        let include = root.join("callee.php");
+        let source = "<?php require __DIR__ . '/callee.php'; $sum = 0; for ($i = 0; $i < 32; $i++) { $sum += hot_leaf(); } echo $sum, \"\\n\";";
+        std::fs::write(&entry, source).expect("write entry");
+        std::fs::write(&include, "<?php function hot_leaf() { return 1; }").expect("write include");
+
+        let mut options = PhpExecutorOptions::default_native_runtime();
+        options.vm_options.collect_counters = true;
+        options.vm_options.tiering.collect_stats = true;
+        options.vm_options.tiering.function_entry_threshold = 1;
+        options.vm_options.tiering.native_max_functions = 4;
+        let include_cache =
+            std::sync::Arc::new(php_vm::api::IncludeCache::new_with_revalidation_interval(
+                1,
+                std::time::Duration::from_secs(60),
+            ));
+        options.vm_options.include_cache = Some(std::sync::Arc::clone(&include_cache));
+        let worker = VmWorkerState::new_with_background_tiering(options.vm_options.tiering.clone());
+        let executor = PhpExecutor::with_options_and_worker_state(options, worker.clone());
+        let compiled = executor
+            .compile_source(PhpCompileInput {
+                source: source.to_owned(),
+                source_path: entry.to_string_lossy().into_owned(),
+                optimization_level: None,
+            })
+            .expect("compile entry");
+        let execute = || {
+            executor.execute_compiled(
+                &compiled,
+                PhpRequestExecutionInput {
+                    real_path: Some(entry.clone()),
+                    cwd: root.clone(),
+                    include_roots: vec![root.clone()],
+                    runtime_context: php_runtime::api::RuntimeContext::default(),
+                    collect_counters: true,
+                },
+            )
+        };
+
+        let first = execute();
+        assert_eq!(first.status, PhpExecutionStatus::Success, "{first:#?}");
+        assert_eq!(first.stdout, b"32\n");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while worker.tiering_stats().native_compiled_functions < 4
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            worker.tiering_stats().native_compiled_functions >= 4,
+            "the completed dynamic request did not finish its bounded optimizing batch"
+        );
+
+        let warm = execute();
+        assert_eq!(warm.status, PhpExecutionStatus::Success, "{warm:#?}");
+        assert_eq!(warm.stdout, b"32\n");
+        assert!(
+            warm.counters
+                .as_ref()
+                .is_some_and(|counters| counters.native_optimizing_entry_executions >= 32),
+            "warm dynamic calls did not consume the published optimizing entry: {warm:#?}"
+        );
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn optimizing_cached_include_dereferences_global_method_receiver() {
+        let _guard = background_tiering_test_guard();
+        let root = std::env::temp_dir().join(format!(
+            "phrust-executor-global-method-receiver-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let entry = root.join("index.php");
+        let include = root.join("callee.php");
+        let class = root.join("receiver.php");
+        let source = "<?php require __DIR__ . '/callee.php'; initialize_global_receiver(); $sum = 0; for ($i = 0; $i < 32; $i++) { $found = false; $sum += through_global_receiver($i, $found); if (!$found) { echo \"missing\\n\"; } } echo $sum, \"\\n\";";
+        std::fs::write(&entry, source).expect("write entry");
+        std::fs::write(
+            &include,
+            "<?php require_once __DIR__ . '/receiver.php'; function initialize_global_receiver() { $GLOBALS['box'] = new NativeReceiverBox(); } function through_global_receiver($value, &$found) { global $box; return $box->get($value, $found); }",
+        )
+        .expect("write include");
+        std::fs::write(
+            &class,
+            "<?php class NativeReceiverBox { public function get($value, &$found) { $found = true; return $value; } }",
+        )
+        .expect("write receiver class");
+
+        let mut options = PhpExecutorOptions::default_native_runtime();
+        options.vm_options.collect_counters = true;
+        options.vm_options.tiering.collect_stats = true;
+        options.vm_options.tiering.function_entry_threshold = 1;
+        options.vm_options.tiering.native_max_functions = 16;
+        let include_cache =
+            std::sync::Arc::new(php_vm::api::IncludeCache::new_with_revalidation_interval(
+                1,
+                std::time::Duration::from_secs(60),
+            ));
+        options.vm_options.include_cache = Some(std::sync::Arc::clone(&include_cache));
+        let worker = VmWorkerState::new_with_background_tiering(options.vm_options.tiering.clone());
+        let executor = PhpExecutor::with_options_and_worker_state(options, worker.clone());
+        let compiled = executor
+            .compile_source(PhpCompileInput {
+                source: source.to_owned(),
+                source_path: entry.to_string_lossy().into_owned(),
+                optimization_level: None,
+            })
+            .expect("compile entry");
+        let execute = || {
+            executor.execute_compiled(
+                &compiled,
+                PhpRequestExecutionInput {
+                    real_path: Some(entry.clone()),
+                    cwd: root.clone(),
+                    include_roots: vec![root.clone()],
+                    runtime_context: php_runtime::api::RuntimeContext::default(),
+                    collect_counters: true,
+                },
+            )
+        };
+
+        let first = execute();
+        assert_eq!(first.status, PhpExecutionStatus::Success, "{first:#?}");
+        assert_eq!(first.stdout, b"496\n");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while worker.tiering_stats().native_compiled_functions < 7
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            worker.tiering_stats().native_compiled_functions >= 7,
+            "the completed request did not finish its optimizing batch"
+        );
+
+        let warm = execute();
+        assert_eq!(warm.status, PhpExecutionStatus::Success, "{warm:#?}");
+        assert_eq!(warm.stdout, b"496\n");
+        assert!(
+            warm.counters
+                .as_ref()
+                .is_some_and(|counters| counters.native_optimizing_entry_executions >= 32),
+            "the global receiver fixture did not execute optimizing entries: {warm:#?}"
+        );
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 }

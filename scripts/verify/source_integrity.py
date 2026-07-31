@@ -84,7 +84,7 @@ VM_RESULT_REQUIRED_SNIPPETS = [
 
 VM_SUBMODULE_REQUIRED_SNIPPETS = {
     "crates/php_vm/src/vm/jit_abi.rs": [
-        "jit_native_call_dispatch_abi",
+        "jit_baseline_native_call_dispatch_abi",
         "jit_native_dynamic_code_abi",
         "jit_native_runtime_fatal_abi",
     ],

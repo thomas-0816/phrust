@@ -60,10 +60,38 @@ impl JsonRequestState {
     }
 }
 
+/// Request-local cycle-collector control state.
+///
+/// The collector itself is currently deterministic and reports no collected
+/// cycles, but enable/disable state is PHP-visible and must survive across
+/// baseline and optimizing builtin calls in the same request.
+#[derive(Debug)]
+pub struct GcRequestState {
+    enabled: bool,
+}
+
+impl Default for GcRequestState {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl GcRequestState {
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub const fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct BuiltinRequestStateSlots {
     pcre: ExtensionStateSlot<PcreRequestState>,
     json: ExtensionStateSlot<JsonRequestState>,
+    gc: ExtensionStateSlot<GcRequestState>,
     curl: ExtensionStateSlot<CurlState>,
 }
 
@@ -83,12 +111,20 @@ fn builtin_layout() -> &'static BuiltinRequestStateLayout {
         let json = builder
             .register(JsonRequestState::default)
             .unwrap_or_else(|_| unreachable!("JSON state is registered once"));
+        let gc = builder
+            .register(GcRequestState::default)
+            .unwrap_or_else(|_| unreachable!("GC state is registered once"));
         let curl = builder
             .register(CurlState::default)
             .unwrap_or_else(|_| unreachable!("cURL state is registered once"));
         BuiltinRequestStateLayout {
             layout: builder.build(),
-            slots: BuiltinRequestStateSlots { pcre, json, curl },
+            slots: BuiltinRequestStateSlots {
+                pcre,
+                json,
+                gc,
+                curl,
+            },
         }
     })
 }
@@ -147,6 +183,18 @@ impl BuiltinRequestState {
             .unwrap_or_else(|| unreachable!("request uses the builtin state layout"))
     }
 
+    pub fn gc(&self) -> &GcRequestState {
+        self.state
+            .get(builtin_layout().slots.gc)
+            .unwrap_or_else(|| unreachable!("request uses the builtin state layout"))
+    }
+
+    pub fn gc_mut(&mut self) -> &mut GcRequestState {
+        self.state
+            .get_mut(builtin_layout().slots.gc)
+            .unwrap_or_else(|| unreachable!("request uses the builtin state layout"))
+    }
+
     pub fn curl(&self) -> &CurlState {
         self.state
             .get(builtin_layout().slots.curl)
@@ -178,6 +226,7 @@ mod tests {
             .json_mut()
             .set(super::super::context::JSON_ERROR_SYNTAX);
         first.pcre_mut().last_error_mut().set(2, "backtrack");
+        first.gc_mut().set_enabled(false);
 
         let second = BuiltinRequestState::new();
         assert_eq!(
@@ -185,13 +234,14 @@ mod tests {
             (super::super::context::JSON_ERROR_NONE, "No error")
         );
         assert_eq!(second.pcre().last_error().code(), 0);
+        assert!(second.gc().enabled());
     }
 
     #[test]
-    fn full_builtin_layout_reports_three_migrated_payloads() {
+    fn full_builtin_layout_reports_four_migrated_payloads() {
         let state = BuiltinRequestState::new();
-        assert_eq!(state.slot_count(), 3);
-        assert_eq!(BuiltinRequestState::payload_bytes(), 200);
+        assert_eq!(state.slot_count(), 4);
+        assert!(BuiltinRequestState::payload_bytes() >= 201);
     }
 
     #[test]

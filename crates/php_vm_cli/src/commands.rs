@@ -263,8 +263,14 @@ where
             .read_to_end(&mut stdin_bytes)
             .map_err(|error| format!("stdin: {error}"))?;
     }
+    let mut environment = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (name, value) in options.env {
+        environment.insert(name, value);
+    }
     let runtime_context = RuntimeContext::controlled_cli(&options.path, options.script_args)
-        .with_env(options.env)
+        .with_env(environment.into_iter().collect())
         .with_cwd(cwd.clone())
         .with_stdin(stdin_bytes);
     let execute_started = Instant::now();
@@ -503,6 +509,33 @@ where
             (false, "rejected", Some(reason.as_str()))
         }
     };
+    let native_transitions = report
+        .result
+        .handle
+        .as_ref()
+        .and_then(php_jit::JitFunctionHandle::region_state_metadata)
+        .map(|metadata| {
+            metadata
+                .native_transitions
+                .iter()
+                .map(|transition| {
+                    json!({
+                        "function_id": transition.function.raw(),
+                        "continuation_id": transition.continuation_id,
+                        "live_locals": transition
+                            .live_locals
+                            .iter()
+                            .map(|local| local.raw())
+                            .collect::<Vec<_>>(),
+                        "live_registers": transition
+                            .live_registers
+                            .iter()
+                            .map(|register| register.raw())
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
     if options.json_output {
         writeln!(
             stdout,
@@ -517,6 +550,7 @@ where
                 "diagnostics": report.result.diagnostics,
                 "compile_time_nanos": report.result.stats.native_compile_time_nanos,
                 "code_bytes": report.result.stats.native_code_bytes,
+                "native_transitions": native_transitions,
                 "native_only": true,
                 "executed": false,
             })

@@ -2,11 +2,14 @@ use super::{
     ClassEntry, ClassEnumBackingType, ObjectIdGuard, debug::property_debug_label, next_object_id,
 };
 use crate::Value;
-use std::cell::{BorrowError, BorrowMutError, Cell, RefCell};
+use std::cell::{BorrowError, BorrowMutError, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// One authoritative declared-property cell while an object is admitted to
 /// native execution. `initialized == 0` represents an absent/unset slot;
@@ -19,13 +22,44 @@ pub struct NativeDeclaredPropertySlot {
     pub value: i64,
 }
 
-/// Class-owned declared-property layout, shared across instances of the
-/// same class through a thread-local cache. The layout maps storage names
-/// (private names arrive pre-mangled as `private:Owner:prop`) to slot
-/// indices and carries the per-class debug labels; per-object state is a
-/// plain slot vector plus a side map for dynamic properties.
+/// One stable authoritative dynamic-property cell.
+///
+/// `slot` is the first field so a pointer to this allocation is also the
+/// direct [`NativeDeclaredPropertySlot`] data-plane pointer consumed by CLIF.
+/// Unset keeps the allocation as a tombstone. A later direct assignment
+/// publishes a fresh insertion order through `next_insertion_order`, matching
+/// PHP's remove-and-reinsert ordering without invalidating the slot address.
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub struct NativeDynamicPropertyCell {
+    pub slot: NativeDeclaredPropertySlot,
+    pub insertion_order: u64,
+    pub next_insertion_order: *mut u64,
+}
+
+impl NativeDynamicPropertyCell {
+    fn new(slot: NativeDeclaredPropertySlot, insertion_order: u64) -> Self {
+        Self {
+            slot,
+            insertion_order,
+            next_insertion_order: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Authoritative native values for undeclared object properties. Every cell
+/// is separately allocated, so its address survives name-index growth,
+/// `unset`, and later reinsertion.
+pub type NativeDynamicPropertySlots = HashMap<String, Box<NativeDynamicPropertyCell>>;
+
+type RustPropertySlots = (Vec<Option<Value>>, HashMap<String, Value>);
+
+/// Class-owned declared-property layout, shared across instances of the same
+/// class through a thread-local data cache. Its numeric identity is interned
+/// process-wide so native code and worker-owned compile records see one stable
+/// ABI shape regardless of which server worker materialized the class.
 struct PropertyLayout {
-    /// Process-thread-unique identity used as the slot-access guard.
+    /// Process-wide identity used as the slot-access and method-PIC guard.
     layout_id: u64,
     /// Declared storage names in declaration order, slot-index aligned.
     slot_names: Vec<String>,
@@ -39,18 +73,41 @@ struct PropertyLayout {
     debug_labels: HashMap<String, String>,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PropertyLayoutIdentity {
+    class_name: String,
+    slot_names: Vec<String>,
+    array_cast_names: Vec<String>,
+    debug_labels: Vec<(String, String)>,
+}
+
 thread_local! {
     static LAYOUT_CACHE: RefCell<HashMap<String, Vec<Rc<PropertyLayout>>>> =
         RefCell::new(HashMap::new());
-    static NEXT_LAYOUT_ID: Cell<u64> = const { Cell::new(1) };
 }
 
-fn next_layout_id() -> u64 {
-    NEXT_LAYOUT_ID.with(|next| {
-        let id = next.get();
-        next.set(id.wrapping_add(1));
-        id
-    })
+fn lock_layout_identities(
+    identities: &Mutex<HashMap<PropertyLayoutIdentity, u64>>,
+) -> MutexGuard<'_, HashMap<PropertyLayoutIdentity, u64>> {
+    identities
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn intern_layout_id(identity: PropertyLayoutIdentity) -> u64 {
+    static IDENTITIES: OnceLock<Mutex<HashMap<PropertyLayoutIdentity, u64>>> = OnceLock::new();
+    static NEXT_LAYOUT_ID: AtomicU64 = AtomicU64::new(1);
+
+    let mut identities = lock_layout_identities(IDENTITIES.get_or_init(Mutex::default));
+    if let Some(id) = identities.get(&identity) {
+        return *id;
+    }
+    let id = NEXT_LAYOUT_ID.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        std::process::abort();
+    }
+    identities.insert(identity, id);
+    id
 }
 
 /// Returns true when a property entry occupies backed instance storage.
@@ -139,8 +196,19 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
             .enumerate()
             .map(|(index, name)| (name.clone(), index as u32))
             .collect();
+        let mut identity_debug_labels = debug_labels
+            .iter()
+            .map(|(name, label)| (name.clone(), label.clone()))
+            .collect::<Vec<_>>();
+        identity_debug_labels.sort_unstable();
+        let layout_id = intern_layout_id(PropertyLayoutIdentity {
+            class_name: class.name.to_string(),
+            slot_names: slot_names.clone(),
+            array_cast_names: array_cast_names.clone(),
+            debug_labels: identity_debug_labels,
+        });
         let layout = Rc::new(PropertyLayout {
-            layout_id: next_layout_id(),
+            layout_id,
             slot_names,
             slot_by_name,
             array_cast_names,
@@ -157,6 +225,12 @@ struct ObjectStorage {
     display_name: Arc<str>,
     is_enum: bool,
     enum_backing_type: Option<ClassEnumBackingType>,
+    /// Exact class-shape knowledge for non-mutating dynamic property tests.
+    /// `None` is reserved for formatter/synthetic views without a complete
+    /// runtime method table.
+    native_magic_isset: Option<bool>,
+    native_countable: bool,
+    native_traversable: bool,
     id_guard: Option<ObjectIdGuard>,
     layout: Rc<PropertyLayout>,
     /// Declared property slots; `None` means unset (absent), which is
@@ -168,6 +242,12 @@ struct ObjectStorage {
     native_declared_slots: Option<Box<[NativeDeclaredPropertySlot]>>,
     /// Dynamic (undeclared) properties; declared names never live here.
     dynamic_properties: HashMap<String, Value>,
+    /// Mutually exclusive native value representation of
+    /// `dynamic_properties`. Names and insertion order remain object-owned,
+    /// while every value is one authoritative request-native encoded owner.
+    native_dynamic_properties: Option<NativeDynamicPropertySlots>,
+    /// Stable order clock addressed directly by native dynamic cells.
+    native_dynamic_next_order: Option<Box<u64>>,
     /// Insertion order of dynamic properties. Declared properties iterate
     /// in declaration (slot) order — even after unset and re-assignment,
     /// matching reference slot semantics — followed by dynamic entries.
@@ -289,7 +369,6 @@ impl ObjectStorage {
 #[derive(Debug)]
 struct ObjectCell {
     id: u64,
-    property_epoch: Cell<u64>,
     storage: RefCell<ObjectStorage>,
 }
 
@@ -450,10 +529,11 @@ impl ObjectRef {
     ) -> Self {
         crate::layout_stats::record_object_allocation();
         let id = next_object_id();
+        let native_dynamic_properties = native_declared_slots.as_ref().map(|_| HashMap::new());
+        let native_dynamic_next_order = native_declared_slots.as_ref().map(|_| Box::new(0));
         Self {
             cell: Rc::new(ObjectCell {
                 id,
-                property_epoch: Cell::new(1),
                 storage: RefCell::new(ObjectStorage {
                     // Shared handle: every instance of one runtime class aliases the
                     // class entry's allocation (no per-instantiation copy, and
@@ -462,11 +542,30 @@ impl ObjectRef {
                     display_name: Arc::from(display_name),
                     is_enum: class.flags.is_enum,
                     enum_backing_type: class.enum_backing_type,
+                    native_magic_isset: class
+                        .methods
+                        .iter()
+                        .any(|method| method.name.eq_ignore_ascii_case("__isset"))
+                        .then_some(true)
+                        .or_else(|| class.flags.has_complete_method_table.then_some(false)),
+                    native_countable: class.flags.implements_countable
+                        || class
+                            .interfaces
+                            .iter()
+                            .any(|name| name.eq_ignore_ascii_case("countable")),
+                    native_traversable: class.flags.implements_traversable
+                        || class.interfaces.iter().any(|name| {
+                            name.eq_ignore_ascii_case("traversable")
+                                || name.eq_ignore_ascii_case("iterator")
+                                || name.eq_ignore_ascii_case("iteratoraggregate")
+                        }),
                     id_guard: Some(ObjectIdGuard::new(id)),
                     layout,
                     declared_slots,
                     native_declared_slots,
                     dynamic_properties: HashMap::new(),
+                    native_dynamic_properties,
+                    native_dynamic_next_order,
                     dynamic_order: Vec::new(),
                     dynamic_debug_labels: HashMap::new(),
                 }),
@@ -505,17 +604,21 @@ impl ObjectRef {
         Self {
             cell: Rc::new(ObjectCell {
                 id: source.id(),
-                property_epoch: Cell::new(source.property_epoch()),
                 storage: RefCell::new(ObjectStorage {
                     class_name: source.class_name_handle(),
                     display_name: source.display_name_handle(),
                     is_enum: false,
                     enum_backing_type: None,
+                    native_magic_isset: None,
+                    native_countable: source.is_native_countable(),
+                    native_traversable: source.is_native_traversable(),
                     id_guard: None,
                     layout: empty_layout,
                     declared_slots: Vec::new(),
                     native_declared_slots: None,
                     dynamic_properties,
+                    native_dynamic_properties: None,
+                    native_dynamic_next_order: None,
                     dynamic_order,
                     dynamic_debug_labels,
                 }),
@@ -570,6 +673,20 @@ impl ObjectRef {
         Arc::clone(&self.cell.storage.borrow().display_name)
     }
 
+    /// Returns publication-time `Countable` classification without consulting
+    /// a request class table.
+    #[must_use]
+    pub fn is_native_countable(&self) -> bool {
+        self.cell.storage.borrow().native_countable
+    }
+
+    /// Returns publication-time `Traversable` classification without
+    /// consulting a request class table.
+    #[must_use]
+    pub fn is_native_traversable(&self) -> bool {
+        self.cell.storage.borrow().native_traversable
+    }
+
     /// Returns whether this object represents an enum case.
     #[must_use]
     pub fn is_enum(&self) -> bool {
@@ -588,21 +705,40 @@ impl ObjectRef {
         crate::layout_stats::record_object_allocation();
         let storage = self.cell.storage.borrow();
         let id = next_object_id();
+        let dynamic_order = if let Some(dynamic) = storage.native_dynamic_properties.as_ref() {
+            let mut names: Vec<String> = dynamic
+                .iter()
+                .filter(|(_, cell)| cell.slot.initialized != 0)
+                .map(|(name, _)| name.clone())
+                .collect();
+            names.sort_by_key(|name| {
+                dynamic
+                    .get(name)
+                    .map_or(u64::MAX, |cell| cell.insertion_order)
+            });
+            names
+        } else {
+            storage.dynamic_order.clone()
+        };
         Self {
             cell: Rc::new(ObjectCell {
                 id,
-                property_epoch: Cell::new(1),
                 storage: RefCell::new(ObjectStorage {
                     class_name: storage.class_name.clone(),
                     display_name: storage.display_name.clone(),
                     is_enum: storage.is_enum,
                     enum_backing_type: storage.enum_backing_type,
+                    native_magic_isset: storage.native_magic_isset,
+                    native_countable: storage.native_countable,
+                    native_traversable: storage.native_traversable,
                     id_guard: Some(ObjectIdGuard::new(id)),
                     layout: Rc::clone(&storage.layout),
                     declared_slots: storage.declared_slots.clone(),
                     native_declared_slots: None,
                     dynamic_properties: storage.dynamic_properties.clone(),
-                    dynamic_order: storage.dynamic_order.clone(),
+                    native_dynamic_properties: None,
+                    native_dynamic_next_order: None,
+                    dynamic_order,
                     dynamic_debug_labels: storage.dynamic_debug_labels.clone(),
                 }),
             }),
@@ -620,17 +756,26 @@ impl ObjectRef {
     /// layout and remains true for uninitialized typed slots.
     #[must_use]
     pub fn has_dynamic_property(&self, name: &str) -> bool {
-        self.cell
-            .storage
-            .borrow()
-            .dynamic_properties
-            .contains_key(name)
+        let storage = self.cell.storage.borrow();
+        storage.dynamic_properties.contains_key(name)
+            || storage
+                .native_dynamic_properties
+                .as_ref()
+                .and_then(|properties| properties.get(name))
+                .is_some_and(|cell| cell.slot.initialized != 0)
     }
 
     /// Returns whether this identity owns any actual dynamic properties.
     #[must_use]
     pub fn has_dynamic_properties(&self) -> bool {
-        !self.cell.storage.borrow().dynamic_properties.is_empty()
+        let storage = self.cell.storage.borrow();
+        !storage.dynamic_properties.is_empty()
+            || storage
+                .native_dynamic_properties
+                .as_ref()
+                .is_some_and(|properties| {
+                    properties.values().any(|cell| cell.slot.initialized != 0)
+                })
     }
 
     /// Attempts to read a property value without panicking on nested borrows.
@@ -644,7 +789,6 @@ impl ObjectRef {
     /// Writes a property value.
     pub fn set_property(&self, name: impl Into<String>, value: Value) {
         self.cell.storage.borrow_mut().set(name.into(), value);
-        self.bump_property_epoch();
     }
 
     /// Writes a property while borrowing its already-published name.
@@ -652,7 +796,6 @@ impl ObjectRef {
     /// materializes a `String` for the side map.
     pub fn set_property_borrowed(&self, name: &str, value: Value) {
         self.cell.storage.borrow_mut().set_borrowed(name, value);
-        self.bump_property_epoch();
     }
 
     /// Attempts to write a property value without panicking on nested borrows.
@@ -662,15 +805,10 @@ impl ObjectRef {
         value: Value,
     ) -> Result<(), BorrowMutError> {
         let name = name.into();
-        let result = self
-            .cell
+        self.cell
             .storage
             .try_borrow_mut()
-            .map(|mut storage| storage.set(name, value));
-        if result.is_ok() {
-            self.bump_property_epoch();
-        }
-        result
+            .map(|mut storage| storage.set(name, value))
     }
 
     /// Runs `f` with a borrowed view of a property value, preferring
@@ -727,7 +865,6 @@ impl ObjectRef {
             // `f` cannot remove the slot; restore defensively regardless.
             storage.set(name.to_owned(), value);
         }
-        self.bump_property_epoch();
         Ok(Some(result))
     }
 
@@ -746,11 +883,7 @@ impl ObjectRef {
 
     /// Removes a property value, returning whether it existed.
     pub fn unset_property(&self, name: &str) -> bool {
-        let removed = self.cell.storage.borrow_mut().unset(name);
-        if removed {
-            self.bump_property_epoch();
-        }
-        removed
+        self.cell.storage.borrow_mut().unset(name)
     }
 
     /// Clears all stored properties as an internal GC action.
@@ -764,9 +897,11 @@ impl ObjectRef {
             *slot = None;
         }
         storage.dynamic_properties.clear();
+        debug_assert!(
+            storage.native_dynamic_properties.is_none(),
+            "native dynamic owners must be retired before cold GC clearing"
+        );
         storage.dynamic_order.clear();
-        drop(storage);
-        self.bump_property_epoch();
     }
 
     /// Releases the PHP-visible object handle after the VM proves the object has
@@ -860,33 +995,87 @@ impl ObjectRef {
             .cloned()
     }
 
-    /// Moves the complete declared-slot vector out for request-native
-    /// promotion. No Rust property value remains authoritative afterwards.
-    pub fn take_declared_slots_for_native(&self, layout_id: u64) -> Option<Vec<Option<Value>>> {
+    /// Moves every declared and dynamic Rust property value out for
+    /// request-native promotion. No Rust property value remains authoritative
+    /// afterwards; dynamic names and their insertion order stay object-owned.
+    pub fn take_property_slots_for_native(&self, layout_id: u64) -> Option<RustPropertySlots> {
         let mut storage = self.cell.storage.borrow_mut();
-        if storage.layout.layout_id != layout_id || storage.native_declared_slots.is_some() {
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_some()
+            || storage.native_dynamic_properties.is_some()
+            || storage.native_dynamic_next_order.is_some()
+        {
             return None;
         }
-        Some(std::mem::take(&mut storage.declared_slots))
+        Some((
+            std::mem::take(&mut storage.declared_slots),
+            std::mem::take(&mut storage.dynamic_properties),
+        ))
     }
 
-    /// Installs the authoritative request-native declared cells after every
-    /// Rust slot value has been moved into an encoded owner.
+    /// Installs all authoritative request-native property cells after every
+    /// Rust value has been moved into an encoded owner.
+    pub fn install_native_property_slots(
+        &self,
+        layout_id: u64,
+        declared: Box<[NativeDeclaredPropertySlot]>,
+        dynamic: NativeDynamicPropertySlots,
+    ) -> Result<
+        (),
+        (
+            Box<[NativeDeclaredPropertySlot]>,
+            NativeDynamicPropertySlots,
+        ),
+    > {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_some()
+            || storage.native_dynamic_properties.is_some()
+            || storage.native_dynamic_next_order.is_some()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+            || declared.len() != storage.layout.slot_names.len()
+            || dynamic.iter().any(|(name, cell)| {
+                cell.slot.initialized != 0 && !storage.dynamic_order.contains(name)
+            })
+        {
+            return Err((declared, dynamic));
+        }
+        let mut dynamic = dynamic;
+        for (order, name) in storage.dynamic_order.iter().enumerate() {
+            if let Some(cell) = dynamic.get_mut(name)
+                && cell.slot.initialized != 0
+            {
+                cell.insertion_order = order as u64;
+            }
+        }
+        let next_order = dynamic
+            .values()
+            .filter(|cell| cell.slot.initialized != 0)
+            .map(|cell| cell.insertion_order)
+            .max()
+            .map_or(0, |order| order.saturating_add(1));
+        let mut order_clock = Box::new(next_order);
+        let order_clock_pointer = std::ptr::from_mut(&mut *order_clock);
+        for cell in dynamic.values_mut() {
+            cell.next_insertion_order = order_clock_pointer;
+        }
+        storage.native_declared_slots = Some(declared);
+        storage.native_dynamic_properties = Some(dynamic);
+        storage.native_dynamic_next_order = Some(order_clock);
+        Ok(())
+    }
+
+    /// Installs prepared declared slots for a newly allocated object. Fresh
+    /// objects have no dynamic properties, but publish an empty native map so
+    /// all property values still have one representation.
     pub fn install_native_declared_slots(
         &self,
         layout_id: u64,
         slots: Box<[NativeDeclaredPropertySlot]>,
     ) -> bool {
-        let mut storage = self.cell.storage.borrow_mut();
-        if storage.layout.layout_id != layout_id
-            || storage.native_declared_slots.is_some()
-            || !storage.declared_slots.is_empty()
-            || slots.len() != storage.layout.slot_names.len()
-        {
-            return false;
-        }
-        storage.native_declared_slots = Some(slots);
-        true
+        self.install_native_property_slots(layout_id, slots, HashMap::new())
+            .is_ok()
     }
 
     /// Returns the stable native declared-slot base guarded by the layout ID.
@@ -903,104 +1092,370 @@ impl ObjectRef {
         Some((slots.as_ptr().cast_mut(), slots.len()))
     }
 
-    /// Copies authoritative native declared-slot records for a prepared
-    /// shallow clone. The caller must retain each initialized encoded value
-    /// before installing the copy in another object identity.
+    /// Reads one authoritative native dynamic-property cell. The outer
+    /// `Option` denotes whether native property storage is active; the inner
+    /// value denotes whether the dynamic name exists.
     #[must_use]
-    pub fn clone_native_declared_slots(
+    pub fn native_dynamic_property_slot(
         &self,
         layout_id: u64,
-    ) -> Option<Box<[NativeDeclaredPropertySlot]>> {
+        name: &str,
+    ) -> Option<Option<NativeDeclaredPropertySlot>> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_none()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        Some(
+            storage
+                .native_dynamic_properties
+                .as_ref()?
+                .get(name)
+                .and_then(|cell| (cell.slot.initialized != 0).then_some(cell.slot)),
+        )
+    }
+
+    /// Locates one stable authoritative native dynamic-property cell.
+    ///
+    /// The returned pointer remains valid across value mutation, `unset`,
+    /// reinsertion, and rehashing of the name index. It must not be retained
+    /// across destruction of the object.
+    #[must_use]
+    pub fn native_dynamic_property_slot_location(
+        &self,
+        layout_id: u64,
+        name: &str,
+    ) -> Option<Option<*mut NativeDeclaredPropertySlot>> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_none()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        Some(
+            storage
+                .native_dynamic_properties
+                .as_ref()?
+                .get(name)
+                .map(|cell| std::ptr::from_ref(&cell.slot).cast_mut()),
+        )
+    }
+
+    /// Returns whether a property name belongs to the immutable declared
+    /// layout while verifying that native property storage is authoritative.
+    #[must_use]
+    pub fn native_property_name_is_declared(&self, layout_id: u64, name: &str) -> Option<bool> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id
+            || storage.native_declared_slots.is_none()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        Some(storage.layout.slot_by_name.contains_key(name))
+    }
+
+    /// Returns exact class metadata for `__isset`, when this is a real runtime
+    /// object rather than a synthetic formatter view.
+    #[must_use]
+    pub fn native_has_magic_isset(&self) -> Option<bool> {
+        self.cell.storage.borrow().native_magic_isset
+    }
+
+    /// Resolves a stable dynamic-property cell, reserving an uninitialized
+    /// tombstone when the name has never existed. Reservation is not
+    /// PHP-visible and does not consume an insertion-order number.
+    #[must_use]
+    pub fn ensure_native_dynamic_property_slot_location(
+        &self,
+        layout_id: u64,
+        name: &str,
+    ) -> Option<*mut NativeDeclaredPropertySlot> {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id
+            || storage.layout.slot_by_name.contains_key(name)
+            || storage.native_declared_slots.is_none()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        let order_clock = storage.native_dynamic_next_order.as_mut()?;
+        let order_clock_pointer = std::ptr::from_mut(&mut **order_clock);
+        let properties = storage.native_dynamic_properties.as_mut()?;
+        let cell = properties.entry(name.to_owned()).or_insert_with(|| {
+            let mut cell = NativeDynamicPropertyCell::new(NativeDeclaredPropertySlot::default(), 0);
+            cell.next_insertion_order = order_clock_pointer;
+            Box::new(cell)
+        });
+        Some(std::ptr::from_mut(&mut cell.slot))
+    }
+
+    /// Replaces or inserts one authoritative native dynamic-property owner.
+    /// On rejection the supplied owner is returned unchanged to its caller.
+    pub fn set_native_dynamic_property(
+        &self,
+        layout_id: u64,
+        name: String,
+        value: NativeDeclaredPropertySlot,
+    ) -> Result<Option<NativeDeclaredPropertySlot>, NativeDeclaredPropertySlot> {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id
+            || storage.layout.slot_by_name.contains_key(&name)
+            || storage.native_declared_slots.is_none()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return Err(value);
+        }
+        let active = storage
+            .native_dynamic_properties
+            .as_ref()
+            .and_then(|properties| properties.get(&name))
+            .is_some_and(|cell| cell.slot.initialized != 0);
+        let Some(order_clock) = storage.native_dynamic_next_order.as_mut() else {
+            return Err(value);
+        };
+        let order_clock_pointer = std::ptr::from_mut(&mut **order_clock);
+        let insertion_order = if active {
+            None
+        } else {
+            let order = **order_clock;
+            **order_clock = order.saturating_add(1);
+            Some(order)
+        };
+        if !active {
+            storage.dynamic_order.retain(|entry| entry != &name);
+            storage.dynamic_order.push(name.clone());
+        }
+        let properties = storage
+            .native_dynamic_properties
+            .as_mut()
+            .expect("native dynamic storage checked above");
+        let cell = properties.entry(name).or_insert_with(|| {
+            Box::new(NativeDynamicPropertyCell::new(
+                NativeDeclaredPropertySlot::default(),
+                0,
+            ))
+        });
+        let previous = (cell.slot.initialized != 0).then_some(cell.slot);
+        cell.slot = value;
+        if let Some(order) = insertion_order {
+            cell.insertion_order = order;
+        }
+        cell.next_insertion_order = order_clock_pointer;
+        Ok(previous)
+    }
+
+    /// Removes one authoritative native dynamic-property owner. The outer
+    /// `Option` denotes whether native storage was available.
+    pub fn unset_native_dynamic_property(
+        &self,
+        layout_id: u64,
+        name: &str,
+    ) -> Option<Option<NativeDeclaredPropertySlot>> {
+        let mut storage = self.cell.storage.borrow_mut();
+        if storage.layout.layout_id != layout_id
+            || storage.layout.slot_by_name.contains_key(name)
+            || storage.native_declared_slots.is_none()
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        let cell = storage.native_dynamic_properties.as_mut()?.get_mut(name);
+        let removed = cell.and_then(|cell| {
+            (cell.slot.initialized != 0).then(|| {
+                let previous = cell.slot;
+                cell.slot = NativeDeclaredPropertySlot::default();
+                previous
+            })
+        });
+        if removed.is_some() {
+            storage.dynamic_order.retain(|entry| entry != name);
+            storage.dynamic_debug_labels.remove(name);
+        }
+        Some(removed)
+    }
+
+    /// Borrows the complete authoritative property comparison view.
+    ///
+    /// Exact native comparison handlers use this to traverse class metadata,
+    /// property names, and encoded values without reconstructing a Rust
+    /// [`Value`] graph. Declared and dynamic values are both encoded native
+    /// owners, while their object-owned names preserve PHP comparison order.
+    pub fn with_native_comparison_view<R>(
+        &self,
+        layout_id: u64,
+        compare: impl FnOnce(
+            &str,
+            &[String],
+            &[NativeDeclaredPropertySlot],
+            &[String],
+            &NativeDynamicPropertySlots,
+        ) -> R,
+    ) -> Option<R> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id || !storage.dynamic_properties.is_empty() {
+            return None;
+        }
+        let slots = storage.native_declared_slots.as_deref()?;
+        let dynamic = storage.native_dynamic_properties.as_ref()?;
+        let mut dynamic_order: Vec<String> = dynamic
+            .iter()
+            .filter(|(_, cell)| cell.slot.initialized != 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+        dynamic_order.sort_by_key(|name| {
+            dynamic
+                .get(name)
+                .map_or(u64::MAX, |cell| cell.insertion_order)
+        });
+        (slots.len() == storage.layout.slot_names.len()).then(|| {
+            compare(
+                storage.class_name.as_ref(),
+                storage.layout.slot_names.as_slice(),
+                slots,
+                dynamic_order.as_slice(),
+                dynamic,
+            )
+        })
+    }
+
+    /// Borrows the authoritative property sequence using PHP's object-to-array
+    /// key encoding. Uninitialized declared properties are retained in the
+    /// aligned slot slice so the native caller can omit them without
+    /// reconstructing a Rust [`Value`] property snapshot.
+    pub fn with_native_array_cast_view<R>(
+        &self,
+        layout_id: u64,
+        cast: impl FnOnce(
+            &[String],
+            &[NativeDeclaredPropertySlot],
+            &[String],
+            &NativeDynamicPropertySlots,
+        ) -> R,
+    ) -> Option<R> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id || !storage.dynamic_properties.is_empty() {
+            return None;
+        }
+        let slots = storage.native_declared_slots.as_deref()?;
+        let dynamic = storage.native_dynamic_properties.as_ref()?;
+        let mut dynamic_order: Vec<String> = dynamic
+            .iter()
+            .filter(|(_, cell)| cell.slot.initialized != 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+        dynamic_order.sort_by_key(|name| {
+            dynamic
+                .get(name)
+                .map_or(u64::MAX, |cell| cell.insertion_order)
+        });
+        (slots.len() == storage.layout.array_cast_names.len()).then(|| {
+            cast(
+                storage.layout.array_cast_names.as_slice(),
+                slots,
+                dynamic_order.as_slice(),
+                dynamic,
+            )
+        })
+    }
+
+    /// Copies every authoritative native property record for a prepared
+    /// shallow clone. The caller must retain each encoded value before
+    /// installing the copy in another object identity.
+    #[must_use]
+    pub fn clone_native_property_slots(
+        &self,
+        layout_id: u64,
+    ) -> Option<(
+        Box<[NativeDeclaredPropertySlot]>,
+        NativeDynamicPropertySlots,
+    )> {
         let storage = self.cell.storage.borrow();
         if storage.layout.layout_id != layout_id {
             return None;
         }
-        Some(storage.native_declared_slots.as_ref()?.clone())
+        Some((
+            storage.native_declared_slots.as_ref()?.clone(),
+            storage.native_dynamic_properties.as_ref()?.clone(),
+        ))
     }
 
-    /// Removes the native cells before a cold boundary reconstructs Rust
-    /// values. Until [`Self::restore_declared_slots_from_native`] succeeds,
-    /// the object has no declared-slot representation and must stay cold.
-    pub fn take_native_declared_slots(
+    /// Removes all native property cells before a cold boundary reconstructs
+    /// Rust values. Until [`Self::restore_property_slots_from_native`]
+    /// succeeds, the object has no property-value representation.
+    pub fn take_native_property_slots(
         &self,
         layout_id: u64,
-    ) -> Option<Box<[NativeDeclaredPropertySlot]>> {
+    ) -> Option<(
+        Box<[NativeDeclaredPropertySlot]>,
+        NativeDynamicPropertySlots,
+    )> {
         let mut storage = self.cell.storage.borrow_mut();
-        if storage.layout.layout_id != layout_id || !storage.declared_slots.is_empty() {
+        if storage.layout.layout_id != layout_id
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+            || storage.native_declared_slots.is_none()
+            || storage.native_dynamic_properties.is_none()
+            || storage.native_dynamic_next_order.is_none()
+        {
             return None;
         }
-        storage.native_declared_slots.take()
+        let dynamic = storage
+            .native_dynamic_properties
+            .take()
+            .expect("native dynamic slots checked above");
+        let mut dynamic_order: Vec<String> = dynamic
+            .iter()
+            .filter(|(_, cell)| cell.slot.initialized != 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+        dynamic_order.sort_by_key(|name| {
+            dynamic
+                .get(name)
+                .map_or(u64::MAX, |cell| cell.insertion_order)
+        });
+        storage.dynamic_order = dynamic_order;
+        storage.native_dynamic_next_order = None;
+        Some((
+            storage
+                .native_declared_slots
+                .take()
+                .expect("native declared slots checked above"),
+            dynamic,
+        ))
     }
 
-    /// Restores the cold Rust declared-slot vector after native owners were
-    /// decoded and released.
-    pub fn restore_declared_slots_from_native(
+    /// Restores all cold Rust property values after native owners were decoded
+    /// and released.
+    pub fn restore_property_slots_from_native(
         &self,
         layout_id: u64,
-        slots: Vec<Option<Value>>,
+        declared: Vec<Option<Value>>,
+        dynamic: HashMap<String, Value>,
     ) -> bool {
         let mut storage = self.cell.storage.borrow_mut();
         if storage.layout.layout_id != layout_id
             || storage.native_declared_slots.is_some()
+            || storage.native_dynamic_properties.is_some()
+            || storage.native_dynamic_next_order.is_some()
             || !storage.declared_slots.is_empty()
-            || slots.len() != storage.layout.slot_names.len()
+            || !storage.dynamic_properties.is_empty()
+            || declared.len() != storage.layout.slot_names.len()
         {
             return false;
         }
-        storage.declared_slots = slots;
+        storage.declared_slots = declared;
+        storage.dynamic_properties = dynamic;
         true
-    }
-
-    /// Reads a declared slot directly when the layout guard matches.
-    /// Returns `None` on guard mismatch or an unset slot; callers fall back
-    /// to the generic name-keyed path.
-    #[must_use]
-    pub fn get_declared_slot(&self, slot: u32, layout_epoch: u64) -> Option<Value> {
-        let storage = self.cell.storage.borrow();
-        if storage.layout.layout_id != layout_epoch {
-            return None;
-        }
-        let value = storage.declared_slots.get(slot as usize)?.clone();
-        if value.is_some() {
-            crate::layout_stats::record_object_declared_slot_read();
-        }
-        value
-    }
-
-    /// Writes a declared slot directly when the layout guard matches.
-    /// Returns false on guard mismatch so callers fall back to the generic
-    /// name-keyed path.
-    pub fn set_declared_slot(&self, slot: u32, layout_epoch: u64, value: Value) -> bool {
-        let mut storage = self.cell.storage.borrow_mut();
-        if storage.layout.layout_id != layout_epoch {
-            return false;
-        }
-        let Some(slot_value) = storage.declared_slots.get_mut(slot as usize) else {
-            return false;
-        };
-        *slot_value = Some(value);
-        drop(storage);
-        self.bump_property_epoch();
-        crate::layout_stats::record_object_declared_slot_write();
-        true
-    }
-
-    /// Monotonic property-mutation epoch used by native declared-slot caches.
-    #[must_use]
-    pub fn property_epoch(&self) -> u64 {
-        self.cell.property_epoch.get()
-    }
-
-    /// Stable address of [`Self::property_epoch`] for request-native guards.
-    #[must_use]
-    pub fn property_epoch_address(&self) -> *const u64 {
-        self.cell.property_epoch.as_ptr().cast_const()
-    }
-
-    fn bump_property_epoch(&self) {
-        self.cell
-            .property_epoch
-            .set(self.cell.property_epoch.get().wrapping_add(1).max(1));
     }
 }
 

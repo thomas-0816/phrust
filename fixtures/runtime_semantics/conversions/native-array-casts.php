@@ -1,5 +1,12 @@
 <?php
 
+class NativeArrayCastFixture
+{
+    public string $public = "public";
+    protected string $protected = "protected";
+    private string $private = "private";
+}
+
 function native_array_casts(): array
 {
     $nothing = null;
@@ -15,7 +22,24 @@ function native_array_casts(): array
     $copy = (array) $source;
     $copy[] = 3;
 
-    return [$empty, $integerArray, $floatArray, $stringArray, $source, $copy];
+    $object = new NativeArrayCastFixture();
+    $objectArray = (array) $object;
+    $numericObject = new stdClass();
+    $numericObject->{7} = "seven";
+    $numericArray = (array) $numericObject;
+
+    return [
+        $empty,
+        $integerArray,
+        $floatArray,
+        $stringArray,
+        $source,
+        $copy,
+        $objectArray["public"],
+        $objectArray["\0*\0protected"],
+        $objectArray["\0NativeArrayCastFixture\0private"],
+        $numericArray[7],
+    ];
 }
 
 $result = null;

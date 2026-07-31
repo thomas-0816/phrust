@@ -12,9 +12,11 @@ python3 - <<'PY'
 from pathlib import Path
 
 root = Path.cwd()
-ops = (root / "crates/php_vm/src/vm/jit_abi/runtime_ops.rs").read_text(encoding="utf-8")
+ops = (root / "crates/php_vm/src/vm/jit_abi/exact_runtime_ops.rs").read_text(encoding="utf-8")
 native = (root / "crates/php_runtime/src/native_ops.rs").read_text(encoding="utf-8")
 
+if (root / "crates/php_vm/src/vm/jit_abi/runtime_ops.rs").exists():
+    raise SystemExit("superseded generic runtime-ops module returned")
 if "fn native_property_name(" in ops or "target.property.clone()" in ops:
     raise SystemExit("native property execution regained request-local name copies")
 if "NonNull::new(out)" in ops:

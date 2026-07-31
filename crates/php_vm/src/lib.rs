@@ -17,6 +17,8 @@ mod error;
 mod include;
 #[doc(hidden)]
 mod inline_cache;
+#[path = "vm/jit_abi/native/mod.rs"]
+mod native_exact;
 #[doc(hidden)]
 mod tiering;
 #[doc(hidden)]

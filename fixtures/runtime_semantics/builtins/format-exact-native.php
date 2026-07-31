@@ -6,8 +6,47 @@ function run_exact_format(): array
     $vectorFormatted = vsprintf('%2$s/%1$03d', [5, 'value']);
     $printed = printf('[%s=%d]', 'count', 3);
     $vectorPrinted = vprintf('<%s:%02d>\n', ['id', 4]);
+    $wideFormatted = sprintf(
+        '%s:%s:%s:%s:%s:%s:%s',
+        'one',
+        'two',
+        'three',
+        'four',
+        'five',
+        'six',
+        'seven',
+    );
+    $widePrinted = printf(
+        '{%s,%s,%s,%s,%s,%s,%s}',
+        'one',
+        'two',
+        'three',
+        'four',
+        'five',
+        'six',
+        'seven',
+    );
+    $integerFormatted = sprintf('%d', INF);
+    $castedInfinity = (int) INF;
+    $castedLargeFloat = (int) 1.0e30;
+    $groupedNumber = number_format(1234567.875, 2, ',', '.');
+    $numericString = number_format('1234.5', 3, '.', '');
+    $defaultNumber = number_format(1234);
 
-    return [$formatted, $vectorFormatted, $printed, $vectorPrinted];
+    return [
+        $formatted,
+        $vectorFormatted,
+        $printed,
+        $vectorPrinted,
+        $wideFormatted,
+        $widePrinted,
+        $integerFormatted,
+        $castedInfinity,
+        $castedLargeFloat,
+        $groupedNumber,
+        $numericString,
+        $defaultNumber,
+    ];
 }
 
 $result = null;

@@ -1377,6 +1377,32 @@ fn property_dimensions_assignment_append_and_unset_lower_to_dedicated_ir() {
 }
 
 #[test]
+fn dynamic_property_dimensions_remain_atomic_through_php_ir() {
+    let frontend = analyze_source(
+        "<?php function run($object, $property, $a, $b) { $object->$property[$a][$b] = 7; $object->$property[] = 8; unset($object->$property[$a]); }",
+    );
+    let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+    assert!(result.verification.is_ok(), "{:#?}", result.verification);
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let snapshot = result.unit.to_snapshot_text();
+    assert!(
+        snapshot.contains("assign_dynamic_property_dim r"),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("append_dynamic_property_dim r"),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("unset_dynamic_property_dim r"),
+        "{snapshot}"
+    );
+    assert!(!snapshot.contains("fetch_dynamic_property r"), "{snapshot}");
+    assert!(!snapshot.contains("array_insert"), "{snapshot}");
+}
+
+#[test]
 fn property_dimension_compound_assignment_lowers_through_fetch_binary_and_writeback() {
     let frontend = analyze_source(
         "<?php class C { private $cache = []; public function run($group, $key, $offset) { $this->cache[$group][$key] += $offset; $this->cache[$group][$key] -= $offset; } }",
@@ -2378,7 +2404,8 @@ fn dim_fetch_lowers_binary_index_expression() {
     assert!(snapshot.contains("local:1 $counter"), "{snapshot}");
     assert!(snapshot.contains("binary r"), "{snapshot}");
     assert!(snapshot.contains("fetch_dim r"), "{snapshot}");
-    assert!(snapshot.contains("mode=read"), "{snapshot}");
+    assert!(snapshot.contains("mode=lvalue"), "{snapshot}");
+    assert!(snapshot.contains("by_ref_dim=local:0["), "{snapshot}");
 }
 
 #[test]

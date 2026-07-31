@@ -214,6 +214,15 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
             remap_operand_constants(object, remap);
             remap_operand_constants(property, remap);
         }
+        InstructionKind::UnsetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(property, remap);
+            remap_operands_constants(dims, remap);
+        }
         InstructionKind::Binary { lhs, rhs, .. }
         | InstructionKind::Compare { lhs, rhs, .. }
         | InstructionKind::DynamicInstanceOf {
@@ -339,6 +348,18 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         } => {
             remap_operand_constants(object, remap);
             remap_operand_constants(property, remap);
+            remap_operand_constants(value, remap);
+        }
+        InstructionKind::AssignDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            value,
+            ..
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(property, remap);
+            remap_operands_constants(dims, remap);
             remap_operand_constants(value, remap);
         }
         InstructionKind::IssetPropertyDim { object, dims, .. }

@@ -13,12 +13,12 @@ macro_rules! diagnostic_helper {
             debug_assert!(!runtime.is_null());
             // SAFETY: diagnostic baseline helpers execute synchronously and
             // use the same caller-owned output slot as the production ABI.
-            unsafe { native_cold_context(runtime).enter_runtime_helper($helper) };
+            unsafe { active_baseline_cold_context().enter_runtime_helper($helper) };
             let result = super::$target(runtime, $($name,)* out);
             if result == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 {
                 // SAFETY: diagnostic wrappers receive a live request pointer
                 // and run synchronously around the production baseline helper.
-                let context = unsafe { native_cold_context(runtime) };
+                let context = unsafe { active_baseline_cold_context() };
                 if context.diagnostic.is_none() {
                     record_native_helper_failure(
                         context,
@@ -27,7 +27,7 @@ macro_rules! diagnostic_helper {
                 }
             }
             // SAFETY: the target returned before the request can be destroyed.
-            unsafe { native_cold_context(runtime).exit_runtime_helper($helper) };
+            unsafe { active_baseline_cold_context().exit_runtime_helper($helper) };
             result
         }
     };
@@ -40,10 +40,10 @@ macro_rules! diagnostic_helper {
             debug_assert!(!runtime.is_null());
             // SAFETY: diagnostic helpers receive the same live request pointer
             // as their production target and execute synchronously.
-            unsafe { native_cold_context(runtime).enter_runtime_helper($helper) };
+            unsafe { active_baseline_cold_context().enter_runtime_helper($helper) };
             let result = super::$target(runtime, $($name),*);
             // SAFETY: the target returned before the request can be destroyed.
-            unsafe { native_cold_context(runtime).exit_runtime_helper($helper) };
+            unsafe { active_baseline_cold_context().exit_runtime_helper($helper) };
             result
         }
     };
@@ -80,25 +80,25 @@ diagnostic_helper!(
 );
 
 diagnostic_helper!(
-    jit_native_unary_diagnostic_abi => jit_native_unary_abi,
+    jit_baseline_native_unary_diagnostic_abi => jit_baseline_native_unary_abi,
     "unary",
     (op: u32, src: i64) -> value_out
 );
 
 diagnostic_helper!(
-    jit_native_binary_diagnostic_abi => jit_native_binary_abi,
+    jit_baseline_native_binary_diagnostic_abi => jit_baseline_native_binary_abi,
     "binary",
     (op: u32, lhs: i64, rhs: i64, function: i64, continuation: i64) -> value_out
 );
 
 diagnostic_helper!(
-    jit_native_compare_diagnostic_abi => jit_native_compare_abi,
+    jit_baseline_native_compare_diagnostic_abi => jit_baseline_native_compare_abi,
     "compare",
     (op: u32, lhs: i64, rhs: i64) -> value_out
 );
 
 diagnostic_helper!(
-    jit_native_cast_diagnostic_abi => jit_native_cast_abi,
+    jit_baseline_native_cast_diagnostic_abi => jit_baseline_native_cast_abi,
     "cast",
     (op: u32, src: i64) -> value_out
 );

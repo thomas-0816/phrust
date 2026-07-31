@@ -774,6 +774,17 @@ fn verify_instruction(
             verify_operand(object, function, unit, errors);
             verify_operand(property, function, unit, errors);
         }
+        InstructionKind::UnsetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+        } => {
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
+        }
         InstructionKind::FetchStaticProperty { dst, .. }
         | InstructionKind::IssetStaticProperty { dst, .. }
         | InstructionKind::EmptyStaticProperty { dst, .. }
@@ -833,6 +844,22 @@ fn verify_instruction(
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
             verify_operand(property, function, unit, errors);
+            verify_operand(value, function, unit, errors);
+        }
+        InstructionKind::AssignDynamicPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+            value,
+            ..
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
             verify_operand(value, function, unit, errors);
         }
         InstructionKind::AssignStaticProperty { dst, value, .. } => {
@@ -1397,6 +1424,17 @@ pub fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) 
             operand_register_uses(object, uses);
             operand_register_uses(property, uses);
         }
+        InstructionKind::UnsetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+        } => {
+            operand_register_uses(object, uses);
+            operand_register_uses(property, uses);
+            for dim in dims {
+                operand_register_uses(dim, uses);
+            }
+        }
         InstructionKind::IssetDynamicPropertyDim {
             object,
             property,
@@ -1545,6 +1583,20 @@ pub fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) 
             operand_register_uses(property, uses);
             operand_register_uses(value, uses);
         }
+        InstructionKind::AssignDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            value,
+            ..
+        } => {
+            operand_register_uses(object, uses);
+            operand_register_uses(property, uses);
+            for dim in dims {
+                operand_register_uses(dim, uses);
+            }
+            operand_register_uses(value, uses);
+        }
         InstructionKind::AssignStaticProperty { value, .. } => operand_register_uses(value, uses),
         InstructionKind::AssignDynamicStaticProperty {
             class_name, value, ..
@@ -1661,6 +1713,7 @@ pub fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) 
         | InstructionKind::AssignProperty { dst, .. }
         | InstructionKind::AssignPropertyDim { dst, .. }
         | InstructionKind::AssignDynamicProperty { dst, .. }
+        | InstructionKind::AssignDynamicPropertyDim { dst, .. }
         | InstructionKind::AssignStaticProperty { dst, .. }
         | InstructionKind::AssignDynamicStaticProperty { dst, .. }
         | InstructionKind::NewArray { dst }
@@ -1719,6 +1772,7 @@ pub fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) 
         | InstructionKind::UnsetProperty { .. }
         | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
+        | InstructionKind::UnsetDynamicPropertyDim { .. }
         | InstructionKind::UnsetStaticPropertyDim { .. }
         | InstructionKind::BindReferenceFromStaticPropertyDim { .. }
         | InstructionKind::ArrayInsert { .. }
@@ -1769,6 +1823,20 @@ fn terminator_targets(kind: &TerminatorKind, targets: &mut Vec<BlockId>) {
 fn call_args_register_uses(args: &[IrCallArg], uses: &mut Vec<RegId>) {
     for arg in args {
         operand_register_uses(&arg.value, uses);
+        if let Some(target) = &arg.by_ref_dim {
+            for dimension in &target.dims {
+                operand_register_uses(dimension, uses);
+            }
+        }
+        if let Some(target) = &arg.by_ref_property {
+            operand_register_uses(&target.object, uses);
+        }
+        if let Some(target) = &arg.by_ref_property_dim {
+            operand_register_uses(&target.object, uses);
+            for dimension in &target.dims {
+                operand_register_uses(dimension, uses);
+            }
+        }
     }
 }
 

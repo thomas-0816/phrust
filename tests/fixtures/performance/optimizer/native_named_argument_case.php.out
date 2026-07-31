@@ -1,0 +1,6 @@
+Unknown named parameter $VALUE
+array (
+  'X' => 1,
+  'x' => 2,
+)
+Unknown named parameter $STRING

@@ -109,6 +109,7 @@ removes both members of every fallback/borrow pair together.
 | mbstring substitution | `mb_substitute_character`, `mb_substitute_character_slot` |
 | MySQL | `mysql_state` |
 | PostgreSQL | `postgres_state` |
+| BCMath default scale | `bcmath_scale`, `bcmath_scale_slot` |
 
 The `request-state-boundaries` gate derives this field list from the struct and
 fails when a field is added without a concrete removal entry. It also fails if

@@ -89,8 +89,6 @@ pub(super) fn property_target(
         property: "value".to_owned(),
         storage_name: "value".to_owned(),
         layout: property_layout(class_id),
-        object_layout_epoch: 0,
-        declared_slot: None,
     })
 }
 
@@ -116,8 +114,6 @@ pub(super) fn property_assign_target(
             has_magic_set: false,
             dynamic_property_fallback: false,
         },
-        object_layout_epoch: 0,
-        declared_slot: Some(0),
         slot_write_eligible: true,
     })
 }

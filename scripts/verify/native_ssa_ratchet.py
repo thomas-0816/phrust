@@ -27,7 +27,7 @@ def main() -> int:
         "crates/php_jit/src/region_ir/ownership.rs",
         "crates/php_jit/src/region_ir/opt/executable.rs",
         "crates/php_jit/src/cranelift_lowering/value_lowering.rs",
-        "crates/php_vm/src/vm/jit_abi/root_index.rs",
+        "crates/php_vm/src/vm/jit_abi/baseline_root_index.rs",
     )
     for relative in required:
         if not (ROOT / relative).is_file():
@@ -37,9 +37,10 @@ def main() -> int:
         lowering = read("crates/php_jit/src/cranelift_lowering.rs")
         executable = read("crates/php_jit/src/cranelift_lowering/executable_region.rs")
         tests = read("crates/php_jit/src/cranelift_lowering/tests.rs")
-        root_index = read("crates/php_vm/src/vm/jit_abi/root_index.rs")
+        root_index = read("crates/php_vm/src/vm/jit_abi/baseline_root_index.rs")
         runtime = read("crates/php_vm/src/vm/jit_abi.rs")
-        runtime_ops = read("crates/php_vm/src/vm/jit_abi/runtime_ops.rs")
+        runtime_ops = read("crates/php_vm/src/vm/jit_abi/exact_runtime_ops.rs")
+        exact_call_dispatch = read("crates/php_vm/src/vm/jit_abi/exact_call_dispatch.rs")
         optimizer = read("crates/php_jit/src/region_ir/opt/executable.rs")
         ownership = read("crates/php_jit/src/region_ir/ownership.rs")
         value_flow = read("crates/php_jit/src/region_ir/value_flow.rs")
@@ -156,11 +157,27 @@ def main() -> int:
             )
         if "jit_native_value_lifecycle_abi" in runtime_ops:
             failures.append("deleted combined lifecycle runtime ABI returned")
+        if "RequestRootIndex" in runtime_ops or "RequestRootIndex" in exact_call_dispatch:
+            failures.append(
+                "baseline Rust-Value root index leaked into an exact optimizing runtime surface"
+            )
+        if (ROOT / "crates/php_vm/src/vm/jit_abi/root_index.rs").exists():
+            failures.append("superseded generic root-index module returned")
+        if (ROOT / "crates/php_vm/src/vm/jit_abi/runtime_ops.rs").exists():
+            failures.append("superseded generic runtime-ops module returned")
 
     if not failures:
         commands = (
             ["cargo", "test", "-q", "-p", "php_jit", "--lib", "optimizing_"],
-            ["cargo", "test", "-q", "-p", "php_vm", "--lib", "vm::jit_abi::root_index"],
+            [
+                "cargo",
+                "test",
+                "-q",
+                "-p",
+                "php_vm",
+                "--lib",
+                "vm::jit_abi::baseline_root_index",
+            ],
         )
         for command in commands:
             completed = subprocess.run(command, cwd=ROOT, check=False)

@@ -9,6 +9,9 @@ function native_scalar_casts(): array
     $nothing = null;
     $fraction = -19.75;
     $negativeZero = -0.0;
+    $emptyArray = [];
+    $filledArray = [1];
+    $integerReference = &$integer;
 
     return [
         (float) $integer,
@@ -22,6 +25,16 @@ function native_scalar_casts(): array
         (int) 19.75,
         (bool) $fraction,
         (bool) $negativeZero,
+        (int) $emptyArray,
+        (int) $filledArray,
+        (float) $emptyArray,
+        (float) $filledArray,
+        (string) $integer,
+        (string) $fraction,
+        (string) $truth,
+        (string) $falsehood,
+        (string) $nothing,
+        (string) $integerReference,
     ];
 }
 

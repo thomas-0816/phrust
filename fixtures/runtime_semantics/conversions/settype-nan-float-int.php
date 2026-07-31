@@ -34,22 +34,27 @@ $a = [1, 2];
 settype($a, "string");
 var_dump($a);
 
-// Non-representable float→int casts warn and use modular conversion.
+// Float→int casts use Zend's modular conversion without diagnostics.
 var_dump((int) fdiv(0, 0));
 var_dump((int) INF);
 var_dump((int) -INF);
 var_dump((int) 1e30);
 var_dump((int) 3.7);
 
-// NAN coercions warn per target type; bool(NAN) is true.
+// Native strings use PHP's numeric-prefix rules for scalar casts.
+foreach (["12abc", "  -3.5x", "abc", ""] as $numericText) {
+    var_dump((int) $numericText, (float) $numericText);
+}
+
+// NAN coercions are ordinary conversions; bool(NAN) is true.
 $nan = fdiv(0, 0);
+var_dump((string) $nan);
 settype($nan, "bool");
 var_dump($nan);
 $nan2 = fdiv(0, 0);
 var_dump((array) $nan2);
 
-// The user error handler observes the NAN coercion warning and may mutate
-// the variable mid-conversion; array wrapping sees the new value.
+// A user error handler is not invoked by ordinary NAN conversion.
 set_error_handler(function ($errno, $errstr) {
     global $nan3;
     $nan3 = null;

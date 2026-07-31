@@ -1,6 +1,6 @@
 use super::*;
 
-fn lower_native_dynamic_caller_frame(
+fn lower_baseline_dynamic_caller_frame(
     builder: &mut FunctionBuilder<'_>,
     locals: &NativeLocalMap,
     pointer_type: ir::Type,
@@ -32,7 +32,7 @@ fn lower_native_dynamic_caller_frame(
     Ok(frame_ptr)
 }
 
-fn reload_native_dynamic_caller_frame(
+fn reload_baseline_dynamic_caller_frame(
     builder: &mut FunctionBuilder<'_>,
     locals: &NativeLocalMap,
     caller_frame: ir::Value,
@@ -47,51 +47,6 @@ fn reload_native_dynamic_caller_frame(
         define_local_variable(builder, locals, *local, value)?;
     }
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn lower_optimizing_native_include(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    native_include: Option<NativeHelper>,
-    locals: &NativeLocalMap,
-    registers: &NativeRegisterMap,
-    kind: php_ir::instruction::IncludeKind,
-    path: RegionOperand,
-    instruction: &RegionInstruction,
-    function: FunctionId,
-    transition: NativeOptimizingTransition<'_>,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let kind = match kind {
-        php_ir::instruction::IncludeKind::Include => crate::JitNativeDynamicCodeKind::INCLUDE,
-        php_ir::instruction::IncludeKind::IncludeOnce => {
-            crate::JitNativeDynamicCodeKind::INCLUDE_ONCE
-        }
-        php_ir::instruction::IncludeKind::Require => crate::JitNativeDynamicCodeKind::REQUIRE,
-        php_ir::instruction::IncludeKind::RequireOnce => {
-            crate::JitNativeDynamicCodeKind::REQUIRE_ONCE
-        }
-    };
-    let source = lower_region_operand(builder, locals, registers, path)?;
-    let pointer_type = module.target_config().pointer_type();
-    let caller_frame = lower_native_dynamic_caller_frame(builder, locals, pointer_type)?;
-    let kind = builder.ins().iconst(types::I32, i64::from(kind.0));
-    let caller_function = builder.ins().iconst(types::I32, i64::from(function.raw()));
-    let continuation = builder
-        .ins()
-        .iconst(types::I32, i64::from(instruction.continuation_id));
-    let value = lower_optimizing_typed_control_value_call(
-        module,
-        builder,
-        native_include,
-        &[kind, caller_function, continuation, source, caller_frame],
-        transition,
-        "exact native include compiler/invoker was not declared",
-    )?;
-    if !locals.is_empty() {
-        reload_native_dynamic_caller_frame(builder, locals, caller_frame)?;
-    }
-    Ok(value)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -292,7 +247,7 @@ pub(super) fn lower_native_dynamic_code(
         3,
     ));
     let out_ptr = builder.ins().stack_addr(pointer_type, out_slot, 0);
-    let caller_frame = lower_native_dynamic_caller_frame(builder, locals, pointer_type)?;
+    let caller_frame = lower_baseline_dynamic_caller_frame(builder, locals, pointer_type)?;
     builder.ins().store(
         MemFlagsData::new(),
         caller_frame,
@@ -324,7 +279,7 @@ pub(super) fn lower_native_dynamic_code(
     builder.ins().return_(&[status]);
     builder.switch_to_block(success);
     if !locals.is_empty() {
-        reload_native_dynamic_caller_frame(builder, locals, caller_frame)?;
+        reload_baseline_dynamic_caller_frame(builder, locals, caller_frame)?;
     }
     if let Some(destination) = destination {
         let value = builder.ins().stack_load(

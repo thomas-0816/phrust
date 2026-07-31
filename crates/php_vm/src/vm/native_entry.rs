@@ -1,9 +1,123 @@
 //! Shared native entry execution boundaries.
 
-use super::{NativeRequestOwner, Vm, VmResult, activate_native_context};
+use super::{
+    NativeOptimizationPolicy, NativeRequestOwner, Vm, VmResult, VmWorkerState,
+    activate_native_context, linked_external_function_signatures,
+};
 use crate::compiled_unit::CompiledUnit;
 use php_runtime::api::OutputBuffer;
 use std::sync::Arc;
+
+impl VmWorkerState {
+    fn prepare_native_direct_callees(
+        &self,
+        unit: &CompiledUnit,
+        handle: &php_jit::JitFunctionHandle,
+        options: &super::VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+    ) -> Result<(), String> {
+        let Some(metadata) = handle.region_state_metadata() else {
+            return Ok(());
+        };
+        for callee in metadata
+            .direct_callees
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let callee_signatures =
+                linked_external_function_signatures(unit, callee, external_signatures);
+            self.prepare_native_baseline_entry(unit, callee, options, &callee_signatures)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn prepare_and_publish_optimizing_entry(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &super::VmOptions,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
+        handle: &php_jit::JitFunctionHandle,
+        background: bool,
+    ) -> Result<(), String> {
+        if options.native_optimization != NativeOptimizationPolicy::Optimizing {
+            let address = handle.native_entry_address().ok_or_else(|| {
+                format!(
+                    "baseline function {} has no native entry address",
+                    function.raw()
+                )
+            })?;
+            let deployment = unit.prepared_deployment_image();
+            let baseline = deployment
+                .native_function_entries
+                .get(function.index())
+                .ok_or_else(|| {
+                    format!(
+                        "native function {} has no baseline publication cell",
+                        function.raw()
+                    )
+                })?;
+            let preferred = deployment
+                .preferred_function_entries
+                .get(function.index())
+                .ok_or_else(|| {
+                    format!(
+                        "native function {} has no preferred publication cell",
+                        function.raw()
+                    )
+                })?;
+            baseline.store(address, std::sync::atomic::Ordering::Release);
+            if preferred
+                .compare_exchange(
+                    0,
+                    address,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                unit.publish_preferred_function_metadata(function, handle);
+            }
+            self.prepare_native_direct_callees(unit, handle, options, external_signatures)?;
+            return Ok(());
+        }
+        let root_signatures =
+            linked_external_function_signatures(unit, function, external_signatures);
+        self.prepare_native_baseline_entry(unit, function, options, &root_signatures)?;
+        if !handle.region_state_metadata().is_some_and(|metadata| {
+            metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
+        }) {
+            return Ok(());
+        }
+        self.prepare_native_direct_callees(unit, handle, options, external_signatures)?;
+        // Background compilation remains publication-neutral until the
+        // tiering coordinator validates and commits the exact returned
+        // optimizer handle.
+        if background {
+            return Ok(());
+        }
+        let address = handle.native_entry_address().ok_or_else(|| {
+            format!(
+                "optimizing function {} has no native entry address",
+                function.raw()
+            )
+        })?;
+        let preferred = unit
+            .prepared_deployment_image()
+            .preferred_function_entries
+            .get(function.index())
+            .ok_or_else(|| {
+                format!(
+                    "optimizing function {} has no preferred publication cell",
+                    function.raw()
+                )
+            })?;
+        unit.publish_preferred_function_metadata(function, handle);
+        preferred.store(address, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+}
 
 impl Vm {
     /// Execute a validated, zero-arity persistent native artifact through the
@@ -13,6 +127,7 @@ impl Vm {
         unit: &CompiledUnit,
         loaded: Arc<super::native_compile_cache::LoadedNativeUnit>,
         entry: php_ir::FunctionId,
+        external_signatures: &[php_jit::JitExternalFunctionSignature],
         output: OutputBuffer,
     ) -> VmResult {
         let native_entries = Arc::clone(loaded.native_entries());
@@ -25,6 +140,16 @@ impl Vm {
                 ),
             );
         };
+        if let Err(error) = self.worker_state.prepare_and_publish_optimizing_entry(
+            unit,
+            entry,
+            &self.options,
+            external_signatures,
+            &handle,
+            false,
+        ) {
+            return VmResult::compile_error(output, format!("E_NATIVE_CACHE_PUBLICATION: {error}"));
+        }
         let mut context = NativeRequestOwner::new(
             unit,
             unit.cache_identity(),
@@ -45,7 +170,7 @@ impl Vm {
             runtime,
             |types, value| {
                 let class = context
-                    .decode_result(value)
+                    .materialize_outer_result(value)
                     .ok()
                     .and_then(super::native_exception_fields)
                     .map(|(class, _, _)| class);
@@ -61,7 +186,8 @@ impl Vm {
                 })
             },
         );
-        let outcome = super::jit_abi::resume_native_optimizing_exit(&mut context, outcome);
+        let outcome =
+            super::jit_abi::resume_native_optimizing_exit(&mut context, handle.clone(), outcome);
         let (exception_handled, exception_handler_error) = match &outcome {
             Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
                 if *status == php_jit::JitCallStatus::THROW.0 as i32 =>
@@ -88,7 +214,10 @@ impl Vm {
         });
         context.output.flush_all_buffers();
         drop(guard);
-        let publish_error = context.publish_include_globals().err();
+        let publish_error = context
+            .materialize_native_session_state()
+            .and_then(|()| context.publish_include_globals())
+            .err();
         let native_execution_time_nanos = native_execution_started_at.map_or(0, |started_at| {
             started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
         });
@@ -123,7 +252,7 @@ impl Vm {
         } else {
             match outcome {
                 Ok(php_jit::JitI64InvokeOutcome::Returned(encoded)) => {
-                    match context.decode_result(encoded) {
+                    match context.materialize_outer_result(encoded) {
                         Ok(value) => {
                             let mut result =
                                 VmResult::success(std::mem::take(&mut context.output), Some(value));
@@ -140,7 +269,7 @@ impl Vm {
                 Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
                     if status == php_jit::JitCallStatus::EXIT.0 as i32 =>
                 {
-                    let exit_code = match context.decode_result(value) {
+                    let exit_code = match context.materialize_outer_result(value) {
                         Ok(php_runtime::api::Value::String(value)) => {
                             context.output.write_bytes(value.as_bytes());
                             0
@@ -156,7 +285,7 @@ impl Vm {
                 Ok(php_jit::JitI64InvokeOutcome::SideExit { status, value, .. })
                     if status == php_jit::JitCallStatus::THROW.0 as i32 =>
                 {
-                    let throwable = context.decode_result(value).ok();
+                    let throwable = context.materialize_outer_result(value).ok();
                     super::native_uncaught_throwable_result(
                         std::mem::take(&mut context.output),
                         throwable,

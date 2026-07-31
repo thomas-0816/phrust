@@ -6,8 +6,13 @@ use crate::{
 };
 use std::cell::Cell;
 use std::cmp::Ordering;
+use std::fmt::{self, Write};
 
 const DEFAULT_FLOAT_STRING_PRECISION: i32 = 14;
+
+/// Stack storage sufficient for every finite `f64` rendered with PHP's
+/// supported scalar-string precision, including fixed-point `precision=0`.
+pub const PHP_FLOAT_STRING_BUFFER_CAPACITY: usize = 384;
 
 thread_local! {
     static FLOAT_STRING_PRECISION: Cell<i32> = const { Cell::new(DEFAULT_FLOAT_STRING_PRECISION) };
@@ -112,32 +117,92 @@ pub fn to_string(value: &Value) -> Result<PhpString, String> {
 /// This is exposed separately from [`to_string`] so native callers that have
 /// already proven the scalar type do not need to construct a runtime `Value`.
 pub fn float_to_php_string(value: f64) -> String {
-    if value.is_nan() {
-        "NAN".to_owned()
-    } else if value.is_infinite() {
-        if value.is_sign_negative() {
-            "-INF".to_owned()
-        } else {
-            "INF".to_owned()
-        }
-    } else if FLOAT_STRING_PRECISION.with(Cell::get) == 0 {
-        format!("{value:.0}")
-    } else if FLOAT_STRING_PRECISION.with(Cell::get) == -1 {
-        value.to_string()
-    } else if value != 0.0 {
-        let abs = value.abs();
-        if !(1e-4..1e14).contains(&abs) {
-            return php_scientific_float_string(value);
-        }
-        php_decimal_float_string(value)
-    } else if value.is_sign_negative() {
-        "-0".to_owned()
-    } else {
-        "0".to_owned()
+    let mut buffer = [0_u8; PHP_FLOAT_STRING_BUFFER_CAPACITY];
+    let rendered = float_to_php_string_bytes(value, &mut buffer);
+    std::str::from_utf8(rendered)
+        .expect("PHP float rendering is ASCII")
+        .to_owned()
+}
+
+/// Formats one IEEE-754 value into caller-owned storage without allocating.
+///
+/// The returned range borrows `output` and contains the same bytes as
+/// [`float_to_php_string`]. The fixed capacity covers the longest finite
+/// fixed-point `f64`, including its sign.
+pub fn float_to_php_string_bytes<'a>(
+    value: f64,
+    output: &'a mut [u8; PHP_FLOAT_STRING_BUFFER_CAPACITY],
+) -> &'a [u8] {
+    let length =
+        render_float_to_php_bytes(value, output).expect("PHP float buffer capacity is sufficient");
+    &output[..length]
+}
+
+struct FixedFloatString<'a> {
+    bytes: &'a mut [u8],
+    length: usize,
+}
+
+impl FixedFloatString<'_> {
+    fn new(bytes: &mut [u8]) -> FixedFloatString<'_> {
+        FixedFloatString { bytes, length: 0 }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) -> fmt::Result {
+        let end = self.length.checked_add(bytes.len()).ok_or(fmt::Error)?;
+        let target = self.bytes.get_mut(self.length..end).ok_or(fmt::Error)?;
+        target.copy_from_slice(bytes);
+        self.length = end;
+        Ok(())
+    }
+
+    fn truncate(&mut self, length: usize) {
+        self.length = self.length.min(length);
     }
 }
 
-fn php_decimal_float_string(value: f64) -> String {
+impl Write for FixedFloatString<'_> {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.push_bytes(value.as_bytes())
+    }
+}
+
+fn render_float_to_php_bytes(value: f64, bytes: &mut [u8]) -> Result<usize, fmt::Error> {
+    let mut output = FixedFloatString::new(bytes);
+    if value.is_nan() {
+        output.push_bytes(b"NAN")?;
+    } else if value.is_infinite() {
+        if value.is_sign_negative() {
+            output.push_bytes(b"-INF")?;
+        } else {
+            output.push_bytes(b"INF")?;
+        }
+    } else if FLOAT_STRING_PRECISION.with(Cell::get) == 0 {
+        write!(output, "{value:.0}")?;
+    } else if FLOAT_STRING_PRECISION.with(Cell::get) == -1 {
+        write!(output, "{value}")?;
+    } else if value != 0.0 {
+        let abs = value.abs();
+        if !(1e-4..1e14).contains(&abs) {
+            return render_php_scientific_float(value, output);
+        }
+        return render_php_decimal_float(value, output);
+    } else if value.is_sign_negative() {
+        output.push_bytes(b"-0")?;
+    } else {
+        output.push_bytes(b"0")?;
+    }
+    Ok(output.length)
+}
+
+fn render_php_decimal_float(
+    value: f64,
+    mut output: FixedFloatString<'_>,
+) -> Result<usize, fmt::Error> {
     let precision = FLOAT_STRING_PRECISION.with(Cell::get).clamp(1, 17) as usize;
     let abs = value.abs();
     let integer_digits = if abs >= 1.0 {
@@ -153,52 +218,63 @@ fn php_decimal_float_string(value: f64) -> String {
     let decimals = precision
         .saturating_sub(integer_digits)
         .saturating_add(leading_fractional_zeros);
-    let mut output = format!("{value:.decimals$}");
-    if output == "-0" {
-        return "0".to_owned();
+    write!(output, "{value:.decimals$}")?;
+    if output.as_bytes() == b"-0" {
+        output.bytes[0] = b'0';
+        output.truncate(1);
+        return Ok(output.length);
     }
-    if output.contains('.') {
-        while output.ends_with('0') {
-            output.pop();
+    if output.as_bytes().contains(&b'.') {
+        while output.as_bytes().ends_with(b"0") {
+            output.truncate(output.length - 1);
         }
-        if output.ends_with('.') {
-            output.pop();
+        if output.as_bytes().ends_with(b".") {
+            output.truncate(output.length - 1);
         }
     }
-    if output == "-0" {
-        "0".to_owned()
-    } else {
-        output
+    if output.as_bytes() == b"-0" {
+        output.bytes[0] = b'0';
+        output.truncate(1);
     }
+    Ok(output.length)
 }
 
-fn php_scientific_float_string(value: f64) -> String {
+fn render_php_scientific_float(
+    value: f64,
+    mut output: FixedFloatString<'_>,
+) -> Result<usize, fmt::Error> {
     let precision = FLOAT_STRING_PRECISION.with(Cell::get).clamp(1, 17) as usize;
     let decimals = precision.saturating_sub(1);
-    let mut output = format!("{value:.decimals$E}");
-    if let Some(exponent_index) = output.find('E') {
-        let mut mantissa = output[..exponent_index].to_owned();
-        let exponent = &output[exponent_index + 1..];
-        while mantissa.ends_with('0') {
-            mantissa.pop();
+    let mut scratch_bytes = [0_u8; PHP_FLOAT_STRING_BUFFER_CAPACITY];
+    let mut scratch = FixedFloatString::new(&mut scratch_bytes);
+    write!(scratch, "{value:.decimals$E}")?;
+    let rendered = scratch.as_bytes();
+    if let Some(exponent_index) = rendered.iter().position(|byte| *byte == b'E') {
+        let mut mantissa_end = exponent_index;
+        while rendered[..mantissa_end].ends_with(b"0") {
+            mantissa_end -= 1;
         }
-        if mantissa.ends_with('.') {
-            mantissa.push('0');
+        output.push_bytes(&rendered[..mantissa_end])?;
+        if rendered[..mantissa_end].ends_with(b".") {
+            output.push_bytes(b"0")?;
         }
-        let sign = exponent
-            .strip_prefix('+')
-            .map(|digits| ("+", digits))
-            .or_else(|| exponent.strip_prefix('-').map(|digits| ("-", digits)))
-            .unwrap_or(("+", exponent));
-        let digits = sign.1.trim_start_matches('0');
-        output = format!(
-            "{}E{}{}",
-            mantissa,
-            sign.0,
-            if digits.is_empty() { "0" } else { digits }
-        );
+        output.push_bytes(b"E")?;
+        let exponent = &rendered[exponent_index + 1..];
+        let (sign, digits) = match exponent.first() {
+            Some(b'+') => (b'+', &exponent[1..]),
+            Some(b'-') => (b'-', &exponent[1..]),
+            _ => (b'+', exponent),
+        };
+        output.push_bytes(&[sign])?;
+        let digits = digits
+            .iter()
+            .position(|digit| *digit != b'0')
+            .map_or(&digits[digits.len()..], |first| &digits[first..]);
+        output.push_bytes(if digits.is_empty() { b"0" } else { digits })?;
+    } else {
+        output.push_bytes(rendered)?;
     }
-    output
+    Ok(output.length)
 }
 
 /// Whether a float is exactly representable in the PHP int domain, mirroring
@@ -292,6 +368,30 @@ pub fn to_number(value: &Value) -> Result<NumericValue, String> {
     }
 }
 
+/// Converts authoritative native string bytes to PHP's arithmetic number
+/// shape without constructing a `PhpString` or runtime `Value`.
+pub fn native_bytes_to_number(value: &[u8]) -> Result<NumericValue, String> {
+    let classified = crate::numeric_string::classify(value);
+    match (classified.kind, classified.value) {
+        (
+            NumericStringKind::IntString
+            | NumericStringKind::FloatString
+            | NumericStringKind::LeadingNumeric,
+            Some(NumericStringValue::Int(value)),
+        ) => Ok(NumericValue::Int(value)),
+        (
+            NumericStringKind::IntString
+            | NumericStringKind::FloatString
+            | NumericStringKind::LeadingNumeric,
+            Some(NumericStringValue::Float(value)),
+        ) => Ok(NumericValue::Float(value)),
+        _ => Err(
+            "E_PHP_RUNTIME_NON_NUMERIC_STRING: non-numeric string cannot be used as a number"
+                .to_owned(),
+        ),
+    }
+}
+
 /// Converts a value to a PHP numeric arithmetic operand and preserves whether
 /// a leading numeric string warning is required.
 pub fn to_arithmetic_number(value: &Value) -> Result<ArithmeticNumber, String> {
@@ -345,7 +445,7 @@ pub fn to_array_php(value: &Value) -> Result<PhpArray, String> {
             let mut array = PhpArray::new();
             for (name, value) in object.array_cast_snapshot() {
                 array.insert(
-                    crate::ArrayKey::String(PhpString::from_bytes(name.into_bytes())),
+                    crate::ArrayKey::from_php_string(PhpString::from_bytes(name.into_bytes())),
                     value,
                 );
             }
@@ -397,6 +497,12 @@ pub fn identical(left: &Value, right: &Value) -> bool {
 /// Loose equality for runtime-semantics comparison cases.
 pub fn equal(left: &Value, right: &Value) -> Result<bool, String> {
     match (left, right) {
+        // PHP converts both operands to boolean before equality whenever
+        // either side is a boolean. Null follows the same truthiness rule
+        // except for the dedicated null/string comparison in `compare`.
+        (Value::Bool(_) | Value::Null, _) | (_, Value::Bool(_) | Value::Null) => {
+            Ok(compare(left, right)? == Ordering::Equal)
+        }
         (Value::Array(left), Value::Array(right)) => arrays_equal(left, right),
         (Value::Array(_), _) | (_, Value::Array(_)) => Ok(false),
         (Value::Object(left), Value::Object(right)) => objects_equal(left, right),
@@ -437,7 +543,16 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering, String> {
             }
             return Ok(left.as_bytes().cmp(right.as_bytes()));
         }
-        (Value::Bool(_), _) | (_, Value::Bool(_)) | (Value::Null, _) | (_, Value::Null) => {
+        (Value::Bool(_), _) | (_, Value::Bool(_)) => {
+            return Ok(to_bool(left)?.cmp(&to_bool(right)?));
+        }
+        (Value::Null, Value::String(right)) => {
+            return Ok(b"".as_slice().cmp(right.as_bytes()));
+        }
+        (Value::String(left), Value::Null) => {
+            return Ok(left.as_bytes().cmp(b"".as_slice()));
+        }
+        (Value::Null, _) | (_, Value::Null) => {
             return Ok(to_bool(left)?.cmp(&to_bool(right)?));
         }
         _ => {}
@@ -475,6 +590,9 @@ pub fn compare_php(left: &Value, right: &Value) -> Result<Ordering, String> {
 }
 
 fn compare_numbers(left: NumericValue, right: NumericValue) -> Result<Ordering, String> {
+    if let (NumericValue::Int(left), NumericValue::Int(right)) = (left, right) {
+        return Ok(left.cmp(&right));
+    }
     if left.as_f64().is_nan() || right.as_f64().is_nan() {
         return Ok(Ordering::Greater);
     }
@@ -492,9 +610,9 @@ pub(crate) fn numeric_comparison_is_unordered(left: &Value, right: &Value) -> bo
     match (left, right) {
         (Value::Reference(left), right) => numeric_comparison_is_unordered(&left.get(), right),
         (left, Value::Reference(right)) => numeric_comparison_is_unordered(left, &right.get()),
-        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
-            matches!(left, Value::Float(value) if value.to_f64().is_nan())
-                || matches!(right, Value::Float(value) if value.to_f64().is_nan())
+        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_) | Value::String(_))
+        | (Value::String(_), Value::Int(_) | Value::Float(_)) => {
+            is_nan_number(left) || is_nan_number(right)
         }
         _ => false,
     }
@@ -516,7 +634,7 @@ fn compare_number_and_string(left: &Value, right: &Value) -> Result<Ordering, St
                 return compare_numbers(to_number(number)?, string);
             }
             if is_nan_number(number) {
-                return Ok(Ordering::Less);
+                return Ok(Ordering::Greater);
             }
             Ok(to_string(number)?.as_bytes().cmp(string.as_bytes()))
         }
@@ -992,6 +1110,12 @@ mod tests {
             compare_php(&Value::string(b"2".to_vec()), &Value::Int(10)).unwrap(),
             Ordering::Less
         );
+        let empty = Value::Array(crate::PhpArray::new());
+        let mut populated = crate::PhpArray::new();
+        populated.append(Value::Int(1));
+        assert!(equal(&empty, &Value::Null).unwrap());
+        assert!(equal(&empty, &Value::Bool(false)).unwrap());
+        assert!(equal(&Value::Array(populated), &Value::Bool(true)).unwrap());
     }
 
     #[test]
@@ -1006,6 +1130,12 @@ mod tests {
 
     #[test]
     fn compare_uses_php8_numeric_string_rules_without_arithmetic_errors() {
+        assert!(!equal(&Value::Null, &Value::string(b"0".to_vec())).unwrap());
+        assert!(equal(&Value::Null, &Value::string(Vec::new())).unwrap());
+        assert_eq!(
+            compare(&Value::Null, &Value::string(b"0".to_vec())).unwrap(),
+            Ordering::Less
+        );
         assert!(equal(&Value::Int(42), &Value::string(b" 42".to_vec())).unwrap());
         assert!(!equal(&Value::Int(42), &Value::string(b"42abc".to_vec())).unwrap());
         assert!(!equal(&Value::Int(0), &Value::string(b"foo".to_vec())).unwrap());
@@ -1047,6 +1177,26 @@ mod tests {
             .unwrap()
         );
         assert!(!equal(&Value::float(f64::NAN), &Value::string(b"NAN".to_vec())).unwrap());
+        assert_eq!(
+            compare(
+                &Value::string(b"9007199254740993".to_vec()),
+                &Value::string(b"9007199254740992".to_vec())
+            )
+            .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare(&Value::float(f64::NAN), &Value::string(b"NAN".to_vec())).unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare(&Value::string(b"NAN".to_vec()), &Value::float(f64::NAN)).unwrap(),
+            Ordering::Greater
+        );
+        assert!(numeric_comparison_is_unordered(
+            &Value::float(f64::NAN),
+            &Value::string(b"NAN".to_vec())
+        ));
     }
 
     #[test]
@@ -1159,6 +1309,7 @@ mod tests {
             &Value::Object(one.clone()),
             &Value::Object(clone.clone())
         ));
+        assert!(equal(&Value::Object(one.clone()), &Value::Bool(true)).unwrap());
         assert!(equal(&Value::Object(one), &Value::Object(clone)).unwrap());
     }
 }

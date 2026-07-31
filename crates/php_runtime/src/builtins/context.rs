@@ -173,6 +173,7 @@ impl BuiltinHttpContext<'_> {
 
 pub(in crate::builtins) struct BuiltinExtensionState<'a> {
     bcmath_scale: usize,
+    bcmath_scale_slot: Option<&'a mut usize>,
     strtok_state: Option<&'a mut StrtokState>,
     iconv_state: Option<IconvEncodingState>,
     iconv_state_slot: Option<&'a mut IconvEncodingState>,
@@ -237,6 +238,7 @@ impl<'a> Default for BuiltinExtensionState<'a> {
     fn default() -> Self {
         Self {
             bcmath_scale: 0,
+            bcmath_scale_slot: None,
             strtok_state: None,
             iconv_state: Some(IconvEncodingState::default()),
             iconv_state_slot: None,
@@ -287,6 +289,7 @@ impl BuiltinExtensionState<'_> {
     fn borrowed() -> Self {
         Self {
             bcmath_scale: 0,
+            bcmath_scale_slot: None,
             strtok_state: None,
             iconv_state: None,
             iconv_state_slot: None,
@@ -400,6 +403,15 @@ impl<'a> BuiltinContext<'a> {
             env: Arc::new(Vec::new()),
             network_requests_enabled: false,
         }
+    }
+
+    #[must_use]
+    pub fn gc_enabled(&self) -> bool {
+        self.request_state.get().gc().enabled()
+    }
+
+    pub fn set_gc_enabled(&mut self, enabled: bool) {
+        self.request_state.get_mut().gc_mut().set_enabled(enabled);
     }
 
     /// Creates a context borrowing an existing request-state owner.
@@ -1153,15 +1165,25 @@ impl<'a> BuiltinContext<'a> {
 
     /// Current request-local bcmath default scale.
     #[must_use]
-    pub const fn bcmath_scale(&self) -> usize {
-        self.extensions.bcmath_scale
+    pub fn bcmath_scale(&self) -> usize {
+        self.extensions
+            .bcmath_scale_slot
+            .as_deref()
+            .copied()
+            .unwrap_or(self.extensions.bcmath_scale)
     }
 
     /// Updates the request-local bcmath default scale and returns the previous value.
     pub fn set_bcmath_scale(&mut self, scale: usize) -> usize {
-        let previous = self.extensions.bcmath_scale;
-        self.extensions.bcmath_scale = scale;
-        previous
+        match self.extensions.bcmath_scale_slot.as_deref_mut() {
+            Some(current) => std::mem::replace(current, scale),
+            None => std::mem::replace(&mut self.extensions.bcmath_scale, scale),
+        }
+    }
+
+    /// Borrows the VM-owned request scale used by exact and baseline bcmath.
+    pub fn set_bcmath_scale_state(&mut self, scale: &'a mut usize) {
+        self.extensions.bcmath_scale_slot = Some(scale);
     }
 
     /// Sets request-local filesystem builtin state.
@@ -1203,7 +1225,7 @@ impl<'a> BuiltinContext<'a> {
             .mb_internal_encoding_slot
             .as_deref()
             .map(String::as_str)
-            .or_else(|| self.extensions.mb_internal_encoding.as_deref())
+            .or(self.extensions.mb_internal_encoding.as_deref())
             .unwrap_or("UTF-8")
     }
 

@@ -547,6 +547,12 @@ fn insert_primary(
     key: NativeCompileCacheKey,
     records: Arc<[JitUnitCompileRecord]>,
 ) {
+    // An external-call signature is an ABI specialization, not an
+    // invalidation generation. During a request, deterministic include order
+    // legitimately exposes both the pre-declaration and post-declaration
+    // variants of the same caller. Discarding one when the other is inserted
+    // makes every later request compile the same two variants again in
+    // alternation. Retain both under the existing process-wide LRU bound.
     state.primary_entries.insert(key, records);
     touch_lru(&mut state.primary_lru, key);
 }
@@ -730,5 +736,23 @@ mod tests {
 
         assert_eq!(disposition, NativeCompileCacheDisposition::Hit);
         assert_eq!(cache.stats().entries, 2);
+    }
+
+    #[test]
+    fn external_signature_specializations_coexist_under_the_lru_bound() {
+        let cache = NativeCompileCache::new(8);
+        let first = NativeCompileCacheKey::new(41, FunctionId::new(3), 2, 11);
+        let second = NativeCompileCacheKey::new(41, FunctionId::new(3), 2, 19);
+        cache.get_or_compile(first, || Ok(vec![record(3)])).unwrap();
+        cache
+            .get_or_compile(second, || Ok(vec![record(3)]))
+            .unwrap();
+
+        let (_, disposition) = cache
+            .get_or_compile(first, || panic!("valid ABI specialization recompiled"))
+            .unwrap();
+        assert_eq!(disposition, NativeCompileCacheDisposition::Hit);
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().evictions, 0);
     }
 }

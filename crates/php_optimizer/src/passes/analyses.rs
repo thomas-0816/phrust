@@ -52,6 +52,7 @@ pub(super) fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::AssignProperty { dst, .. }
         | InstructionKind::AssignPropertyDim { dst, .. }
         | InstructionKind::AssignDynamicProperty { dst, .. }
+        | InstructionKind::AssignDynamicPropertyDim { dst, .. }
         | InstructionKind::AssignStaticProperty { dst, .. }
         | InstructionKind::AssignDynamicStaticProperty { dst, .. }
         | InstructionKind::NewArray { dst }
@@ -121,6 +122,7 @@ pub(super) fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::UnsetProperty { .. }
         | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
+        | InstructionKind::UnsetDynamicPropertyDim { .. }
         | InstructionKind::UnsetStaticPropertyDim { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }

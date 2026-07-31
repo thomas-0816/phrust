@@ -554,8 +554,6 @@ fn bench_inline_cache_lookup(c: &mut Criterion) {
                     has_magic_get: false,
                     dynamic_property_fallback: false,
                 },
-                object_layout_epoch: 1,
-                declared_slot: Some(0),
             }),
         },
     );
@@ -603,8 +601,6 @@ fn bench_inline_cache_lookup(c: &mut Criterion) {
                     has_magic_set: false,
                     dynamic_property_fallback: false,
                 },
-                object_layout_epoch: 1,
-                declared_slot: Some(0),
                 slot_write_eligible: true,
             }),
         },

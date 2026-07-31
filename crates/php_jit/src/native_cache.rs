@@ -1,6 +1,5 @@
 //! Restart-persistent validated native machine-code artifacts.
 
-use bincode::Options;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -649,15 +648,13 @@ impl NativeArtifactImage {
             graphs: cached_metadata_graphs,
             roots: cached_metadata_roots,
         };
-        let metadata_payload = region_metadata_binary_options()
-            .serialize(&metadata_bundle)
-            .map_err(|error| {
-                NativeCacheError::InvalidSection(format!(
-                    "failed to encode native state metadata: {error}"
-                ))
-            })?;
+        let metadata_payload = postcard::to_allocvec(&metadata_bundle).map_err(|error| {
+            NativeCacheError::InvalidSection(format!(
+                "failed to encode native state metadata: {error}"
+            ))
+        })?;
         let mut signature_metadata = Vec::with_capacity(4 + metadata_payload.len());
-        signature_metadata.extend_from_slice(b"PRM5");
+        signature_metadata.extend_from_slice(b"PRM6");
         signature_metadata.extend_from_slice(&metadata_payload);
 
         Ok(Self {
@@ -698,12 +695,6 @@ fn validate_cached_region_metadata(
     Ok(())
 }
 
-fn region_metadata_binary_options() -> impl Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .reject_trailing_bytes()
-}
-
 fn validate_decoded_region_metadata(
     graphs: Vec<crate::JitRegionStateMetadata>,
     roots: Vec<CachedRegionMetadataRoot>,
@@ -736,13 +727,11 @@ fn decode_region_metadata(bytes: &[u8]) -> Result<DecodedRegionMetadata, NativeC
             roots: Vec::new(),
         });
     }
-    if let Some(payload) = bytes.strip_prefix(b"PRM5") {
-        let bundle = region_metadata_binary_options()
-            .with_limit(bytes.len() as u64)
-            .deserialize::<CachedRegionMetadataBinaryBundle>(payload)
-            .map_err(|error| {
+    if let Some(payload) = bytes.strip_prefix(b"PRM6") {
+        let bundle =
+            postcard::from_bytes::<CachedRegionMetadataBinaryBundle>(payload).map_err(|error| {
                 NativeCacheError::InvalidSection(format!(
-                    "invalid PRM5 native state metadata: {error}"
+                    "invalid PRM6 native state metadata: {error}"
                 ))
             })?;
         return validate_decoded_region_metadata(bundle.graphs, bundle.roots);
@@ -757,8 +746,9 @@ fn decode_region_metadata(bytes: &[u8]) -> Result<DecodedRegionMetadata, NativeC
     }
 
     // PRM3 remains readable for the legacy PNA1 migration window. PRM4 stays
-    // readable so already validated PNA2 artifacts survive the metadata-codec
-    // transition; new writers emit compact graph-deduplicated PRM5.
+    // readable so validated JSON PNA2 artifacts survive the metadata-codec
+    // transition; new writers emit compact graph-deduplicated PRM6. PRM5
+    // bincode payloads are deliberately rejected and recompiled.
     let envelope =
         serde_json::from_slice::<CachedRegionMetadataEnvelope>(bytes).map_err(|error| {
             NativeCacheError::InvalidSection(format!("invalid native state metadata: {error}"))
@@ -1271,9 +1261,12 @@ impl NativeLoadedArtifact {
         }
         let address = self.entry_address(function_id)?;
         let mut out = 0_i64;
-        let mut state = crate::JitDeoptState::default();
+        let mut state = crate::prepare_native_deopt_out(std::ptr::null_mut());
+        let state = state.as_mut_ptr();
         // SAFETY: PNA validation proved the entry range and signature metadata;
-        // the mapping was writable only before its RX transition.
+        // the mapping was writable only before its RX transition. The sparse
+        // deopt record is prepared through the same runtime-view boundary as a
+        // production entry, so direct native loads never observe a null view.
         let status = unsafe {
             match function.abi {
                 NativeFunctionAbi::I64StatusOut => {
@@ -1283,7 +1276,7 @@ impl NativeLoadedArtifact {
                         i32,
                         *const crate::JitDeoptState,
                     ) -> i32 = std::mem::transmute(address);
-                    entry(&mut out, &mut state, -1, std::ptr::null())
+                    entry(&mut out, state, -1, std::ptr::null())
                 }
                 NativeFunctionAbi::PackedI64StatusOut => {
                     let entry: extern "C" fn(
@@ -1298,7 +1291,7 @@ impl NativeLoadedArtifact {
                         std::ptr::null_mut(),
                         std::ptr::NonNull::<i64>::dangling().as_ptr(),
                         &mut out,
-                        &mut state,
+                        state,
                         -1,
                         std::ptr::null(),
                     )
@@ -2811,7 +2804,7 @@ mod tests {
     }
 
     #[test]
-    fn prm5_binary_metadata_roundtrips_and_prm4_remains_readable() {
+    fn prm6_binary_metadata_roundtrips_and_prm4_remains_readable() {
         let graphs = vec![sample_region_metadata()];
         let roots = vec![CachedRegionMetadataRoot {
             function_id: 3,
@@ -2821,12 +2814,8 @@ mod tests {
             graphs: graphs.clone(),
             roots: roots.clone(),
         };
-        let mut binary = b"PRM5".to_vec();
-        binary.extend(
-            region_metadata_binary_options()
-                .serialize(&binary_bundle)
-                .unwrap(),
-        );
+        let mut binary = b"PRM6".to_vec();
+        binary.extend(postcard::to_allocvec(&binary_bundle).unwrap());
         let decoded = decode_region_metadata(&binary).unwrap();
         assert_eq!(decoded.graphs, graphs);
         assert_eq!(decoded.roots, roots);

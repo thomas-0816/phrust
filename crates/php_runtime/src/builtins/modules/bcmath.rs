@@ -468,6 +468,193 @@ fn integer_sqrt_floor(value: &BigInt) -> BigInt {
     low
 }
 
+fn native_decimal(bytes: &[u8]) -> Option<Decimal> {
+    parse_decimal(&String::from_utf8_lossy(bytes))
+}
+
+#[doc(hidden)]
+pub fn native_bcadd(left: &[u8], right: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let left = native_decimal(left)?;
+    let right = native_decimal(right)?;
+    let common = left.scale.max(right.scale);
+    Some(
+        Decimal {
+            units: rescale_units(
+                left.units_scaled(common) + right.units_scaled(common),
+                common,
+                scale,
+            ),
+            scale,
+        }
+        .format(),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_bcsub(left: &[u8], right: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let left = native_decimal(left)?;
+    let right = native_decimal(right)?;
+    let common = left.scale.max(right.scale);
+    Some(
+        Decimal {
+            units: rescale_units(
+                left.units_scaled(common) - right.units_scaled(common),
+                common,
+                scale,
+            ),
+            scale,
+        }
+        .format(),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_bcmul(left: &[u8], right: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let left = native_decimal(left)?;
+    let right = native_decimal(right)?;
+    let raw_scale = left.scale + right.scale;
+    Some(
+        Decimal {
+            units: rescale_units(left.units * right.units, raw_scale, scale),
+            scale,
+        }
+        .format(),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_bcdiv(left: &[u8], right: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let left = native_decimal(left)?;
+    let right = native_decimal(right)?;
+    if right.units.is_zero() {
+        return None;
+    }
+    let mut numerator = left.units;
+    let mut denominator = right.units;
+    let exponent = scale as isize + right.scale as isize - left.scale as isize;
+    if exponent >= 0 {
+        numerator *= pow10(exponent as usize);
+    } else {
+        denominator *= pow10((-exponent) as usize);
+    }
+    Some(
+        Decimal {
+            units: numerator / denominator,
+            scale,
+        }
+        .format(),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_bcmod(left: &[u8], right: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let left = native_decimal(left)?;
+    let right = native_decimal(right)?;
+    if right.units.is_zero() {
+        return None;
+    }
+    let common = left.scale.max(right.scale);
+    Some(
+        Decimal {
+            units: left.units_scaled(common) % right.units_scaled(common),
+            scale: 0,
+        }
+        .rescaled(scale)
+        .format(),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_bcpow(base: &[u8], exponent: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let base = native_decimal(base)?;
+    let exponent = String::from_utf8_lossy(exponent)
+        .trim()
+        .parse::<u32>()
+        .ok()?;
+    let units = base.units.pow(exponent);
+    let raw_scale = base.scale.saturating_mul(exponent as usize);
+    Some(
+        Decimal {
+            units: rescale_units(units, raw_scale, scale),
+            scale,
+        }
+        .format(),
+    )
+}
+
+fn native_integer_decimal(bytes: &[u8]) -> Option<BigInt> {
+    let decimal = native_decimal(bytes)?;
+    if decimal.scale == 0 {
+        return Some(decimal.units);
+    }
+    let divisor = pow10(decimal.scale);
+    (&decimal.units % &divisor)
+        .is_zero()
+        .then(|| decimal.units / divisor)
+}
+
+#[doc(hidden)]
+pub fn native_bcpowmod(
+    base: &[u8],
+    exponent: &[u8],
+    modulus: &[u8],
+    scale: usize,
+) -> Option<Vec<u8>> {
+    let base = native_integer_decimal(base)?;
+    let mut exponent = native_integer_decimal(exponent)?;
+    if exponent.sign() == Sign::Minus {
+        return None;
+    }
+    let modulus = native_integer_decimal(modulus)?;
+    if modulus.is_zero() {
+        return None;
+    }
+    let modulus = modulus.abs();
+    let two = BigInt::from(2_u8);
+    let mut result = BigInt::one() % &modulus;
+    let mut factor = base % &modulus;
+    while !exponent.is_zero() {
+        if (&exponent % &two).is_one() {
+            result = (result * &factor) % &modulus;
+        }
+        exponent /= &two;
+        if !exponent.is_zero() {
+            factor = (&factor * &factor) % &modulus;
+        }
+    }
+    Some(
+        Decimal {
+            units: result,
+            scale: 0,
+        }
+        .rescaled(scale)
+        .format(),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_bcsqrt(value: &[u8], scale: usize) -> Option<Vec<u8>> {
+    let value = native_decimal(value)?;
+    if value.units.sign() == Sign::Minus {
+        return None;
+    }
+    let numerator = value.units * pow10(scale.saturating_mul(2));
+    let denominator = pow10(value.scale);
+    let units = integer_sqrt_rational_floor(&numerator, &denominator);
+    Some(Decimal { units, scale }.format())
+}
+
+#[doc(hidden)]
+pub fn native_bccomp(left: &[u8], right: &[u8], scale: usize) -> Option<i64> {
+    let left = native_decimal(left)?.rescaled(scale);
+    let right = native_decimal(right)?.rescaled(scale);
+    Some(match left.units.cmp(&right.units) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

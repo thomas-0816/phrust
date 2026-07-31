@@ -10,8 +10,8 @@ IDs present in the manifest.
 
 ## Summary
 
-- Total runtime gap rows: 100
-- Open rows: 70
+- Total runtime gap rows: 99
+- Open rows: 69
 - Implemented rows retained for historical coverage: 30
 - Machine-readable report: `target/runtime-gap-report/runtime-gap-report.json`
 
@@ -28,7 +28,7 @@ IDs present in the manifest.
 | include scope and cross-file declarations | 19 | 11 | 8 |
 | superglobals and $GLOBALS | 1 | 1 | 0 |
 | standard-library/extension routing | 9 | 7 | 2 |
-| runtime object/control-flow compatibility | 8 | 5 | 3 |
+| runtime object/control-flow compatibility | 7 | 4 | 3 |
 
 ## Highest Priority Open Gaps
 
@@ -43,13 +43,13 @@ IDs present in the manifest.
 | `E_PHP_RUNTIME_ARRAYACCESS_STDLIB_GAP` | arrays and array-key conversion | high | high | `fixtures/runtime_semantics/foreach/arrayaccess-known-gap.php` |
 | `E_PHP_RUNTIME_ARRAY_REFERENCE_COW` | foreach mutation/reference behavior | high | high | `fixtures/runtime/valid/references/array-element-ref.php`, `fixtures/runtime_semantics/arrays/cow-element-reference-separates.php`, `fixtures/runtime_semantics/arrays/nested-reference-copy-matrix.php`, and 1 more |
 | `E_PHP_RUNTIME_CONST_EXPR_MATRIX` | arrays and array-key conversion | high | high | `fixtures/runtime/valid/constants/global.php`, `fixtures/runtime_semantics/const_expr/cast-default.php`, `fixtures/runtime_semantics/constants/defaults-see-runtime-constants.php`, and 1 more |
-| `E_PHP_RUNTIME_FOREACH_MUTATION_COMPAT` | foreach mutation/reference behavior | high | high | `fixtures/runtime/valid/foreach/by-ref-break-continue.php`, `fixtures/runtime/valid/foreach/snapshot-mutation.php`, `fixtures/runtime_semantics/foreach/arrayaccess-known-gap.php`, and 20 more |
+| `E_PHP_RUNTIME_FOREACH_MUTATION_COMPAT` | foreach mutation/reference behavior | high | high | `fixtures/runtime/valid/foreach/by-ref-break-continue.php`, `fixtures/runtime/valid/foreach/snapshot-mutation.php`, `fixtures/runtime_semantics/foreach/arrayaccess-known-gap.php`, and 21 more |
 | `E_PHP_RUNTIME_GENERATOR_BY_REF_YIELD_GAP` | foreach mutation/reference behavior | high | high | `fixtures/runtime_semantics/generators/by-ref-yield-known-gap.php` |
-| `E_PHP_RUNTIME_GLOBALS_ALIAS_MATRIX` | arrays and array-key conversion | high | high | `fixtures/runtime/valid/superglobals/globals-alias.php`, `fixtures/runtime_semantics/globals/closure-global-interaction.php`, `fixtures/runtime_semantics/globals/dynamic-global-known-gap.php`, and 10 more |
-| `E_PHP_RUNTIME_NUMERIC_STRING_MATRIX` | arrays and array-key conversion | high | high | `fixtures/runtime/valid/scalars/expressions.php`, `fixtures/runtime_semantics/comparisons/array-loose-strict.php`, `fixtures/runtime_semantics/comparisons/elvis-branch-condition-register-reuse.php`, and 16 more |
+| `E_PHP_RUNTIME_GLOBALS_ALIAS_MATRIX` | arrays and array-key conversion | high | high | `fixtures/runtime/valid/superglobals/globals-alias.php`, `fixtures/runtime_semantics/globals/closure-global-interaction.php`, `fixtures/runtime_semantics/globals/dynamic-global-known-gap.php`, and 11 more |
+| `E_PHP_RUNTIME_NUMERIC_STRING_MATRIX` | arrays and array-key conversion | high | high | `fixtures/runtime/valid/scalars/expressions.php`, `fixtures/runtime_semantics/comparisons/array-loose-strict.php`, `fixtures/runtime_semantics/comparisons/elvis-branch-condition-register-reuse.php`, and 28 more |
 | `E_PHP_RUNTIME_SERIALIZATION_STDLIB_GAP` | standard-library/extension routing | high | high | `fixtures/runtime_semantics/known_gaps/serialize-magic-known-gap.php`, `fixtures/runtime_semantics/known_gaps/unserialize-wakeup-known-gap.php`, `fixtures/runtime_semantics/known_gaps/var-export-set-state-known-gap.php` |
 | `E_PHP_RUNTIME_UNSUPPORTED_CLONE_WITH_PROPERTY_RULES` | warning channel and exact warning continuation | high | high | `fixtures/runtime/known_gaps/objects/clone-with-private.php`, `fixtures/runtime/known_gaps/objects/clone-with-readonly.php`, `fixtures/runtime_semantics/clone_with/clone-with-private-known-gap.php`, and 4 more |
-| `E_PHP_RUNTIME_UNSUPPORTED_REFERENCE_SEMANTICS` | foreach mutation/reference behavior | high | high | `fixtures/runtime/known_gaps/foreach/by-ref.php`, `fixtures/runtime/valid/functions/by-ref-capture.php`, `fixtures/runtime/valid/references/array-element-ref.php`, and 17 more |
+| `E_PHP_RUNTIME_UNSUPPORTED_REFERENCE_SEMANTICS` | foreach mutation/reference behavior | high | high | `fixtures/runtime/known_gaps/foreach/by-ref.php`, `fixtures/runtime/valid/functions/by-ref-capture.php`, `fixtures/runtime/valid/references/array-element-ref.php`, and 18 more |
 | `E_PHP_RUNTIME_UNSUPPORTED_THROWABLE_HIERARCHY` | Throwable/Error hierarchy and stack traces | high | high | `fixtures/runtime/invalid/exceptions/rethrow.php`, `fixtures/runtime/invalid/exceptions/throw-uncaught.php`, `fixtures/runtime_semantics/errors/catch-error-parent.php`, and 7 more |
 | `E_PHP_RUNTIME_VAR_DUMP_FORMAT_MATRIX` | arrays and array-key conversion | high | high | `fixtures/runtime/valid/arrays/var-dump-mixed.php`, `fixtures/runtime/valid/builtins/var-dump-array.php`, `fixtures/runtime/valid/builtins/var-dump-scalars.php` |
 | `E_PHP_RUNTIME_WEAK_STRICT_TYPES_COERCION` | weak/strict type coercion | high | high | `fixtures/runtime/invalid/runtime_types/param-int-fail.php`, `fixtures/runtime/invalid/runtime_types/return-string-fail.php`, `fixtures/runtime/valid/runtime_types/param-int.php`, and 4 more |

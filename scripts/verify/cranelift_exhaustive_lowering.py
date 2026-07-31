@@ -59,8 +59,8 @@ def main() -> int:
         entries = report.get("entries", [])
         instructions = [entry for entry in entries if entry.get("kind") == "instruction"]
         terminators = [entry for entry in entries if entry.get("kind") == "terminator"]
-        if len(instructions) != 101:
-            failures.append(f"expected 101 instruction variants, found {len(instructions)}")
+        if len(instructions) != 103:
+            failures.append(f"expected 103 instruction variants, found {len(instructions)}")
         if len(terminators) != 6:
             failures.append(f"expected 6 terminator variants, found {len(terminators)}")
         names = [entry.get("variant") for entry in instructions]
@@ -77,7 +77,7 @@ def main() -> int:
         print("Cranelift exhaustive lowering gate failed:", file=sys.stderr)
         print("\n".join(f"- {failure}" for failure in failures), file=sys.stderr)
         return 1
-    print("Cranelift exhaustive lowering gate passed (101 instructions, 6 terminators)")
+    print("Cranelift exhaustive lowering gate passed (103 instructions, 6 terminators)")
     return 0
 
 

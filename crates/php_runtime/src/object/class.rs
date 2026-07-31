@@ -53,6 +53,16 @@ pub struct ClassEntry {
 /// Class declaration flags.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ClassFlags {
+    /// The runtime method table contains the complete inherited lineage.
+    ///
+    /// Native property tests may conclude that magic methods are absent only
+    /// when this publication-time guarantee is set. Extension/reflection
+    /// placeholder classes leave it clear and retain their cold semantics.
+    pub has_complete_method_table: bool,
+    /// Instances satisfy the built-in `Countable` interface.
+    pub implements_countable: bool,
+    /// Instances satisfy the built-in `Traversable` interface hierarchy.
+    pub implements_traversable: bool,
     /// Abstract class.
     pub is_abstract: bool,
     /// Final class.

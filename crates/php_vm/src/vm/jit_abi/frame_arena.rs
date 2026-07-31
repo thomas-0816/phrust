@@ -1,4 +1,4 @@
-use super::*;
+use super::NativeRequestFastState;
 
 #[cfg(unix)]
 use std::ptr::NonNull;
@@ -34,7 +34,7 @@ struct FrameChunkStorage {
 // owner between worker requests does not expose or alias the mapping; checkout
 // occurs only after the previous request has ended and reset its allocations.
 #[cfg(unix)]
-#[allow(unsafe_code)]
+#[allow(unsafe_code)] // Safety: the frame arena owns and bounds the addressed native slot.
 unsafe impl Send for FrameChunkStorage {}
 
 #[cfg(unix)]
@@ -170,7 +170,7 @@ struct FrameAllocation {
 
 /// Bounded request-local storage for generated PHP call frames and slot tables.
 #[derive(Debug)]
-pub(super) struct NativeFrameArena {
+pub(crate) struct NativeFrameArena {
     chunks: Vec<FrameChunk>,
     allocations: Vec<FrameAllocation>,
     capacity_bytes: usize,
@@ -191,7 +191,7 @@ impl Default for NativeFrameArena {
 }
 
 impl NativeFrameArena {
-    fn allocate(&mut self, bytes: usize, alignment: usize) -> Result<usize, String> {
+    pub(super) fn allocate(&mut self, bytes: usize, alignment: usize) -> Result<usize, String> {
         if self.allocations.len() >= FRAME_ARENA_MAX_ACTIVE_ALLOCATIONS {
             return Err(format!(
                 "E_PHP_VM_NATIVE_FRAME_DEPTH: active PHP frame storage exceeds {} allocations",
@@ -266,7 +266,7 @@ impl NativeFrameArena {
         Ok(address)
     }
 
-    fn release(&mut self, address: usize) -> Result<(), String> {
+    pub(super) fn release(&mut self, address: usize) -> Result<(), String> {
         let Some(allocation) = self.allocations.pop() else {
             return Err("E_PHP_VM_NATIVE_FRAME_ORDER: release from empty arena".to_owned());
         };
@@ -312,56 +312,38 @@ pub(in crate::vm) extern "C" fn jit_native_frame_alloc_abi(
     alignment: u64,
 ) -> u64 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_native_context_for(runtime, "frame_arena", |context| {
-            let bytes = usize::try_from(bytes).map_err(|_| {
-                "E_PHP_VM_NATIVE_FRAME_LIMIT: frame size does not fit usize".to_owned()
-            })?;
-            let alignment = usize::try_from(alignment).map_err(|_| {
-                "E_PHP_VM_NATIVE_FRAME_ALIGNMENT: alignment does not fit usize".to_owned()
-            })?;
-            match context.native_frame_arena.allocate(bytes, alignment) {
-                Ok(address) => Ok(address),
-                Err(message) => {
-                    context.diagnostic = Some(php_runtime::api::RuntimeDiagnostic::new(
-                        "E_PHP_VM_NATIVE_FRAME_LIMIT",
-                        php_runtime::api::RuntimeSeverity::FatalError,
-                        message.clone(),
-                        php_runtime::api::RuntimeSourceSpan::default(),
-                        Vec::new(),
-                        None,
-                    ));
-                    Err(message)
-                }
-            }
-        })
-        .and_then(Result::ok)
-        .unwrap_or(0) as u64
+        // SAFETY: artifact publication installs the request-stable frame
+        // capability before generated code can enter this exact ABI.
+        unsafe { &mut *runtime }
+            .frame_arena
+            .allocate(bytes, alignment)
     }))
     .unwrap_or(0)
 }
 
+// SAFETY: this ABI boundary consumes only the opaque address returned by the
+// matching request-local allocation.
+#[allow(unsafe_code)] // Safety: the frame arena owns and bounds the addressed native slot.
 pub(in crate::vm) extern "C" fn jit_native_frame_release_abi(
     runtime: *mut NativeRequestFastState,
     _vm_context: u64,
     address: u64,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if with_native_context_for(runtime, "frame_arena", |context| {
-            context.native_frame_arena.release(address as usize)
-        })
-        .is_some_and(|result| result.is_ok())
-        {
-            0
-        } else {
-            php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32
-        }
+        // SAFETY: the matching allocation and request publication keep the
+        // arena capability live for this synchronous generated call.
+        unsafe { &mut *runtime }.frame_arena.release(address)
     }))
     .unwrap_or(php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        FRAME_ARENA_CHUNK_BYTES, FRAME_ARENA_MAX_ALLOCATION_BYTES, FrameChunkStorage,
+        NativeFrameArena, jit_native_frame_alloc_abi, jit_native_frame_release_abi,
+    };
+    use crate::vm::jit_abi::{NativeFrameArenaCapability, NativeRequestFastState};
 
     #[test]
     fn arena_addresses_are_stable_bounded_and_lifo() {
@@ -379,6 +361,25 @@ mod tests {
                 .allocate(FRAME_ARENA_MAX_ALLOCATION_BYTES + 1, 16)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn published_fast_capability_allocates_without_a_cold_context() {
+        let mut arena = NativeFrameArena::default();
+        let mut diagnostic = None;
+        let mut fast = NativeRequestFastState {
+            frame_arena: NativeFrameArenaCapability {
+                arena: std::ptr::from_mut(&mut arena),
+                diagnostic: std::ptr::from_mut(&mut diagnostic),
+            },
+            ..NativeRequestFastState::default()
+        };
+        let runtime = std::ptr::from_mut(&mut fast);
+
+        let address = jit_native_frame_alloc_abi(runtime, 0, 128, 16);
+        assert_ne!(address, 0);
+        assert!(diagnostic.is_none());
+        assert_eq!(jit_native_frame_release_abi(runtime, 0, address), 0);
     }
 
     #[test]

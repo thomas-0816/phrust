@@ -211,6 +211,22 @@ pub fn current_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
+/// Returns whether the supplied components form a PHP-supported Gregorian
+/// calendar date.
+#[must_use]
+pub fn is_valid_gregorian_date(month: i64, day: i64, year: i64) -> bool {
+    let Ok(year) = i32::try_from(year) else {
+        return false;
+    };
+    let Ok(month) = u8::try_from(month) else {
+        return false;
+    };
+    if !(1..=32_767).contains(&year) || !(1..=12).contains(&month) {
+        return false;
+    }
+    (1..=i64::from(days_in_month(year, month))).contains(&day)
+}
+
 /// Builds a Unix timestamp from PHP-style date components, including overflow
 /// normalization for month, day, and time fields.
 pub fn timestamp_from_components(

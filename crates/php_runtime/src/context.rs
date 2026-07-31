@@ -1108,6 +1108,59 @@ pub fn input_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) ->
     array
 }
 
+#[cfg(feature = "full-runtime")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeInputKey {
+    Int(i64),
+    String(Vec<u8>),
+}
+
+#[cfg(feature = "full-runtime")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeInputSegment {
+    Key(NativeInputKey),
+    Append,
+}
+
+#[cfg(feature = "full-runtime")]
+pub(crate) fn native_input_bytes_into<E>(
+    input: &[u8],
+    ini: &RuntimeIniOptions,
+    mut insert: impl FnMut(&[NativeInputSegment], &[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut builder = InputArrayBuilder::new(ini);
+    let separators = input_separator_bytes(&ini.arg_separator_input);
+    for part in input
+        .split(|byte| separators.contains(byte))
+        .filter(|part| !part.is_empty())
+    {
+        if !builder.consume_var() {
+            break;
+        }
+        let (name, value) = split_bytes_once(part, b'=').unwrap_or((part, &[]));
+        let Some(name) = decode_component(name) else {
+            continue;
+        };
+        let Some(value) = decode_component(value) else {
+            continue;
+        };
+        let Some(segments) = parse_input_key_segments(&name, builder.max_input_nesting_level)
+        else {
+            continue;
+        };
+        let segments = segments
+            .iter()
+            .map(|segment| match segment {
+                InputKeySegment::Key(key) => NativeInputSegment::Key(native_input_key(key)),
+                InputKeySegment::Append => NativeInputSegment::Append,
+            })
+            .collect::<Vec<_>>();
+        let value = builder.filter_value_bytes(&value);
+        insert(&segments, &value)?;
+    }
+    Ok(())
+}
+
 fn raw_input_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) -> PhpArray {
     let mut array = PhpArray::new();
     InputArrayBuilder::raw(ini).insert_pairs(&mut array, pairs);
@@ -1190,18 +1243,29 @@ impl InputArrayBuilder {
     }
 
     fn filter_value(&self, value: &str) -> Value {
+        Value::string(self.filter_value_bytes(value))
+    }
+
+    fn filter_value_bytes(&self, value: &str) -> Vec<u8> {
         match self.default_filter {
-            RuntimeInputFilter::UnsafeRaw => Value::string(filter_unsafe_raw_input(
-                value,
-                self.default_input_filter_flags(),
-            )),
-            RuntimeInputFilter::Stripped => Value::string(encode_input_stripped(value)),
-            RuntimeInputFilter::SpecialChars => Value::string(encode_input_special_chars(value)),
+            RuntimeInputFilter::UnsafeRaw => {
+                filter_unsafe_raw_input(value, self.default_input_filter_flags())
+            }
+            RuntimeInputFilter::Stripped => encode_input_stripped(value),
+            RuntimeInputFilter::SpecialChars => encode_input_special_chars(value),
         }
     }
 
     fn default_input_filter_flags(&self) -> i64 {
         self.default_filter_flags
+    }
+}
+
+#[cfg(feature = "full-runtime")]
+fn native_input_key(key: &ArrayKey) -> NativeInputKey {
+    match key {
+        ArrayKey::Int(value) => NativeInputKey::Int(*value),
+        ArrayKey::String(value) => NativeInputKey::String(value.as_bytes().to_vec()),
     }
 }
 

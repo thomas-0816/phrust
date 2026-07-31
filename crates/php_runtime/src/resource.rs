@@ -387,6 +387,7 @@ struct ResourceState {
     flags: StreamFlags,
     metadata: StreamMetadata,
     user_closable: bool,
+    read_eof: bool,
     read_filters: Vec<StreamFilterSpec>,
     write_filters: Vec<StreamFilterSpec>,
     data: StreamData,
@@ -403,6 +404,9 @@ struct StreamFilterSpec {
 enum StreamFilterKind {
     ZlibDeflate,
     ZlibInflate,
+    StringRot13,
+    StringToUpper,
+    StringToLower,
 }
 
 impl StreamFilterKind {
@@ -410,6 +414,9 @@ impl StreamFilterKind {
         match name.to_ascii_lowercase().as_str() {
             "zlib.deflate" => Some(Self::ZlibDeflate),
             "zlib.inflate" => Some(Self::ZlibInflate),
+            "string.rot13" => Some(Self::StringRot13),
+            "string.toupper" => Some(Self::StringToUpper),
+            "string.tolower" => Some(Self::StringToLower),
             _ => None,
         }
     }
@@ -429,6 +436,7 @@ enum StreamData {
         path: PathBuf,
         buffer: Vec<u8>,
         cursor: usize,
+        delete_on_close: bool,
     },
     GzipFile {
         path: PathBuf,
@@ -447,7 +455,11 @@ enum StreamData {
         cursor: usize,
     },
     Context {
-        options: PhpArray,
+        /// Baseline-only compatibility snapshot. Optimizing execution keeps
+        /// the authoritative option graph in its request-owned native arena
+        /// and materializes this sidecar only for one explicit baseline
+        /// continuation.
+        baseline_options: Option<PhpArray>,
     },
     FileInfo {
         flags: i64,
@@ -480,6 +492,7 @@ impl ResourceRef {
             flags,
             metadata,
             user_closable: true,
+            read_eof: false,
             read_filters: Vec::new(),
             write_filters: Vec::new(),
             data,
@@ -562,6 +575,25 @@ impl ResourceRef {
         self.0.borrow().user_closable
     }
 
+    /// Marks a local plain-file stream as owning an anonymous temporary path.
+    ///
+    /// The path is removed by the authoritative stream close operation,
+    /// including request finalization. Other stream kinds cannot acquire this
+    /// ownership mode.
+    #[doc(hidden)]
+    pub fn mark_delete_on_close(&self) -> bool {
+        let mut state = self.0.borrow_mut();
+        match &mut state.data {
+            StreamData::File {
+                delete_on_close, ..
+            } => {
+                *delete_on_close = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Writes bytes into writable in-memory, temp, stdio, or file-backed buffers.
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<usize, StreamOpenError> {
         let mut state = self.0.borrow_mut();
@@ -636,22 +668,30 @@ impl ResourceRef {
             ));
         }
         let filters = state.read_filters.clone();
+        let mut reached_eof = false;
         let bytes = match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
             | StreamData::File { buffer, cursor, .. }
             | StreamData::GzipFile { buffer, cursor, .. } => {
                 if *cursor >= buffer.len() {
-                    return apply_stream_filters(&filters, Vec::new());
+                    reached_eof = true;
+                    Ok(Vec::new())
+                } else {
+                    let remaining = buffer.len() - *cursor;
+                    reached_eof = length > remaining;
+                    let end = (*cursor).saturating_add(length).min(buffer.len());
+                    let bytes = buffer[*cursor..end].to_vec();
+                    *cursor = end;
+                    Ok(bytes)
                 }
-                let end = (*cursor).saturating_add(length).min(buffer.len());
-                let bytes = buffer[*cursor..end].to_vec();
-                *cursor = end;
-                Ok(bytes)
             }
             StreamData::StandardDevice {
                 kind: StandardDeviceKind::Null,
-            } => Ok(Vec::new()),
+            } => {
+                reached_eof = true;
+                Ok(Vec::new())
+            }
             StreamData::StandardDevice {
                 kind: StandardDeviceKind::Zero | StandardDeviceKind::Full,
             } => Ok(vec![0; length]),
@@ -664,11 +704,26 @@ impl ResourceRef {
                 "directory resource is not byte-readable",
             )),
         }?;
+        state.read_eof = reached_eof;
         apply_stream_filters(&filters, bytes)
     }
 
     /// Reads one line, including the trailing newline when present.
     pub fn read_line(&self) -> Result<Vec<u8>, StreamOpenError> {
+        self.read_line_limit(None)
+    }
+
+    /// Reads at most `maximum` bytes of one line.
+    ///
+    /// PHP's `fgets($stream, $length)` exposes at most `length - 1` bytes and
+    /// advances the cursor only by the bytes returned. Exact native and
+    /// baseline-native execution share this authoritative cursor operation.
+    #[doc(hidden)]
+    pub fn read_line_bounded(&self, maximum: usize) -> Result<Vec<u8>, StreamOpenError> {
+        self.read_line_limit(Some(maximum))
+    }
+
+    fn read_line_limit(&self, maximum: Option<usize>) -> Result<Vec<u8>, StreamOpenError> {
         let mut state = self.0.borrow_mut();
         if state.kind == ResourceKind::Closed {
             return Err(StreamOpenError::new(
@@ -683,22 +738,30 @@ impl ResourceRef {
             ));
         }
         let filters = state.read_filters.clone();
+        let mut reached_eof = false;
         let bytes = match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
             | StreamData::File { buffer, cursor, .. }
             | StreamData::GzipFile { buffer, cursor, .. } => {
                 let remaining = &buffer[*cursor..];
-                let len = php_source::byte_kernel::find_byte(remaining, b'\n')
-                    .map_or(remaining.len(), |index| index + 1);
+                let newline = php_source::byte_kernel::find_byte(remaining, b'\n');
+                let mut len = newline.map_or(remaining.len(), |index| index + 1);
+                if let Some(maximum) = maximum {
+                    len = len.min(maximum);
+                }
                 let end = *cursor + len;
+                reached_eof = newline.is_none() && end >= buffer.len();
                 let bytes = buffer[*cursor..end].to_vec();
                 *cursor = end;
                 Ok(bytes)
             }
             StreamData::StandardDevice {
                 kind: StandardDeviceKind::Null,
-            } => Ok(Vec::new()),
+            } => {
+                reached_eof = true;
+                Ok(Vec::new())
+            }
             StreamData::StandardDevice { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_UNBOUNDED_DEVICE_READ",
                 "line reads from an unbounded standard device are unsupported",
@@ -712,6 +775,7 @@ impl ResourceRef {
                 "directory resource is not line-readable",
             )),
         }?;
+        state.read_eof = reached_eof;
         apply_stream_filters(&filters, bytes)
     }
 
@@ -731,6 +795,7 @@ impl ResourceRef {
             ));
         }
         let filters = state.read_filters.clone();
+        let mut reached_eof = false;
         let bytes = match &mut state.data {
             StreamData::Memory { buffer, cursor }
             | StreamData::Stdio { buffer, cursor }
@@ -738,11 +803,15 @@ impl ResourceRef {
             | StreamData::GzipFile { buffer, cursor, .. } => {
                 let bytes = buffer.get(*cursor..).unwrap_or_default().to_vec();
                 *cursor = buffer.len();
+                reached_eof = true;
                 Ok(bytes)
             }
             StreamData::StandardDevice {
                 kind: StandardDeviceKind::Null,
-            } => Ok(Vec::new()),
+            } => {
+                reached_eof = true;
+                Ok(Vec::new())
+            }
             StreamData::StandardDevice { .. } => Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_UNBOUNDED_DEVICE_READ",
                 "read-to-end from an unbounded standard device is unsupported",
@@ -756,6 +825,7 @@ impl ResourceRef {
                 "directory resource is not byte-readable",
             )),
         }?;
+        state.read_eof = reached_eof;
         apply_stream_filters(&filters, bytes)
     }
 
@@ -832,6 +902,7 @@ impl ResourceRef {
                 ));
             }
         }
+        state.read_eof = false;
         Ok(())
     }
 
@@ -913,22 +984,77 @@ impl ResourceRef {
             ));
         }
         Ok(match &state.data {
-            StreamData::Memory { buffer, cursor }
-            | StreamData::Stdio { buffer, cursor }
-            | StreamData::File { buffer, cursor, .. }
-            | StreamData::GzipFile { buffer, cursor, .. } => *cursor >= buffer.len(),
+            StreamData::Memory { .. }
+            | StreamData::Stdio { .. }
+            | StreamData::File { .. }
+            | StreamData::GzipFile { .. }
+            | StreamData::StandardDevice { .. } => state.read_eof,
             StreamData::Directory {
                 entries, cursor, ..
             } => *cursor >= entries.len(),
-            StreamData::StandardDevice {
-                kind: StandardDeviceKind::Null,
-            } => true,
-            StreamData::StandardDevice { .. } => false,
             StreamData::Context { .. }
             | StreamData::FileInfo { .. }
             | StreamData::SocketServer { .. }
             | StreamData::StreamFilter { .. } => true,
         })
+    }
+
+    /// Captures the authoritative byte cursor for an exact native read.
+    ///
+    /// This is an engine transaction primitive, not a PHP stream operation:
+    /// it also supports internally buffered non-seekable streams so a failed
+    /// native result publication can restore state before the callsite takes
+    /// its single baseline continuation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_read_cursor_checkpoint(&self) -> Option<(usize, bool)> {
+        let state = self.0.borrow();
+        if state.kind == ResourceKind::Closed {
+            return None;
+        }
+        match &state.data {
+            StreamData::Memory { cursor, .. }
+            | StreamData::Stdio { cursor, .. }
+            | StreamData::File { cursor, .. }
+            | StreamData::GzipFile { cursor, .. } => Some((*cursor, state.read_eof)),
+            StreamData::StandardDevice { .. } => Some((0, state.read_eof)),
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
+            | StreamData::StreamFilter { .. } => None,
+        }
+    }
+
+    /// Restores a cursor captured by `native_read_cursor_checkpoint`.
+    ///
+    /// This deliberately bypasses PHP's seekability flag: it only rolls back
+    /// an unpublished exact native read and is never exposed as userland seek.
+    #[doc(hidden)]
+    pub fn restore_native_read_cursor(&self, checkpoint: (usize, bool)) -> bool {
+        let mut state = self.0.borrow_mut();
+        if state.kind == ResourceKind::Closed {
+            return false;
+        }
+        match &mut state.data {
+            StreamData::Memory { cursor, .. }
+            | StreamData::Stdio { cursor, .. }
+            | StreamData::File { cursor, .. }
+            | StreamData::GzipFile { cursor, .. } => {
+                *cursor = checkpoint.0;
+                state.read_eof = checkpoint.1;
+                true
+            }
+            StreamData::StandardDevice { .. } => {
+                state.read_eof = checkpoint.1;
+                true
+            }
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. }
+            | StreamData::SocketServer { .. }
+            | StreamData::StreamFilter { .. } => false,
+        }
     }
 
     /// Reads the next directory entry name from a directory resource.
@@ -957,6 +1083,35 @@ impl ResourceRef {
         }
     }
 
+    /// Captures the directory cursor before an exact native read.
+    #[must_use]
+    pub fn native_directory_cursor_checkpoint(&self) -> Option<usize> {
+        let state = self.0.borrow();
+        match &state.data {
+            StreamData::Directory { cursor, .. } if state.kind != ResourceKind::Closed => {
+                Some(*cursor)
+            }
+            _ => None,
+        }
+    }
+
+    /// Restores a directory cursor when native result publication fails.
+    pub fn restore_native_directory_cursor(&self, checkpoint: usize) -> bool {
+        let mut state = self.0.borrow_mut();
+        if state.kind == ResourceKind::Closed {
+            return false;
+        }
+        match &mut state.data {
+            StreamData::Directory {
+                entries, cursor, ..
+            } if checkpoint <= entries.len() => {
+                *cursor = checkpoint;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Rewinds a directory resource to the first entry.
     pub fn rewind_dir(&self) -> Result<(), StreamOpenError> {
         let mut state = self.0.borrow_mut();
@@ -982,10 +1137,40 @@ impl ResourceRef {
     pub fn context_options(&self) -> Option<PhpArray> {
         let state = self.0.borrow();
         match &state.data {
-            StreamData::Context { options } if state.kind != ResourceKind::Closed => {
-                Some(options.clone())
+            StreamData::Context { baseline_options } if state.kind != ResourceKind::Closed => {
+                baseline_options.clone()
             }
             _ => None,
+        }
+    }
+
+    /// Publishes one baseline-only compatibility snapshot for this context.
+    ///
+    /// Native execution owns context options separately and uses this method
+    /// only while crossing its single baseline continuation.
+    pub fn replace_context_options(&self, options: PhpArray) -> Result<(), StreamOpenError> {
+        let mut state = self.0.borrow_mut();
+        if state.kind == ResourceKind::Closed {
+            return Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_CLOSED",
+                "cannot update a closed stream context",
+            ));
+        }
+        let StreamData::Context { baseline_options } = &mut state.data else {
+            return Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_NOT_CONTEXT",
+                "resource is not a stream context",
+            ));
+        };
+        *baseline_options = Some(options);
+        Ok(())
+    }
+
+    /// Drops the baseline compatibility snapshot after native republication.
+    pub fn clear_context_options(&self) {
+        let mut state = self.0.borrow_mut();
+        if let StreamData::Context { baseline_options } = &mut state.data {
+            *baseline_options = None;
         }
     }
 
@@ -1003,12 +1188,13 @@ impl ResourceRef {
                 "cannot update a closed stream context",
             ));
         }
-        let StreamData::Context { options } = &mut state.data else {
+        let StreamData::Context { baseline_options } = &mut state.data else {
             return Err(StreamOpenError::new(
                 "E_PHP_RUNTIME_STREAM_NOT_CONTEXT",
                 "resource is not a stream context",
             ));
         };
+        let options = baseline_options.get_or_insert_with(PhpArray::new);
         let wrapper = wrapper.into();
         let option = option.into();
         let wrapper_key = ArrayKey::String(PhpString::from_test_str(&wrapper));
@@ -1095,7 +1281,19 @@ impl ResourceRef {
             return false;
         }
         let _ = flush_file_data(&state.data);
+        let delete_path = match &state.data {
+            StreamData::File {
+                path,
+                delete_on_close: true,
+                ..
+            } => Some(path.clone()),
+            _ => None,
+        };
         state.kind = ResourceKind::Closed;
+        drop(state);
+        if let Some(path) = delete_path {
+            let _ = std::fs::remove_file(path);
+        }
         true
     }
 }
@@ -1227,6 +1425,7 @@ impl ResourceTable {
             flags: StreamFlags::new(true, false, true),
             metadata: StreamMetadata::new("plainfile", "stream", "r", uri),
             user_closable: true,
+            read_eof: false,
             read_filters: Vec::new(),
             write_filters: Vec::new(),
             data: StreamData::Directory {
@@ -1241,6 +1440,16 @@ impl ResourceTable {
 
     /// Registers a stream context resource.
     pub fn register_stream_context(&mut self, options: PhpArray) -> ResourceRef {
+        self.register_stream_context_data(Some(options))
+    }
+
+    /// Registers a context whose authoritative options live in the native
+    /// request arena. No Rust `Value` or `PhpArray` is constructed.
+    pub fn register_native_stream_context(&mut self) -> ResourceRef {
+        self.register_stream_context_data(None)
+    }
+
+    fn register_stream_context_data(&mut self, baseline_options: Option<PhpArray>) -> ResourceRef {
         let id = ResourceId::new(self.next_id);
         self.next_id += 1;
         let resource = ResourceRef(Rc::new(RefCell::new(ResourceState {
@@ -1249,9 +1458,10 @@ impl ResourceTable {
             flags: StreamFlags::new(false, false, false),
             metadata: StreamMetadata::new("PHP", "stream-context", "", "stream-context"),
             user_closable: true,
+            read_eof: false,
             read_filters: Vec::new(),
             write_filters: Vec::new(),
-            data: StreamData::Context { options },
+            data: StreamData::Context { baseline_options },
         })));
         self.resources.insert(id, resource.clone());
         resource
@@ -1267,6 +1477,7 @@ impl ResourceTable {
             flags: StreamFlags::new(false, false, false),
             metadata: StreamMetadata::new("fileinfo", "file_info", "", "fileinfo"),
             user_closable: true,
+            read_eof: false,
             read_filters: Vec::new(),
             write_filters: Vec::new(),
             data: StreamData::FileInfo { flags, magic_file },
@@ -1285,6 +1496,7 @@ impl ResourceTable {
             flags: StreamFlags::new(true, false, false),
             metadata: StreamMetadata::new("glob", "stream", "r", pattern),
             user_closable: false,
+            read_eof: false,
             read_filters: Vec::new(),
             write_filters: Vec::new(),
             data: StreamData::Memory {
@@ -1342,6 +1554,7 @@ impl ResourceTable {
             flags: StreamFlags::new(false, false, false),
             metadata: StreamMetadata::new("PHP", "stream filter", "", name.clone()),
             user_closable: false,
+            read_eof: false,
             read_filters: Vec::new(),
             write_filters: Vec::new(),
             data: StreamData::StreamFilter {
@@ -1555,6 +1768,7 @@ fn open_file_stream(
             path: normalized,
             buffer,
             cursor,
+            delete_on_close: false,
         },
     ))
 }
@@ -1673,6 +1887,24 @@ fn apply_stream_filters(
         bytes = match filter.kind {
             StreamFilterKind::ZlibDeflate => zlib_deflate_filter(&bytes, &filter.name)?,
             StreamFilterKind::ZlibInflate => zlib_inflate_filter(&bytes, &filter.name)?,
+            StreamFilterKind::StringRot13 => {
+                for byte in &mut bytes {
+                    *byte = match *byte {
+                        b'a'..=b'm' | b'A'..=b'M' => *byte + 13,
+                        b'n'..=b'z' | b'N'..=b'Z' => *byte - 13,
+                        byte => byte,
+                    };
+                }
+                bytes
+            }
+            StreamFilterKind::StringToUpper => {
+                bytes.make_ascii_uppercase();
+                bytes
+            }
+            StreamFilterKind::StringToLower => {
+                bytes.make_ascii_lowercase();
+                bytes
+            }
         };
     }
     Ok(bytes)
@@ -1807,6 +2039,45 @@ mod tests {
             resource.rewind().expect("rewind");
             assert_eq!(resource.read_to_end().expect("read"), b"stdlib");
         }
+    }
+
+    #[test]
+    fn byte_stream_eof_and_native_cursor_rollback_match_php_reads() {
+        let registry = StreamWrapperRegistry::new();
+        let capabilities = FilesystemCapabilities::none();
+        let mut table = ResourceTable::new();
+        let resource = registry
+            .open(
+                &mut table,
+                "php://memory",
+                "w+",
+                Path::new("."),
+                &capabilities,
+                &[],
+            )
+            .expect("php memory opens");
+        resource.write_bytes(b"abc\n").expect("write");
+        resource.rewind().expect("rewind");
+
+        assert_eq!(resource.read_bytes(4).expect("exact read"), b"abc\n");
+        assert!(!resource.eof().expect("exact read does not probe past eof"));
+        assert_eq!(resource.read_bytes(1).expect("past-end read"), b"");
+        assert!(resource.eof().expect("past-end read sets eof"));
+
+        resource.rewind().expect("rewind clears eof");
+        assert!(!resource.eof().expect("rewind eof"));
+        assert_eq!(resource.read_line_bounded(2).expect("bounded line"), b"ab");
+        assert_eq!(resource.tell().expect("bounded cursor"), 2);
+        assert!(!resource.eof().expect("bounded read eof"));
+
+        let checkpoint = resource
+            .native_read_cursor_checkpoint()
+            .expect("native cursor checkpoint");
+        assert_eq!(resource.read_to_end().expect("remaining read"), b"c\n");
+        assert!(resource.eof().expect("read-to-end eof"));
+        assert!(resource.restore_native_read_cursor(checkpoint));
+        assert_eq!(resource.tell().expect("restored cursor"), 2);
+        assert!(!resource.eof().expect("restored eof"));
     }
 
     #[test]

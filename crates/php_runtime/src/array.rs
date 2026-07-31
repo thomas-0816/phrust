@@ -92,6 +92,13 @@ impl ArrayKey {
         }
     }
 
+    /// Normalizes owned bytes without requiring native callers to construct
+    /// or import the Rust string facade themselves.
+    #[must_use]
+    pub fn from_bytes(value: Vec<u8>) -> Self {
+        Self::from_php_string(PhpString::from_bytes(value))
+    }
+
     /// Returns the integer key when present.
     #[must_use]
     pub const fn as_int(&self) -> Option<i64> {

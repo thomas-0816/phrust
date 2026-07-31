@@ -53,6 +53,20 @@ jq -e '
     exit 1
 }
 
+# A direct linked callee may enter one baseline-native semantic continuation.
+# The continuation metadata belongs to the callee artifact even though the
+# complete cold unit state remains installed for its caller.
+linked_semantic_output="$OUT_DIR/native-linked-semantic-dispatch.out"
+"$VM" run --native-cache off \
+    tests/fixtures/performance/native_tier/linked_semantic_dispatch.php \
+    >"$linked_semantic_output"
+cmp -s \
+    tests/fixtures/performance/native_tier/linked_semantic_dispatch.php.out \
+    "$linked_semantic_output" || {
+    printf '%s\n' '[fail] linked semantic dispatch did not use callee unit metadata' >&2
+    exit 1
+}
+
 # Positional by-value builtins call the stable-ID helper directly. The former
 # generic call-frame path wrote 512000 bytes for this fixture; the direct ABI
 # publishes only the 32000 bytes of actual i64 arguments.

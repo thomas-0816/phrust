@@ -1232,20 +1232,7 @@ pub(in crate::builtins::modules) fn builtin_session_name(
 }
 
 fn session_name_is_valid(name: &str) -> bool {
-    !name.is_empty()
-        && !name.as_bytes().contains(&0)
-        && !session_name_is_numeric(name)
-        && !name.bytes().any(|byte| {
-            matches!(
-                byte,
-                b'=' | b',' | b';' | b'.' | b'[' | b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c
-            )
-        })
-}
-
-fn session_name_is_numeric(name: &str) -> bool {
-    let trimmed = name.trim();
-    !trimmed.is_empty() && trimmed.parse::<f64>().is_ok()
+    crate::session::native_session_name_is_valid(name)
 }
 
 pub(in crate::builtins::modules) fn builtin_session_module_name(

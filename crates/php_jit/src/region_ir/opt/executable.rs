@@ -264,7 +264,9 @@ fn hoist_loop_invariants(region: &mut RegionGraph, report: &mut ExecutableOptRep
 const fn instruction_is_motion_barrier(kind: &RegionInstructionKind) -> bool {
     matches!(
         kind,
-        RegionInstructionKind::NativeCall(_)
+        RegionInstructionKind::ArrayCallback(_)
+            | RegionInstructionKind::PregCallbackArray(_)
+            | RegionInstructionKind::NativeCall(_)
             | RegionInstructionKind::NativeControl(_)
             | RegionInstructionKind::NativeSuspend(_)
             | RegionInstructionKind::NativeDynamicCode(_)
@@ -387,6 +389,7 @@ fn instruction_is_licm_safe_scalar(
 const fn instruction_result_register(kind: &RegionInstructionKind) -> Option<php_ir::RegId> {
     match kind {
         RegionInstructionKind::Move { dst, .. }
+        | RegionInstructionKind::LoadLocal { dst, .. }
         | RegionInstructionKind::Binary { dst, .. }
         | RegionInstructionKind::Unary { dst, .. }
         | RegionInstructionKind::Compare { dst, .. }
@@ -398,23 +401,52 @@ const fn instruction_result_register(kind: &RegionInstructionKind) -> Option<php
 fn eliminate_dead_moves(region: &mut RegionGraph, report: &mut ExecutableOptReport) {
     loop {
         let classes = infer_register_classes(region);
-        let used = region
+        let reference_shadow_loads = region
             .blocks
             .iter()
-            .flat_map(|block| {
-                block
-                    .instructions
-                    .iter()
-                    .flat_map(super::super::RegionInstruction::register_uses)
-                    .chain(block.terminator.register_uses())
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| {
+                let RegionInstructionKind::NativeCall(call) = &instruction.kind else {
+                    return None;
+                };
+                Some(call.args.iter().filter_map(|argument| {
+                    (argument.value_kind
+                        == php_ir::instruction::IrCallArgValueKind::ByRefLocationPlaceholder
+                        && argument.by_ref_local.is_some())
+                    .then_some(argument.value)
+                    .and_then(|operand| match operand {
+                        php_ir::Operand::Register(register) => Some(register),
+                        php_ir::Operand::Local(_) | php_ir::Operand::Constant(_) => None,
+                    })
+                }))
             })
+            .flatten()
             .collect::<BTreeSet<_>>();
+        let mut used = BTreeSet::new();
+        for block in &region.blocks {
+            used.extend(block.terminator.register_uses());
+            used.extend(block.terminator_live_registers.iter().flatten().copied());
+            for instruction in &block.instructions {
+                used.extend(instruction.register_uses());
+                used.extend(
+                    instruction
+                        .transition_live_registers
+                        .iter()
+                        .flatten()
+                        .copied(),
+                );
+            }
+        }
         let mut removed = 0_u64;
         for block in &mut region.blocks {
             block.instructions.retain(|instruction| {
                 let dead = instruction_result_register(&instruction.kind).is_some_and(|dst| {
                     !used.contains(&dst)
                         && (matches!(instruction.kind, RegionInstructionKind::Move { .. })
+                            || (matches!(
+                                instruction.kind,
+                                RegionInstructionKind::LoadLocal { .. }
+                            ) && reference_shadow_loads.contains(&dst))
                             || instruction_is_dce_safe_scalar(&instruction.kind, &classes))
                 });
                 removed = removed.saturating_add(u64::from(dead));
@@ -619,7 +651,9 @@ fn operand_class(
             Some(super::super::SsaValueClass::Bool)
         }
         RegionOperand::Register(register) => classes.get(&register).copied(),
-        RegionOperand::Local(_) | RegionOperand::Constant(_) => None,
+        RegionOperand::Local(_)
+        | RegionOperand::Constant(_)
+        | RegionOperand::LinkedConstant { .. } => None,
     }
 }
 
@@ -635,6 +669,12 @@ fn resolve(
 
 const fn is_immediate(operand: RegionOperand) -> bool {
     matches!(operand, RegionOperand::I64(_) | RegionOperand::Constant(_))
+}
+
+fn folded_immediate_integer(value: i64) -> Option<RegionOperand> {
+    (crate::jit_decode_runtime_value(value).is_none()
+        && crate::jit_decode_constant(value).is_none())
+    .then_some(RegionOperand::I64(value))
 }
 
 fn fold_binary(
@@ -661,7 +701,7 @@ fn fold_binary(
         | RegionBinaryOp::ShiftLeft
         | RegionBinaryOp::ShiftRight => return None,
     };
-    Some(RegionOperand::I64(value))
+    folded_immediate_integer(value)
 }
 
 fn fold_unary(op: RegionUnaryOp, src: RegionOperand) -> Option<RegionOperand> {
@@ -670,8 +710,8 @@ fn fold_unary(op: RegionUnaryOp, src: RegionOperand) -> Option<RegionOperand> {
     };
     match op {
         RegionUnaryOp::Plus => Some(RegionOperand::I64(src)),
-        RegionUnaryOp::Minus => src.checked_neg().map(RegionOperand::I64),
-        RegionUnaryOp::BitNot => Some(RegionOperand::I64(!src)),
+        RegionUnaryOp::Minus => src.checked_neg().and_then(folded_immediate_integer),
+        RegionUnaryOp::BitNot => folded_immediate_integer(!src),
         RegionUnaryOp::Not => Some(encoded_bool(src == 0)),
     }
 }
@@ -735,10 +775,38 @@ const fn immediate_truthy(value: RegionOperand) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use php_ir::{
-        BinaryOp, FunctionFlags, InstructionKind, IrBuilder, IrConstant, IrSpan, Operand, UnitId,
+        BinaryOp, FunctionFlags, FunctionId, InstructionKind, IrBuilder, IrConstant, IrSpan,
+        Operand, RegId, UnitId,
     };
 
     use super::*;
+
+    #[test]
+    fn array_callbacks_are_optimizer_motion_barriers() {
+        let callback =
+            RegionInstructionKind::ArrayCallback(crate::region_ir::RegionArrayCallbackCall {
+                result: RegId::new(1),
+                operation: crate::region_ir::RegionArrayCallbackOperation::Map,
+                callback: crate::region_ir::RegionArrayCallbackTarget::Stable(
+                    crate::region_ir::RegionStableCallback {
+                        name: "callback".to_owned(),
+                        function: Some(FunctionId::new(1)),
+                        receiver: None,
+                        closure: None,
+                        bound_object_count: 0,
+                        capture_count: 0,
+                        returns_int: false,
+                        returns_string: false,
+                        returns_releasable_scalar: false,
+                    },
+                ),
+                arrays: vec![RegionOperand::Register(RegId::new(0))],
+                initial: None,
+                mutable_local: None,
+                caller_strict_types: false,
+            });
+        assert!(instruction_is_motion_barrier(&callback));
+    }
 
     #[test]
     fn executable_optimizer_folds_scalar_chain_and_branch() {
@@ -782,6 +850,33 @@ mod tests {
         ));
         assert!(
             matches!(region.blocks[0].terminator, RegionTerminator::Jump { target } if target == yes)
+        );
+    }
+
+    #[test]
+    fn integer_folding_never_produces_a_raw_native_handle_collision() {
+        let constant_tag = crate::JIT_VALUE_CONSTANT_TAG as i64;
+        assert_eq!(
+            fold_binary(
+                RegionBinaryOp::Add,
+                RegionOperand::I64(constant_tag - 1),
+                RegionOperand::I64(1),
+            ),
+            None,
+        );
+
+        let runtime_tag = crate::JIT_VALUE_RUNTIME_TAG as i64;
+        assert_eq!(
+            fold_binary(
+                RegionBinaryOp::Add,
+                RegionOperand::I64(runtime_tag - 1),
+                RegionOperand::I64(1),
+            ),
+            None,
+        );
+        assert_eq!(
+            fold_unary(RegionUnaryOp::BitNot, RegionOperand::I64(!runtime_tag),),
+            None,
         );
     }
 

@@ -1848,6 +1848,60 @@ impl LoweringContext<'_> {
                 );
                 continue;
             }
+            if let Some(target) = self.dynamic_property_dim_target(expr) {
+                if target.append {
+                    self.unsupported(
+                        UnsupportedFeature::HirStatement,
+                        self.span_for(SourceMappedId::from(expr)),
+                        "unset of append dynamic-property dimension is invalid",
+                    );
+                    continue;
+                }
+                let Some(object) =
+                    self.lower_expr_to_register(builder, function, current, target.receiver)
+                else {
+                    continue;
+                };
+                current = object.block;
+                let property_range = self.span_for(SourceMappedId::from(target.property));
+                let property_site = LowerSite {
+                    function,
+                    block: current,
+                    expr: target.property,
+                    span: span_from_range(self.file, property_range),
+                    range: property_range,
+                };
+                let Some(property) = self.lower_dynamic_member_name_to_register(
+                    builder,
+                    property_site,
+                    current,
+                    target.property,
+                ) else {
+                    continue;
+                };
+                current = property.block;
+                let mut dims = Vec::with_capacity(target.dims.len());
+                for dim in target.dims {
+                    let Some(dim_value) =
+                        self.lower_expr_to_register(builder, function, current, dim)
+                    else {
+                        continue;
+                    };
+                    current = dim_value.block;
+                    dims.push(Operand::Register(dim_value.register));
+                }
+                builder.emit(
+                    function,
+                    current,
+                    InstructionKind::UnsetDynamicPropertyDim {
+                        object: Operand::Register(object.register),
+                        property: Operand::Register(property.register),
+                        dims,
+                    },
+                    span,
+                );
+                continue;
+            }
             if let Some(target) = self.property_dim_target(expr) {
                 if target.append {
                     self.unsupported(

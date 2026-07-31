@@ -1,4 +1,5 @@
 <?php
+// runtime-semantics: expect=pass regression_category=refs-arrays reference_behavior=stdout:2:1:2:2:2:1:2 regression_case=native-by-ref-array-dimensions-local
 
 function increment_local_array_dimension(&$value) {
     $value++;

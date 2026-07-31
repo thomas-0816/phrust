@@ -961,6 +961,363 @@ fn display_width(value: &str) -> usize {
         .sum()
 }
 
+/// Exact mbstring operations used by native callsites.
+///
+/// These functions deliberately expose byte/string/scalar results rather than
+/// `Value`. Invalid encodings and exceptional argument shapes are reported as
+/// `None`, so the fixed handler can enter its one baseline continuation and
+/// preserve PHP's diagnostic text there.
+#[doc(hidden)]
+pub fn native_mb_canonical_encoding(encoding: &[u8]) -> Option<&'static str> {
+    let encoding = std::str::from_utf8(encoding).ok()?;
+    canonical_encoding(encoding)
+}
+
+#[doc(hidden)]
+pub fn native_mb_encoding_names() -> impl ExactSizeIterator<Item = &'static str> {
+    ENCODING_REGISTRY.iter().map(|spec| spec.list_name)
+}
+
+#[doc(hidden)]
+pub fn native_mb_encoding_aliases(encoding: &str) -> Option<&'static [&'static str]> {
+    canonical_encoding(encoding).map(encoding_aliases)
+}
+
+#[doc(hidden)]
+pub fn native_mb_detect_encoding<I, E>(bytes: &[u8], encodings: I) -> Option<Option<&'static str>>
+where
+    I: IntoIterator<Item = E>,
+    E: AsRef<str>,
+{
+    for encoding in encodings {
+        let canonical = canonical_encoding(encoding.as_ref())?;
+        if bytes_match_encoding(bytes, canonical) {
+            return Some(Some(canonical));
+        }
+    }
+    Some(None)
+}
+
+#[doc(hidden)]
+pub fn native_mb_check_encoding(bytes: &[u8], encoding: &str) -> Option<bool> {
+    let canonical = canonical_encoding(encoding)?;
+    Some(bytes_are_valid_for_encoding(bytes, canonical))
+}
+
+#[doc(hidden)]
+pub fn native_mb_convert_encoding(
+    bytes: &[u8],
+    to_encoding: &str,
+    from_encoding: &str,
+) -> Option<Vec<u8>> {
+    let to_encoding = canonical_encoding(to_encoding)?;
+    let from_encoding = canonical_encoding(from_encoding)?;
+    let text = decode_bytes("mb_convert_encoding", bytes, from_encoding).ok()?;
+    encode_text("mb_convert_encoding", &text, to_encoding).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_strlen(bytes: &[u8], encoding: &str) -> Option<i64> {
+    let canonical = canonical_encoding(encoding)?;
+    if canonical == "8BIT" {
+        return i64::try_from(bytes.len()).ok();
+    }
+    i64::try_from(
+        decode_bytes("mb_strlen", bytes, canonical)
+            .ok()?
+            .chars()
+            .count(),
+    )
+    .ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_convert_simple_case(
+    bytes: &[u8],
+    encoding: &str,
+    uppercase: bool,
+) -> Option<Vec<u8>> {
+    let canonical = canonical_encoding(encoding)?;
+    if canonical == "8BIT" {
+        return Some(bytes.to_vec());
+    }
+    let text = decode_bytes("mb_convert_case", bytes, canonical).ok()?;
+    let output = if uppercase {
+        text.chars()
+            .flat_map(char::to_uppercase)
+            .collect::<String>()
+    } else {
+        text.chars()
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    encode_text("mb_convert_case", &output, canonical).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_convert_case(bytes: &[u8], mode: i64, encoding: &str) -> Option<Vec<u8>> {
+    let canonical = canonical_encoding(encoding)?;
+    let text = decode_bytes("mb_convert_case", bytes, canonical).ok()?;
+    let output = match mode {
+        MB_CASE_UPPER | MB_CASE_UPPER_SIMPLE => text
+            .chars()
+            .flat_map(char::to_uppercase)
+            .collect::<String>(),
+        MB_CASE_LOWER | MB_CASE_LOWER_SIMPLE | MB_CASE_FOLD | MB_CASE_FOLD_SIMPLE => {
+            lowercase(&text)
+        }
+        MB_CASE_TITLE | MB_CASE_TITLE_SIMPLE => titlecase(&text),
+        _ => return None,
+    };
+    encode_text("mb_convert_case", &output, canonical).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_first_char_case(bytes: &[u8], encoding: &str, uppercase: bool) -> Option<Vec<u8>> {
+    let canonical = canonical_encoding(encoding)?;
+    let text = decode_bytes("mb_first_char_case", bytes, canonical).ok()?;
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return Some(Vec::new());
+    };
+    let mut output = String::new();
+    if uppercase {
+        output.extend(first.to_uppercase());
+    } else {
+        output.extend(first.to_lowercase());
+    }
+    output.push_str(chars.as_str());
+    encode_text("mb_first_char_case", &output, canonical).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_substr(
+    bytes: &[u8],
+    start: i64,
+    length: Option<i64>,
+    encoding: &str,
+) -> Option<Vec<u8>> {
+    let canonical = canonical_encoding(encoding)?;
+    if canonical == "8BIT" {
+        return Some(byte_substring(bytes, start, length));
+    }
+    let text = decode_bytes("mb_substr", bytes, canonical).ok()?;
+    let chars = text.char_indices().collect::<Vec<_>>();
+    let total = chars.len();
+    let start = normalize_character_offset(total, start);
+    if start >= total {
+        return Some(Vec::new());
+    }
+    let char_len = match length {
+        None => total - start,
+        Some(length) if length >= 0 => (length as usize).min(total - start),
+        Some(length) => (total - start).saturating_sub(length.unsigned_abs() as usize),
+    };
+    if char_len == 0 {
+        return Some(Vec::new());
+    }
+    let byte_start = chars[start].0;
+    let byte_end = chars
+        .get(start + char_len)
+        .map_or(text.len(), |(offset, _)| *offset);
+    encode_text("mb_substr", &text[byte_start..byte_end], canonical).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_strcut(
+    bytes: &[u8],
+    start: i64,
+    length: Option<i64>,
+    encoding: &str,
+) -> Option<Vec<u8>> {
+    let canonical = canonical_encoding(encoding)?;
+    if canonical == "8BIT" {
+        return Some(byte_substring(bytes, start, length));
+    }
+    let text = decode_bytes("mb_strcut", bytes, canonical).ok()?;
+    let total = bytes.len();
+    let byte_start = normalize_character_offset(total, start);
+    let byte_end = length
+        .map(|length| {
+            if length < 0 {
+                total.saturating_sub(length.unsigned_abs() as usize)
+            } else {
+                byte_start.saturating_add(length as usize).min(total)
+            }
+        })
+        .unwrap_or(total)
+        .min(total);
+    let mut output = String::new();
+    let mut cursor = 0usize;
+    for character in text.chars() {
+        let encoded = encode_text("mb_strcut", &character.to_string(), canonical).ok()?;
+        let next = cursor + encoded.len();
+        if cursor >= byte_start && next <= byte_end {
+            output.push(character);
+        }
+        cursor = next;
+    }
+    encode_text("mb_strcut", &output, canonical).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_strwidth(bytes: &[u8], encoding: &str) -> Option<i64> {
+    let canonical = canonical_encoding(encoding)?;
+    let text = decode_bytes("mb_strwidth", bytes, canonical).ok()?;
+    i64::try_from(display_width(&text)).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_strimwidth(
+    bytes: &[u8],
+    start: i64,
+    width: i64,
+    marker: &[u8],
+    encoding: &str,
+) -> Option<Vec<u8>> {
+    let width = usize::try_from(width).ok()?;
+    let canonical = canonical_encoding(encoding)?;
+    let text = decode_bytes("mb_strimwidth", bytes, canonical).ok()?;
+    let marker = decode_bytes("mb_strimwidth", marker, canonical).ok()?;
+    let output = trim_to_display_width(&text, start, width, &marker);
+    encode_text("mb_strimwidth", &output, canonical).ok()
+}
+
+fn native_mb_position_text(
+    haystack: &str,
+    needle: &str,
+    offset: i64,
+    case_insensitive: bool,
+    reverse: bool,
+) -> Option<Option<i64>> {
+    let total = haystack.chars().count();
+    if reverse {
+        let limit = validate_reverse_offset(total, offset, "mb_strrpos").ok()?;
+        if needle.is_empty() {
+            return Some(Some(if offset < 0 { limit } else { total } as i64));
+        }
+        let (haystack, needle) = if case_insensitive {
+            (lowercase(haystack), lowercase(needle))
+        } else {
+            (haystack.to_owned(), needle.to_owned())
+        };
+        return Some(
+            haystack
+                .match_indices(&needle)
+                .filter_map(|(byte_offset, _)| {
+                    let position = haystack[..byte_offset].chars().count();
+                    if offset >= 0 {
+                        (position >= limit).then_some(position)
+                    } else {
+                        (position <= limit).then_some(position)
+                    }
+                })
+                .last()
+                .and_then(|position| i64::try_from(position).ok()),
+        );
+    }
+    let haystack_chars = haystack.chars().collect::<Vec<_>>();
+    let start = validate_position_offset(haystack_chars.len(), offset, "mb_strpos").ok()?;
+    let tail = haystack_chars[start..].iter().collect::<String>();
+    let (tail, needle) = if case_insensitive {
+        (lowercase(&tail), lowercase(needle))
+    } else {
+        (tail, needle.to_owned())
+    };
+    Some(
+        tail.find(&needle).and_then(|byte_offset| {
+            i64::try_from(start + tail[..byte_offset].chars().count()).ok()
+        }),
+    )
+}
+
+#[doc(hidden)]
+pub fn native_mb_position(
+    haystack: &[u8],
+    needle: &[u8],
+    offset: i64,
+    encoding: &str,
+    case_insensitive: bool,
+    reverse: bool,
+) -> Option<Option<i64>> {
+    let canonical = canonical_encoding(encoding)?;
+    if canonical == "8BIT" {
+        let total = haystack.len();
+        let mut haystack = haystack.to_vec();
+        let mut needle = needle.to_vec();
+        if case_insensitive {
+            haystack.make_ascii_lowercase();
+            needle.make_ascii_lowercase();
+        }
+        if reverse {
+            let limit = validate_reverse_offset(total, offset, "mb_strrpos").ok()?;
+            if needle.is_empty() {
+                return Some(Some(if offset < 0 { limit } else { total } as i64));
+            }
+            return Some(
+                haystack
+                    .windows(needle.len())
+                    .enumerate()
+                    .filter_map(|(position, window)| {
+                        (window == needle.as_slice()
+                            && if offset >= 0 {
+                                position >= limit
+                            } else {
+                                position <= limit
+                            })
+                        .then_some(position)
+                    })
+                    .next_back()
+                    .and_then(|position| i64::try_from(position).ok()),
+            );
+        }
+        let start = validate_position_offset(total, offset, "mb_strpos").ok()?;
+        if needle.is_empty() {
+            return Some(Some(i64::try_from(start).ok()?));
+        }
+        return Some(
+            haystack[start..]
+                .windows(needle.len())
+                .position(|window| window == needle.as_slice())
+                .and_then(|position| i64::try_from(start + position).ok()),
+        );
+    }
+    let haystack = decode_bytes("mb_position", haystack, canonical).ok()?;
+    let needle = decode_bytes("mb_position", needle, canonical).ok()?;
+    native_mb_position_text(&haystack, &needle, offset, case_insensitive, reverse)
+}
+
+#[doc(hidden)]
+pub fn native_mb_substr_count(haystack: &[u8], needle: &[u8], encoding: &str) -> Option<i64> {
+    if needle.is_empty() {
+        return None;
+    }
+    let canonical = canonical_encoding(encoding)?;
+    let count = if canonical == "8BIT" {
+        non_overlapping_byte_count(haystack, needle)
+    } else {
+        let haystack = decode_bytes("mb_substr_count", haystack, canonical).ok()?;
+        let needle = decode_bytes("mb_substr_count", needle, canonical).ok()?;
+        non_overlapping_text_count(&haystack, &needle)
+    };
+    i64::try_from(count).ok()
+}
+
+#[doc(hidden)]
+pub fn native_mb_ord(bytes: &[u8], encoding: &str) -> Option<Option<i64>> {
+    let canonical = canonical_encoding(encoding)?;
+    let text = decode_bytes("mb_ord", bytes, canonical).ok()?;
+    Some(text.chars().next().map(|character| character as u32 as i64))
+}
+
+#[doc(hidden)]
+pub fn native_mb_chr(codepoint: i64, encoding: &str) -> Option<Vec<u8>> {
+    let codepoint = u32::try_from(codepoint).ok()?;
+    let character = char::from_u32(codepoint)?;
+    let canonical = canonical_encoding(encoding)?;
+    encode_text("mb_chr", &character.to_string(), canonical).ok()
+}
+
 fn trim_to_display_width(value: &str, start: i64, width: usize, marker: &str) -> String {
     let total_width = display_width(value);
     let start = if start < 0 {

@@ -237,7 +237,7 @@ def verify_lowering(failures: list[str]) -> None:
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
     instructions = [entry for entry in coverage.get("entries", []) if entry.get("kind") == "instruction"]
     terminators = [entry for entry in coverage.get("entries", []) if entry.get("kind") == "terminator"]
-    if len(instructions) != 101 or len(terminators) != 6:
+    if len(instructions) != 103 or len(terminators) != 6:
         failures.append(
             f"lowering manifest has {len(instructions)} instructions/{len(terminators)} terminators"
         )

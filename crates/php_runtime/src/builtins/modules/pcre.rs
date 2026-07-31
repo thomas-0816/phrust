@@ -74,15 +74,65 @@ exact_pcre_builtin!(exact_preg_last_error => preg_last_error);
 exact_pcre_builtin!(exact_preg_last_error_msg => preg_last_error_msg);
 
 #[derive(Debug)]
-pub struct NativePregMatchResult {
+pub struct NativePregPublishedMatch<T> {
     pub matched: bool,
-    pub captures: super::json::NativeJsonDecodedValue,
+    pub captures: Option<T>,
 }
 
 #[derive(Debug)]
-pub struct NativePregMatchAllResult {
+pub struct NativePregPublishedMatchAll<T> {
     pub count: i64,
-    pub captures: super::json::NativeJsonDecodedValue,
+    pub captures: Option<T>,
+}
+
+/// PCRE-specific extension of the structured native sink. Capture rows can
+/// publish both a named and numeric key for one owned value, while pattern
+/// order appends directly into independently growing native columns.
+#[doc(hidden)]
+pub trait NativePregCapturePublisher: super::json::NativeStructuredValuePublisher {
+    fn publish_preg_capture(
+        &mut self,
+        bytes: Option<&[u8]>,
+        offset: Option<i64>,
+        unmatched_as_null: bool,
+    ) -> Option<Self::Output>
+    where
+        Self: Sized,
+    {
+        let value = match bytes {
+            Some(bytes) => self.publish_string(bytes)?,
+            None if unmatched_as_null => self.publish_null()?,
+            None => self.publish_string(&[])?,
+        };
+        let Some(offset) = offset else {
+            return Some(value);
+        };
+        let mut value = Some(value);
+        self.publish_array_with(2, |publisher, index| match index {
+            0 => value.take(),
+            1 => publisher.publish_int(offset),
+            _ => None,
+        })
+    }
+
+    fn publish_preg_capture_row<'a, E>(
+        &mut self,
+        length: usize,
+        build: impl FnMut(&mut Self, usize) -> Result<(Option<&'a [u8]>, Self::Output), E>,
+    ) -> Result<Option<Self::Output>, E>
+    where
+        Self: Sized;
+
+    fn publish_preg_capture_columns<E>(
+        &mut self,
+        groups: usize,
+        build: impl FnOnce(
+            &mut Self,
+            &mut dyn FnMut(&mut Self, usize, Self::Output) -> Option<()>,
+        ) -> Result<(), E>,
+    ) -> Result<Option<Self::Output>, E>
+    where
+        Self: Sized;
 }
 
 #[derive(Debug)]
@@ -91,23 +141,174 @@ pub struct NativePregReplaceResult {
     pub count: i64,
 }
 
-#[derive(Debug)]
-pub struct NativePregReplaceManyResult {
-    pub values: Vec<Option<Vec<u8>>>,
-    pub count: i64,
+/// Typed outcome of preparing one native callback replacement plan.
+///
+/// `SemanticFailure` is PHP's normal `null` result with `preg_last_error`
+/// already updated. `Unsupported` is reserved for representation or
+/// publication failures that may take the one pre-effect baseline
+/// continuation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativePregCallbackPlanResult<T> {
+    Plan(T),
+    SemanticFailure,
+    Unsupported,
 }
 
-/// Runs `preg_match` over native bytes and returns a typed capture tree.
-/// Mixed named/MARK capture maps remain on the exact baseline continuation.
+/// Publishes the complete scalar `preg_replace_callback()` match plan without
+/// invoking or representing the PHP callback. Every outer row is
+/// `[start, end, captures]`; `captures` has the exact PHP-visible named and
+/// numeric capture layout. Generated code can therefore invoke one already
+/// prepared compiled callback per row and assemble the output without
+/// entering builtin dispatch or constructing a Rust `Value`.
 #[doc(hidden)]
-pub fn native_preg_match(
+pub fn native_preg_callback_plan_into<P: NativePregCapturePublisher>(
+    state: &mut crate::builtins::PcreRequestState,
+    limits: pcre::PcreMatchLimits,
+    pattern: &[u8],
+    subject: &[u8],
+    limit: i64,
+    flags: i64,
+    publisher: &mut P,
+) -> NativePregCallbackPlanResult<P::Output> {
+    let compiled = match state.cache_mut().compile_bytes_with_limits(pattern, limits) {
+        Ok(compiled) => compiled,
+        // Pattern-compilation failures emit a PHP warning. The caller may
+        // take its one baseline continuation only before callback effects.
+        Err(_) => return NativePregCallbackPlanResult::Unsupported,
+    };
+    let options = match state
+        .cache_mut()
+        .match_options_for_subject_bytes_at_offset(&compiled, subject, 0)
+    {
+        Ok(options) => options,
+        Err(error) => {
+            state
+                .last_error_mut()
+                .set(error.code(), pcre::preg_error_message(error.code()));
+            return NativePregCallbackPlanResult::SemanticFailure;
+        }
+    };
+    let mut emitted = 0i64;
+    let mut publication_failed = false;
+    let mut match_failure = None;
+    let published = publisher.publish_array_stream::<()>(|publisher, push| {
+        let walked = compiled.for_each_php_match_with_options(
+            subject,
+            0,
+            options,
+            |captures| {
+                let Some(full) = captures.get(0) else {
+                    return Ok(true);
+                };
+                if limit >= 0 && emitted >= limit {
+                    return Ok(false);
+                }
+                let capture_count = if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
+                    captures.len()
+                } else {
+                    (0..captures.len())
+                        .rev()
+                        .find(|index| captures.get(*index).is_some())
+                        .map_or(0, |index| index + 1)
+                };
+                let captures =
+                    match publisher.publish_preg_capture_row(capture_count, |publisher, index| {
+                        let capture = captures.get(index);
+                        let bytes =
+                            capture
+                                .as_ref()
+                                .map(|capture| capture.as_bytes())
+                                .or_else(|| {
+                                    (flags & pcre::PREG_UNMATCHED_AS_NULL == 0).then_some(&[][..])
+                                });
+                        let offset = (flags & pcre::PREG_OFFSET_CAPTURE != 0).then(|| {
+                            capture
+                                .as_ref()
+                                .map_or(-1, |capture| capture.start() as i64)
+                        });
+                        let value = publisher
+                            .publish_preg_capture(
+                                bytes,
+                                offset,
+                                flags & pcre::PREG_UNMATCHED_AS_NULL != 0,
+                            )
+                            .ok_or(())?;
+                        let name = compiled
+                            .capture_names()
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            .map(|name| name.as_bytes());
+                        Ok((name, value))
+                    }) {
+                        Ok(Some(captures)) => captures,
+                        Ok(None) | Err(()) => {
+                            publication_failed = true;
+                            return Ok(false);
+                        }
+                    };
+                let Some(start) = publisher.publish_int(full.start() as i64) else {
+                    publisher.rollback(captures);
+                    publication_failed = true;
+                    return Ok(false);
+                };
+                let Some(end) = publisher.publish_int(full.end() as i64) else {
+                    publisher.rollback(start);
+                    publisher.rollback(captures);
+                    publication_failed = true;
+                    return Ok(false);
+                };
+                let mut row = [Some(start), Some(end), Some(captures)];
+                let Some(row) =
+                    publisher.publish_array_with(row.len(), |_, index| row[index].take())
+                else {
+                    publication_failed = true;
+                    return Ok(false);
+                };
+                if push(publisher, row).is_none() {
+                    publication_failed = true;
+                    return Ok(false);
+                }
+                emitted += 1;
+                Ok(true)
+            },
+            std::convert::identity,
+        );
+        if let Err(error) = walked {
+            match_failure = Some(error);
+            Err(())
+        } else if publication_failed {
+            Err(())
+        } else {
+            Ok(())
+        }
+    });
+    if let Some(error) = match_failure {
+        state
+            .last_error_mut()
+            .set(error.code(), pcre::preg_error_message(error.code()));
+        return NativePregCallbackPlanResult::SemanticFailure;
+    }
+    let plan = match published {
+        Ok(Some(plan)) => plan,
+        Ok(None) | Err(()) => return NativePregCallbackPlanResult::Unsupported,
+    };
+    state.last_error_mut().clear();
+    NativePregCallbackPlanResult::Plan(plan)
+}
+
+/// Runs `preg_match` over native bytes and publishes each borrowed capture
+/// directly into the authoritative native sink.
+#[doc(hidden)]
+pub fn native_preg_match_into<P: NativePregCapturePublisher>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
     pattern: &[u8],
     subject: &[u8],
     flags: i64,
     offset: i64,
-) -> Result<Option<NativePregMatchResult>, BuiltinError> {
+    publish_captures: bool,
+    publisher: &mut P,
+) -> Result<Option<NativePregPublishedMatch<P::Output>>, BuiltinError> {
     validate_preg_offset_min("preg_match", offset)?;
     validate_preg_match_flags("preg_match", "#4 ($flags)", flags)?;
     let Some(start) = preg_match_offset(subject.len(), offset) else {
@@ -117,7 +318,15 @@ pub fn native_preg_match(
         Ok(compiled) => compiled,
         Err(_) => return Ok(None),
     };
-    if compiled.capture_names().iter().any(Option::is_some) {
+    let mut capture_names = std::collections::BTreeSet::new();
+    if compiled
+        .capture_names()
+        .iter()
+        .filter_map(Option::as_deref)
+        .any(|name| !capture_names.insert(name))
+    {
+        // Duplicate-name unmatched precedence is PHP-visible. Keep that rare
+        // PCRE extension shape at the one baseline continuation.
         return Ok(None);
     }
     let options = match state
@@ -132,10 +341,18 @@ pub fn native_preg_match(
         Err(_) => return Ok(None),
     };
     let Some(captures) = captures else {
+        let captures = if publish_captures {
+            match publisher.publish_preg_capture_row::<()>(0, |_, _| unreachable!()) {
+                Ok(Some(captures)) => Some(captures),
+                Ok(None) | Err(()) => return Ok(None),
+            }
+        } else {
+            None
+        };
         state.last_error_mut().clear();
-        return Ok(Some(NativePregMatchResult {
+        return Ok(Some(NativePregPublishedMatch {
             matched: false,
-            captures: super::json::NativeJsonDecodedValue::Array(Vec::new()),
+            captures,
         }));
     };
     if captures.mark().is_some() {
@@ -149,51 +366,52 @@ pub fn native_preg_match(
             .find(|index| captures.get(*index).is_some())
             .map_or(0, |index| index + 1)
     };
-    let mut output = Vec::with_capacity(count);
-    for index in 0..count {
-        let value = match captures.get(index) {
-            Some(capture) if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
-                super::json::NativeJsonDecodedValue::Array(vec![
-                    super::json::NativeJsonDecodedValue::String(capture.as_bytes().to_vec()),
-                    super::json::NativeJsonDecodedValue::Int(capture.start() as i64),
-                ])
-            }
-            Some(capture) => {
-                super::json::NativeJsonDecodedValue::String(capture.as_bytes().to_vec())
-            }
-            None if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
-                super::json::NativeJsonDecodedValue::Array(vec![
-                    if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
-                        super::json::NativeJsonDecodedValue::Null
-                    } else {
-                        super::json::NativeJsonDecodedValue::String(Vec::new())
-                    },
-                    super::json::NativeJsonDecodedValue::Int(-1),
-                ])
-            }
-            None if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 => {
-                super::json::NativeJsonDecodedValue::Null
-            }
-            None => super::json::NativeJsonDecodedValue::String(Vec::new()),
-        };
-        output.push(value);
-    }
+    let published = if publish_captures {
+        match publisher.publish_preg_capture_row(count, |publisher, index| {
+            let capture = captures.get(index);
+            let bytes = capture
+                .as_ref()
+                .map(|capture| capture.as_bytes())
+                .or_else(|| (flags & pcre::PREG_UNMATCHED_AS_NULL == 0).then_some(&[][..]));
+            let offset = (flags & pcre::PREG_OFFSET_CAPTURE != 0).then(|| {
+                capture
+                    .as_ref()
+                    .map_or(-1, |capture| capture.start() as i64)
+            });
+            let value = publisher
+                .publish_preg_capture(bytes, offset, flags & pcre::PREG_UNMATCHED_AS_NULL != 0)
+                .ok_or(())?;
+            let name = compiled
+                .capture_names()
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|name| name.as_bytes());
+            Ok((name, value))
+        }) {
+            Ok(Some(captures)) => Some(captures),
+            Ok(None) | Err(()) => return Ok(None),
+        }
+    } else {
+        None
+    };
     state.last_error_mut().clear();
-    Ok(Some(NativePregMatchResult {
+    Ok(Some(NativePregPublishedMatch {
         matched: true,
-        captures: super::json::NativeJsonDecodedValue::Array(output),
+        captures: published,
     }))
 }
 
 #[doc(hidden)]
-pub fn native_preg_match_all(
+pub fn native_preg_match_all_into<P: NativePregCapturePublisher>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
     pattern: &[u8],
     subject: &[u8],
     flags: i64,
     offset: i64,
-) -> Result<Option<NativePregMatchAllResult>, BuiltinError> {
+    publish_captures: bool,
+    publisher: &mut P,
+) -> Result<Option<NativePregPublishedMatchAll<P::Output>>, BuiltinError> {
     validate_preg_match_all_flags(flags)?;
     validate_preg_offset_min("preg_match_all", offset)?;
     let Some(start) = preg_match_offset(subject.len(), offset) else {
@@ -214,10 +432,10 @@ pub fn native_preg_match_all(
         Err(_) => return Ok(None),
     };
     let set_order = flags & pcre::PREG_SET_ORDER != 0;
-    let mut matches = Vec::new();
     let mut unsupported = false;
-    if compiled
-        .for_each_php_match_with_options(
+    let mut count = 0_i64;
+    let captures = if !publish_captures {
+        let walked = compiled.for_each_php_match_with_options(
             subject,
             start,
             options,
@@ -226,82 +444,142 @@ pub fn native_preg_match_all(
                     unsupported = true;
                     return Ok(false);
                 }
-                let count = if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 || !set_order {
-                    captures.len()
-                } else {
-                    (0..captures.len())
-                        .rev()
-                        .find(|index| captures.get(*index).is_some())
-                        .map_or(0, |index| index + 1)
-                };
-                let mut row = Vec::with_capacity(count);
-                for index in 0..count {
-                    let value = match captures.get(index) {
-                        Some(capture) if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
-                            super::json::NativeJsonDecodedValue::Array(vec![
-                                super::json::NativeJsonDecodedValue::String(
-                                    capture.as_bytes().to_vec(),
-                                ),
-                                super::json::NativeJsonDecodedValue::Int(capture.start() as i64),
-                            ])
-                        }
-                        Some(capture) => {
-                            super::json::NativeJsonDecodedValue::String(capture.as_bytes().to_vec())
-                        }
-                        None if flags & pcre::PREG_OFFSET_CAPTURE != 0 => {
-                            super::json::NativeJsonDecodedValue::Array(vec![
-                                if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
-                                    super::json::NativeJsonDecodedValue::Null
-                                } else {
-                                    super::json::NativeJsonDecodedValue::String(Vec::new())
-                                },
-                                super::json::NativeJsonDecodedValue::Int(-1),
-                            ])
-                        }
-                        None if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 => {
-                            super::json::NativeJsonDecodedValue::Null
-                        }
-                        None => super::json::NativeJsonDecodedValue::String(Vec::new()),
-                    };
-                    row.push(value);
-                }
-                matches.push(row);
+                count = count.saturating_add(1);
                 Ok(true)
             },
             std::convert::identity,
-        )
-        .is_err()
-    {
-        return Ok(None);
-    }
-    if unsupported {
-        return Ok(None);
-    }
-    let count = matches.len() as i64;
-    let captures = if set_order {
-        super::json::NativeJsonDecodedValue::Array(
-            matches
-                .into_iter()
-                .map(super::json::NativeJsonDecodedValue::Array)
-                .collect(),
-        )
+        );
+        if walked.is_err() || unsupported {
+            return Ok(None);
+        }
+        None
+    } else if set_order {
+        let mut publication_failed = false;
+        let published = publisher.publish_array_stream::<()>(|publisher, push| {
+            let walked = compiled.for_each_php_match_with_options(
+                subject,
+                start,
+                options,
+                |captures| {
+                    if captures.mark().is_some() {
+                        unsupported = true;
+                        return Ok(false);
+                    }
+                    let row_length = if flags & pcre::PREG_UNMATCHED_AS_NULL != 0 {
+                        captures.len()
+                    } else {
+                        (0..captures.len())
+                            .rev()
+                            .find(|index| captures.get(*index).is_some())
+                            .map_or(0, |index| index + 1)
+                    };
+                    let row = publisher.publish_preg_capture_row(row_length, |publisher, index| {
+                        let capture = captures.get(index);
+                        let bytes =
+                            capture
+                                .as_ref()
+                                .map(|capture| capture.as_bytes())
+                                .or_else(|| {
+                                    (flags & pcre::PREG_UNMATCHED_AS_NULL == 0).then_some(&[][..])
+                                });
+                        let offset = (flags & pcre::PREG_OFFSET_CAPTURE != 0).then(|| {
+                            capture
+                                .as_ref()
+                                .map_or(-1, |capture| capture.start() as i64)
+                        });
+                        publisher
+                            .publish_preg_capture(
+                                bytes,
+                                offset,
+                                flags & pcre::PREG_UNMATCHED_AS_NULL != 0,
+                            )
+                            .map(|value| (None, value))
+                            .ok_or(())
+                    });
+                    let row = match row {
+                        Ok(Some(row)) => row,
+                        Ok(None) | Err(()) => {
+                            publication_failed = true;
+                            return Ok(false);
+                        }
+                    };
+                    if push(publisher, row).is_none() {
+                        publication_failed = true;
+                        return Ok(false);
+                    }
+                    count = count.saturating_add(1);
+                    Ok(true)
+                },
+                std::convert::identity,
+            );
+            if walked.is_err() || unsupported || publication_failed {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        match published {
+            Ok(Some(captures)) => Some(captures),
+            Ok(None) | Err(()) => return Ok(None),
+        }
     } else {
         let groups = compiled.capture_names().len();
-        let mut columns = (0..groups).map(|_| Vec::new()).collect::<Vec<_>>();
-        for row in matches {
-            for (index, value) in row.into_iter().enumerate() {
-                columns[index].push(value);
+        let mut publication_failed = false;
+        let published = publisher.publish_preg_capture_columns::<()>(groups, |publisher, push| {
+            let walked = compiled.for_each_php_match_with_options(
+                subject,
+                start,
+                options,
+                |captures| {
+                    if captures.mark().is_some() {
+                        unsupported = true;
+                        return Ok(false);
+                    }
+                    for index in 0..groups {
+                        let capture = captures.get(index);
+                        let bytes =
+                            capture
+                                .as_ref()
+                                .map(|capture| capture.as_bytes())
+                                .or_else(|| {
+                                    (flags & pcre::PREG_UNMATCHED_AS_NULL == 0).then_some(&[][..])
+                                });
+                        let offset = (flags & pcre::PREG_OFFSET_CAPTURE != 0).then(|| {
+                            capture
+                                .as_ref()
+                                .map_or(-1, |capture| capture.start() as i64)
+                        });
+                        let Some(value) = publisher.publish_preg_capture(
+                            bytes,
+                            offset,
+                            flags & pcre::PREG_UNMATCHED_AS_NULL != 0,
+                        ) else {
+                            publication_failed = true;
+                            return Ok(false);
+                        };
+                        if push(publisher, index, value).is_none() {
+                            publication_failed = true;
+                            return Ok(false);
+                        }
+                    }
+                    count = count.saturating_add(1);
+                    Ok(true)
+                },
+                std::convert::identity,
+            );
+            if walked.is_err() || unsupported || publication_failed {
+                Err(())
+            } else {
+                Ok(())
             }
+        });
+        match published {
+            Ok(Some(captures)) => Some(captures),
+            Ok(None) | Err(()) => return Ok(None),
         }
-        super::json::NativeJsonDecodedValue::Array(
-            columns
-                .into_iter()
-                .map(super::json::NativeJsonDecodedValue::Array)
-                .collect(),
-        )
     };
     state.last_error_mut().clear();
-    Ok(Some(NativePregMatchAllResult { count, captures }))
+    Ok(Some(NativePregPublishedMatchAll { count, captures }))
 }
 
 /// Executes the scalar form shared by `preg_replace` and `preg_filter`
@@ -333,40 +611,48 @@ pub fn native_preg_replace_scalar(
 /// string subjects. Keys remain authoritative in the caller; this returns
 /// only replacement bytes and the aggregate replacement count.
 #[doc(hidden)]
-pub fn native_preg_replace_many(
+pub fn native_preg_replace_many_into<'a, E>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
     pattern: &[u8],
     replacement: &[u8],
-    subjects: &[&[u8]],
+    subject_count: usize,
+    mut subject_at: impl FnMut(usize) -> Option<&'a [u8]>,
     limit: i64,
     filter: bool,
-) -> Option<NativePregReplaceManyResult> {
-    let compiled = state
-        .cache_mut()
-        .compile_bytes_with_limits(pattern, limits)
-        .ok()?;
+    mut publish: impl FnMut(usize, Option<&[u8]>) -> Result<(), E>,
+) -> Result<Option<i64>, E> {
+    let compiled = match state.cache_mut().compile_bytes_with_limits(pattern, limits) {
+        Ok(compiled) => compiled,
+        Err(_) => return Ok(None),
+    };
     let mut count = 0;
-    let mut values = Vec::with_capacity(subjects.len());
-    for subject in subjects {
+    for index in 0..subject_count {
+        let Some(subject) = subject_at(index) else {
+            return Ok(None);
+        };
         let before = count;
-        let replaced =
-            preg_replace_bytes(&compiled, replacement, subject, limit, &mut count).ok()?;
-        values.push((!filter || count != before).then_some(replaced));
+        let replaced = match preg_replace_bytes(&compiled, replacement, subject, limit, &mut count)
+        {
+            Ok(replaced) => replaced,
+            Err(_) => return Ok(None),
+        };
+        publish(index, (!filter || count != before).then_some(&replaced))?;
     }
     state.last_error_mut().clear();
-    Some(NativePregReplaceManyResult { values, count })
+    Ok(Some(count))
 }
 
 #[doc(hidden)]
-pub fn native_preg_split(
+pub fn native_preg_split_into<P: NativePregCapturePublisher>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
     pattern: &[u8],
     subject: &[u8],
     limit: i64,
     flags: i64,
-) -> Option<super::json::NativeJsonDecodedValue> {
+    publisher: &mut P,
+) -> Option<P::Output> {
     let compiled = state
         .cache_mut()
         .compile_bytes_with_limits(pattern, limits)
@@ -375,93 +661,117 @@ pub fn native_preg_split(
         .cache_mut()
         .match_options_for_subject_bytes_at_offset(&compiled, subject, 0)
         .ok()?;
-    let mut pieces = Vec::new();
     let mut last_end = 0usize;
     let mut emitted = 0i64;
-    let append =
-        |pieces: &mut Vec<super::json::NativeJsonDecodedValue>, bytes: &[u8], offset: usize| {
+    let mut publication_failed = false;
+    let published = publisher.publish_array_stream::<()>(|publisher, push| {
+        let mut append = |publisher: &mut P, bytes: &[u8], offset: usize| {
             if flags & pcre::PREG_SPLIT_NO_EMPTY != 0 && bytes.is_empty() {
-                return;
+                return true;
             }
-            let value = super::json::NativeJsonDecodedValue::String(bytes.to_vec());
-            pieces.push(if flags & pcre::PREG_SPLIT_OFFSET_CAPTURE != 0 {
-                super::json::NativeJsonDecodedValue::Array(vec![
-                    value,
-                    super::json::NativeJsonDecodedValue::Int(offset as i64),
-                ])
-            } else {
-                value
-            });
-        };
-    let walked = compiled.for_each_php_match_with_options(
-        subject,
-        0,
-        options,
-        |captures| {
-            let Some(full) = captures.get(0) else {
-                return Ok(true);
+            let value = publisher.publish_preg_capture(
+                Some(bytes),
+                (flags & pcre::PREG_SPLIT_OFFSET_CAPTURE != 0).then_some(offset as i64),
+                false,
+            );
+            let Some(value) = value else {
+                return false;
             };
-            if limit > 0 && emitted >= limit - 1 {
-                return Ok(false);
-            }
-            if full.start() < last_end {
-                return Err(pcre::PcreFailure::new(
-                    pcre::PREG_INTERNAL_ERROR,
-                    "PCRE split match moved before the previous delimiter",
-                ));
-            }
-            append(&mut pieces, &subject[last_end..full.start()], last_end);
-            emitted += 1;
-            if flags & pcre::PREG_SPLIT_DELIM_CAPTURE != 0 {
-                for index in 1..captures.len() {
-                    if let Some(capture) = captures.get(index) {
-                        append(&mut pieces, capture.as_bytes(), capture.start());
+            push(publisher, value).is_some()
+        };
+        let walked = compiled.for_each_php_match_with_options(
+            subject,
+            0,
+            options,
+            |captures| {
+                let Some(full) = captures.get(0) else {
+                    return Ok(true);
+                };
+                if limit > 0 && emitted >= limit - 1 {
+                    return Ok(false);
+                }
+                if full.start() < last_end {
+                    return Err(pcre::PcreFailure::new(
+                        pcre::PREG_INTERNAL_ERROR,
+                        "PCRE split match moved before the previous delimiter",
+                    ));
+                }
+                if !append(publisher, &subject[last_end..full.start()], last_end) {
+                    publication_failed = true;
+                    return Ok(false);
+                }
+                emitted += 1;
+                if flags & pcre::PREG_SPLIT_DELIM_CAPTURE != 0 {
+                    for index in 1..captures.len() {
+                        if let Some(capture) = captures.get(index)
+                            && !append(publisher, capture.as_bytes(), capture.start())
+                        {
+                            publication_failed = true;
+                            return Ok(false);
+                        }
                     }
                 }
-            }
-            last_end = full.end();
-            Ok(true)
-        },
-        std::convert::identity,
-    );
-    if walked.is_err() {
-        return None;
-    }
-    append(&mut pieces, &subject[last_end..], last_end);
+                last_end = full.end();
+                Ok(true)
+            },
+            std::convert::identity,
+        );
+        if walked.is_err()
+            || publication_failed
+            || !append(publisher, &subject[last_end..], last_end)
+        {
+            Err(())
+        } else {
+            Ok(())
+        }
+    });
+    let captures = match published {
+        Ok(Some(captures)) => captures,
+        Ok(None) | Err(()) => return None,
+    };
     state.last_error_mut().clear();
-    Some(super::json::NativeJsonDecodedValue::Array(pieces))
+    Some(captures)
 }
 
 /// Selects the input strings matched by `preg_grep` without constructing a
 /// PHP array or PHP string representation. The caller keeps the authoritative
 /// keys and values and uses this mask to publish the result array directly.
 #[doc(hidden)]
-pub fn native_preg_grep(
+pub fn native_preg_grep_into<'a, E>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
     pattern: &[u8],
-    subjects: &[&[u8]],
+    subject_count: usize,
+    mut subject_at: impl FnMut(usize) -> Option<&'a [u8]>,
     flags: i64,
-) -> Option<Vec<bool>> {
-    let compiled = state
-        .cache_mut()
-        .compile_bytes_with_limits(pattern, limits)
-        .ok()?;
+    mut publish: impl FnMut(usize) -> Result<(), E>,
+) -> Result<Option<()>, E> {
+    let compiled = match state.cache_mut().compile_bytes_with_limits(pattern, limits) {
+        Ok(compiled) => compiled,
+        Err(_) => return Ok(None),
+    };
     let invert = flags & pcre::PREG_GREP_INVERT != 0;
-    let mut selected = Vec::with_capacity(subjects.len());
-    for subject in subjects {
-        let options = state
+    for index in 0..subject_count {
+        let Some(subject) = subject_at(index) else {
+            return Ok(None);
+        };
+        let options = match state
             .cache_mut()
             .match_options_for_subject_bytes_at_offset(&compiled, subject, 0)
-            .ok()?;
-        let is_match = compiled
-            .captures_at_with_options(subject, 0, options)
-            .ok()?
-            .is_some();
-        selected.push(is_match != invert);
+        {
+            Ok(options) => options,
+            Err(_) => return Ok(None),
+        };
+        let is_match = match compiled.captures_at_with_options(subject, 0, options) {
+            Ok(captures) => captures.is_some(),
+            Err(_) => return Ok(None),
+        };
+        if is_match != invert {
+            publish(index)?;
+        }
     }
     state.last_error_mut().clear();
-    Some(selected)
+    Ok(Some(()))
 }
 
 pub(in crate::builtins::modules) fn builtin_preg_replace_callback(

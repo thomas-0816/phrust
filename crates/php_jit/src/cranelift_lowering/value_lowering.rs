@@ -42,21 +42,13 @@ pub(super) fn lower_direct_compare(
     lhs_class: SsaValueClass,
     rhs_class: SsaValueClass,
 ) -> Option<ir::Value> {
-    if matches!(
-        op,
-        RegionCompareOpCode::Identical | RegionCompareOpCode::NotIdentical
-    ) && (lhs_class == SsaValueClass::MixedHandle || rhs_class == SsaValueClass::MixedHandle)
-    {
-        let condition = builder.ins().icmp(
-            if op == RegionCompareOpCode::Identical {
-                IntCC::Equal
-            } else {
-                IntCC::NotEqual
-            },
-            lhs,
-            rhs,
-        );
-        return Some(encode_native_bool(builder, condition));
+    // Mixed handles carry no identity semantics. Equal strings and floats can
+    // live in different request slots, while arrays require structural
+    // identity and references require dereferencing. Let the tier-specific
+    // exact lowering classify their stable native representation instead of
+    // comparing encoded arena indexes.
+    if lhs_class == SsaValueClass::MixedHandle || rhs_class == SsaValueClass::MixedHandle {
+        return None;
     }
     if lhs_class == SsaValueClass::Int && rhs_class == SsaValueClass::Int {
         if op == RegionCompareOpCode::Spaceship {

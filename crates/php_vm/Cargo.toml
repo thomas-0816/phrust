@@ -22,10 +22,11 @@ php_runtime = { path = "../php_runtime", version = "0.0.0", default-features = f
 php_extensions = { path = "../php_extensions", version = "0.0.0", default-features = false }
 php_source = { path = "../php_source", version = "0.0.0" }
 php_std = { path = "../php_std", version = "0.0.0", default-features = false }
+ryu = "1"
+serde_json = "1"
 smallvec = "1"
 
 [dev-dependencies]
 php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
 php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_testkit = { path = "../php_testkit", version = "0.0.0" }
-serde_json = "1"

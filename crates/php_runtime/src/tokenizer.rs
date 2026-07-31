@@ -125,14 +125,60 @@ pub fn tokenize_with_diagnostics(source: &str, flags: i64) -> Result<TokenizeRes
     })
 }
 
+/// Tokenizes the diagnostic-free default `token_get_all($source, 0)` shape
+/// directly into an authoritative native sink. The lexer token storage is
+/// consumed once; no second normalized token vector is constructed.
+pub fn native_tokenize_default_into<P: crate::api::NativeStructuredValuePublisher>(
+    source: &[u8],
+    publisher: &mut P,
+) -> Option<P::Output> {
+    let source = String::from_utf8_lossy(source);
+    let result = lex_all(&source, LexerConfig::default());
+    if result
+        .diagnostics
+        .iter()
+        .any(|diagnostic| !is_recoverable_tokenizer_diagnostic(diagnostic.kind, false))
+    {
+        return None;
+    }
+    let length = result
+        .tokens
+        .iter()
+        .filter(|token| token.kind != TokenKind::Eof)
+        .count();
+    let mut tokens = result
+        .tokens
+        .into_iter()
+        .filter(|token| token.kind != TokenKind::Eof);
+    publisher.publish_array_with(length, |publisher, _| {
+        let token = tokens.next()?;
+        let text = token.text(&source).unwrap_or_default();
+        match token.kind {
+            TokenKind::Named(name) => {
+                publisher.publish_array_with(3, |publisher, index| match index {
+                    0 => publisher.publish_int(token_name_id(name)),
+                    1 => publisher.publish_string(text.as_bytes()),
+                    2 => publisher.publish_int(i64::from(token.line)),
+                    _ => None,
+                })
+            }
+            TokenKind::Symbol(_) => publisher.publish_string(text.as_bytes()),
+            TokenKind::Eof => None,
+        }
+    })
+}
+
 fn is_recoverable_tokenizer_diagnostic(kind: LexDiagnosticKind, token_parse: bool) -> bool {
     matches!(kind, LexDiagnosticKind::BadCharacter)
         || (!token_parse && matches!(kind, LexDiagnosticKind::UnterminatedHeredoc))
 }
 
-/// Converts tokenizer output to `token_get_all` array/string shape.
+/// Materializes tokenizer output for the baseline interpreter only.
+///
+/// Optimizing native artifacts publish lexer records directly and must never
+/// import this Rust `Value` conversion boundary.
 #[must_use]
-pub fn token_get_all_value(tokens: Vec<TokenizerToken>) -> Value {
+pub(crate) fn baseline_token_get_all_value(tokens: Vec<TokenizerToken>) -> Value {
     Value::packed_array(tokens.into_iter().map(token_get_all_entry).collect())
 }
 
@@ -567,8 +613,8 @@ fn token_get_all_entry(token: TokenizerToken) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{TOKEN_PARSE, tokenize};
-    use php_lexer::TokenName;
+    use super::{TOKEN_PARSE, token_name_id, token_name_kind_for_id, tokenize};
+    use php_lexer::{TOKENIZER_TOKEN_NAMES, TokenName};
 
     fn significant_names_and_text(source: &str) -> Vec<(TokenName, String)> {
         tokenize(source, TOKEN_PARSE)
@@ -579,6 +625,31 @@ mod tests {
                 (name != TokenName::Whitespace).then_some((name, token.text))
             })
             .collect()
+    }
+
+    #[test]
+    fn token_ids_match_the_php_8_5_abi() {
+        assert_eq!(TOKENIZER_TOKEN_NAMES.len(), 152);
+        assert!(
+            TOKENIZER_TOKEN_NAMES
+                .iter()
+                .enumerate()
+                .all(|(index, name)| !TOKENIZER_TOKEN_NAMES[..index].contains(name))
+        );
+        assert_eq!(token_name_id(TokenName::LNumber), 260);
+        assert_eq!(token_name_id(TokenName::String), 262);
+        assert_eq!(token_name_id(TokenName::Variable), 266);
+        assert_eq!(token_name_id(TokenName::Function), 310);
+        assert_eq!(token_name_id(TokenName::PropertyC), 353);
+        assert_eq!(token_name_id(TokenName::OpenTag), 394);
+        assert_eq!(token_name_id(TokenName::Whitespace), 397);
+        assert_eq!(token_name_id(TokenName::DoubleColon), 402);
+        assert_eq!(token_name_id(TokenName::Pipe), 408);
+        assert_eq!(token_name_id(TokenName::BadCharacter), 411);
+        assert_eq!(token_name_kind_for_id(402), Some(TokenName::DoubleColon));
+        assert_eq!(token_name_kind_for_id(411), Some(TokenName::BadCharacter));
+        assert_eq!(token_name_kind_for_id(259), None);
+        assert_eq!(token_name_kind_for_id(412), None);
     }
 
     #[test]

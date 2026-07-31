@@ -178,6 +178,7 @@ define_instruction_coverage! {
     InstructionKind::UnsetProperty { .. } => ("UnsetProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::UnsetPropertyDim { .. } => ("UnsetPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::UnsetDynamicProperty { .. } => ("UnsetDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::UnsetDynamicPropertyDim { .. } => ("UnsetDynamicPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::FetchStaticProperty { .. } => ("FetchStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
     InstructionKind::FetchDynamicStaticProperty { .. } => ("FetchDynamicStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
     InstructionKind::IssetStaticProperty { .. } => ("IssetStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
@@ -190,6 +191,7 @@ define_instruction_coverage! {
     InstructionKind::AssignProperty { .. } => ("AssignProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::AssignPropertyDim { .. } => ("AssignPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::AssignDynamicProperty { .. } => ("AssignDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AssignDynamicPropertyDim { .. } => ("AssignDynamicPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::AssignStaticProperty { .. } => ("AssignStaticProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::AssignDynamicStaticProperty { .. } => ("AssignDynamicStaticProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
     InstructionKind::NewArray { .. } => ("NewArray", BaselineLoweringClass::NativeStateMachine, ALLOCATE, true, true, false, false, true);
@@ -348,7 +350,7 @@ mod tests {
 
     #[test]
     fn manifest_has_every_current_instruction_and_terminator() {
-        assert_eq!(BASELINE_INSTRUCTION_MANIFEST.len(), 101);
+        assert_eq!(BASELINE_INSTRUCTION_MANIFEST.len(), 103);
         assert_eq!(BASELINE_TERMINATOR_MANIFEST.len(), 6);
         assert_eq!(
             BASELINE_INSTRUCTION_MANIFEST

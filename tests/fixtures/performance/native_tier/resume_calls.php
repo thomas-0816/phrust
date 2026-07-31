@@ -106,8 +106,8 @@ var_dump(chain($sum));    // $sum=2000 -> int(6010)
 // mix=52^13=57.
 var_dump(twice(7));       // call:57, call:58 -> int(59)
 
-// Non-int leaf argument: the entry guard side-exits before any call and the
-// interpreter runs the whole leaf (its int parameter coerces "3" -> 3).
+// Numeric-string leaf argument: the direct call's native weak-scalar binder
+// publishes an actual int owner before the compiled leaf begins.
 var_dump(chain("3"));     // int(19)
 
 // Exception after a performed call: echo happened, then the throw propagates.

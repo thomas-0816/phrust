@@ -60,6 +60,11 @@ TELEMETRY_FAMILIES = (
 LINKAGE_FOOTPRINT_COUNTERS = frozenset(
     {
         "native_artifact_header_padding_bytes",
+        "native_arena_high_water_bytes",
+        "native_arena_reserved_bytes",
+        "native_arena_reset_bytes",
+        "native_arena_resident_bytes",
+        "native_arena_reused_bytes",
         "native_builtin_direct_eligible",
         "native_builtin_direct_executed",
         "native_code_bytes_by_function",
@@ -95,6 +100,9 @@ HOTPATH_DIAGNOSTIC_COUNTERS = frozenset(
     {
         "native_builtin_calls_by_name",
         "native_builtin_time_nanos_by_name",
+        "native_baseline_entry_executions",
+        "native_optimizing_entry_executions",
+        "native_production_lowering_by_site",
         "native_value_decodes",
         "native_value_encodes",
     }

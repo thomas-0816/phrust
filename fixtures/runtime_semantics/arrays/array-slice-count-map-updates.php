@@ -31,10 +31,19 @@ $byref = [1, 2, 3];
 $alias = &$byref;
 echo count($packed), "|", count($record), "|", count($alias), "\n";
 echo count([[1, 2], [3]], COUNT_RECURSIVE), "\n";
+echo sizeof([[1, 2], [3]], COUNT_RECURSIVE), "\n";
 class Sized implements Countable {
     public function count(): int { return 42; }
 }
 echo count(new Sized()), "\n";
+try {
+    count([1], 2);
+} catch (ValueError $error) {
+    echo $error->getMessage(), "\n";
+}
+$recursive = [];
+$recursive[] = &$recursive;
+echo count($recursive, COUNT_RECURSIVE), "\n";
 
 // Grouped map updates through a by-ref cache (session-policy shape).
 function tally(&$cache, $key) {

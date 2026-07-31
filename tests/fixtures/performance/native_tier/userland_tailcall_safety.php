@@ -57,8 +57,8 @@ function via_stringy(int $x): int {
 echo relay(3), "\n";    // step(4)  = 8
 echo relay(-5), "\n";   // step(-4) = 0
 
-// A non-int actual arg (whole float, lossless coercion) trips the native Int
-// guard and side-exits to the interpreter, which coerces 4.0 -> 4.
+// A whole float takes the native weak-scalar parameter lane and arrives at the
+// compiled callee as an actual int owner.
 echo relay(4.0), "\n";  // step(5)  = 10
 
 // A by-reference callee: the VM rejects the tail call and interprets it.

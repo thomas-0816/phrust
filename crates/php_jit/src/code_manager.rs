@@ -919,7 +919,15 @@ impl CraneliftCodeManager {
                             },
                         ));
                     }
-                    let generation = match regalloc_mode_for_admission(admission) {
+                    let regalloc = regalloc_mode_for_admission(admission);
+                    // External-call ABI variants are simultaneously valid:
+                    // deterministic include order needs both the
+                    // pre-declaration and post-declaration caller. They share
+                    // the bounded active generation like unrelated functions;
+                    // creating a dedicated 32 MiB JIT module for every variant
+                    // made application size, rather than live code bytes, set
+                    // process RSS.
+                    let generation = match regalloc {
                         NativeRegallocMode::Fast => Arc::clone(&state.active_fast),
                         NativeRegallocMode::Quality => Arc::clone(&state.active_quality),
                     };
@@ -1012,7 +1020,12 @@ impl CraneliftCodeManager {
         state.cache.insert(key.clone(), handle.clone());
         state.compile_failures.remove(&key);
 
-        if generation.bytes.load(Ordering::Relaxed) >= self.generation_limit {
+        let generation_is_active = match generation.regalloc {
+            NativeRegallocMode::Fast => generation.id == state.active_fast.id,
+            NativeRegallocMode::Quality => generation.id == state.active_quality.id,
+        };
+        if generation_is_active && generation.bytes.load(Ordering::Relaxed) >= self.generation_limit
+        {
             let id = state.next_generation;
             state.next_generation = state.next_generation.saturating_add(1);
             if let Ok(next) =
@@ -1497,6 +1510,54 @@ mod tests {
         assert_ne!(old.code_generation_id(), new.code_generation_id());
         assert_eq!(old.invoke_i64(&[], JIT_RUNTIME_ABI_HASH), Ok(10));
         assert_eq!(new.invoke_i64(&[], JIT_RUNTIME_ABI_HASH), Ok(20));
+    }
+
+    #[test]
+    fn valid_function_specializations_share_generation_and_remain_cached() {
+        let manager = CraneliftCodeManager::new(1024 * 1024, 1024 * 1024).unwrap();
+        let function_key = crate::native_function_key("deployment".to_owned(), 0, 0, 0, false, 0);
+        let first_key = key(81, 0);
+        let mut second_key = first_key.clone();
+        second_key.dependency_identity = "dependency-81-signature-2".to_owned();
+        second_key.specialization = "test-constant-v2".to_owned();
+
+        let first = manager
+            .compile_once_with_scratch(
+                first_key.clone(),
+                Some(function_key.clone()),
+                &[],
+                |module, _context, _builder_context, symbol| compile_constant(module, symbol, 10),
+            )
+            .unwrap();
+        assert_eq!(first.disposition, CraneliftCodeCacheDisposition::Compiled);
+        let first_generation = first.handle.code_generation_id();
+        drop(first);
+        let second = manager
+            .compile_once_with_scratch(
+                second_key,
+                Some(function_key.clone()),
+                &[],
+                |module, _context, _builder_context, symbol| compile_constant(module, symbol, 20),
+            )
+            .unwrap();
+        assert_eq!(second.disposition, CraneliftCodeCacheDisposition::Compiled);
+        let second_generation = second.handle.code_generation_id();
+        assert_eq!(
+            first_generation, second_generation,
+            "valid ABI specializations must not allocate one JIT module each"
+        );
+        drop(second);
+
+        let reused = manager
+            .compile_once_with_scratch(
+                first_key,
+                Some(function_key),
+                &[],
+                |module, _context, _builder_context, symbol| compile_constant(module, symbol, 10),
+            )
+            .unwrap();
+        assert_eq!(reused.disposition, CraneliftCodeCacheDisposition::Hit);
+        assert_eq!(manager.stats().code_generations, 2);
     }
 
     #[test]

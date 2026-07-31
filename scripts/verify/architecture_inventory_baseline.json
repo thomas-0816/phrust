@@ -1,5 +1,18 @@
 {
-  "diagnostic_string_parsing_allowlist": [],
+  "diagnostic_string_parsing_allowlist": [
+    {
+      "id": "crates/php_vm/src/vm/jit_abi.rs:diagnostic_code_prefix_parse:cbdaba2703e0:1",
+      "reason": "explicit baseline-only conversion from the legacy semantic error envelope into typed NativeCallControl; optimizing exact handlers construct typed control directly"
+    },
+    {
+      "id": "crates/php_vm/src/vm/jit_abi.rs:diagnostic_code_prefix_parse:836d0b5d1da3:1",
+      "reason": "explicit baseline-only exit conversion in NativeCallControl::from_baseline_error; optimizing exact handlers carry the encoded exit value directly"
+    },
+    {
+      "id": "crates/php_vm/src/vm/jit_abi/baseline_runtime_ops.rs:diagnostic_code_prefix_parse:aeb86ceeb4fd:1",
+      "reason": "baseline local-operation continuation translates the legacy cold semantic throw envelope at its ABI boundary; optimizing operations use typed control"
+    }
+  ],
   "generated_file_allowlist": [
     "crates/php_extensions/src/generated.rs",
     "crates/php_runtime/src/builtins/generated/arrays.rs",
@@ -125,16 +138,48 @@
   ],
   "large_file_limits": {
     "crates/php_ir/src/lower/expressions.rs": {
-      "max_bytes": 341057,
-      "max_lines": 9555
+      "max_bytes": 342140,
+      "max_lines": 9561
+    },
+    "crates/php_jit/src/cranelift_lowering.rs": {
+      "max_bytes": 1547132,
+      "max_lines": 38997
+    },
+    "crates/php_jit/src/cranelift_lowering/executable_region.rs": {
+      "max_bytes": 469778,
+      "max_lines": 10936
+    },
+    "crates/php_jit/src/region_ir/executable.rs": {
+      "max_bytes": 345548,
+      "max_lines": 7813
     },
     "crates/php_phpt_tools/src/commands/mod.rs": {
-      "max_bytes": 188143,
-      "max_lines": 5199
+      "max_bytes": 186734,
+      "max_lines": 5173
     },
     "crates/php_runtime/src/builtins/modules/core.rs": {
-      "max_bytes": 468308,
-      "max_lines": 14300
+      "max_bytes": 474203,
+      "max_lines": 14439
+    },
+    "crates/php_vm/src/vm/jit_abi.rs": {
+      "max_bytes": 924671,
+      "max_lines": 21500
+    },
+    "crates/php_vm/src/vm/jit_abi/call_dispatch.rs": {
+      "max_bytes": 259619,
+      "max_lines": 6877
+    },
+    "crates/php_vm/src/vm/jit_abi/native_builtins.rs": {
+      "max_bytes": 237378,
+      "max_lines": 5838
+    },
+    "crates/php_vm/src/vm/jit_abi/baseline_runtime_ops.rs": {
+      "max_bytes": 278575,
+      "max_lines": 6653
+    },
+    "crates/php_vm/src/vm/mod.rs": {
+      "max_bytes": 230198,
+      "max_lines": 5530
     }
   },
   "module_wide_allowlist": [
@@ -242,6 +287,7 @@
     "php_runtime:wasm-bindgen-shared:wasm_bindgen",
     "php_server:clang-sys:clang",
     "php_server:curl-sys:curl",
+    "php_server:libmimalloc-sys:mimalloc",
     "php_server:libsodium-sys-stable:sodium",
     "php_server:libsqlite3-sys:sqlite3",
     "php_server:libssh2-sys:ssh2",
@@ -267,6 +313,7 @@
     "php_vm:wasm-bindgen-shared:wasm_bindgen",
     "php_vm_cli:clang-sys:clang",
     "php_vm_cli:curl-sys:curl",
+    "php_vm_cli:libmimalloc-sys:mimalloc",
     "php_vm_cli:libsodium-sys-stable:sodium",
     "php_vm_cli:libsqlite3-sys:sqlite3",
     "php_vm_cli:libssh2-sys:ssh2",
@@ -278,11 +325,20 @@
   "platform_dependency_allowlist": [
     "php_jit:libc:normal:cfg(unix)"
   ],
-  "pointer_integer_identity_allowlist": [],
+  "pointer_integer_identity_allowlist": [
+    {
+      "id": "crates/php_vm/src/vm/jit_abi.rs:pointer_integer_identity:9beb5d43ba8e:1",
+      "reason": "request-published immutable class-allocation capability forwarded only to its exact native handler; never used as logical identity, hash, or equality"
+    },
+    {
+      "id": "crates/php_vm/src/vm/jit_abi.rs:pointer_integer_identity:5a3313beaec1:1",
+      "reason": "request-published immutable closure-plan capability forwarded only to its exact native handler; never used as logical identity, hash, or equality"
+    }
+  ],
   "public_surface_limits": {
     "php_runtime": {
-      "public_module_declarations": 13,
-      "public_reexport_statements": 47,
+      "public_module_declarations": 14,
+      "public_reexport_statements": 51,
       "root_public_module_declarations": 3,
       "root_reexport_statements": 0
     },

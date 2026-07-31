@@ -1,15 +1,13 @@
 <?php
 
-// Builtin abs() lowered to a native helper call — the safe subset of native
-// tier gap (b): inside a scalar-int leaf, abs($int) is emitted as a real `blr`
-// into the pure phrust_jit_abs_i64 VM helper over the slot ABI (no VM re-entry,
-// no context pointer). The call is compiled natively only after the VM confirms
-// `abs` resolves to the real builtin (not a user-defined or namespaced shadow).
+// Builtin abs() is emitted directly in CLIF over the authoritative native
+// integer/float representation. The call is compiled natively only after the
+// VM confirms `abs` resolves to the real builtin (not a user-defined or
+// namespaced shadow).
 //
 // abs(PHP_INT_MIN) overflows i64, so PHP promotes it to a float; the native
-// path side-exits there and the interpreter produces the float. That value is
-// shown via magnitude(), whose int|float return keeps it in the interpreter —
-// the exact value the native path's side exit defers to.
+// float lane publishes the result directly. That value is shown via
+// magnitude(), whose int|float return preserves the native owner.
 //
 // Native differential fixture; the native runtime gate executes this
 // with the native tier off and on and asserts identical output, and against the
@@ -27,8 +25,7 @@ function abs_diff(int $a, int $b): int {
 }
 
 // abs() magnitude with a float-accepting return: PHP promotes abs(PHP_INT_MIN)
-// to a float, so this surfaces that float. Its union return type keeps it in
-// the interpreter, which is where the native path side-exits to for that input.
+// to a float, so this surfaces that float on the same native slot plane.
 function magnitude(int $x): int|float {
     return abs($x);
 }

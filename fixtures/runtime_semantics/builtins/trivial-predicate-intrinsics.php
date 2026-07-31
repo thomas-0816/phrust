@@ -5,6 +5,16 @@
 
 function gen() { yield 1; }
 
+class NativeCountablePredicate implements Countable
+{
+    public function count(): int { return 1; }
+}
+
+class NativeIterablePredicate implements IteratorAggregate
+{
+    public function getIterator(): Traversable { yield 1; }
+}
+
 $cases = [
     "null" => null,
     "false" => false,
@@ -18,6 +28,8 @@ $cases = [
     "object" => new stdClass(),
     "closure" => function () {},
     "generator" => gen(),
+    "countable" => new NativeCountablePredicate(),
+    "iterable" => new NativeIterablePredicate(),
 ];
 foreach ($cases as $label => $value) {
     echo $label, ":";
@@ -27,6 +39,8 @@ foreach ($cases as $label => $value) {
     echo is_bool($value) ? "B" : "-";
     echo is_float($value) ? "F" : "-";
     echo is_numeric($value) ? "M" : "-";
+    echo is_countable($value) ? "C" : "-";
+    echo is_iterable($value) ? "I" : "-";
     echo "\n";
 }
 

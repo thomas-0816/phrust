@@ -2,8 +2,8 @@
 
 use php_ir::IrUnit;
 use php_ir::constants::IrConstant;
-use php_ir::ids::FunctionId;
-use php_ir::module::{ClassEntry, normalize_class_name, normalized_class_name};
+use php_ir::ids::{ConstId, FunctionId};
+use php_ir::module::{ClassEntry, ClassMethodEntry, normalize_class_name, normalized_class_name};
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
 use php_source::{BytePos, LineIndex};
@@ -94,6 +94,32 @@ impl CompiledClass {
             _ => false,
         }
     }
+
+    /// Returns the source-spelled method name from the class owner's function
+    /// table. Runtime-owned metadata falls back to its stable lookup name.
+    #[must_use]
+    pub fn method_display_name(&self, method: &ClassMethodEntry) -> String {
+        match &self.storage {
+            CompiledClassStorage::Unit { owner, .. } => owner
+                .unit()
+                .functions
+                .get(method.function.index())
+                .and_then(|function| function.name.rsplit_once("::"))
+                .map_or_else(|| method.name.clone(), |(_, name)| name.to_owned()),
+            CompiledClassStorage::Owned(_) => method.name.clone(),
+        }
+    }
+
+    /// Resolves a class default's constant against the canonical owning unit.
+    /// Runtime-owned classes have no IR constant table and therefore return
+    /// `None`, retaining their single baseline continuation.
+    #[must_use]
+    pub fn constant(&self, id: ConstId) -> Option<&IrConstant> {
+        match &self.storage {
+            CompiledClassStorage::Unit { owner, .. } => owner.unit().constants.get(id.index()),
+            CompiledClassStorage::Owned(_) => None,
+        }
+    }
 }
 
 impl Deref for CompiledClass {
@@ -167,7 +193,7 @@ impl SymbolIndex {
 struct PreparedUnit {
     ir_verification_errors: OnceLock<usize>,
     class_validation: OnceLock<PreparedClassValidation>,
-    native_indexes: OnceLock<PreparedNativeIndexes>,
+    native_function_indexes: Box<[OnceLock<Arc<PreparedNativeFunctionIndexes>>]>,
     ir_fingerprint: OnceLock<String>,
     function_ir_fingerprint_context: OnceLock<php_jit::StableFunctionIrFingerprintContext>,
     function_ir_fingerprints: Box<[OnceLock<String>]>,
@@ -200,6 +226,16 @@ pub(crate) struct PreparedDeploymentNativeImage {
     /// baseline initializes its cell and an optimizing publication atomically
     /// replaces that target, so generated calls never select a tier.
     pub preferred_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
+    /// Exact compiler metadata paired with the currently published preferred
+    /// entry of each function. Catch/finally resume IDs are compiler artifact
+    /// identities and must never be reconstructed from source IR after code
+    /// generation.
+    preferred_function_metadata:
+        std::sync::RwLock<Box<[Option<Arc<php_jit::JitRegionStateMetadata>>]>>,
+    /// Process-stable direct baseline-entry counters indexed by `FunctionId`.
+    /// Baseline CLIF updates these counters and the request-completion
+    /// coordinator consumes them to select optimizing candidates.
+    pub baseline_function_entry_counts: Box<[std::sync::atomic::AtomicU64]>,
 }
 
 impl PreparedUnit {
@@ -216,7 +252,7 @@ impl PreparedUnit {
         Self {
             ir_verification_errors: OnceLock::new(),
             class_validation: OnceLock::new(),
-            native_indexes: OnceLock::new(),
+            native_function_indexes: (0..function_count).map(|_| OnceLock::new()).collect(),
             ir_fingerprint: OnceLock::new(),
             function_ir_fingerprint_context: OnceLock::new(),
             function_ir_fingerprints: fingerprint_slots.into_boxed_slice(),
@@ -249,17 +285,25 @@ pub(crate) enum PreparedClassValidation {
 struct PreparedExternalFunctionCalls {
     by_function: Box<[Box<[PreparedExternalFunctionCall]>]>,
     whole_unit: Box<[PreparedExternalFunctionCall]>,
+    method_link_indexes: BTreeMap<(FunctionId, php_ir::InstrId), u32>,
+    linked_function_count: usize,
 }
 
-/// A statically named call that may resolve to a function in another unit.
+/// A statically named call that may resolve to a function or exact method in
+/// another unit.
 ///
 /// Whether the target is currently visible and has by-reference parameters is
 /// intentionally resolved at runtime. Only the source-IR scan and name
-/// normalization are prepared here because those are immutable.
+/// normalization are prepared here because those are immutable. Methods use
+/// the collision-free `class::method` spelling already used by function
+/// metadata; their link slot still points directly at the declaring unit's
+/// published function entry.
 #[derive(Debug)]
 pub(crate) struct PreparedExternalFunctionCall {
     pub normalized_name: Box<str>,
     pub source_name: Box<str>,
+    /// Dense immutable slot in the source unit's linked-function table.
+    pub link_index: u32,
 }
 
 /// Immutable userland-call metadata shared by every invocation of a function.
@@ -279,12 +323,12 @@ pub(crate) struct PreparedNativeFunctionMetadata {
 }
 
 #[derive(Debug)]
-struct PreparedNativeIndexes {
-    continuation_instructions: Arc<Vec<Vec<Option<Arc<php_ir::Instruction>>>>>,
-    callsites: Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>>,
-    property_sites: Arc<Vec<Vec<Option<PreparedNativePropertySite>>>>,
-    closure_sites: Arc<Vec<Vec<Option<Arc<PreparedNativeClosureSite>>>>>,
-    global_sites: Arc<Vec<Vec<Option<Arc<str>>>>>,
+struct PreparedNativeFunctionIndexes {
+    continuation_instructions: Arc<[Option<Arc<php_ir::Instruction>>]>,
+    callsites: Arc<[Option<Arc<NativeCallSiteDescriptor>>]>,
+    property_sites: Arc<[Option<PreparedNativePropertySite>]>,
+    closure_sites: Arc<[Option<Arc<PreparedNativeClosureSite>>]>,
+    global_sites: Arc<[Option<Arc<str>>]>,
 }
 
 #[derive(Clone, Debug)]
@@ -303,6 +347,14 @@ pub(crate) struct PreparedNativeClosureSite {
     pub capture_descriptors: Arc<[(String, bool)]>,
     pub debug: Option<php_runtime::api::ClosureDebugInfo>,
     pub binds_this: bool,
+    /// Visible positional arity admitted by the same native entry used for
+    /// ordinary compiled closure calls. The hidden prefix is fixed by this
+    /// site's receiver/capture descriptors.
+    pub fixed_visible_arity: Option<u32>,
+    pub first_parameter_by_reference: bool,
+    pub returns_int: bool,
+    pub returns_string: bool,
+    pub returns_releasable_scalar: bool,
 }
 
 /// Typed operation selected by one native callsite descriptor.
@@ -340,6 +392,9 @@ pub(crate) struct NativeCallSiteDescriptor {
     pub arguments: Arc<[php_ir::instruction::IrCallArg]>,
     pub argument_operand_offset: usize,
     pub pic_slot: u64,
+    /// Immutable request-publication slot reserved for a monomorphic method
+    /// target owned by another compiled unit.
+    pub external_method_link_index: Option<u32>,
     semantic_instruction: Arc<php_ir::Instruction>,
     method_pic: PersistentNativeMethodPic,
 }
@@ -476,8 +531,27 @@ impl NativeCallSiteDescriptor {
             method: Arc::from(method),
             class_layout_epoch,
             method_table_epoch,
-            function,
-            is_static,
+            target: PersistentNativeMethodPicTarget::Local {
+                function,
+                is_static,
+            },
+        })
+    }
+
+    pub(crate) fn install_external_method_pic(
+        &self,
+        receiver_class: &str,
+        method: &str,
+        class_layout_epoch: u64,
+        method_table_epoch: u64,
+        signature: php_jit::JitExternalFunctionSignature,
+    ) -> bool {
+        self.method_pic.install(PersistentNativeMethodPicEntry {
+            receiver_class: Arc::from(receiver_class),
+            method: Arc::from(method),
+            class_layout_epoch,
+            method_table_epoch,
+            target: PersistentNativeMethodPicTarget::Linked(signature),
         })
     }
 }
@@ -490,8 +564,16 @@ struct PersistentNativeMethodPicEntry {
     method: Arc<str>,
     class_layout_epoch: u64,
     method_table_epoch: u64,
-    function: FunctionId,
-    is_static: bool,
+    target: PersistentNativeMethodPicTarget,
+}
+
+#[derive(Debug, PartialEq)]
+enum PersistentNativeMethodPicTarget {
+    Local {
+        function: FunctionId,
+        is_static: bool,
+    },
+    Linked(php_jit::JitExternalFunctionSignature),
 }
 
 #[derive(Debug)]
@@ -507,6 +589,17 @@ impl Default for PersistentNativeMethodPic {
             entries: std::array::from_fn(|_| std::sync::OnceLock::new()),
             megamorphic: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+}
+
+impl PersistentNativeMethodPic {
+    fn monomorphic(&self) -> Option<&PersistentNativeMethodPicEntry> {
+        if self.megamorphic.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let mut entries = self.entries.iter().filter_map(std::sync::OnceLock::get);
+        let entry = entries.next()?;
+        entries.next().is_none().then_some(entry)
     }
 }
 
@@ -543,7 +636,14 @@ impl PersistentNativeMethodPic {
                 class_layout_epoch,
                 method_table_epoch,
             )
-            .then_some((entry.function, entry.is_static))
+            .then_some(match &entry.target {
+                PersistentNativeMethodPicTarget::Local {
+                    function,
+                    is_static,
+                } => Some((*function, *is_static)),
+                PersistentNativeMethodPicTarget::Linked(_) => None,
+            })
+            .flatten()
         })
     }
 
@@ -562,7 +662,12 @@ impl PersistentNativeMethodPic {
                         candidate.method_table_epoch,
                     )
                 {
-                    return true;
+                    if entry.target == candidate.target {
+                        return true;
+                    }
+                    self.megamorphic
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    return false;
                 }
             }
             let Some(empty) = self.entries.iter().find(|entry| entry.get().is_none()) else {
@@ -684,8 +789,45 @@ impl CompiledUnit {
                 preferred_function_entries: (0..unit.functions.len())
                     .map(|_| std::sync::atomic::AtomicUsize::new(0))
                     .collect(),
+                preferred_function_metadata: std::sync::RwLock::new(
+                    (0..unit.functions.len()).map(|_| None).collect(),
+                ),
+                baseline_function_entry_counts: (0..unit.functions.len())
+                    .map(|_| std::sync::atomic::AtomicU64::new(0))
+                    .collect(),
             }
         })
+    }
+
+    pub(crate) fn publish_preferred_function_metadata(
+        &self,
+        function: FunctionId,
+        handle: &php_jit::JitFunctionHandle,
+    ) {
+        let Some(metadata) = handle.region_state_metadata_arc() else {
+            return;
+        };
+        let mut published = self
+            .prepared_deployment_image()
+            .preferred_function_metadata
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(slot) = published.get_mut(function.index()) {
+            *slot = Some(metadata);
+        }
+    }
+
+    pub(crate) fn preferred_function_metadata(
+        &self,
+        function: FunctionId,
+    ) -> Option<Arc<php_jit::JitRegionStateMetadata>> {
+        self.prepared_deployment_image()
+            .preferred_function_metadata
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(function.index())
+            .cloned()
+            .flatten()
     }
 
     /// Wraps an IR unit and snapshots all source files that are currently readable.
@@ -900,32 +1042,33 @@ impl CompiledUnit {
         })
     }
 
-    fn prepared_native_indexes(&self) -> &PreparedNativeIndexes {
-        self.inner.prepared.native_indexes.get_or_init(|| {
+    fn prepared_native_function_indexes(
+        &self,
+        function: FunctionId,
+    ) -> Option<&Arc<PreparedNativeFunctionIndexes>> {
+        let slot = self
+            .inner
+            .prepared
+            .native_function_indexes
+            .get(function.index())?;
+        Some(slot.get_or_init(|| {
             self.inner
                 .prepared
                 .continuation_index_runs
                 .fetch_add(1, Ordering::Relaxed);
-            let mut instructions = Vec::with_capacity(self.inner.unit.functions.len());
-            let mut callsites = Vec::with_capacity(self.inner.unit.functions.len());
-            let mut property_sites = Vec::with_capacity(self.inner.unit.functions.len());
-            let mut closure_sites = Vec::with_capacity(self.inner.unit.functions.len());
-            let mut global_sites = Vec::with_capacity(self.inner.unit.functions.len());
+            let mut function_instructions = Vec::new();
+            let mut function_callsites = Vec::new();
+            let mut function_property_sites = Vec::new();
+            let mut function_closure_sites = Vec::new();
+            let mut function_global_sites = Vec::new();
             let metadata = php_jit::region_ir::CompileMetadata::default();
-            for function_index in 0..self.inner.unit.functions.len() {
-                let function = FunctionId::new(function_index as u32);
-                let mut function_instructions = Vec::new();
-                let mut function_callsites = Vec::new();
-                let mut function_property_sites = Vec::new();
-                let mut function_closure_sites = Vec::new();
-                let mut function_global_sites = Vec::new();
-                if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
-                    &self.inner.unit,
-                    function,
-                    &metadata,
-                ) {
-                    for block in &region.blocks {
-                        for instruction in &block.instructions {
+            if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
+                &self.inner.unit,
+                function,
+                &metadata,
+            ) {
+                for block in &region.blocks {
+                    for instruction in &block.instructions {
                             let semantic_instruction = Arc::new(php_ir::Instruction {
                                 id: instruction.id,
                                 span: instruction.span,
@@ -1011,7 +1154,7 @@ impl CompiledUnit {
                                 php_jit::region_ir::RegionNativeDynamicCode::MakeClosure {
                                     function: closure_function,
                                     captures,
-                                    binds_this,
+                                    bound_this_local,
                                     ..
                                 },
                             ) = &instruction.kind
@@ -1047,6 +1190,18 @@ impl CompiledUnit {
                                     function_closure_sites
                                         .resize_with(continuation + 1, || None);
                                 }
+                                let fixed_callable_plan =
+                                    crate::vm::native_fixed_callable_plan(
+                                        self,
+                                        *closure_function,
+                                        false,
+                                    )
+                                    .filter(|plan| {
+                                        usize::from(bound_this_local.is_some())
+                                            .saturating_add(captures.len())
+                                            .saturating_add(plan.visible_arity as usize)
+                                            <= u8::MAX as usize
+                                    });
                                 function_closure_sites[continuation] =
                                     Some(Arc::new(PreparedNativeClosureSite {
                                         function: *closure_function,
@@ -1059,7 +1214,19 @@ impl CompiledUnit {
                                                 .collect::<Vec<_>>(),
                                         ),
                                         debug,
-                                        binds_this: *binds_this,
+                                        binds_this: bound_this_local.is_some(),
+                                        fixed_visible_arity: fixed_callable_plan
+                                            .map(|plan| plan.visible_arity),
+                                        first_parameter_by_reference: fixed_callable_plan
+                                            .is_some_and(|plan| {
+                                                plan.first_parameter_by_reference
+                                            }),
+                                        returns_int: fixed_callable_plan
+                                            .is_some_and(|plan| plan.returns_int),
+                                        returns_string: fixed_callable_plan
+                                            .is_some_and(|plan| plan.returns_string),
+                                        returns_releasable_scalar: fixed_callable_plan
+                                            .is_some_and(|plan| plan.returns_releasable_scalar),
                                     }));
                             }
                             if let php_jit::region_ir::RegionInstructionKind::NativeCall(call) =
@@ -1105,6 +1272,15 @@ impl CompiledUnit {
                                 };
                                 let pic_slot = (u64::from(function.raw()) << 32)
                                     | u64::from(instruction.continuation_id);
+                                let external_method_link_index =
+                                    (kind == NativeCallSiteKind::Method)
+                                        .then(|| {
+                                            self.prepared_external_method_link_index(
+                                                function,
+                                                semantic_instruction.id,
+                                            )
+                                        })
+                                        .flatten();
                                 let continuation = instruction.continuation_id as usize;
                                 if function_callsites.len() <= continuation {
                                     function_callsites.resize_with(continuation + 1, || None);
@@ -1120,55 +1296,122 @@ impl CompiledUnit {
                                         arguments: Arc::from(call.args.clone()),
                                         argument_operand_offset: call.argument_operand_offset,
                                         pic_slot,
+                                        external_method_link_index,
                                         semantic_instruction,
                                         method_pic: PersistentNativeMethodPic::default(),
                                     }));
                             }
-                        }
                     }
                 }
-                instructions.push(function_instructions);
-                callsites.push(function_callsites);
-                property_sites.push(function_property_sites);
-                closure_sites.push(function_closure_sites);
-                global_sites.push(function_global_sites);
             }
-            PreparedNativeIndexes {
-                continuation_instructions: Arc::new(instructions),
-                callsites: Arc::new(callsites),
-                property_sites: Arc::new(property_sites),
-                closure_sites: Arc::new(closure_sites),
-                global_sites: Arc::new(global_sites),
-            }
-        })
+            Arc::new(PreparedNativeFunctionIndexes {
+                continuation_instructions: function_instructions.into(),
+                callsites: function_callsites.into(),
+                property_sites: function_property_sites.into(),
+                closure_sites: function_closure_sites.into(),
+                global_sites: function_global_sites.into(),
+            })
+        }))
     }
 
     pub(crate) fn prepared_continuation_instructions(
         &self,
-    ) -> Arc<Vec<Vec<Option<Arc<php_ir::Instruction>>>>> {
-        Arc::clone(&self.prepared_native_indexes().continuation_instructions)
+        function: FunctionId,
+    ) -> Option<Arc<[Option<Arc<php_ir::Instruction>>]>> {
+        self.prepared_native_function_indexes(function)
+            .map(|indexes| Arc::clone(&indexes.continuation_instructions))
+    }
+
+    pub(crate) fn prepared_method_specializations(
+        &self,
+        function: FunctionId,
+    ) -> Vec<php_jit::JitMethodSpecialization> {
+        // Publication scans every declared function to refresh linked method
+        // records. Most declarations contain no instance callsite at all;
+        // consulting the immutable link-site index first prevents that scan
+        // from constructing continuation/RegionGraph-derived metadata for
+        // dormant functions.
+        if !self
+            .prepared_external_function_call_index()
+            .method_link_indexes
+            .keys()
+            .any(|(candidate, _)| *candidate == function)
+        {
+            return Vec::new();
+        }
+        let Some(indexes) = self.prepared_native_function_indexes(function) else {
+            return Vec::new();
+        };
+        indexes
+            .callsites
+            .iter()
+            .flatten()
+            .filter(|descriptor| descriptor.kind == NativeCallSiteKind::Method)
+            .filter_map(|descriptor| {
+                let entry = descriptor.method_pic.monomorphic()?;
+                if entry.class_layout_epoch == 0 {
+                    return None;
+                }
+                let target = match &entry.target {
+                    PersistentNativeMethodPicTarget::Local {
+                        function,
+                        is_static: false,
+                    } => {
+                        let target = self.unit().functions.get(function.index())?;
+                        if target.returns_by_ref {
+                            return None;
+                        }
+                        php_jit::JitMethodSpecializationTarget::Local(*function)
+                    }
+                    PersistentNativeMethodPicTarget::Linked(signature)
+                        if signature.published && !signature.returns_by_reference =>
+                    {
+                        php_jit::JitMethodSpecializationTarget::Linked(signature.clone())
+                    }
+                    PersistentNativeMethodPicTarget::Local {
+                        is_static: true, ..
+                    }
+                    | PersistentNativeMethodPicTarget::Linked(_) => return None,
+                };
+                Some(php_jit::JitMethodSpecialization {
+                    instruction_id: descriptor.semantic_instruction.id.raw(),
+                    receiver_layout_id: entry.class_layout_epoch,
+                    target,
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn prepared_native_callsites(
         &self,
-    ) -> Arc<Vec<Vec<Option<Arc<NativeCallSiteDescriptor>>>>> {
-        Arc::clone(&self.prepared_native_indexes().callsites)
+        function: FunctionId,
+    ) -> Option<Arc<[Option<Arc<NativeCallSiteDescriptor>>]>> {
+        self.prepared_native_function_indexes(function)
+            .map(|indexes| Arc::clone(&indexes.callsites))
     }
 
     pub(crate) fn prepared_native_property_sites(
         &self,
-    ) -> Arc<Vec<Vec<Option<PreparedNativePropertySite>>>> {
-        Arc::clone(&self.prepared_native_indexes().property_sites)
+        function: FunctionId,
+    ) -> Option<Arc<[Option<PreparedNativePropertySite>]>> {
+        self.prepared_native_function_indexes(function)
+            .map(|indexes| Arc::clone(&indexes.property_sites))
     }
 
     pub(crate) fn prepared_native_closure_sites(
         &self,
-    ) -> Arc<Vec<Vec<Option<Arc<PreparedNativeClosureSite>>>>> {
-        Arc::clone(&self.prepared_native_indexes().closure_sites)
+        function: FunctionId,
+    ) -> Option<Arc<[Option<Arc<PreparedNativeClosureSite>>]>> {
+        self.prepared_native_function_indexes(function)
+            .map(|indexes| Arc::clone(&indexes.closure_sites))
     }
 
-    pub(crate) fn prepared_native_global_sites(&self) -> Arc<Vec<Vec<Option<Arc<str>>>>> {
-        Arc::clone(&self.prepared_native_indexes().global_sites)
+    pub(crate) fn prepared_native_global_sites(
+        &self,
+        function: FunctionId,
+    ) -> Option<Arc<[Option<Arc<str>>]>> {
+        self.prepared_native_function_indexes(function)
+            .map(|indexes| Arc::clone(&indexes.global_sites))
     }
 
     fn prepared_external_function_call_index(&self) -> &PreparedExternalFunctionCalls {
@@ -1180,27 +1423,167 @@ impl CompiledUnit {
                 .iter()
                 .map(|entry| entry.name.to_ascii_lowercase())
                 .collect::<std::collections::HashSet<_>>();
+            let local_classes = self
+                .inner
+                .unit
+                .classes
+                .iter()
+                .map(|class| class.name.trim_start_matches('\\').to_ascii_lowercase())
+                .collect::<std::collections::HashSet<_>>();
+            let external_parent_dependency = |class_name: &str| {
+                let mut current = class_name.trim_start_matches('\\').to_ascii_lowercase();
+                let mut visited = std::collections::HashSet::new();
+                loop {
+                    if !visited.insert(current.clone()) {
+                        return None;
+                    }
+                    let class = self.inner.unit.classes.iter().find(|class| {
+                        class
+                            .name
+                            .trim_start_matches('\\')
+                            .eq_ignore_ascii_case(&current)
+                    })?;
+                    let parent = class.parent.as_deref()?.trim_start_matches('\\');
+                    let normalized_parent = parent.to_ascii_lowercase();
+                    if !local_classes.contains(&normalized_parent) {
+                        return Some(parent.to_owned());
+                    }
+                    current = normalized_parent;
+                }
+            };
             let mut whole_unit = BTreeMap::<String, String>::new();
+            let mut method_sites = Vec::new();
             let by_function = self
                 .inner
                 .unit
                 .functions
                 .iter()
-                .map(|function| {
+                .enumerate()
+                .map(|(function_index, function)| {
+                    let function_id = u32::try_from(function_index).ok().map(FunctionId::new);
                     let mut calls = BTreeMap::<String, String>::new();
+                    let mut external_object_registers = BTreeMap::<php_ir::RegId, String>::new();
+                    let mut external_object_locals = BTreeMap::<php_ir::LocalId, String>::new();
                     for instruction in function.blocks.iter().flat_map(|block| &block.instructions)
                     {
-                        let name = match &instruction.kind {
+                        match &instruction.kind {
                             php_ir::InstructionKind::CallFunction { name, .. }
-                            | php_ir::InstructionKind::BindReferenceFromCall { name, .. } => name,
-                            _ => continue,
-                        };
-                        let normalized = name.to_ascii_lowercase();
-                        if local_functions.contains(&normalized) {
-                            continue;
+                            | php_ir::InstructionKind::BindReferenceFromCall { name, .. } => {
+                                let normalized = name.to_ascii_lowercase();
+                                if local_functions.contains(&normalized) {
+                                    continue;
+                                }
+                                calls.insert(normalized.clone(), name.clone());
+                                whole_unit.insert(normalized, name.clone());
+                            }
+                            php_ir::InstructionKind::NewObject {
+                                dst, class_name, ..
+                            } => {
+                                let normalized_class =
+                                    class_name.trim_start_matches('\\').to_ascii_lowercase();
+                                if local_classes.contains(&normalized_class) {
+                                    if let Some(parent) = external_parent_dependency(class_name) {
+                                        // A local allocation inherits the
+                                        // external parent's published layout.
+                                        // Model that immutable class-plan
+                                        // dependency beside ordinary
+                                        // cross-unit constructor links so
+                                        // declaration-time publication can
+                                        // recompile the caller exactly once.
+                                        let source_name = format!("{parent}::__construct");
+                                        let normalized = source_name.to_ascii_lowercase();
+                                        calls.insert(normalized.clone(), source_name.clone());
+                                        whole_unit.insert(normalized, source_name);
+                                    }
+                                } else {
+                                    external_object_registers.insert(
+                                        *dst,
+                                        class_name.trim_start_matches('\\').to_owned(),
+                                    );
+                                    let source_name = format!(
+                                        "{}::__construct",
+                                        class_name.trim_start_matches('\\')
+                                    );
+                                    let normalized = source_name.to_ascii_lowercase();
+                                    calls.insert(normalized.clone(), source_name.clone());
+                                    whole_unit.insert(normalized, source_name);
+                                }
+                            }
+                            php_ir::InstructionKind::Move { dst, src }
+                            | php_ir::InstructionKind::CloneObject { dst, object: src } => {
+                                if let php_ir::Operand::Register(source) = src
+                                    && let Some(class) =
+                                        external_object_registers.get(source).cloned()
+                                {
+                                    external_object_registers.insert(*dst, class);
+                                }
+                            }
+                            php_ir::InstructionKind::LoadLocal { dst, local }
+                            | php_ir::InstructionKind::LoadLocalQuiet { dst, local } => {
+                                if let Some(class) = external_object_locals.get(local).cloned() {
+                                    external_object_registers.insert(*dst, class);
+                                }
+                            }
+                            php_ir::InstructionKind::StoreLocal { local, src } => {
+                                if let php_ir::Operand::Register(source) = src
+                                    && let Some(class) =
+                                        external_object_registers.get(source).cloned()
+                                {
+                                    external_object_locals.insert(*local, class);
+                                } else {
+                                    external_object_locals.remove(local);
+                                }
+                            }
+                            php_ir::InstructionKind::CallMethod { object, method, .. }
+                            | php_ir::InstructionKind::BindReferenceFromMethodCall {
+                                object,
+                                method,
+                                ..
+                            } => {
+                                let class = match object {
+                                    php_ir::Operand::Register(register) => {
+                                        external_object_registers.get(register)
+                                    }
+                                    php_ir::Operand::Local(local) => {
+                                        external_object_locals.get(local)
+                                    }
+                                    _ => None,
+                                };
+                                let Some(class) = class else {
+                                    if let Some(function_id) = function_id {
+                                        method_sites.push(((function_id, instruction.id), None));
+                                    }
+                                    continue;
+                                };
+                                let source_name = format!("{class}::{method}");
+                                let normalized = source_name.to_ascii_lowercase();
+                                calls.insert(normalized.clone(), source_name.clone());
+                                whole_unit.insert(normalized.clone(), source_name);
+                                if let Some(function_id) = function_id {
+                                    method_sites
+                                        .push(((function_id, instruction.id), Some(normalized)));
+                                }
+                            }
+                            php_ir::InstructionKind::CallStaticMethod {
+                                class_name,
+                                method,
+                                ..
+                            } => {
+                                let normalized_class =
+                                    class_name.trim_start_matches('\\').to_ascii_lowercase();
+                                if matches!(normalized_class.as_str(), "self" | "parent" | "static")
+                                    || local_classes.contains(&normalized_class)
+                                {
+                                    continue;
+                                }
+                                let source_name =
+                                    format!("{}::{method}", class_name.trim_start_matches('\\'));
+                                let normalized = source_name.to_ascii_lowercase();
+                                calls.insert(normalized.clone(), source_name.clone());
+                                whole_unit.insert(normalized, source_name);
+                            }
+                            _ => {}
                         }
-                        calls.insert(normalized.clone(), name.clone());
-                        whole_unit.insert(normalized, name.clone());
                     }
                     calls
                         .into_iter()
@@ -1208,28 +1591,83 @@ impl CompiledUnit {
                             |(normalized_name, source_name)| PreparedExternalFunctionCall {
                                 normalized_name: normalized_name.into_boxed_str(),
                                 source_name: source_name.into_boxed_str(),
+                                link_index: 0,
                             },
                         )
                         .collect::<Vec<_>>()
                         .into_boxed_slice()
                 })
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            let whole_unit = whole_unit
+                .collect::<Vec<_>>();
+            let mut whole_unit = whole_unit
                 .into_iter()
                 .map(
                     |(normalized_name, source_name)| PreparedExternalFunctionCall {
                         normalized_name: normalized_name.into_boxed_str(),
                         source_name: source_name.into_boxed_str(),
+                        link_index: 0,
                     },
                 )
+                .collect::<Vec<_>>();
+            let link_indexes = whole_unit
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(index, call)| {
+                    let index = u32::try_from(index).ok()?;
+                    call.link_index = index;
+                    Some((call.normalized_name.to_string(), index))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let by_function = by_function
+                .into_iter()
+                .map(|mut calls| {
+                    for call in &mut calls {
+                        call.link_index = link_indexes
+                            .get(call.normalized_name.as_ref())
+                            .copied()
+                            .expect("per-function external call must have a unit link slot");
+                    }
+                    calls
+                })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
+            let method_link_indexes = method_sites
+                .into_iter()
+                .scan(0_usize, |dynamic_offset, (site, normalized)| {
+                    let index = normalized
+                        .as_deref()
+                        .and_then(|normalized| link_indexes.get(normalized).copied())
+                        .or_else(|| {
+                            let index = whole_unit.len().checked_add(*dynamic_offset)?;
+                            *dynamic_offset = (*dynamic_offset).saturating_add(1);
+                            u32::try_from(index).ok()
+                        });
+                    Some(index.map(|index| (site, index)))
+                })
+                .flatten()
+                .collect::<BTreeMap<_, _>>();
+            let dynamic_method_links = method_link_indexes
+                .values()
+                .filter(|index| **index as usize >= whole_unit.len())
+                .count();
+            let linked_function_count = whole_unit.len().saturating_add(dynamic_method_links);
             PreparedExternalFunctionCalls {
                 by_function,
-                whole_unit,
+                whole_unit: whole_unit.into_boxed_slice(),
+                method_link_indexes,
+                linked_function_count,
             }
         })
+    }
+
+    fn prepared_external_method_link_index(
+        &self,
+        function: FunctionId,
+        instruction: php_ir::InstrId,
+    ) -> Option<u32> {
+        self.prepared_external_function_call_index()
+            .method_link_indexes
+            .get(&(function, instruction))
+            .copied()
     }
 
     pub(crate) fn prepared_external_function_calls(
@@ -1244,6 +1682,11 @@ impl CompiledUnit {
 
     pub(crate) fn prepared_unit_external_function_calls(&self) -> &[PreparedExternalFunctionCall] {
         &self.prepared_external_function_call_index().whole_unit
+    }
+
+    pub(crate) fn prepared_linked_function_count(&self) -> usize {
+        self.prepared_external_function_call_index()
+            .linked_function_count
     }
 
     pub(crate) fn prepared_native_function_metadata_ptr(
@@ -1857,10 +2300,22 @@ mod tests {
 
     #[test]
     fn continuation_instruction_index_is_shared_per_compiled_unit() {
-        let compiled = CompiledUnit::new(IrUnit::new(UnitId::new(0)));
+        let mut builder = php_ir::IrBuilder::new(UnitId::new(0));
+        let file = builder.add_file("continuation-index.php");
+        let span = IrSpan::new(file, 0, 1);
+        let entry = builder.start_function("main", php_ir::FunctionFlags::default(), span);
+        let block = builder.append_block(entry);
+        builder.terminate_return(entry, block, None, span);
+        builder.set_entry(entry);
+        let compiled = CompiledUnit::new(builder.finish());
+        let entry = compiled.unit().entry;
 
-        let first = compiled.prepared_continuation_instructions();
-        let second = compiled.prepared_continuation_instructions();
+        let first = compiled
+            .prepared_continuation_instructions(entry)
+            .expect("entry continuation index");
+        let second = compiled
+            .prepared_continuation_instructions(entry)
+            .expect("entry continuation index");
         let first_ir_fingerprint = compiled.prepared_ir_fingerprint();
         let second_ir_fingerprint = compiled.prepared_ir_fingerprint();
         let first_dependency_identity = compiled.prepared_dependency_identity();
@@ -1882,6 +2337,71 @@ mod tests {
         assert_eq!(compiled.prepared_unit_stats().continuation_index_runs, 1);
         assert_eq!(compiled.prepared_unit_stats().ir_fingerprint_runs, 1);
         assert_eq!(compiled.prepared_unit_stats().dependency_identity_runs, 1);
+    }
+
+    #[test]
+    fn continuation_indexes_are_prepared_only_for_reached_functions() {
+        let mut builder = php_ir::IrBuilder::new(UnitId::new(1));
+        let file = builder.add_file("function-on-demand-index.php");
+        let span = IrSpan::new(file, 0, 1);
+        let entry = builder.start_function("main", php_ir::FunctionFlags::default(), span);
+        let entry_block = builder.append_block(entry);
+        builder.terminate_return(entry, entry_block, None, span);
+        let dormant = builder.start_function("dormant", php_ir::FunctionFlags::default(), span);
+        let dormant_block = builder.append_block(dormant);
+        builder.terminate_return(dormant, dormant_block, None, span);
+        builder.set_entry(entry);
+        let compiled = CompiledUnit::new(builder.finish());
+
+        let _entry = compiled
+            .prepared_continuation_instructions(entry)
+            .expect("entry continuation index");
+        assert_eq!(compiled.prepared_unit_stats().continuation_index_runs, 1);
+
+        let _dormant = compiled
+            .prepared_continuation_instructions(dormant)
+            .expect("dormant continuation index");
+        assert_eq!(compiled.prepared_unit_stats().continuation_index_runs, 2);
+    }
+
+    #[test]
+    fn local_allocation_indexes_its_external_parent_class_plan() {
+        let mut builder = php_ir::IrBuilder::new(UnitId::new(2));
+        let file = builder.add_file("external-parent-plan.php");
+        let span = IrSpan::new(file, 0, 1);
+        let entry = builder.start_function("main", php_ir::FunctionFlags::default(), span);
+        let block = builder.append_block(entry);
+        let object = builder.alloc_register(entry);
+        builder.emit(
+            entry,
+            block,
+            php_ir::InstructionKind::NewObject {
+                dst: object,
+                display_class_name: "LocalChild".to_owned(),
+                class_name: "localchild".to_owned(),
+                args: Vec::new(),
+            },
+            span,
+        );
+        builder.terminate_return(entry, block, Some(php_ir::Operand::Register(object)), span);
+        let mut child = class_entry(0, "localchild", false);
+        child.display_name = "LocalChild".to_owned();
+        child.parent = Some("externalbase".to_owned());
+        child.parent_display_name = Some("ExternalBase".to_owned());
+        child.span = span;
+        builder.push_class(child);
+        builder.set_entry(entry);
+
+        let compiled = CompiledUnit::new(builder.finish());
+        let calls = compiled.prepared_external_function_calls(entry);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].normalized_name.as_ref(),
+            "externalbase::__construct"
+        );
+        assert_eq!(calls[0].source_name.as_ref(), "externalbase::__construct");
+        assert_eq!(calls[0].link_index, 0);
+        assert_eq!(compiled.prepared_unit_external_function_calls().len(), 1);
     }
 
     #[test]

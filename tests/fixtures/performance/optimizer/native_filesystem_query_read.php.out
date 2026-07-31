@@ -1,0 +1,14 @@
+is_file=1
+is_dir=1
+is_readable=1
+is_writable=1
+filesize=1
+filemtime=1
+contents=1
+slice=1
+wrapper=1
+missing_file=0
+missing_dir=0
+missing_size=1
+missing_mtime=1
+missing_contents=1

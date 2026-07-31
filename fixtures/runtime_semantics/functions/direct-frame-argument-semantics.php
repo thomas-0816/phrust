@@ -7,6 +7,29 @@ function observer($a, $b = 5) {
     return implode(",", func_get_args()) . "#" . func_num_args();
 }
 echo observer(1), "|", observer(1, 2), "|", observer(1, 2, 3), "\n";
+$unpackedObserver = function ($first, $second) {
+    return implode(",", func_get_args()) . "#" . func_num_args();
+};
+echo call_user_func_array($unpackedObserver, [7, 8]), "\n";
+
+function observes_current_fixed_and_original_variadic($first = "A", $second = "B", ...$rest) {
+    $first = "changed-fixed";
+    if (isset($rest[0])) {
+        $rest[0] = "changed-tail";
+    }
+    return func_get_arg(0) . ":" . implode(",", func_get_args()) . "#" . func_num_args();
+}
+echo observes_current_fixed_and_original_variadic(second: "named"), "|";
+echo observes_current_fixed_and_original_variadic("x", "y", "z"), "\n";
+
+function catches_out_of_range_argument($value) {
+    try {
+        func_get_arg(9);
+    } catch (Error $error) {
+        return func_num_args() . ":" . $value;
+    }
+}
+echo catches_out_of_range_argument("kept"), "\n";
 
 function thrower($x, $y) {
     throw new RuntimeException("boom:$x:$y");

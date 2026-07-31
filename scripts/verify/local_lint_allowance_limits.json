@@ -1,16 +1,40 @@
 {
   "limits": {
-    "crates/php_runtime/src/runtime_memory.rs": {
-      "unsafe_code": 6
-    },
-    "crates/php_vm/src/frame_memory.rs": {
+    "crates/php_jit/src/abi.rs": {
       "unsafe_code": 3
     },
-    "crates/php_vm/src/vm/execution_tiering.rs": {
+    "crates/php_jit/src/cranelift_lowering/fallback_helpers.rs": {
       "unsafe_code": 1
     },
+    "crates/php_runtime/src/runtime_memory.rs": {
+      "unsafe_code": 25
+    },
     "crates/php_vm/src/vm/jit_abi.rs": {
-      "unsafe_code": 7
+      "unsafe_code": 108
+    },
+    "crates/php_vm/src/vm/jit_abi/call_dispatch.rs": {
+      "unsafe_code": 119
+    },
+    "crates/php_vm/src/vm/jit_abi/diagnostic_helpers.rs": {
+      "unsafe_code": 2
+    },
+    "crates/php_vm/src/vm/jit_abi/dynamic_code.rs": {
+      "unsafe_code": 1
+    },
+    "crates/php_vm/src/vm/jit_abi/dynamic_units.rs": {
+      "unsafe_code": 2
+    },
+    "crates/php_vm/src/vm/jit_abi/frame_arena.rs": {
+      "unsafe_code": 1
+    },
+    "crates/php_vm/src/vm/jit_abi/native_builtins.rs": {
+      "unsafe_code": 3
+    },
+    "crates/php_vm/src/vm/jit_abi/runtime_ops.rs": {
+      "unsafe_code": 21
+    },
+    "crates/php_vm/src/vm/jit_abi/semantic_dispatch/mod.rs": {
+      "unsafe_code": 3
     }
   },
   "schema_version": 1
